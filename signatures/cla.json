@@ -1,3 +1,12 @@
 {
-   "signedContributors": []
+  "signedContributors": [
+    {
+      "name": "Generative-Logic",
+      "id": 222432200,
+      "comment_id": 3112523393,
+      "created_at": "2025-07-24T08:21:39Z",
+      "repoId": 1025412361,
+      "pullRequestNo": 1
+    }
+  ]
 }
