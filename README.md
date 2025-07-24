@@ -1,6 +1,5 @@
 ## Licensing 📜
 
-#test
 Generative Logic is dual-licensed under the AGPLv3 and a Commercial License.
 
 **1. AGPLv3 License (Open-Source)**
