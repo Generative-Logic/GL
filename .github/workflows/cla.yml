@@ -1,0 +1,54 @@
+name: CLA Assistant
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  statuses: write
+
+jobs:
+  cla:
+    runs-on: ubuntu-latest
+
+    # only run on PR events, or on new comments that are exactly “recheck”
+    if: >
+      github.event_name == 'pull_request_target' ||
+      (
+        github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request != null &&
+        github.event.comment.body == 'recheck'
+      )
+
+    permissions:
+      contents: write
+      pull-requests: write
+      statuses: write
+
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Ensure signatures directory
+        run: mkdir -p signatures
+
+      - name: Run CLA Assistant
+        uses: contributor-assistant/github-action@v2.6.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          path-to-document: https://raw.githubusercontent.com/Generative-Logic/test_repo/main/legal/CONTRIBUTOR_LICENSE_AGREEMENT.md
+          path-to-signatures: signatures/cla.json
+          branch: main
+          allowlist: |
+            dependabot[bot]
+            github-actions[bot]
