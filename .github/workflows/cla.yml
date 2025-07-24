@@ -46,7 +46,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          path-to-document: https://raw.githubusercontent.com/Generative-Logic/test_repo/main/legal/CONTRIBUTOR_LICENSE_AGREEMENT.md
+          path-to-document: https://raw.githubusercontent.com/Generative-Logic/GL/main/legal/CONTRIBUTOR_LICENSE_AGREEMENT.md
           path-to-signatures: signatures/cla.json
           branch: main
           allowlist: |
