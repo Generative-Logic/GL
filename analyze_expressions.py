@@ -123,6 +123,7 @@ class BodyOfProves:
         self.start_int = 0
         self.to_be_proved = {}
         self.statements = []
+        self.encoded_statements = []
         self.statement_levels_map = {}
         self.expr_key = ""
         self.parent_body_of_proves = None
@@ -130,6 +131,7 @@ class BodyOfProves:
         self.local_memory = LocalMemory()
         self.equivalence_classes = []
         self.local_statements = []
+        self.local_encoded_statements = []
         self.local_statements_delta = []
         self.mail_in = Mail()
         self.mail_out = Mail()
@@ -164,6 +166,33 @@ class Dependencies:
         self.original_induction_variable_map = {}
         self.auxy_index = 0
         self.original_index = 0
+
+
+ARGUMENT_PATTERN = re.compile(r'it_(\d+)_lev_(\d+)_(\d+)')
+class EncodedExpression:
+    def __init__(self, expression: str):
+        core_expr = extract_expression(expression)
+        self.name = core_expr
+
+        self.negation = False
+        if expression.startswith('!'):
+            self.negation = True
+
+        args = get_args(expression)
+        self.arguments = tuple([self._parse_argument(arg) for arg in args])
+
+        self.original = expression
+
+
+    @staticmethod
+    def _parse_argument(arg: str):
+        match = ARGUMENT_PATTERN.fullmatch(arg)
+        if match:
+            iteration = int(match.group(1))
+            lev = int(match.group(2))
+            id = match.group(3)
+            return iteration + 1, lev + 1, id
+        return 0, 0, arg
 
 
 global_body_of_proves = BodyOfProves()
@@ -1712,7 +1741,9 @@ def apply_equivalence_class(clss: EquivalenceClass,
         if not applied in memory_block.statement_levels_map and applied not in memory_block.expr_origin_map  and max(expr_levels_map[applied]) == memory_block.level:
             memory_block.statement_levels_map[applied] = expr_levels_map[applied]
             memory_block.statements.append(applied)
+            #memory_block.encoded_statements.append(EncodedExpression(applied))
             memory_block.local_statements.append(applied)
+            #memory_block.local_encoded_statements.append(EncodedExpression(applied))
             memory_block.local_statements_delta.append(applied)
             new_statements.append(applied)
 
@@ -1809,20 +1840,36 @@ def merge_two_equivalence_classes(class_a: EquivalenceClass,
 def clean_up_expressions(mb: BodyOfProves, new_statements: list[str]):
     # Rebuild local_statements and statements by filtering out those that fail the filter.
 
-
+    new_local = []
+    new_local_encoded = []
     for eq_clss in mb.equivalence_classes:
-        new_local = [s for s in mb.local_statements if filter_iterations(s, eq_clss)]
+        for index in range(len(mb.local_statements)):
+            if filter_iterations(mb.local_statements[index], eq_clss):
+                new_local.append(mb.local_statements[index])
+
+                if index >= len(mb.local_encoded_statements):
+                    test = 0
+
+                #new_local_encoded.append(mb.local_encoded_statements[index])
+
         new_local_delta = [s for s in mb.local_statements_delta if filter_iterations(s, eq_clss)]
         for s in set(mb.local_statements) - set(new_local):
             mb.statement_levels_map.pop(s, None)
         mb.local_statements = new_local
         mb.local_statements_delta = new_local_delta
+        mb.local_encoded_statements = new_local_encoded
 
-        new_stmts = [s for s in mb.statements if filter_iterations(s, eq_clss)]
+        new_stmts = []
+        new_encoded_statements = []
+        for index in range(len(mb.statements)):
+            if filter_iterations(mb.statements[index], eq_clss):
+                new_stmts.append(mb.statements[index])
+                #new_encoded_statements.append(mb.encoded_statements[index])
+
         for s in set(mb.statements) - set(new_stmts):
             mb.statement_levels_map.pop(s, None)
         mb.statements = new_stmts
-
+        mb.encoded_statements = new_encoded_statements
 
         new_statements = [s for s in new_statements if filter_iterations(s, eq_clss)]
 
@@ -1903,6 +1950,8 @@ def is_equality(cand: str) -> bool:
     """Determines whether the expression is considered an equality expression."""
     return cand.startswith("(=[")
 
+
+
 def add_statement(expr: str,
                   memory_block,
                   local: bool,
@@ -1934,10 +1983,12 @@ def add_statement(expr: str,
                         assert expr not in memory_block.mail_out.expr_origin_map
                         memory_block.mail_out.expr_origin_map[expr] = origin
                 memory_block.statements.append(expr)
+                #memory_block.encoded_statements.append(EncodedExpression(expr))
                 if local:
 
 
                     memory_block.local_statements.append(expr)
+                    #memory_block.local_encoded_statements.append(EncodedExpression(expr))
                     memory_block.local_statements_delta.append(expr)
                     new_statements.append(expr)
                     memory_block.mail_out.statements.add((expr, frozenset(levels)))
