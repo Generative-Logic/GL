@@ -89,14 +89,18 @@ class LocalMemoryValue:
 
 class LocalMemory:
     def __init__(self):
-        self.map = {}
+        self.encoded_map = {}
         self.remaining_args_tuples_map = {}
         self.remaining_args_normalized_map = {}
+        self.remaining_args_normalized_encoded_map = {}
         self.max_occurrence_per_key_map = {}
         self.max_key_length = 0
         self.min_max = {}
         self.normalized_keys = set()
+        self.normalized_encoded_keys = set()
+        self.normalized_encoded_subkeys = set()
         self.normalized_subkeys = set()
+        self.normalized_encoded_subkeys = set()
         self.admission_map = {}
         self.rejected_map = {}
         self.admission_status_map = {}
@@ -122,7 +126,6 @@ class BodyOfProves:
             self.binary_seqs_map[num] = generate_binary_sequences_as_lists(num)
         self.start_int = 0
         self.to_be_proved = {}
-        self.statements = []
         self.encoded_statements = []
         self.statement_levels_map = {}
         self.expr_key = ""
@@ -130,9 +133,8 @@ class BodyOfProves:
         self.level = -1
         self.local_memory = LocalMemory()
         self.equivalence_classes = []
-        self.local_statements = []
         self.local_encoded_statements = []
-        self.local_statements_delta = []
+        self.local_encoded_statements_delta = []
         self.mail_in = Mail()
         self.mail_out = Mail()
         self.whole_expressions = set()
@@ -168,7 +170,10 @@ class Dependencies:
         self.original_index = 0
 
 
+import re
+
 ARGUMENT_PATTERN = re.compile(r'it_(\d+)_lev_(\d+)_(\d+)')
+
 class EncodedExpression:
     def __init__(self, expression: str):
         core_expr = extract_expression(expression)
@@ -181,18 +186,97 @@ class EncodedExpression:
         args = get_args(expression)
         self.arguments = tuple([self._parse_argument(arg) for arg in args])
 
+        self.max_iteration_number = self._get_max_iteration_number(self)
+
         self.original = expression
 
+    def __lt__(self, other):
+        if not isinstance(other, EncodedExpression):
+            return NotImplemented
+        return self.original < other.original
+
+    def __eq__(self, other):
+        if not isinstance(other, EncodedExpression):
+            return NotImplemented
+        return (
+            self.name == other.name and
+            self.negation == other.negation and
+            self.arguments == other.arguments and
+            self.max_iteration_number == other.max_iteration_number and
+            self.original == other.original
+        )
+
+    def __hash__(self):
+        # Make arguments hashable (they’re tuples of lists by default)
+        args_hashable = tuple(tuple(a) for a in self.arguments)
+        return hash((
+            self.name,
+            self.negation,
+            args_hashable,
+            self.max_iteration_number,
+            self.original
+        ))
+
+    @staticmethod
+    def _is_unchangeable(name: str) -> str:
+        return str(name.startswith('u_'))
 
     @staticmethod
     def _parse_argument(arg: str):
+        is_unchangeable = EncodedExpression._is_unchangeable(arg)
+        if is_unchangeable == 'True':
+            arg = arg[2:]
+
         match = ARGUMENT_PATTERN.fullmatch(arg)
+
         if match:
             iteration = int(match.group(1))
             lev = int(match.group(2))
-            id = match.group(3)
-            return iteration + 1, lev + 1, id
-        return 0, 0, arg
+            arg_id = match.group(3)
+            return [is_unchangeable, arg, str(iteration), str(lev + 1), arg_id]
+        return [is_unchangeable, arg, '-1', '0', arg]
+
+    @staticmethod
+    def _get_max_iteration_number(self):
+        max_iteration = -1
+        for argument in self.arguments:
+            if int(argument[2]) > max_iteration:
+                max_iteration = int(argument[2])
+        return max_iteration
+
+
+
+
+
+class NormalizedKey:
+    __slots__ = ("number_expressions", "data")
+
+    def __init__(self):
+        self.number_expressions = 0
+        self.data = []  # only ever holds strings
+
+    def __eq__(self, other):
+        if not isinstance(other, NormalizedKey):
+            return NotImplemented
+        return (self.number_expressions == other.number_expressions
+                and self.data == other.data)
+
+    def __hash__(self):
+        # start from the hash of number_expressions
+        h = self.number_expressions & 0xFFFFFFFF
+        # fold in each string’s hash
+        for s in self.data:
+            # simple multiply-and-xor mix (mod 2**64)
+            h = ((h * 31) ^ hash(s)) & 0xFFFFFFFFFFFFFFFF
+        return h
+
+    def append(self, item: str):
+        if not isinstance(item, str):
+            raise TypeError("NormalizedKey.data only supports strings")
+        self.data.append(item)
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}(n={self.number_expressions}, data={self.data})"
 
 
 global_body_of_proves = BodyOfProves()
@@ -438,6 +522,15 @@ def get_all_args(expression_list: list[str]):
 
     return all_args
 
+def get_all_encoded_args(expression_list: list[EncodedExpression]):
+    all_args = set()
+
+    for expression in expression_list:
+        for arg in expression.arguments:
+            all_args.add(arg[1])
+
+    return all_args
+
 def find_integers(string):
     integer = r'-?\d+'  # Pattern to match integers (including negative numbers)
     pattern = r'(?<=[\[,])(' + integer + r')(?=[\],])'
@@ -466,7 +559,33 @@ def perform_back_replacement(expr2: str, back_replacement_map2: {}):
 
     return back_replaced_expr
 
-def check_local_memory(expression_list: list[str], memory_block: BodyOfProves, iteration: int, tple):
+
+
+def set_unchangeables(expression_list: list[EncodedExpression], unchangeables: set[str]):
+    for expression in expression_list:
+        for argument in expression.arguments:
+            if argument[1] in unchangeables:
+                argument[0] = 'True'
+
+def extract_unchangeables(expression_list: list[EncodedExpression]):
+    unchangeables = set()
+
+    for expression in expression_list:
+        for argument in expression.arguments:
+            if argument[0] == 'True':
+                unchangeables.add(argument[1])
+
+    return unchangeables
+
+def reset_unchangeables(expression_list: list[EncodedExpression], unchangeables: set[str]):
+    for expression in expression_list:
+        for argument in expression.arguments:
+            argument[0] = 'False'
+
+            if argument[1] in unchangeables:
+                argument[0] = 'True'
+
+def check_local_encoded_memory(expression_list: list[EncodedExpression], memory_block: BodyOfProves, iteration: int, tple):
     def replace_u_substrings(s):
         """
         Replace substrings in the string s that have the structure 'u_' followed by any string,
@@ -493,34 +612,32 @@ def check_local_memory(expression_list: list[str], memory_block: BodyOfProves, i
 
     pure = True
     for expression in expression_list:
-        args = set(get_args(expression))
-
-        args = {arg for arg in args if extract_max_iteration_number(arg) is not None}
+        args = {arg[1] for arg in expression.arguments if int(arg[2]) > -1}
 
         if not args.issubset(memory_block.local_memory.products_of_recursion):
             pure = False
             break
 
-    combined_expression = ""
+    or_unchangeables = extract_unchangeables(expression_list)
+
     combined_levels = set()
     for subexpr in expression_list:
-        combined_expression += subexpr
-        combined_levels.update(memory_block.statement_levels_map[subexpr])
+        combined_levels.update(memory_block.statement_levels_map[subexpr.original])
 
-    all_args = get_all_args(expression_list)
-    if len(memory_block.local_memory.map) != 0:
+    all_args = get_all_encoded_args(expression_list)
+    if len(memory_block.local_memory.encoded_map) != 0:
 
-        for st in sorted(list(memory_block.local_memory.remaining_args_normalized_map.keys())):
+        for st in sorted(list(memory_block.local_memory.remaining_args_normalized_encoded_map.keys())):
             if st.issubset(all_args):
-                if tple in memory_block.local_memory.remaining_args_normalized_map[st]:
-                    replacement_map = {arg: "u_" + arg for arg in st}
-                    replaced_expr = replace_keys_in_string(combined_expression, replacement_map)
+                if tple in memory_block.local_memory.remaining_args_normalized_encoded_map[st]:
+                    set_unchangeables(expression_list, st)
 
-                    normalized, norm_map = normalize_variables(replaced_expr)
+                    normalized, norm_map = make_normalized_encoded_key(expression_list)
+                    reset_unchangeables(expression_list, or_unchangeables)
                     bck_rplcmnt_mp = {value: key for key, value in norm_map.items()}
 
-                    if normalized in memory_block.local_memory.map:
-                        vlue_set = memory_block.local_memory.map[normalized]
+                    if normalized in memory_block.local_memory.encoded_map:
+                        vlue_set = memory_block.local_memory.encoded_map[normalized]
                         for local_memory_value in sorted(vlue_set, key=lambda item: item.value):
 
 
@@ -537,7 +654,7 @@ def check_local_memory(expression_list: list[str], memory_block: BodyOfProves, i
                                                          1,
                                                          temp_levels,
                                                          ["implication", local_memory_value.original_implication] +
-                                                         sorted(expression_list))
+                                                         sorted([expr.original for expr in expression_list]))
 
                             else:
 
@@ -572,35 +689,29 @@ def check_local_memory(expression_list: list[str], memory_block: BodyOfProves, i
     return
 
 
+def make_normalized_encoded_key(lst: list[EncodedExpression], ignore_u: bool = True):
+    ky = NormalizedKey()
+    covered_variables = {}
 
-import re
-from functools import lru_cache
-from typing import Dict, Tuple
+    for expr in lst:
 
-_ALLOWED_REGEX_PATTERN_NORM_VARS = re.compile(r'(?<=[\[,])([A-Za-z0-9_]+)(?=[],])')
+        ky.data.append(expr.name)
+        ky.data.append(str(expr.negation))
 
-@lru_cache(maxsize=6000000)
-def _normalize_variables_cached(expression: str, ignore_u: bool) -> Tuple[str, tuple[tuple[str, str], ...]]:
-    mapping: Dict[str, str] = {}
+        ky.number_expressions += 1
 
-    def replacement(match: re.Match) -> str:
-        token = match.group(1)
-        if ignore_u and token.startswith("u_"):
-            return token
-        if token not in mapping:
-            mapping[token] = str(len(mapping) + 1)
-        return mapping[token]
+        for arg in expr.arguments:
+            original = arg[1]
 
-    normalized = _ALLOWED_REGEX_PATTERN_NORM_VARS.sub(replacement, expression)
-    mapping_tuple: tuple[tuple[str, str], ...] = tuple((k, v) for k, v in mapping.items())
-    return normalized, mapping_tuple
+            if ignore_u and arg[0] == 'True':
+                ky.data.append('u_' + original)
+            else:
+                if original not in covered_variables:
+                    covered_variables[original] = str(len(covered_variables) + 1)
 
-def normalize_variables(expression: str, ignore_u: bool = True) -> Tuple[str, Dict[str, str]]:
-    normalized, mapping_tuple = _normalize_variables_cached(expression, ignore_u)
-    return normalized, dict(mapping_tuple)
+                ky.data.append(covered_variables[original])
 
-
-
+    return ky, covered_variables
 
 def get_global_key(memory_block: BodyOfProves):
     global_key = []
@@ -675,10 +786,10 @@ def calc_num_diff_args(input_key: list[str], binary_list: list[int]):
     return tuple(sorted(extr_expressions)), len(diff_args)
 
 def normalize_subkey(input_key: list[str]):
-    subkey = "".join(input_key)
-    subkey, mp = normalize_variables(subkey, False)
+    encoded_subkey = [EncodedExpression(expr) for expr in input_key]
+    normalized_encoded_subkey, mp2 = make_normalized_encoded_key(encoded_subkey, False)
 
-    return subkey
+    return normalized_encoded_subkey
 
 def update_admission_map(hash_memory: LocalMemory,
                          key: list[str],
@@ -807,7 +918,7 @@ def make_normalized_keys_for_admission(key: list[str], hash_memory: LocalMemory,
 
             variants = create_variants(subkey, replaced)
 
-            for ky, vlue, mp in variants:
+            for encoded_ignored_ky, encode_not_ignored_ky, vlue, mp in variants:
                 remaining_args = get_remaining_args(subkey)
 
                 local_memory_value = LocalMemoryValue()
@@ -817,19 +928,20 @@ def make_normalized_keys_for_admission(key: list[str], hash_memory: LocalMemory,
 
                 local_memory_value.key = repl_key
                 local_memory_value.remaining_args = remaining_args
-                if ky in hash_memory.map:
-                    hash_memory.map[ky].add(local_memory_value)
-                else:
-                    hash_memory.map[ky] = set()
-                    hash_memory.map[ky].add(local_memory_value)
 
-                normalized_key, norm_mp = normalize_variables(ky, False)
-                hash_memory.normalized_keys.add(normalized_key)
 
-                if frozenset(remaining_args) in hash_memory.remaining_args_normalized_map:
-                    hash_memory.remaining_args_normalized_map[remaining_args].add(normalized_key)
+                if encoded_ignored_ky in hash_memory.encoded_map:
+                    hash_memory.encoded_map[encoded_ignored_ky].add(local_memory_value)
                 else:
-                    hash_memory.remaining_args_normalized_map[remaining_args] = {normalized_key}
+                    hash_memory.encoded_map[encoded_ignored_ky] = set()
+                    hash_memory.encoded_map[encoded_ignored_ky].add(local_memory_value)
+
+                hash_memory.normalized_encoded_keys.add(encode_not_ignored_ky)
+
+                if frozenset(remaining_args) in hash_memory.remaining_args_normalized_encoded_map:
+                    hash_memory.remaining_args_normalized_encoded_map[remaining_args].add(encode_not_ignored_ky)
+                else:
+                    hash_memory.remaining_args_normalized_encoded_map[remaining_args] = {encode_not_ignored_ky}
 
     return
 
@@ -854,9 +966,10 @@ def make_normalized_subkeys(key: list[str], hash_memory: LocalMemory):
             if to_break:
                 break
 
-            subkey_variant = "".join(temp_list[:index + 1])
-            subkey_variant, mp = normalize_variables(subkey_variant, False)
-            hash_memory.normalized_subkeys.add(subkey_variant)
+            subkey_encoded_list = [EncodedExpression(temp_list[index2]) for index2 in range(0, index + 1)]
+
+            subkey_encoded_variant, mp2 = make_normalized_encoded_key(subkey_encoded_list, False)
+            hash_memory.normalized_encoded_subkeys.add(subkey_encoded_variant)
 
     return
 
@@ -886,25 +999,25 @@ def add_to_hash_memory(key: list[str],
 
     make_normalized_subkeys(key, hash_memory)
 
-    for ky, vlue, mp in variants:
+    for encoded_ignored_ky, encoded_not_ignored_ky, vlue, mp in variants:
         local_memory_value = LocalMemoryValue()
         local_memory_value.value = vlue
         local_memory_value.levels = frozenset(levels)
         local_memory_value.original_implication = original_implication
         local_memory_value.remaining_args = remaining_args
-        if ky in hash_memory.map:
-            hash_memory.map[ky].add(local_memory_value)
-        else:
-            hash_memory.map[ky] = set()
-            hash_memory.map[ky].add(local_memory_value)
 
-        normalized_key, norm_mp = normalize_variables(ky, False)
-        hash_memory.normalized_keys.add(normalized_key)
-
-        if remaining_args in hash_memory.remaining_args_normalized_map:
-            hash_memory.remaining_args_normalized_map[remaining_args].add(normalized_key)
+        if encoded_ignored_ky in hash_memory.encoded_map:
+            hash_memory.encoded_map[encoded_ignored_ky].add(local_memory_value)
         else:
-            hash_memory.remaining_args_normalized_map[remaining_args] = {normalized_key}
+            hash_memory.encoded_map[encoded_ignored_ky] = set()
+            hash_memory.encoded_map[encoded_ignored_ky].add(local_memory_value)
+
+        hash_memory.normalized_encoded_keys.add(encoded_not_ignored_ky)
+
+        if remaining_args in hash_memory.remaining_args_normalized_encoded_map:
+            hash_memory.remaining_args_normalized_encoded_map[remaining_args].add(encoded_not_ignored_ky)
+        else:
+            hash_memory.remaining_args_normalized_encoded_map[remaining_args] = {encoded_not_ignored_ky}
 
 
 
@@ -978,6 +1091,16 @@ def count_pattern_occurrences(input_string, local_memory: LocalMemory):
 
     return counter
 
+def count_pattern_occurrences_encoded(encoded_expression: EncodedExpression, local_memory: LocalMemory):
+    counter = 0
+
+    for argument in encoded_expression.arguments:
+        if int(argument[2]) > -1:
+            if argument[1] not in local_memory.products_of_recursion:
+                counter += 1
+
+    return counter
+
 
 def send_mail(memory_block: BodyOfProves, mail: Mail):
     #print("memory_block.expr_key: " + memory_block.expr_key)
@@ -1005,19 +1128,19 @@ def send_mail(memory_block: BodyOfProves, mail: Mail):
             send_mail(subsequent, mail)
 
 
-def filter_statements(statements: list[str],
+def filter_encoded_statements(encoded_statements: list[EncodedExpression],
                       local_memory: LocalMemory):
     filtered = []
 
-    for sttment in statements:
-        normed = normalize_subkey([sttment])
-        if normed not in local_memory.normalized_subkeys:
+    for sttment in encoded_statements:
+        encoded_normed, mp = make_normalized_encoded_key([sttment], False)
+        if encoded_normed not in local_memory.normalized_encoded_subkeys:
             continue
 
-        filter_statements_itr = extract_max_iteration_number(sttment)
-        if filter_statements_itr is not None:
-            if filter_statements_itr > max_iteration_number_variable:
-                continue
+        filter_statements_itr = sttment.max_iteration_number
+
+        if filter_statements_itr > max_iteration_number_variable:
+            continue
 
 
         filtered.append(sttment)
@@ -1025,52 +1148,45 @@ def filter_statements(statements: list[str],
     return filtered
 
 def perform_elementary_logical_step(body_of_proves: BodyOfProves):
-    def pre_evaluate_key(key: list):
-        """
-        Evaluate the key (a list of statements) by counting the occurrences of each core expression.
-        Returns a tuple (local_good, global_good) after comparing the counts against maximum allowed
-        occurrences in local and global memory maps.
-        """
-
-
-
-
-
-
+    def pre_evaluate_encoded_key(key: list[EncodedExpression]):
         local_good = True
 
         secondary_counter = 0
         for key_expression in key:
-            secondary_counter += count_pattern_occurrences(key_expression, body_of_proves.local_memory)
+            secondary_counter += count_pattern_occurrences_encoded(key_expression, body_of_proves.local_memory)
 
         if secondary_counter > max_number_secondary_variables:
-            return False
-
-        normalized_subkey = normalize_subkey(key)
-
-        # Check local memory restrictions for binary analysis
-        if normalized_subkey not in body_of_proves.local_memory.normalized_subkeys:
             local_good = False
 
-        return local_good
+        normalized_encoded_key, encoded_map = make_normalized_encoded_key(key, False)
+
+        # Check local memory restrictions for binary analysis
+        if normalized_encoded_key not in body_of_proves.local_memory.normalized_encoded_subkeys:
+            local_good = False
+
+        return local_good, normalized_encoded_key
 
 
 
-    import copy
 
-    def make_mandatory_statement_lists1(local_memory: LocalMemory,local_statements: list[str]):
-        temp_list = sorted(filter_statements(local_statements, local_memory))
+
+
+
+    def make_mandatory_encoded_statement_lists1(local_memory: LocalMemory,local_statements: list[EncodedExpression]):
+        temp_list = sorted(filter_encoded_statements(local_statements, local_memory), key=lambda u: u.original)
 
         return [[element] for element in temp_list]
 
-    def make_mandatory_statement_lists2(local_memory: LocalMemory,
-                                        first_layer: list[str],
-                                        second_layer: list[str]):
+    def make_mandatory_encoded_statement_lists2(local_memory: LocalMemory,
+                                        first_layer: list[EncodedExpression],
+                                        second_layer: list[EncodedExpression]):
         mandatory_statement_lists = []
 
         if first_layer and second_layer:
-            filtered_first_layer = sorted(filter_statements(first_layer, local_memory))
-            filtered_second_layer = sorted(filter_statements(second_layer, local_memory))
+            filtered_first_layer = sorted(filter_encoded_statements(first_layer, local_memory),
+                                          key=lambda u: u.original)
+            filtered_second_layer = sorted(filter_encoded_statements(second_layer, local_memory),
+                                           key=lambda u: u.original)
 
             mandatory_statement_lists = []
 
@@ -1079,12 +1195,12 @@ def perform_elementary_logical_step(body_of_proves: BodyOfProves):
                     if filtered_first != filtered_second:
                         statement_list = [filtered_first, filtered_second]
 
-                        if pre_evaluate_key(statement_list):
+                        if pre_evaluate_encoded_key(statement_list)[0]:
                             mandatory_statement_lists.append(statement_list)
 
         return mandatory_statement_lists
 
-    def sort_expressions(strings):
+    def sort_encoded_expressions(encoded_expressions: list[EncodedExpression]):
         """
         Sorts a list of strings lexicographically (in ascending order)
         using the extracted expressions from each string as the key.
@@ -1092,14 +1208,16 @@ def perform_elementary_logical_step(body_of_proves: BodyOfProves):
         The extraction is applied only once per element.
         """
         # Decorate: create a list of tuples (extracted key, original string)
-        decorated = [(extract_expression(s), s) for s in strings]
+        decorated = [(ee.name, ee) for ee in encoded_expressions]
         # Sort the decorated list based on the extracted expression
         decorated.sort(key=lambda pair: pair[0])
         # Undecorate: extract the sorted original strings
         return [original for _, original in decorated]
 
-
-    def merge_insert_sorted(list_a, values_list_a, list_b, values_list_b):
+    def merge_insert_sorted_encoded(list_a: list[EncodedExpression],
+                                    values_list_a: list[str],
+                                    list_b: list[EncodedExpression],
+                                    values_list_b: list[str]):
         """
         Merges two lists of strings by inserting elements from list_b into list_a.
 
@@ -1112,13 +1230,13 @@ def perform_elementary_logical_step(body_of_proves: BodyOfProves):
         such that the resulting list is sorted lexicographically by their keys.
 
         Parameters:
-            list_a (List[str]): A list of strings sorted by values_list_a.
+            list_a (List[EncodedExpression]): A list of strings sorted by values_list_a.
             values_list_a (List[str]): A list of sort keys corresponding to list_a.
-            list_b (List[str]): A list of strings that will be merged into list_a.
+            list_b (List[EncodedExpression]): A list of strings that will be merged into list_a.
             values_list_b (List[str]): A list of sort keys corresponding to list_b.
 
         Returns:
-            List[str]: A new list containing all elements from list_a and list_b in
+            List[EncodedExpression]: A new list containing all elements from list_a and list_b in
                        ascending lexicographical order based on their keys.
         """
         # Create copies to avoid modifying the original lists
@@ -1134,49 +1252,32 @@ def perform_elementary_logical_step(body_of_proves: BodyOfProves):
 
         return merged_list
 
+    def generate_encoded_requests(local_memory: LocalMemory,
+                                  mandatory_encoded_statement_lists: list[list[EncodedExpression]],
+                                  all_statements: list[EncodedExpression]):
+        rqsts = set()
 
-    def generate_requests(local_memory: LocalMemory,
-                          mandatory_statement_lists: list[list[str]],
-                          all_statements: list[str]):
-        """
-        Iteratively generates requests by combining subsets of statements from
-        body_of_proves.statements (using their indices) with each statement from
-        body_of_proves.local_statements. A request (a list of statements) is added to the output
-        list if pre_evaluate_key returns True for either the local or global condition.
+        filtered_all_statements = sort_encoded_expressions(filter_encoded_statements(all_statements, local_memory))
 
-        Branch-and-bound pruning is applied: a branch is extended only if at least one combination
-        in that branch succeeds the test.
+        values_fas = [filtered.name for filtered in filtered_all_statements]
+        values_msl = [[sttmnt.name for sttmnt in sttmnt_lst] for sttmnt_lst in mandatory_encoded_statement_lists]
 
-        Returns:
-            A list of tuples (rqst, local_good, global_good, sttmnt_tple) where 'rqst' is a valid request.
-        """
-        rqsts = []
-
-        filtered_all_statements = sort_expressions(filter_statements(all_statements, local_memory))
-
-
-        values_fas = [extract_expression(filtered) for filtered in filtered_all_statements]
-        values_msl = [[extract_expression(sttmnt) for sttmnt in sttmnt_lst] for sttmnt_lst in mandatory_statement_lists]
-
-
-        # Process each local statement individually.
-        for mandatory_statement_list in mandatory_statement_lists:
+        for mandatory_statement_list in mandatory_encoded_statement_lists:
             rqst = mandatory_statement_list
-            local_good = pre_evaluate_key(rqst)
-            normalized_req = normalize_subkey(rqst)
-            if local_good and normalized_req in local_memory.normalized_keys:
-                rqsts.append((copy.deepcopy(rqst), local_good, normalized_req))
+            local_good, nek = pre_evaluate_encoded_key(rqst)
+            if local_good:
+                normalized_encoded_req, encoded_map = make_normalized_encoded_key(rqst, False)
+                if normalized_encoded_req in local_memory.normalized_encoded_keys:
+                    rqsts.add((tuple(rqst), local_good, normalized_encoded_req))
 
-        # Use a stack for iterative backtracking over indices from body_of_proves.statements.
-        # Instead of a viability mask (list of booleans), we'll use a set of viable indices.
-        initial_viable_set = set(range(len(mandatory_statement_lists)))
+        initial_viable_set = set(range(len(mandatory_encoded_statement_lists)))
         stack = deque()
         # Each element is a tuple: (next_start_index, current_indices_subset, viable_set)
         stack.append((0, [], initial_viable_set))
 
         max_key_len = local_memory.max_key_length
 
-        size_one_mandatory_statement_list = len(mandatory_statement_lists[0])
+        size_one_mandatory_statement_list = len(mandatory_encoded_statement_lists[0])
 
         while stack:
             start, indices_subset, viable_set = stack.pop()
@@ -1192,7 +1293,7 @@ def perform_elementary_logical_step(body_of_proves: BodyOfProves):
                     once_successful = False
                     # Iterate only over the indices that are still viable.
                     for j in list(new_viable_set):
-                        msl = mandatory_statement_lists[j]
+                        msl = mandatory_encoded_statement_lists[j]
                         to_continue2 = False
                         for sttmnt in msl:
                             if sttmnt in base_request:
@@ -1200,18 +1301,17 @@ def perform_elementary_logical_step(body_of_proves: BodyOfProves):
                         if to_continue2:
                             continue
 
-                        #rqst_old = base_request + msl
-                        rqst = merge_insert_sorted(base_request,
-                                                   base_request_values,
-                                                   msl,
-                                                   values_msl[j])
+                        # rqst_old = base_request + msl
+                        rqst = merge_insert_sorted_encoded(base_request,
+                                                           base_request_values,
+                                                           msl,
+                                                           values_msl[j])
 
-                        local_good = pre_evaluate_key(rqst)
+                        local_good, nek = pre_evaluate_encoded_key(rqst)
                         if local_good:
-                            normalized_req = normalize_subkey(rqst)
-                            if normalized_req in local_memory.normalized_keys:
-
-                                rqsts.append((copy.deepcopy(rqst), local_good, normalized_req))
+                            normalized_req, normalized_encoded_req = make_normalized_encoded_key(rqst, False)
+                            if normalized_req in local_memory.normalized_encoded_keys:
+                                rqsts.add((tuple(rqst), local_good, normalized_req))
                             once_successful = True
                         else:
                             # Remove this index from the viable set for this branch.
@@ -1221,16 +1321,13 @@ def perform_elementary_logical_step(body_of_proves: BodyOfProves):
                     if once_successful:
                         stack.append((i + 1, new_indices_subset, new_viable_set))
 
-        return sorted(rqsts)
-
+        return sorted([(list(rqst[0]), rqst[1], rqst[2]) for rqst in rqsts])
 
 
 
     if not body_of_proves.is_active:
         return body_of_proves
 
-    #print(body_of_proves.expr_key)
-    #print(len(body_of_proves.statements))
 
     for chain, head, remaining_args_key, levels, or_impl in body_of_proves.mail_in.implications:
 
@@ -1261,17 +1358,24 @@ def perform_elementary_logical_step(body_of_proves: BodyOfProves):
                            False)
 
 
-    working_hash_memory_requests = []
-    if len(working_hash_memory.map) > 0:
+    working_hash_memory_encoded_requests = []
+    if len(working_hash_memory.encoded_map) > 0:
 
-        mandatory_statement_lists1 =\
-            make_mandatory_statement_lists1(working_hash_memory,
-                                            body_of_proves.local_statements)
 
-        if mandatory_statement_lists1:
-            working_hash_memory_requests = generate_requests(working_hash_memory,
-                                                             mandatory_statement_lists1,
-                                                             body_of_proves.statements)
+
+
+        mandatory_encoded_statement_lists1 =\
+            make_mandatory_encoded_statement_lists1(working_hash_memory,
+                                                    body_of_proves.local_encoded_statements)
+
+
+        if mandatory_encoded_statement_lists1:
+            working_hash_memory_encoded_requests = generate_encoded_requests(working_hash_memory,
+                                                             mandatory_encoded_statement_lists1,
+                                                             body_of_proves.encoded_statements)
+
+
+
 
 
     for statement, levels in body_of_proves.mail_in.statements:
@@ -1288,59 +1392,59 @@ def perform_elementary_logical_step(body_of_proves: BodyOfProves):
                                      set(levels),
                                      origin)
 
-    mandatory_new_local_lists1 = \
-        make_mandatory_statement_lists1(body_of_proves.local_memory,
-                                        body_of_proves.local_statements_delta)
 
-    new_local_requests = []
-    if mandatory_new_local_lists1:
-        new_local_requests = generate_requests(body_of_proves.local_memory,
-                                                mandatory_new_local_lists1,
-                                                body_of_proves.statements)
+    mandatory_new_encoded_local_lists1 = \
+        make_mandatory_encoded_statement_lists1(body_of_proves.local_memory,
+                                        body_of_proves.local_encoded_statements_delta)
 
-    mail_statements = [element[0] for element in body_of_proves.mail_in.statements]
-    mandatory_local_mail_lists2 = (
-        make_mandatory_statement_lists2(body_of_proves.local_memory, body_of_proves.local_statements, mail_statements))
-
-    local_mail_requests = []
-    if mandatory_local_mail_lists2:
-        local_mail_requests = generate_requests(body_of_proves.local_memory,
-                                                mandatory_local_mail_lists2,
-                                                body_of_proves.statements)
+    new_local_encoded_requests = []
+    if mandatory_new_encoded_local_lists1:
+        new_local_encoded_requests = generate_encoded_requests(body_of_proves.local_memory,
+                                                mandatory_new_encoded_local_lists1,
+                                                body_of_proves.encoded_statements)
 
 
-    requests = working_hash_memory_requests + new_local_requests + local_mail_requests
+    mail_encoded_statements = [EncodedExpression(element[0]) for element in body_of_proves.mail_in.statements]
+    mandatory_local_encoded_mail_lists2 = (
+        make_mandatory_encoded_statement_lists2(body_of_proves.local_memory, body_of_proves.local_encoded_statements, mail_encoded_statements))
+
+    local_encoded_mail_requests = []
+    if mandatory_local_encoded_mail_lists2:
+        local_encoded_mail_requests = generate_encoded_requests(body_of_proves.local_memory,
+                                                mandatory_local_encoded_mail_lists2,
+                                                body_of_proves.encoded_statements)
+
+
+    encoded_requests = working_hash_memory_encoded_requests + new_local_encoded_requests + local_encoded_mail_requests
+
+
+
 
     body_of_proves.mail_in.statements.clear()
     body_of_proves.mail_in.implications.clear()
     body_of_proves.mail_in.expr_origin_map.clear()
 
-    body_of_proves.local_statements_delta = []
-
-    for request in requests:
-        combined_expression = ""
-        combined_levels = set()
+    body_of_proves.local_encoded_statements_delta = []
 
 
+    for request in encoded_requests:
 
         to_continue = False
         for subexpr in request[0]:
-            combined_expression += subexpr
-            if subexpr in body_of_proves.statement_levels_map:
-                combined_levels.update(body_of_proves.statement_levels_map[subexpr])
-            else:
-                #it can happen that subexpr was removed during update_equivalence_classes
+            if not subexpr.original in body_of_proves.statement_levels_map:
                 to_continue = True
 
         if to_continue:
             continue
 
+        itr = -1
+        for encoded_expression in request[0]:
+            if itr < encoded_expression.max_iteration_number:
+                itr = encoded_expression.max_iteration_number
 
-        itr = extract_max_iteration_number(combined_expression)
-        if itr is None:
-            itr = -1
+        check_local_encoded_memory(request[0], body_of_proves, itr + 1, request[2])
 
-        check_local_memory(request[0], body_of_proves, itr + 1, request[2])
+
 
     send_mail(body_of_proves, body_of_proves.mail_out)
     body_of_proves.mail_out.statements.clear()
@@ -1348,39 +1452,21 @@ def perform_elementary_logical_step(body_of_proves: BodyOfProves):
     body_of_proves.mail_out.expr_origin_map.clear()
 
 
-
-
-    """
-    mb = global_body_of_proves.simple_map['(NaturalNumbers[1,2,3,4,5])']
-    mb = mb.simple_map['(in3[2,6,7,4])']
-    mb = mb.simple_map['(in2[rec,6,3])']
-    """
-
     for expr in sorted(body_of_proves.simple_map):
         # if body_of_proves.simple_map[expr].is_active:
         perform_elementary_logical_step(body_of_proves.simple_map[expr])
 
 
 
-
     return None
+
+
 
 def prove():
 
     for iteration in range(0, max_iteration_number_proof):
         print("Hash burst: " + str(iteration))
         perform_elementary_logical_step(global_body_of_proves)
-
-        """
-        cur, peak = tracemalloc.get_traced_memory()
-        print(f"Python heap now: {cur / 2 ** 20:,.1f} MB  |  peak: {peak / 2 ** 20:,.1f} MB")
-
-        for idx, stat in enumerate(tracemalloc.take_snapshot().statistics("lineno")[:10], 1):
-            frame = stat.traceback[0]
-            print(f"{idx:>2}. {frame.filename}:{frame.lineno} "
-                  f"{stat.size / 2 ** 20:6.1f} MB  "
-                  f"— {linecache.getline(frame.filename, frame.lineno).strip()}")
-        """
 
 
 
@@ -1740,11 +1826,9 @@ def apply_equivalence_class(clss: EquivalenceClass,
             continue
         if not applied in memory_block.statement_levels_map and applied not in memory_block.expr_origin_map  and max(expr_levels_map[applied]) == memory_block.level:
             memory_block.statement_levels_map[applied] = expr_levels_map[applied]
-            memory_block.statements.append(applied)
-            #memory_block.encoded_statements.append(EncodedExpression(applied))
-            memory_block.local_statements.append(applied)
-            #memory_block.local_encoded_statements.append(EncodedExpression(applied))
-            memory_block.local_statements_delta.append(applied)
+            memory_block.encoded_statements.append(EncodedExpression(applied))
+            memory_block.local_encoded_statements.append(EncodedExpression(applied))
+            memory_block.local_encoded_statements_delta.append(EncodedExpression(applied))
             new_statements.append(applied)
 
             memory_block.mail_out.statements.add((applied, frozenset(expr_levels_map[applied])))
@@ -1840,35 +1924,30 @@ def merge_two_equivalence_classes(class_a: EquivalenceClass,
 def clean_up_expressions(mb: BodyOfProves, new_statements: list[str]):
     # Rebuild local_statements and statements by filtering out those that fail the filter.
 
-    new_local = []
-    new_local_encoded = []
     for eq_clss in mb.equivalence_classes:
-        for index in range(len(mb.local_statements)):
-            if filter_iterations(mb.local_statements[index], eq_clss):
-                new_local.append(mb.local_statements[index])
+        new_local_encoded = []
+        for index in range(len(mb.local_encoded_statements)):
+            if filter_iterations(mb.local_encoded_statements[index].original, eq_clss):
+                new_local_encoded.append(mb.local_encoded_statements[index])
 
-                if index >= len(mb.local_encoded_statements):
-                    test = 0
+        new_local_encoded_delta = []
+        for index in range(len(mb.local_encoded_statements_delta)):
+            if filter_iterations(mb.local_encoded_statements_delta[index].original, eq_clss):
+                new_local_encoded_delta.append(mb.local_encoded_statements_delta[index])
 
-                #new_local_encoded.append(mb.local_encoded_statements[index])
-
-        new_local_delta = [s for s in mb.local_statements_delta if filter_iterations(s, eq_clss)]
-        for s in set(mb.local_statements) - set(new_local):
+        for s in set(mb.local_encoded_statements) - set(new_local_encoded):
             mb.statement_levels_map.pop(s, None)
-        mb.local_statements = new_local
-        mb.local_statements_delta = new_local_delta
         mb.local_encoded_statements = new_local_encoded
+        mb.local_encoded_statements_delta = new_local_encoded_delta
 
-        new_stmts = []
+
         new_encoded_statements = []
-        for index in range(len(mb.statements)):
-            if filter_iterations(mb.statements[index], eq_clss):
-                new_stmts.append(mb.statements[index])
-                #new_encoded_statements.append(mb.encoded_statements[index])
+        for index in range(len(mb.encoded_statements)):
+            if filter_iterations(mb.encoded_statements[index].original, eq_clss):
+                new_encoded_statements.append(mb.encoded_statements[index])
 
-        for s in set(mb.statements) - set(new_stmts):
-            mb.statement_levels_map.pop(s, None)
-        mb.statements = new_stmts
+        for s in set(mb.encoded_statements) - set(new_encoded_statements):
+            mb.statement_levels_map.pop(s.original, None)
         mb.encoded_statements = new_encoded_statements
 
         new_statements = [s for s in new_statements if filter_iterations(s, eq_clss)]
@@ -1926,13 +2005,13 @@ def update_equivalence_classes(mb: BodyOfProves,
     new_classes.append(merged_class)
     mb.equivalence_classes = new_classes
 
-    for index in range(0, len(mb.statements)):
+    for index in range(0, len(mb.encoded_statements)):
         apply_equivalence_class(merged_class,
-                                mb.statements[index],
+                                mb.encoded_statements[index].original,
                                 mb,
-                                mb.statement_levels_map[mb.statements[index]], new_statements)
+                                mb.statement_levels_map[mb.encoded_statements[index].original], new_statements)
 
-    mb.eq_class_sttmnt_index_map[frozenset(merged_class.variables)] = len(mb.statements)
+    mb.eq_class_sttmnt_index_map[frozenset(merged_class.variables)] = len(mb.encoded_statements)
 
 
 
@@ -1982,14 +2061,13 @@ def add_statement(expr: str,
                         memory_block.expr_origin_map[expr] = origin
                         assert expr not in memory_block.mail_out.expr_origin_map
                         memory_block.mail_out.expr_origin_map[expr] = origin
-                memory_block.statements.append(expr)
-                #memory_block.encoded_statements.append(EncodedExpression(expr))
+
+                memory_block.encoded_statements.append(EncodedExpression(expr))
                 if local:
 
 
-                    memory_block.local_statements.append(expr)
-                    #memory_block.local_encoded_statements.append(EncodedExpression(expr))
-                    memory_block.local_statements_delta.append(expr)
+                    memory_block.local_encoded_statements.append(EncodedExpression(expr))
+                    memory_block.local_encoded_statements_delta.append(EncodedExpression(expr))
                     new_statements.append(expr)
                     memory_block.mail_out.statements.add((expr, frozenset(levels)))
 
@@ -2007,26 +2085,26 @@ def add_statement(expr: str,
 
 
     # Iteratively apply equivalence classes to any newly generated statements.
-    old_size = len(memory_block.statements)
+    old_size = len(memory_block.encoded_statements)
     while True:
         for equivalence_class in memory_block.equivalence_classes:
             start_index = memory_block.eq_class_sttmnt_index_map[frozenset(equivalence_class.variables)]
 
 
 
-            for index in range(start_index, len(memory_block.statements)):
+            for index in range(start_index, len(memory_block.encoded_statements)):
                 apply_equivalence_class(equivalence_class,
-                                        memory_block.statements[index],
+                                        memory_block.encoded_statements[index].original,
                                         memory_block,
-                                        memory_block.statement_levels_map[memory_block.statements[index]], new_statements)
+                                        memory_block.statement_levels_map[memory_block.encoded_statements[index].original], new_statements)
 
 
 
             memory_block.eq_class_sttmnt_index_map[frozenset(equivalence_class.variables)] =\
-                len(memory_block.statements)
-        if old_size == len(memory_block.statements):
+                len(memory_block.encoded_statements)
+        if old_size == len(memory_block.encoded_statements):
             break
-        old_size = len(memory_block.statements)
+        old_size = len(memory_block.encoded_statements)
 
     if is_equality(expr):
         new_statements = clean_up_expressions(memory_block, new_statements)
@@ -2404,10 +2482,16 @@ def create_variants(chain: list[str], head: str):
         if to_continue:
             continue
 
-        key_variant = "".join(temp_list)
-        key_variant, mp = normalize_variables(key_variant)
-        value_variant = replace_keys_in_string(head, mp)
-        variants.add((key_variant, value_variant, frozenset(mp.items())))
+        temp_ecoded_list = [EncodedExpression(expression) for expression in temp_list]
+        normalized_ignored_enocoded_key_variant, mp2 = make_normalized_encoded_key(temp_ecoded_list)
+        normalized_not_ignored_enocoded_key_variant, mp3 = make_normalized_encoded_key(temp_ecoded_list, False)
+
+        value_variant = replace_keys_in_string(head, mp2)
+
+        variants.add((normalized_ignored_enocoded_key_variant,
+                      normalized_not_ignored_enocoded_key_variant,
+                      value_variant,
+                      frozenset(mp2.items())))
 
     return variants
 
@@ -2909,6 +2993,8 @@ def analyze_expressions(theorems):
 
     start_time2 = time.time()
     prove()
+
+    #prove_encoded()
     end_time2 = time.time()
     print("Deep size:", asizeof.asizeof(global_body_of_proves), "bytes")
 
