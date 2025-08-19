@@ -41,6 +41,7 @@ import re
 import shutil
 
 import create_expressions
+from analyze_expressions import EncodedExpression
 from create_expressions import get_args
 from parameters import debug
 
@@ -351,7 +352,7 @@ def check_zero(theorem, induction_var, prefix=''):
     for key in sorted(mb.simple_map):
         if (key.startswith("(=[s(rec") and
                 key.endswith(f",{zero_name}])") and
-                head in mb.simple_map[key].local_statements):
+                EncodedExpression(head) in mb.simple_map[key].local_encoded_statements):
 
             induction_var2 = get_args(mb.simple_map[key].expr_key)[0]
             if induction_var != induction_var2:
@@ -382,7 +383,7 @@ def check_induction_condition(theorem, induction_var, prefix=''):
     for key in  sorted(mb.simple_map):
         if (key.startswith("(in2[rec") and
                 key.endswith(f"{induction_var},{s_name}])") and
-                head in mb.simple_map[key].local_statements):
+                EncodedExpression(head) in mb.simple_map[key].local_encoded_statements):
             mb = mb.simple_map[key]
             stack = []
             analyze_expressions.build_stack(mb, head, stack, set())

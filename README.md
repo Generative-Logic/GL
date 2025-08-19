@@ -36,7 +36,7 @@ Commutativity (addition, multiplication)
 Associativity (addition, multiplication)
 Left and right distributivity
 Output: HTML proof graph in files/full_proof_graph/
-Estimated runtime: ~1 minute
+Estimated runtime: ~0.5 minute
 
 
 
@@ -55,7 +55,7 @@ Associativity (addition, multiplication)
 Left and right distributivity
 
 Output: HTML proof graph in files/full_proof_graph/
-Estimated runtime: ~1.5 hours
+Estimated runtime: ~0.5 hours
 
 
 
@@ -74,4 +74,4 @@ Associativity (addition, multiplication)
 Left and right distributivity
 
 Output: HTML proof graph in files/full_proof_graph/
-Estimated runtime: ~1 day
+Estimated runtime: ~5 hours
