@@ -12,7 +12,7 @@ This license requires that any derivative works or applications that use this so
 If you wish to use Generative Logic in a proprietary, closed-source commercial application, a commercial license is required. This license frees you from the obligations of the AGPLv3 and includes enterprise-grade features such as a limited warranty and IP indemnity.
 
 For more details and to request a quote, please visit our commercial licensing page:
-**https://generative-logic.com/commercial**
+**https://generative-logic.com/license**
 
 **Contributing**
 
