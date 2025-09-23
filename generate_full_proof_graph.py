@@ -36,13 +36,14 @@ Default output directory: full_proof_graph
 
 import os
 import html
-import analyze_expressions
+
 import re
 import shutil
 
 import create_expressions
-from analyze_expressions import EncodedExpression
-from create_expressions import get_args
+from typing import Dict
+
+
 from parameters import debug
 
 import visu_helpers
@@ -211,13 +212,70 @@ def rename_expr(expr: str):
         if arg.isdigit():
             replacement_map[arg] = "v" + arg
 
-    return analyze_expressions.replace_keys_in_string(expr, replacement_map)
+    return replace_keys_in_string(expr, replacement_map)
+
+def disintegrate_implication(expr_for_desintegration, chain):
+    head = ""
+
+    root, root_number_leafs = create_expressions.parse_expr(expr_for_desintegration)
+
+    node = root
+    while True:
+        if node is not None:
+            if node.value[0] == ">":
+                chain.append((create_expressions.tree_to_expr(node.left), create_expressions.get_args(node.value), node.left.arguments))
+                node = node.right
+            else:
+                head = create_expressions.tree_to_expr(node)
+                break
+        else:
+            break
+
+    return head
+
+# Global cache to store compiled regex patterns keyed by a sorted tuple of keys.
+_regex_cache = {}
+
+def _get_compiled_regex(keys) -> re.Pattern:
+    # Create a key for caching: a sorted tuple of keys ensures consistency.
+    key_tuple = tuple(sorted(keys))
+    if key_tuple not in _regex_cache:
+        # Escape all keys to handle special regex characters.
+        escaped_keys = [re.escape(key) for key in key_tuple]
+        # Build the regex pattern with lookbehind and lookahead for context.
+        pattern = r'(?<=[\[,])(' + '|'.join(escaped_keys) + r')(?=[\],])'
+        _regex_cache[key_tuple] = re.compile(pattern)
+    return _regex_cache[key_tuple]
+
+
+def replace_keys_in_string(big_string: str, replacement_map: Dict[str, str]) -> str:
+    """
+    Replaces keys in big_string based on replacement_map, but only if they occur in a context where they are
+    immediately preceded by '[' or ',' and immediately followed by ']' or ','.
+
+    Args:
+        big_string (str): The original string containing keys to be replaced.
+        replacement_map (Dict[str, str]): A dictionary mapping keys to their replacement values.
+
+    Returns:
+        str: The modified string with specified keys replaced.
+    """
+    if not replacement_map:
+        return big_string  # No replacements needed
+
+    # Get the precompiled regex from the cache.
+    regex = _get_compiled_regex(replacement_map.keys())
+
+    # Use a lambda for direct substitution.
+    return regex.sub(lambda m: replacement_map.get(m.group(1), m.group(1)), big_string)
+
+
 
 def rename_theorem(theorem: str):
     ren_th = rename_expr(theorem)
 
     temp_chain = []
-    head = analyze_expressions.disintegrate_implication(ren_th, temp_chain)
+    head = disintegrate_implication(ren_th, temp_chain)
     chain = []
     for element in temp_chain:
         chain.append(element[0])
@@ -225,7 +283,7 @@ def rename_theorem(theorem: str):
     replacement_map = {}
     for expr in chain:
         if expr.startswith("(NaturalNumbers"):
-            args = analyze_expressions.get_args(expr)
+            args = create_expressions.get_args(expr)
 
             replacement_map[args[0]] = "N"
             replacement_map[args[1]] = "0"
@@ -235,7 +293,7 @@ def rename_theorem(theorem: str):
             replacement_map[args[5]] = "*"
 
 
-    ren_th2 = analyze_expressions.replace_keys_in_string(ren_th, replacement_map)
+    ren_th2 = replace_keys_in_string(ren_th, replacement_map)
 
 
     if debug:
@@ -254,7 +312,7 @@ def clean_stack(stack: list[list[str]]):
        Among those, identifies tokens of the form 'v<digit>' and determines the maximum digit.
     2. Scans expressions again for tokens matching 'it_<digits>_lev_<digits>_' and assigns each
        such token a new key of the form 'v<mi>', incrementing mi for each unique occurrence.
-    3. Applies replacements to all expressions using analyze_expressions.replace_keys_in_string.
+    3. Applies replacements to all expressions using replace_keys_in_string.
 
     Args:
         stack: A list of lists of expression strings.
@@ -291,7 +349,7 @@ def clean_stack(stack: list[list[str]]):
     # 3. Apply replacements to produce cleaned stack
     for i, row in enumerate(stack):
         for j, expr in enumerate(row):
-            stack[i][j] = analyze_expressions.replace_keys_in_string(expr, replacement_map)
+            stack[i][j] = replace_keys_in_string(expr, replacement_map)
 
 
 
@@ -307,12 +365,12 @@ def rename_stack(stack: list[list[str]], theorem: str):
         replacement_map = {}
 
         temp_chain = []
-        head = analyze_expressions.disintegrate_implication(theorem, temp_chain)
+        head = disintegrate_implication(theorem, temp_chain)
         chain = [e[0] for e in temp_chain]
 
         for expr in chain:
             if expr.startswith("(NaturalNumbers"):
-                args = analyze_expressions.get_args(expr)
+                args = create_expressions.get_args(expr)
 
                 replacement_map["v" + args[0]] = "N"
                 replacement_map["v" + args[1]] = "0"
@@ -323,83 +381,58 @@ def rename_stack(stack: list[list[str]], theorem: str):
 
         for entry in stack:
             for index, expr in enumerate(entry):
-                entry[index] = analyze_expressions.replace_keys_in_string(expr, replacement_map)
+                entry[index] = replace_keys_in_string(expr, replacement_map)
 
     return
 
 
 
 
+def read_stack(file_path: str, proof_part: str):
+    """
+    Load a raw stack written by generate_raw_proof_graph.
 
-# Proof step functions returning HTML for subchapters
-def check_zero(theorem, induction_var, prefix=''):
-    temp_chain = []
-    head = analyze_expressions.disintegrate_implication(theorem, temp_chain)
-    chain = [e[0] for e in temp_chain]
-    mb = analyze_expressions.global_body_of_proves
-
-    t2 = '(&(&(in[2,1])(&(fXY[3,1,1])(&(>[n](in[n,1])!(in2[n,2,3]))(>[m](in[m,1])(>[n1,n2](&(in2[n1,m,3])(in2[n2,m,3]))(=[n1,n2]))))))(&(&(fXYZ[4,1,1,1])(&(>[a](in[a,1])(>[b](in3[a,2,b,4])(=[a,b])))(>[b](in[b,1])(>[a,c,d](&(in2[b,c,3])(in3[a,b,d,4]))(&(>[e](in3[a,c,e,4])(in2[d,e,3]))(>[e](in2[d,e,3])(in3[a,c,e,4])))))))(&(fXYZ[5,1,1,1])(&(>[a](in[a,1])(>[b](in3[a,2,b,5])(=[b,2])))(>[b](in[b,1])(>[a,c,d](&(in2[b,c,3])(in3[a,b,d,5]))(&(>[e](in3[d,a,e,4])(in3[a,c,e,5]))(>[e](in3[a,c,e,5])(in3[d,a,e,4])))))))))'
-    t1 = '(>[a](in[a,1])(>[b](in3[a,2,b,4])(=[a,b])))'
-
-
-
-
-    for elt in chain:
-        mb = mb.simple_map[elt]
-
-
-    zero_name = analyze_expressions.get_args(chain[0])[1]
-    for key in sorted(mb.simple_map):
-        if (key.startswith("(=[s(rec") and
-                key.endswith(f",{zero_name}])") and
-                EncodedExpression(head) in mb.simple_map[key].local_encoded_statements):
-
-            induction_var2 = get_args(mb.simple_map[key].expr_key)[0]
-            if induction_var != induction_var2:
-                continue
-
-            rec_name = create_expressions.get_args(key)[0]
-            temp_expr = f"(=[{rec_name},{zero_name}])"
-            mb = mb.simple_map[temp_expr]
-            break
+    - File is resolved under PROJECT_ROOT / 'files/raw_proof_graph'
+    - Filename is the same sanitizer as in generate_raw_proof_graph:
+        f"{_safe(theorem)}__{proof_part}.txt"
+    - Each line corresponds to one list[str], items separated by tabs.
+    - Empty line => empty list.
+    """
+    # same sanitizer used when writing
 
     stack = []
+    with open(file_path, "r", encoding="utf-8") as f:
+        for raw_line in f:
+            # remove newline only (preserve all other characters)
+            line = raw_line.rstrip("\n")
+            # handle Windows CR if present
+            if line.endswith("\r"):
+                line = line[:-1]
+            if line == "":
+                stack.append([])          # empty list was written as a blank line
+            else:
+                stack.append(line.split("\t"))  # items were joined with tabs
+    return stack
 
 
-    analyze_expressions.build_stack(mb, head, stack, set())
+
+# Proof step functions returning HTML for subchapters
+def check_zero(theorem, file_path, induction_var, prefix=''):
+
+
+    stack = read_stack(file_path, "check_zero")
     rename_stack(stack, theorem)
     return format_stack_entries(stack, prefix)
 
 
-def check_induction_condition(theorem, induction_var, prefix=''):
-    temp_chain = []
-    head = analyze_expressions.disintegrate_implication(theorem, temp_chain)
-    chain = [e[0] for e in temp_chain]
-    mb = analyze_expressions.global_body_of_proves
-    for elt in chain:
-        mb = mb.simple_map[elt]
-    s_name = analyze_expressions.get_args(chain[0])[3]
-
-    for key in  sorted(mb.simple_map):
-        if (key.startswith("(in2[rec") and
-                key.endswith(f"{induction_var},{s_name}])") and
-                EncodedExpression(head) in mb.simple_map[key].local_encoded_statements):
-            mb = mb.simple_map[key]
-            stack = []
-            analyze_expressions.build_stack(mb, head, stack, set())
-            rename_stack(stack, theorem)
-            return format_stack_entries(stack, prefix)
+def check_induction_condition(theorem, file_path, induction_var, prefix=''):
+    stack = read_stack(file_path, "check_induction_condition")
+    rename_stack(stack, theorem)
+    return format_stack_entries(stack, prefix)
 
 
-def direct(theorem, prefix=''):
-    temp_chain = []
-    head = analyze_expressions.disintegrate_implication(theorem, temp_chain)
-    chain = [e[0] for e in temp_chain]
-    mb = analyze_expressions.global_body_of_proves
-    for elt in chain:
-        mb = mb.simple_map[elt]
-    stack = []
-    analyze_expressions.build_stack(mb, head, stack, set())
+def direct(theorem, file_path, prefix=''):
+    stack = read_stack(file_path, "direct")
     rename_stack(stack, theorem)
     return format_stack_entries(stack, prefix)
 
@@ -409,25 +442,9 @@ def split_at_plus(s: str) -> tuple[str, str]:
         raise ValueError("String does not contain '+'")
     return left, right
 
-def debugging(path_plus_end, prefix=''):
-    path, end = split_at_plus(path_plus_end)
+def debugging(path_plus_end, file_path, prefix=''):
 
-    chain = path.split(";")
-    mb = analyze_expressions.global_body_of_proves
-    for elt in chain:
-        mb = mb.simple_map[elt]
-    stack = []
-
-    temp_lst = re.split(r"[;+]", path_plus_end)
-    expr_nat_nums = ""
-    for elem in temp_lst:
-        if elem.startswith("(Nat"):
-            expr_nat_nums = elem
-            break
-    expr_nat_nums = "(>[]" + expr_nat_nums + expr_nat_nums  + ")"
-
-    analyze_expressions.build_stack(mb, end, stack, set())
-    #rename_stack(stack, expr_nat_nums)
+    stack = read_stack(file_path, "debugging")
     return format_stack_entries(stack, prefix)
 
 def mirrored(mirrored_theorem, theorem, prefix=''):
@@ -435,9 +452,90 @@ def mirrored(mirrored_theorem, theorem, prefix=''):
     rename_stack(stack, mirrored_theorem)
     return format_stack_entries(stack, prefix)
 
+def read_theorem_list(map_path: str | Path | None = None):
+    """
+    Reads PROJECT_ROOT/files/raw_proof_graph/global_theorem_list.txt
+    and returns a list of (theorem, method, var) tuples.
+
+    Each line in the file must be tab-separated: theorem \t method \t var
+    Blank or malformed lines are ignored.
+    """
+    if map_path is None:
+        map_path = Path(PROJECT_ROOT) / "files" / "raw_proof_graph" / "global_theorem_list.txt"
+    else:
+        map_path = Path(map_path)
+
+    theorem_list = []
+    with open(map_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.rstrip("\n").rstrip("\r")
+            if not line:
+                continue
+            parts = line.split("\t")
+            if len(parts) < 3:
+                continue
+            theorem, method, var = parts[0], parts[1], parts[2]
+            theorem_list.append((theorem, method, var))
+    return theorem_list
+
+def makes_file_path_map(theorem_list, base_dir=None):
+    """
+    Build a map from theorem name -> list of indexed stack file paths.
+
+    Indexing matches generate_raw_proof_graph/find_ends:
+      - induction  -> two files:  <i>_check_zero.txt, <i+1>_check_induction_condition.txt
+      - direct     -> one file:   <i>_direct_proof.txt
+      - debug      -> one file:   <i>_debug.txt
+      - mirrored statement (if present) -> one file: <i>_mirrored_statement.txt
+      - unknown method -> one file: <i>_unknown_<sanitized>.txt
+
+    Args:
+        theorem_list: list[tuple[str, str, str]] like [(theorem, method, var), ...]
+        base_dir: optional Path/str; default PROJECT_ROOT/files/raw_proof_graph
+
+    Returns:
+        dict[str, list[Path]]
+    """
+    if base_dir is None:
+        base_dir = Path(PROJECT_ROOT) / "files" / "raw_proof_graph"
+    else:
+        base_dir = Path(base_dir)
+
+    result = {}
+    idx = 0  # global file index (0-based)
+
+    for name, method, var in theorem_list:
+        m = (method or "").lower()
+        files = []
+
+        if m == "induction":
+            files.append(base_dir / f"{idx}_check_zero.txt")
+            files.append(base_dir / f"{idx + 1}_check_induction_condition.txt")
+            idx += 2
+        elif m == "direct":
+            files.append(base_dir / f"{idx}_direct_proof.txt")
+            idx += 1
+        elif m == "debug":
+            files.append(base_dir / f"{idx}_debug.txt")
+            idx += 1
+        elif m == "mirrored statement":
+            files.append(base_dir / f"{idx}_mirrored_statement.txt")
+            idx += 1
+        else:
+            safe = re.sub(r"[^A-Za-z0-9._\-+]+", "_", m)[:64] or "unknown"
+            files.append(base_dir / f"{idx}_unknown_{safe}.txt")
+            idx += 1
+
+        # accumulate (support multiple entries of the same theorem name)
+        if name in result:
+            result[name].extend(files)
+        else:
+            result[name] = files
+
+    return result
 
 
-def generate_proof_graph_pages(theorem_list, out_dir=None):
+def generate_proof_graph_pages(out_dir=None):
     global theorem_to_file
 
     # if caller didn’t supply an explicit out_dir, use
@@ -453,6 +551,9 @@ def generate_proof_graph_pages(theorem_list, out_dir=None):
         shutil.rmtree(out_dir)
 
     os.makedirs(out_dir, exist_ok=True)
+
+    theorem_list = read_theorem_list()
+    file_path_map = makes_file_path_map(theorem_list)
 
     # JavaScript for left-click/right-click expansion; popup named “Expression” with deep-navy styling
     popup_script = """
@@ -627,20 +728,20 @@ def generate_proof_graph_pages(theorem_list, out_dir=None):
             body.extend([
                 f"  <span class=\"var-highlight\">Induction variable: v{html.escape(var)}</span>",
                 "  <h2 id=\"sub1\">Check for 0</h2>",
-                f"  <div class=\"step-output\">{check_zero(name, var, f'c{idx}s1')}</div>",
+                f"  <div class=\"step-output\">{check_zero(name, file_path_map[name][0], var, f'c{idx}s1')}</div>",
                 "  <h2 id=\"sub2\">Check induction condition</h2>",
-                f"  <div class=\"step-output\">{check_induction_condition(name, var, f'c{idx}s2')}</div>",
+                f"  <div class=\"step-output\">{check_induction_condition(name, file_path_map[name][1], var, f'c{idx}s2')}</div>",
             ])
 
         elif method.lower() == "direct":
             body.extend([
                 "  <h2>Direct Proof</h2>",
-                "  <div class='step-output'>", direct(name), "  </div>",
+                "  <div class='step-output'>", direct(name, file_path_map[name][0]), "  </div>",
             ])
         elif method.lower() == "debug":
             body.extend([
                 "  <h2>Debugging</h2>",
-                "  <div class='step-output'>", debugging(name), "  </div>",
+                "  <div class='step-output'>", debugging(name, file_path_map[name][0]), "  </div>",
             ])
         elif method.lower() == "mirrored statement":
                 body.extend([

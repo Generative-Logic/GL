@@ -23,7 +23,11 @@
 # Contributor License Agreement (CLA). See the project's CONTRIBUTING.md file.
 
 import create_expressions
-from analyze_expressions import *
+import regex
+import re
+import copy
+
+
 
 
 from create_expressions import disintegrate_implication
@@ -38,7 +42,7 @@ def rewrite_expression(expression: str):
             expression.startswith('(in2') or
             expression.startswith('(in3'))
 
-    args = get_args(expression)
+    args = create_expressions.get_args(expression)
 
     if expression.startswith('(in'):
         rewritten = 'marker' + args[-2]
@@ -61,7 +65,7 @@ def rewrite_expression2(expression: str):
             expression.startswith('(in3') or
             expression.startswith('(=['))
 
-    args = get_args(expression)
+    args = create_expressions.get_args(expression)
 
     if expression.startswith('(in['):
         rewritten = 'marker' + args[-2] + ' in ' + args[-1]
@@ -83,7 +87,7 @@ def make_readable_simple_implication_title(chain: list[str]):
 
     for element in chain:
         assert element.startswith('(in')
-        args_list.append(get_args(element))
+        args_list.append(create_expressions.get_args(element))
 
     head_output = args_list[-1][-2]
 
@@ -106,7 +110,7 @@ def make_readable_simple_implication_title(chain: list[str]):
     return readable
 
 def make_readable_equality(chain: list[str]):
-    eq_args = get_args(chain[-1])
+    eq_args = create_expressions.get_args(chain[-1])
     left_output = eq_args[0]
     right_output = eq_args[1]
 
@@ -114,7 +118,7 @@ def make_readable_equality(chain: list[str]):
     right_operator = ''
     for element in chain:
         if element.startswith('(in2') or element.startswith('(in3'):
-            args = get_args(element)
+            args = create_expressions.get_args(element)
 
             if left_output in args:
                 left_operator = element
@@ -138,7 +142,7 @@ def make_readable_equality(chain: list[str]):
         else:
             non_empty = right_operator
 
-        args = get_args(non_empty)
+        args = create_expressions.get_args(non_empty)
         assert left_output in args and right_output in args
 
         rewritten_non_empty = rewrite_expression2(non_empty)
@@ -150,15 +154,52 @@ def make_readable_equality(chain: list[str]):
 
     return readable
 
+
+
+def list_last_removed_args(expr: str):
+    pattern = r">\[[^\[\]]*\]"
+    match = re.search(pattern, expr)
+    if match:
+        # Extract the content between ">[" and "]"
+        return match.group()[2:-1].split(',')
+    return []
+
+# Precompile the regex for form1 using a DEFINE block.
+# The DEFINE block declares a recursive group "bal" that matches either "(" or "!(",
+# followed by any content (or nested "bal") and a closing ")".
+_FORM1_REGEX = regex.compile(r'''
+    (?(DEFINE)
+        (?P<bal> !?\( (?: [^()]+ | (?&bal) )* \) )
+    )
+    ^(!?\()         # Outer opening, optionally with "!"
+    >\[[^]]*\]     # A literal ">" and a bracketed part (ignored)
+    (?P<b>(?&bal))  # First balanced group (capturing b) including its original brackets
+    (?P<c>(?&bal))  # Second balanced group (capturing c) including its original brackets
+    \)$            # Outer closing
+    ''', regex.VERBOSE)
+
+# Pattern for form2: if the input does not follow form1, we expect a balanced structure.
+_FORM2_REGEX = regex.compile(r'^!?\(.*\)$')
+
+def extract_values_regex(s: str):
+    s = s.strip()
+    m = _FORM1_REGEX.match(s)
+    if m:
+        # Return the captured groups exactly as found.
+        return m.group("b"), m.group("c")
+    if _FORM2_REGEX.match(s):
+        return s  # Form2: return unchanged.
+    raise ValueError("Input string does not match expected formats.")
+
 def make_readable_element(chain: list[str]):
     head = chain[-1]
     readable = ''
 
     assert len(chain) == 2
 
-    element_arg = get_args(head)[-2]
+    element_arg = create_expressions.get_args(head)[-2]
 
-    assert element_arg in get_args(chain[0])
+    assert element_arg in create_expressions.get_args(chain[0])
 
     readable = 'from ' + rewrite_expression2(chain[0]) +  ' follows ' + rewrite_expression2(chain[-1])
 
@@ -217,7 +258,7 @@ def make_readable_simple_implication(chain: list[str]):
 
     for element in chain:
         assert element.startswith('(in')
-        args_list.append(get_args(element))
+        args_list.append(create_expressions.get_args(element))
 
     head_output = args_list[-1][-2]
 
@@ -235,8 +276,8 @@ def make_readable_simple_implication(chain: list[str]):
 
     for_list = []
     head = chain[-1]
-    head_args = get_args(head)
-    left_head_args = get_args(left_head)
+    head_args = create_expressions.get_args(head)
+    left_head_args = create_expressions.get_args(left_head)
     input_args = []
 
     for arg_index in range(0, len(left_head_args) - 2):

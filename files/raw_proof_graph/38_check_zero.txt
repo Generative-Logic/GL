@@ -1,0 +1,12 @@
+(in3[8,10,11,5])	implication	(>[4,5](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10](in2[8,10,4])(>[11](in2[9,11,4])(in3[7,10,11,5])))))	(NaturalNumbers[1,2,3,4,5,6])	(in2[7,10,4])	(in2[9,11,4])	(in3[8,7,9,5])
+(>[4,5](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10](in2[8,10,4])(>[11](in2[9,11,4])(in3[7,10,11,5])))))	theorem
+(NaturalNumbers[1,2,3,4,5,6])	task formulation
+(in2[7,10,4])	task formulation
+(in2[9,11,4])	task formulation
+(in3[8,7,9,5])	equality1	(in3[2,7,9,5])	(=[2,8])
+(in3[2,7,9,5])	implication	(>[2,5](NaturalNumbers[1,2,3,4,5,6])(>[7,8](in3[7,2,8,5])(in3[2,7,8,5])))	(NaturalNumbers[1,2,3,4,5,6])	(in3[7,2,9,5])
+(>[2,5](NaturalNumbers[1,2,3,4,5,6])(>[7,8](in3[7,2,8,5])(in3[2,7,8,5])))	theorem
+(in3[7,2,9,5])	equality1	(in3[7,8,9,5])	(=[8,2])
+(in3[7,8,9,5])	task formulation
+(=[8,2])	recursion
+(=[2,8])	symmetry of equality	(=[8,2])

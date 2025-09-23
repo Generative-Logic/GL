@@ -1,4 +1,4 @@
-## Licensing 📜
+# Licensing 📜
 
 Generative Logic is dual-licensed under the AGPLv3 and a Commercial License.
 
@@ -19,59 +19,89 @@ For more details and to request a quote, please visit our commercial licensing p
 Please note that all contributions to this project require a signed Contributor License Agreement (CLA). For more information, please see our `CONTRIBUTING.md` file.
 
 
-Run Modes
+# Run Mode & How to Run
+## Run mode
 
-🔹 Quick Mode (default)
+There is only one run mode (previously called “Full Mode”).
 
-Settings:
+End-to-end runtime (reference): ~5 minutes on a Dell G16 7630 (overall).
 
-parameters.quick_run = True
-parameters.min_num_operators_key = 2
-parameters.max_iteration_number_proof = 17
+Native prover runtime: ~7 seconds (included in the overall runtime).
+(Your timings will vary by CPU, build type, and OS.)
 
-The system does not generate theorem candidates.
-It receives a predefined list of theorems and attempts to prove all of them.
-These inputs are sufficient to prove the six foundational theorems of Peano arithmetic:
-Commutativity (addition, multiplication)
-Associativity (addition, multiplication)
-Left and right distributivity
-Output: HTML proof graph in files/full_proof_graph/
-Estimated runtime: ~0.5 minute
+Memory consumption: Under 1 GB.
 
+## Prerequisites
+
+Python 3.9+ (standard library + regex).
+
+Visual Studio 2022 with the MSVC toolset (C++17 enabled).
 
 
-🔸 Almost-Full Mode
+## Quick start
 
-Settings:
-
-parameters.quick_run = False
-parameters.min_num_operators_key = 4
-parameters.max_iteration_number_proof = 12
-
-The system generates candidate theorems, then attempts to prove them.
-Proves five of the six main Peano theorems (missing commutativity of multiplication):
-Commutativity (addition)
-Associativity (addition, multiplication)
-Left and right distributivity
-
-Output: HTML proof graph in files/full_proof_graph/
-Estimated runtime: ~0.5 hours
+Run from the repository root (where main.py lives) on Windows / macOS / Linux:
+python main.py
 
 
+What happens:
 
-🔸 Full Mode
+Python creates conjectures (parallelized).
 
-Settings:
+Python calls the native prover executable
+GL_Quick_VS/GL_Quick/gl_quick.exe.
 
-parameters.quick_run = False
-parameters.min_num_operators_key = 2
-parameters.max_iteration_number_proof = 15
+Python renders the proof graph pages.
 
-The system generates all candidate theorems and attempts full closure.
-Successfully proves all six of the Peano arithmetic laws:
-Commutativity (addition, multiplication)
-Associativity (addition, multiplication)
-Left and right distributivity
+Outputs:
 
-Output: HTML proof graph in files/full_proof_graph/
-Estimated runtime: ~5 hours
+Generated HTML lives under: files/full_proof_graph/index.html (plus chapter*.html).
+
+## Rebuilding the native executable (if needed)
+
+The native prover is a C++ project compiled with Microsoft Visual Studio on Windows 11.
+
+Windows (Visual Studio 2022+)
+
+Open GL_Quick_VS/GL_Quick.sln in Visual Studio.
+
+Build Release x64 (recommended).
+
+The binary will be at GL_Quick_VS/GL_Quick/gl_quick.exe (this is the path the Python code expects).
+
+Linux / macOS (experimental)
+
+Source code is under GL_Quick_VS/GL_Quick/src/.
+If the code is portable, you can try a simple build:
+
+cd GL_Quick_VS/GL_Quick
+c++ -std=c++17 -O3 src/*.cpp -o gl_quick
+
+
+If you place the binary somewhere else or name it differently, update the path in run_modes.py (function run_gl_quick()).
+
+## Troubleshooting
+
+FileNotFoundError: GL_Quick_VS/GL_Quick/gl_quick.exe
+Rebuild the native executable or ensure the file exists at that path.
+
+No HTML output
+Check files/raw_proof_graph/* was generated and that files/full_proof_graph/ is created. Running python main.py regenerates these.
+
+Slow run
+Make sure you’re using a Release build of the native binary and modern CPU; performance varies.
+
+## Paths recap
+
+Entry point: main.py
+
+Native executable (Windows): GL_Quick_VS/GL_Quick/gl_quick.exe
+
+Native source: GL_Quick_VS/GL_Quick/src/
+
+Output HTML: files/full_proof_graph/
+
+# 3rd party notices
+
+regex — © Matthew Barnett — Apache-2.0 and CNRI-Python.
+

@@ -64,8 +64,6 @@ DEFINITIONS_FOLDER = PROJECT_ROOT / 'files/definitions'
 
 core_expression_map = {#"inN":  (1, {"1": "(1)", "N": "P(1)"}, "(x(1)P(1))", "(in[1,N])", 1, "inN[1]", False),
                        "in":   (2, {"1": "(1)", "2": "P(1)"}, "(x(1)P(1))", "(in[1,2])", 0, "in[1,2]", False),
-                       "s":    (2, {"1": "(1)", "2": "(1)", "s": "P(x(1)(1))"}, "(x(1)(x(2)P(x(1)(2))))",
-                                "(in2[1,2,s])", 1, "s[1,2]", False),
                        "=":    (2, {"1": "(1)", "2": "(1)"}, "(x(1)(1))", "(=[1,2])", 1, "=[1,2]", True),
                        "fXY":  (3, {"1": "P(x(1)(1))", "2": "P(1)", "3": "P(1)"}, "(xP(x(1)(1))(xP(1)P(1)))",
                                 DEFINITIONS_FOLDER/"fXY.txt", 1, "fXY[f,X,Y]", False),
@@ -842,8 +840,7 @@ def extract_between_brackets(s, start_index=0):
 def get_args(expr):
     sub_expr = extract_between_brackets(expr, 0)
 
-    if sub_expr is None:
-        test = 0
+
 
     if sub_expr == "":
         return []
@@ -3240,7 +3237,7 @@ def create_expressions_parallel():
         with open(filename, 'w', encoding='utf-8') as file:
             for expr in sorted_list:
                 file.write(expr + "\n")
-        print(f"Successfully wrote to {filename}")
+        #print(f"Successfully wrote to {filename}")
     except IOError as e:
         print(f"An error occurred while writing to the file: {e}")
     filename = str(theorems_folder /"reshuffled_theorems.txt")
@@ -3248,7 +3245,7 @@ def create_expressions_parallel():
         with open(filename, 'w', encoding='utf-8') as file:
             for expr in reshuffled_sorted_list:
                 file.write(expr + "\n")
-        print(f"Successfully wrote to {filename}")
+        #print(f"Successfully wrote to {filename}")
     except IOError as e:
         print(f"An error occurred while writing to the file: {e}")
     filename = str(theorems_folder /"reshuffled_mirrored_theorems.txt")
@@ -3256,11 +3253,11 @@ def create_expressions_parallel():
         with open(filename, 'w', encoding='utf-8') as file:
             for expr in reshuffled_mirrored_sorted_list:
                 file.write(expr + "\n")
-        print(f"Successfully wrote to {filename}")
+        #print(f"Successfully wrote to {filename}")
     except IOError as e:
         print(f"An error occurred while writing to the file: {e}")
-    print("Size: " + str(len(result_expr_set)))
-    print(f"Main loop runtime: {end_time - start_time:.5f} seconds")
+    print("Number conjectures: " + str(len(result_expr_set)))
+    #print(f"Main loop runtime: {end_time - start_time:.5f} seconds")
     return result_expr_set
 
 

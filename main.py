@@ -22,11 +22,11 @@
 # Contributions to this project must be made under the terms of the
 # Contributor License Agreement (CLA). See the project's CONTRIBUTING.md file.
 
-from test_functions import *
+
 
 import create_expressions
 
-import parameters
+import os
 
 import time
 
@@ -65,14 +65,12 @@ def main():
 
     start_time = time.time()
 
-    if parameters.quick_run_mode:
-        run_modes.quick_run()
-    else:
-        run_modes.full_run()
+
+    run_modes.full_run()
 
     end_time = time.time()
 
-    print(f"Runtime: {end_time - start_time:.5f} seconds")
+    print(f"Overall runtime: {end_time - start_time:.5f} seconds")
 
 
 if __name__ == "__main__":
