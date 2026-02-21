@@ -1,0 +1,11 @@
+(interval[N,+,i0,v1,v2])	main	implication	(>[](implication22[v2,N,+,i0])(>[](implication23[v2,N,+,v1])(>[](implication24[N,+,i0,v1,v2])(>[](in[i0,N])(>[](in[v1,N])(interval[N,+,i0,v1,v2]))))))	main	(implication22[v2,N,+,i0])	main	(implication23[v2,N,+,v1])	main	(implication24[N,+,i0,v1,v2])	main	(in[v1,N])	main	(in[i0,N])	main
+(>[](implication22[v2,N,+,i0])(>[](implication23[v2,N,+,v1])(>[](implication24[N,+,i0,v1,v2])(>[](in[i0,N])(>[](in[v1,N])(interval[N,+,i0,v1,v2]))))))	main	reformulation for integration	(&(&(&(&(implication22[v2,N,+,i0])(implication23[v2,N,+,v1]))(implication24[N,+,i0,v1,v2]))(in[i0,N]))(in[v1,N]))	main
+(&(&(&(&(implication22[v2,N,+,i0])(implication23[v2,N,+,v1]))(implication24[N,+,i0,v1,v2]))(in[i0,N]))(in[v1,N]))	main	expansion	(interval[N,+,i0,v1,v2])	main
+(interval[N,+,i0,v1,v2])	main	implication	(>[](implication22[v2,N,+,i0])(>[](implication23[v2,N,+,v1])(>[](implication24[N,+,i0,v1,v2])(>[](in[i0,N])(>[](in[v1,N])(interval[N,+,i0,v1,v2]))))))	main	(implication22[v2,N,+,i0])	main	(implication23[v2,N,+,v1])	main	(implication24[N,+,i0,v1,v2])	main	(in[v1,N])	main	(in[i0,N])	main
+(implication22[v2,N,+,i0])	main	disintegration	(&(&(&(&(implication22[v2,N,+,i0])(implication23[v2,N,+,v1]))(implication24[N,+,i0,v1,v2]))(in[i0,N]))(in[v1,N]))	main
+(implication23[v2,N,+,v1])	main	disintegration	(&(&(&(&(implication22[v2,N,+,i0])(implication23[v2,N,+,v1]))(implication24[N,+,i0,v1,v2]))(in[i0,N]))(in[v1,N]))	main
+(implication24[N,+,i0,v1,v2])	main	disintegration	(&(&(&(&(implication22[v2,N,+,i0])(implication23[v2,N,+,v1]))(implication24[N,+,i0,v1,v2]))(in[i0,N]))(in[v1,N]))	main
+(in[v1,N])	main	disintegration	(&(&(&(&(implication22[v2,N,+,i0])(implication23[v2,N,+,v1]))(implication24[N,+,i0,v1,v2]))(in[i0,N]))(in[v1,N]))	main
+(in[i0,N])	main	disintegration	(&(&(&(&(implication22[v3,N,+,i0])(implication23[v3,N,+,v4]))(implication24[N,+,i0,v4,v3]))(in[i0,N]))(in[v4,N]))	main
+(&(&(&(&(implication22[v3,N,+,i0])(implication23[v3,N,+,v4]))(implication24[N,+,i0,v4,v3]))(in[i0,N]))(in[v4,N]))	main	expansion	(interval[N,+,i0,v4,v3])	main
+(interval[N,+,i0,v4,v3])	main	task formulation

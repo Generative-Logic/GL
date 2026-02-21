@@ -34,17 +34,38 @@ from create_expressions import disintegrate_implication
 
 test_expr = '(>[5,6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11](in3[7,10,11,6])(>[12](in3[8,10,12,6])(>[13](in3[9,10,13,6])(in3[11,12,13,5]))))))'
 
+def get_output_arg(expr: str) -> str:
+    """Helper to extract the output variable based on expression type."""
+    args = create_expressions.get_args(expr)
+    if not args:
+        return ''
+    if expr.startswith('(fold['):
+        return args[-1]
+    if expr.startswith('(in[') or expr.startswith('(in2[') or expr.startswith('(in3['):
+        return args[-2]
+    return ''
+
+def fully_resolve_markers(base_str: str, chain_subset: list[str]) -> str:
+    """Recursively replaces nested marker variables to build a single mathematical equation."""
+    res = base_str
+    for el in reversed(chain_subset):
+        if el.startswith('(in') or el.startswith('(fold['):
+            out = get_output_arg(el)
+            if out and ('marker' + out) in res:
+                res = res.replace('marker' + out, rewrite_expression(el))
+    return res.replace('marker', '')
+
 def rewrite_expression(expression: str):
     rewritten = ''
 
-
     assert (expression.startswith('(in') or
             expression.startswith('(in2') or
-            expression.startswith('(in3'))
+            expression.startswith('(in3') or
+            expression.startswith('(fold['))
 
     args = create_expressions.get_args(expression)
 
-    if expression.startswith('(in'):
+    if expression.startswith('(in['):
         rewritten = 'marker' + args[-2]
 
     if expression.startswith('(in2'):
@@ -53,17 +74,25 @@ def rewrite_expression(expression: str):
     if expression.startswith('(in3'):
         rewritten = '(marker' + args[-4] + args[-1] + 'marker' + args[-3] + ')'
 
+    if expression.startswith('(fold['):
+        # fold[N,s,+,f,n,m,p]  ->  sum(i=n..m) if f is id
+        # Drop the `= p_name` assignment so the sum can dynamically embed into other operators
+        _, _, _, f_name, n_name, m_name, p_name = args
+        term = '' if f_name == 'id' else f' {f_name}(i)'
+        # Removed the outer '(' and ')' here:
+        rewritten = 'sum(i=' + 'marker' + n_name + '..' + 'marker' + m_name + ')' + term
 
     return rewritten
+
 
 def rewrite_expression2(expression: str):
     rewritten = ''
 
-
     assert (expression.startswith('(in[') or
             expression.startswith('(in2') or
             expression.startswith('(in3') or
-            expression.startswith('(=['))
+            expression.startswith('(=[') or
+            expression.startswith('(fold['))
 
     args = create_expressions.get_args(expression)
 
@@ -79,35 +108,31 @@ def rewrite_expression2(expression: str):
     if expression.startswith('(=['):
         rewritten = 'marker' + args[-2] + '=' 'marker' + args[-1]
 
+    if expression.startswith('(fold['):
+        # fold[N,s,+,f,n,m,p]  ->  sum(i=n..m)=p if f is id
+        _, _, _, f_name, n_name, m_name, p_name = args
+        term = '' if f_name == 'id' else f' {f_name}(i)'
+        rewritten = 'sum(i=' + 'marker' + n_name + '..' + 'marker' + m_name + ')' + term + '=' + 'marker' + p_name
+
     return rewritten
 
 def make_readable_simple_implication_title(chain: list[str]):
     readable = ''
-    args_list = []
+    head = chain[-1]
+    head_output = get_output_arg(head)
 
-    for element in chain:
-        assert element.startswith('(in')
-        args_list.append(create_expressions.get_args(element))
-
-    head_output = args_list[-1][-2]
-
-    for index, args in enumerate(args_list):
-        assert args != args_list[-1]
-        output = args[-2]
-        if output == head_output:
-            readable = rewrite_expression(chain[index]) + '=' +  rewrite_expression(chain[-1])
+    for index, element in enumerate(chain[:-1]):
+        output = get_output_arg(element)
+        if output == head_output and output != '':
+            readable = rewrite_expression(element) + '=' + rewrite_expression(head)
             break
 
-    for index, args in enumerate(args_list):
-        output = args[-2]
+    if not readable:
+        readable = rewrite_expression2(head)
 
-        if 'marker' + output in readable:
-            rewritten = rewrite_expression(chain[index])
-            readable = readable.replace('marker' + output, rewritten)
-
-    readable = readable.replace('marker', '')
-
+    readable = fully_resolve_markers(readable, chain[:-1])
     return readable
+
 
 def make_readable_equality(chain: list[str]):
     eq_args = create_expressions.get_args(chain[-1])
@@ -116,41 +141,33 @@ def make_readable_equality(chain: list[str]):
 
     left_operator = ''
     right_operator = ''
-    for element in chain:
-        if element.startswith('(in2') or element.startswith('(in3'):
-            args = create_expressions.get_args(element)
-
-            if left_output in args:
+    for element in chain[:-1]:
+        if element.startswith('(in2') or element.startswith('(in3') or element.startswith('(fold['):
+            output = get_output_arg(element)
+            if output == left_output:
                 left_operator = element
-
-            if right_output in args:
+            if output == right_output:
                 right_operator = element
 
     assert left_operator and right_operator
 
+    # Integrate the equality mathematically
+    integrated_equality = fully_resolve_markers(rewrite_expression2(chain[-1]), chain[:-1])
+
     if left_operator != right_operator:
+        left_idx = chain.index(left_operator)
+        right_idx = chain.index(right_operator)
 
-        rewritten_left = rewrite_expression2(left_operator)
-        rewritten_right = rewrite_expression2(right_operator)
-        rewritten_equality = rewrite_expression2(chain[-1])
+        resolved_left = fully_resolve_markers(rewrite_expression2(left_operator), chain[:left_idx])
+        resolved_right = fully_resolve_markers(rewrite_expression2(right_operator), chain[:right_idx])
 
-        readable = 'from ' + rewritten_left + ' and ' + rewritten_right + ' follows ' + rewritten_equality
-
+        readable = 'from ' + resolved_left + ' and ' + resolved_right + ' follows ' + integrated_equality
     else:
-        if left_operator:
-            non_empty = left_operator
-        else:
-            non_empty = right_operator
+        non_empty = left_operator if left_operator else right_operator
+        non_empty_idx = chain.index(non_empty)
+        resolved_non_empty = fully_resolve_markers(rewrite_expression2(non_empty), chain[:non_empty_idx])
 
-        args = create_expressions.get_args(non_empty)
-        assert left_output in args and right_output in args
-
-        rewritten_non_empty = rewrite_expression2(non_empty)
-        rewritten_equality = rewrite_expression2(chain[-1])
-
-        readable = 'from ' + rewritten_non_empty + ' follows ' + rewritten_equality
-
-    readable = readable.replace('marker', '')
+        readable = 'from ' + resolved_non_empty + ' follows ' + integrated_equality
 
     return readable
 
@@ -191,6 +208,40 @@ def extract_values_regex(s: str):
         return s  # Form2: return unchanged.
     raise ValueError("Input string does not match expected formats.")
 
+def is_relation_expression(expr: str) -> bool:
+    return expr.startswith('(in[') or expr.startswith('(in2[') or expr.startswith('(in3[')
+
+
+def is_rewritable_atom(expr: str) -> bool:
+    return (
+        expr.startswith('(in[')
+        or expr.startswith('(in2[')
+        or expr.startswith('(in3[')
+        or expr.startswith('(=[')
+        or expr.startswith('(fold[')
+    )
+
+
+def safe_rewrite_atom(expr: str) -> str:
+    try:
+        if is_rewritable_atom(expr):
+            return rewrite_expression2(expr).replace('marker', '')
+    except Exception:
+        pass
+    return expr
+
+
+def make_readable_generic_chain(chain: list[str]) -> str:
+    if not chain:
+        return ''
+
+    rendered = [safe_rewrite_atom(expr) for expr in chain]
+    if len(rendered) == 1:
+        return rendered[0]
+
+    return 'from ' + ', '.join(rendered[:-1]) + ' follows ' + rendered[-1]
+
+
 def make_readable_element(chain: list[str]):
     head = chain[-1]
     readable = ''
@@ -207,50 +258,81 @@ def make_readable_element(chain: list[str]):
 
     return readable
 
+
 def make_readable_existence(chain: list[str]):
-    readable = ''
+    head = chain[-1]
 
-    last_removed = list_last_removed_args(chain[-1])
-    left_expr, right_expr = extract_values_regex(chain[-1])
-    right_expr = right_expr[1:]
+    try:
+        left_expr, right_expr = extract_values_regex(head)
+    except ValueError:
+        return safe_rewrite_atom(head)
 
-    readable = 'from ' + rewrite_expression2(chain[0])
-    for index in range(1, len(chain) - 1):
-        readable += ' and ' + rewrite_expression2(chain[index])
+    left_text = safe_rewrite_atom(left_expr)
 
-    readable += ' follows existence of ' + rewrite_expression2(left_expr) + ' with ' + rewrite_expression2(right_expr)
+    # If the second expression has a '!', strip it. Otherwise, prepend 'not '
+    if right_expr.startswith('!'):
+        right_text = safe_rewrite_atom(right_expr[1:])
+    else:
+        right_text = 'not ' + safe_rewrite_atom(right_expr)
 
-    readable = readable.replace('marker', '')
+    # Build the final existence string
+    existence_str = f"exists {left_text} with {right_text}"
+    existence_str = existence_str.replace('marker', '')
 
-    return readable
+    # If it's part of a chain with premises, prepend the "from ... follows"
+    if len(chain) > 1:
+        premises = [safe_rewrite_atom(expr) for expr in chain[:-1]]
+        return 'from ' + ', '.join(premises) + ' follows ' + existence_str
+
+    return existence_str
 
 def make_readable_from_chain(chain: list[str]):
+    if not chain:
+        return ''
+
     head = chain[-1]
     readable = ''
 
-    if head.startswith('(in2') or head.startswith('(in3'):
-        readable = make_readable_simple_implication(chain)
+    try:
+        # Now natively targets fold directly as a viable sequence
+        if head.startswith('(in2') or head.startswith('(in3') or head.startswith('(fold['):
+            readable = make_readable_simple_implication(chain)
+        elif head.startswith('(=['):
+            readable = make_readable_equality(chain)
+        elif head.startswith('(in['):
+            readable = make_readable_element(chain)
+        elif head.startswith('!(>['):
+            readable = make_readable_existence(chain)
+    except Exception:
+        readable = ''
 
-    if head.startswith('(=['):
-        readable = make_readable_equality(chain)
-
-    if head.startswith('(in['):
-        readable = make_readable_element(chain)
-
-    if head.startswith('!(>['):
-        readable = make_readable_existence(chain)
+    if not readable:
+        readable = make_readable_generic_chain(chain)
 
     return readable
 
 def make_readable_from_chain_title(chain: list[str]):
+    if not chain:
+        return ''
+
     head = chain[-1]
     readable = ''
 
-    if head.startswith('(in2') or head.startswith('(in3'):
-        readable = make_readable_simple_implication_title(chain)
+    try:
+        if head.startswith('(in2') or head.startswith('(in3'):
+            readable = make_readable_simple_implication_title(chain)
+        elif head.startswith('(fold['):
+            readable = safe_rewrite_atom(head)
+        elif head.startswith('!(>['):  # Added existence hook for TOC titles!
+            readable = make_readable_existence(chain)
+    except Exception:
+        readable = ''
 
+    if not readable:
+        readable = make_readable_generic_chain(chain)
 
     return readable
+
 
 def make_readable_simple_implication(chain: list[str]):
     readable = ''
@@ -268,11 +350,11 @@ def make_readable_simple_implication(chain: list[str]):
         assert args != args_list[-1]
         output = args[-2]
         if output == head_output:
-            readable = rewrite_expression(chain[index]) + '=' + head_output + '=' +  rewrite_expression(chain[-1])
+            # FIXED: Removed the '+ '=' + head_output' to prevent internal variable leaks like '=v8='
+            readable = rewrite_expression(chain[index]) + '=' + rewrite_expression(chain[-1])
             left_head = chain[index]
             left_head_index = index
             break
-
 
     for_list = []
     head = chain[-1]
@@ -286,7 +368,6 @@ def make_readable_simple_implication(chain: list[str]):
         input_args.append(head_args[arg_index])
 
     for input_arg in input_args:
-
         for index, args in enumerate(args_list):
             if index == left_head_index or index == len(chain) - 1:
                 continue
@@ -295,17 +376,37 @@ def make_readable_simple_implication(chain: list[str]):
             if output_arg == input_arg:
                 for_list.append(chain[index])
 
-
     for_list2 = [rewrite_expression2(expression) for expression in for_list]
-    #for_list2.append(rewrite_expression2(left_head))
 
     if for_list2:
-        readable = 'from ' + ','.join(for_list2) + ' follows ' + readable
+        readable = 'from ' + ', '.join(for_list2) + ' follows ' + readable
 
     readable = readable.replace('marker', '')
 
     return readable
 
+def expand_expr(expr: str):
+    expanded_expr = expr[:]
+    magic_string = "@19023847@"
+
+    for core_expr in create_expressions.get_configuration_data():
+        index = expr.find(r"(" + core_expr + r"[")
+        if index != -1:
+            index += 1
+            replacing_args = create_expressions.get_args(expr[index:])
+            args_to_be_replaced = create_expressions.get_args(
+                create_expressions.get_configuration_data()[core_expr].short_mpl_raw)
+
+            replacement_map = {}
+            for ind in range(len(args_to_be_replaced)):
+                replacement_map[args_to_be_replaced[ind]] = replacing_args[ind] + magic_string
+
+            expanded_expr = (
+                create_expressions.replace_keys_in_string(
+                    create_expressions.get_configuration_data()[core_expr].full_mpl[:], replacement_map))
+            expanded_expr = expanded_expr.replace(magic_string, "")
+
+    return expanded_expr
 
 def make_readable(expression: str):
     readable = expression
@@ -316,7 +417,7 @@ def make_readable(expression: str):
     for element in temp_chain:
         chain.append(element[0])
     chain.append(head)
-    if create_expressions.anchor[3] in chain[0]:
+    if "Anchor" in chain[0]:
         chain = chain[1:]
 
     readable = make_readable_from_chain(chain)
@@ -332,7 +433,7 @@ def make_readable_title(expression: str):
     for element in temp_chain:
         chain.append(element[0])
     chain.append(head)
-    if create_expressions.anchor[3] in chain[0]:
+    if "Anchor" in chain[0]:
         chain = chain[1:]
 
     readable = make_readable_from_chain_title(chain)
@@ -348,7 +449,7 @@ def format_implication(sublist):
     else:
         temp_list = sublist[3:]
         temp_list.extend([copy.copy(sublist[0])])
-        if create_expressions.anchor[3] in temp_list[0]:
+        if "Anchor" in temp_list[0]:
             temp_list = temp_list[1:]
         application = make_readable_from_chain(temp_list)
 

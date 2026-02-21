@@ -24,9 +24,6 @@
 
 
 
-import create_expressions
-
-import os
 
 import time
 
@@ -35,33 +32,8 @@ import multiprocessing
 import run_modes
 
 
-
-
-
-
-
-
-
-
-def modify_core_expression_map():
-    for expr in create_expressions.core_expression_map:
-        temp_str = create_expressions.core_expression_map[expr][3]
-        if os.path.isfile(str(create_expressions.core_expression_map[expr][3])):
-            definition = create_expressions.read_tree_from_file(str(create_expressions.core_expression_map[expr][3]))
-            definition = definition.replace("\n", "")  # Remove spaces
-            definition = definition.replace(" ", "")  # Remove spaces
-            definition = definition.replace("\t", "")  # Remove spaces
-            create_expressions.core_expression_map[expr] = (create_expressions.core_expression_map[expr][0], create_expressions.core_expression_map[expr][1],
-                                         create_expressions.core_expression_map[expr][2], definition, create_expressions.core_expression_map[expr][4],
-                                         create_expressions.core_expression_map[expr][5], create_expressions.core_expression_map[expr][6])
-
-
-
-
-
-
 def main():
-    modify_core_expression_map()
+
 
     start_time = time.time()
 
@@ -73,7 +45,11 @@ def main():
     print(f"Overall runtime: {end_time - start_time:.5f} seconds")
 
 
+
+
 if __name__ == "__main__":
+
 
     multiprocessing.freeze_support()
     main()
+

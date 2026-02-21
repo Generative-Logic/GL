@@ -1,0 +1,11 @@
+(interval[1,4,2,10,11])	main	implication	(>[](implication22[11,1,4,2])(>[](implication23[11,1,4,10])(>[](implication24[1,4,2,10,11])(>[](in[2,1])(>[](in[10,1])(interval[1,4,2,10,11]))))))	main	(implication22[11,1,4,2])	main	(implication23[11,1,4,10])	main	(implication24[1,4,2,10,11])	main	(in[10,1])	main	(in[2,1])	main
+(>[](implication22[11,1,4,2])(>[](implication23[11,1,4,10])(>[](implication24[1,4,2,10,11])(>[](in[2,1])(>[](in[10,1])(interval[1,4,2,10,11]))))))	main	reformulation for integration	(&(&(&(&(implication22[11,1,4,2])(implication23[11,1,4,10]))(implication24[1,4,2,10,11]))(in[2,1]))(in[10,1]))	main
+(&(&(&(&(implication22[11,1,4,2])(implication23[11,1,4,10]))(implication24[1,4,2,10,11]))(in[2,1]))(in[10,1]))	main	expansion	(interval[1,4,2,10,11])	main
+(interval[1,4,2,10,11])	main	implication	(>[](implication22[11,1,4,2])(>[](implication23[11,1,4,10])(>[](implication24[1,4,2,10,11])(>[](in[2,1])(>[](in[10,1])(interval[1,4,2,10,11]))))))	main	(implication22[11,1,4,2])	main	(implication23[11,1,4,10])	main	(implication24[1,4,2,10,11])	main	(in[10,1])	main	(in[2,1])	main
+(implication22[11,1,4,2])	main	disintegration	(&(&(&(&(implication22[11,1,4,2])(implication23[11,1,4,10]))(implication24[1,4,2,10,11]))(in[2,1]))(in[10,1]))	main
+(implication23[11,1,4,10])	main	disintegration	(&(&(&(&(implication22[11,1,4,2])(implication23[11,1,4,10]))(implication24[1,4,2,10,11]))(in[2,1]))(in[10,1]))	main
+(implication24[1,4,2,10,11])	main	disintegration	(&(&(&(&(implication22[11,1,4,2])(implication23[11,1,4,10]))(implication24[1,4,2,10,11]))(in[2,1]))(in[10,1]))	main
+(in[10,1])	main	disintegration	(&(&(&(&(implication22[11,1,4,2])(implication23[11,1,4,10]))(implication24[1,4,2,10,11]))(in[2,1]))(in[10,1]))	main
+(in[2,1])	main	disintegration	(&(&(&(&(implication22[9,1,4,2])(implication23[9,1,4,12]))(implication24[1,4,2,12,9]))(in[2,1]))(in[12,1]))	main
+(&(&(&(&(implication22[9,1,4,2])(implication23[9,1,4,12]))(implication24[1,4,2,12,9]))(in[2,1]))(in[12,1]))	main	expansion	(interval[1,4,2,12,9])	main
+(interval[1,4,2,12,9])	main	task formulation

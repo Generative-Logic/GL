@@ -1,0 +1,234 @@
+{
+  "in": {
+    "arity": 2,
+    "definition_sets": { "1": ["(1)", true], "2": ["P(1)", false] },
+    "full_mpl": "(in[1,2])",
+	"short_mpl": "(in[1,2])",
+	"max_count_per_conjecture": 0,
+	"input_args": ["1"],
+	"output_args": [],
+	"max_size_expression": 5
+  },
+  "=": {
+    "arity": 2,
+    "definition_sets": { "1": ["(1)", true], "2": ["(1)", true] },
+    "full_mpl": "(=[1,2])",
+	"short_mpl": "(=[1,2])",
+	"max_count_per_conjecture": 0,
+	"input_args": ["1", "2"],
+	"output_args": [],
+	"max_size_expression": 4
+  },
+  "in2": {
+    "arity": 3,
+    "definition_sets": { "1": ["(1)", true], "2": ["(1)", true], "3": ["P(x(1)(1))", false] },
+    "full_mpl": "(in2[1,2,3])",
+	"short_mpl": "(in2[1,2,3])",
+	"max_count_per_conjecture": 0,
+	"input_args": ["1"],
+	"output_args": ["2"],
+	"max_size_expression": 4
+  },
+  "in3": {
+    "arity": 4,
+    "definition_sets": {
+      "1": ["(1)", true], "2": ["(1)", true], "3": ["(1)", true], "4": ["P(x(1)(x(1)(1)))", false]
+    },
+    "full_mpl": "(in3[1,2,3,4])",
+	"short_mpl": "(in3[1,2,3,4])",
+	"max_count_per_conjecture": 0,
+	"input_args": ["1", "2"],
+	"output_args": ["3"],
+	"max_size_expression": 5
+  },
+  "fXY": {
+    "arity": 3,
+    "definition_sets": {
+      "1": ["P(x(1)(1))", true], "2": ["P(1)", true], "3": ["P(1)", false]
+    },
+    "full_mpl": "fXY.txt",
+	"short_mpl": "(fXY[f,X,Y])",
+	"max_count_per_conjecture": 0,
+	"input_args": [],
+	"output_args": [],
+	"max_size_expression": 5
+  },
+  "fXYZ": {
+    "arity": 4,
+    "definition_sets": {
+      "1": ["P(x(1)(x(1)(1)))", false], "2": ["P(1)", false], "3": ["P(1)", false], "4": ["P(1)", false]
+    },
+    "full_mpl": "fXYZ.txt",
+	"short_mpl": "(fXYZ[f,X,Y,Z])",
+	"max_count_per_conjecture": 0,
+	"input_args": [],
+	"output_args": [],
+	"max_size_expression": 5
+  },
+  "NaturalNumbers": {
+    "arity": 5,
+    "definition_sets": {
+      "1": ["P(1)", true],
+      "2": ["(1)", true],
+      "3": ["P(x(1)(1))", true],
+      "4": ["P(x(1)(x(1)(1)))", true],
+      "5": ["P(x(1)(x(1)(1)))", true]
+    },
+    "full_mpl": "NaturalNumbers.txt",
+	"short_mpl": "(NaturalNumbers[N,i0,s,+,*])",
+	"max_count_per_conjecture": 0,
+	"input_args": [],
+	"output_args": [],
+	"max_size_expression": 5 
+  },
+  "residual": {
+    "arity": 4,
+    "definition_sets": {
+      "1": ["(1)", true], "2": ["(1)", true], "3": ["(1)", true], "4": ["P(x(1)(x(1)(1)))", false]
+    },
+    "full_mpl": "residual.txt",
+	"short_mpl": "(residual[n,m,p,+])",
+	"max_count_per_conjecture": 0,
+	"input_args": ["n", "m"],
+	"output_args": ["p"],
+	"max_size_expression": 5
+  },
+  "interval": {
+    "arity": 5,
+    "definition_sets": {
+      "1": ["P(1)", false], "2": ["P(x(1)(1))", false], "3": ["(1)", true], "4": ["(1)", true], "5": ["P(1)", true]
+    },
+    "full_mpl": "interval.txt",
+	"short_mpl": "(interval[N,+,n,m,M])",
+	"max_count_per_conjecture": 0,
+	"input_args": ["n", "m"],
+	"output_args": [],
+	"max_size_expression": 5
+  },
+  "split": {
+    "arity": 6,
+    "definition_sets": {
+      "1": ["P(1)", false], "2": ["P(x(1)(x(1)(1)))", false], "3": ["(1)", true],
+      "4": ["(1)", true], "5": ["P(x(1)(1))", true], "6": ["P(x(1)(1))", true]
+    },
+    "full_mpl": "split.txt",
+	"short_mpl": "(split[N,+,n,m,f,g])",
+	"max_count_per_conjecture": 0,
+	"input_args": ["n", "m"],
+	"output_args": [],
+	"max_size_expression": 5
+  },
+  "fold": {
+    "arity": 7,
+    "definition_sets": {
+      "1": ["P(1)", false], "2": ["P(x(1)(1))", false], "3": ["P(x(1)(x(1)(1)))", false],
+      "4": ["P(x(1)(1))", false], "5": ["(1)", true], "6": ["(1)", true], "7": ["(1)", true]
+    },
+    "full_mpl": "fold.txt",
+	"short_mpl": "(fold[N,s,+,f,n,m,p])",
+	"max_count_per_conjecture": 0,
+	"input_args": ["n", "m"],
+	"output_args": ["p"],
+	"max_size_expression": 4
+  },
+  "preorder": {
+    "arity": 4,
+    "definition_sets": {
+      "1": ["P(1)", false], "2": ["P(x(1)(x(1)(1)))", false], "3": ["(1)", true], "4": ["(1)", true]
+    },
+    "full_mpl": "preorder.txt",
+	"short_mpl": "(preorder[N,+,n,m])",
+	"max_count_per_conjecture": 0,
+	"input_args": ["n", "m"],
+	"output_args": [],
+	"max_size_expression": 4
+  },
+  "identity": {
+	"arity": 2,
+    "definition_sets": {
+      "1": ["P(1)", false], "2": ["P(x(1)(1))", false]
+    },
+    "full_mpl": "identity.txt",
+	"short_mpl": "(identity[X,id])",
+	"max_count_per_conjecture": 0,
+	"input_args": [],
+	"output_args": [],
+	"max_size_expression": 4  
+  },
+  "sequence": {
+	"arity": 5,
+    "definition_sets": {
+      "1": ["P(1)", false], "2": ["P(x(1)(x(1)(1)))", false], "3": ["(1)", true], "4": ["(1)", true], "5": ["P(x(1)(1))", true]
+    },
+    "full_mpl": "sequence.txt",
+	"short_mpl": "(sequence[N,+,n,m,seq])",
+	"max_count_per_conjecture": 0,
+	"input_args": [],
+	"output_args": [],
+	"max_size_expression": 4  
+  },
+  "patterns_to_exclude": [],
+	"only_in_head": [],
+	"prohibited_combinations": [],
+   "AnchorGauss": {
+    "arity": 8,
+    "definition_sets": {
+      "1": ["P(1)", true],
+      "2": ["(1)", true],
+      "3": ["P(x(1)(1))", true],
+      "4": ["P(x(1)(x(1)(1)))", true],
+      "5": ["P(x(1)(x(1)(1)))", true],
+	  "6": ["(1)", true],
+	  "7": ["(1)", true],
+	  "8": ["P(x(1)(1))", true]
+    },
+    "full_mpl": "AnchorGauss.txt",
+	"short_mpl": "(AnchorGauss[N,i0,s,+,*,i1,i2,id])",
+	"max_count_per_conjecture": 0,
+	"input_args": [],
+	"output_args": [],
+	"max_size_expression": 6
+  },
+  "AnchorPeano": {
+    "arity": 6,
+    "definition_sets": {
+      "1": ["P(1)", true],
+      "2": ["(1)", true],
+      "3": ["P(x(1)(1))", true],
+      "4": ["P(x(1)(x(1)(1)))", true],
+      "5": ["P(x(1)(x(1)(1)))", true],
+	  "6": ["(1)", true]
+    },
+    "full_mpl": "AnchorPeano.txt",
+	"short_mpl": "(AnchorPeano[N,i0,s,+,*,i1])",
+	"max_count_per_conjecture": 0,
+	"input_args": [],
+	"output_args": [],
+	"max_size_expression": 5
+  },
+  "parameters": {
+   "max_number_simple_expressions": -1,
+   "max_size_mapping_def_set": -1,
+   "max_number_args_expr": -1,
+   "operator_threshold": -1,
+   "max_values_for_def_sets": {
+     "(1)": -1,
+     "P(x(1)(1))": -1,
+     "P(x(1)(x(1)(1)))": -1,
+     "P(1)": -1
+   },
+   "max_values_for_def_sets_prior_connection": {
+     "(1)": -1,
+     "P(x(1)(1))": -1,
+     "P(x(1)(x(1)(1)))": -1,
+     "P(1)": -1
+   },
+   "max_complexity_if_anchor_parameter_connected": {
+     "(1)": -1,
+     "P(x(1)(1))": -1,
+     "P(x(1)(x(1)(1)))": -1,
+     "P(1)": -1
+   },
+   "max_size_binary_list": -1
+  }
+}

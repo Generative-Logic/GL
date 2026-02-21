@@ -1,4 +1,0 @@
-(in3[7,2,8,6])	equality1	(in3[2,7,8,6])	(=[2,7])	(=[7,2])
-(in3[2,7,8,6])	task formulation
-(=[2,7])	symmetry of equality	(=[7,2])
-(=[7,2])	recursion

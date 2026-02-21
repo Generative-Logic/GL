@@ -86,11 +86,11 @@ namespace ce {
         return allPermutations;
     }
 
+    // Turn optimizations OFF for just this section
+//#pragma optimize("", off)
 
-
-    std::pair<TreeNode1*, int> parseExpr(
-        const std::string& treeStrIn,
-        const std::map<std::string, ce::CoreExpressionConfig>& coreExpressionMap) {
+    TreeNode1* parseExpr(
+        const std::string& treeStrIn) {
 
         std::string s;
         s.reserve(treeStrIn.size());
@@ -104,10 +104,9 @@ namespace ce {
         std::size_t index = 0;
 
         struct Parser {
-            static std::pair<TreeNode1*, int> parseSubtree(
+            static TreeNode1* parseSubtree(
                 const std::string& s,
-                std::size_t& index,
-                const std::map<std::string, ce::CoreExpressionConfig>& coreExpressionMap) {
+                std::size_t& index) {
 
                 if (s.empty()) {
                     throw std::runtime_error("Input 's' cannot be empty.");
@@ -115,7 +114,6 @@ namespace ce {
 
                 TreeNode1* node = new TreeNode1("", 0);
                 std::string nodeLabel;
-                int nodeNumberLeafs = 0;
 
                 if (index < s.size() && s[index] == '(') {
                     ++index;
@@ -139,12 +137,10 @@ namespace ce {
                         }
                         nodeLabel.push_back(']');
 
-                        std::pair<TreeNode1*, int> leftRes = parseSubtree(s, index, coreExpressionMap);
-                        std::pair<TreeNode1*, int> rightRes = parseSubtree(s, index, coreExpressionMap);
-                        node->left = leftRes.first;
-                        node->right = rightRes.first;
-
-                        nodeNumberLeafs = leftRes.second + rightRes.second;
+                        TreeNode1* leftRes = parseSubtree(s, index);
+                        TreeNode1* rightRes = parseSubtree(s, index);
+                        node->left = leftRes;
+                        node->right = rightRes;
 
                         if (node->left) {
                             node->arguments.insert(node->left->arguments.begin(), node->left->arguments.end());
@@ -163,12 +159,10 @@ namespace ce {
                         ++index;
                         nodeLabel.push_back('&');
 
-                        std::pair<TreeNode1*, int> leftRes = parseSubtree(s, index, coreExpressionMap);
-                        std::pair<TreeNode1*, int> rightRes = parseSubtree(s, index, coreExpressionMap);
-                        node->left = leftRes.first;
-                        node->right = rightRes.first;
-
-                        nodeNumberLeafs = leftRes.second + rightRes.second;
+                        TreeNode1* leftRes = parseSubtree(s, index);
+                        TreeNode1* rightRes = parseSubtree(s, index);
+                        node->left = leftRes;
+                        node->right = rightRes;
 
                         if (node->left) {
                             node->arguments.insert(node->left->arguments.begin(), node->left->arguments.end());
@@ -188,12 +182,6 @@ namespace ce {
                         index = endIndex;
 
                         const std::string expr = ce::extractExpression(nodeLabel);
-                        std::map<std::string, ce::CoreExpressionConfig>::const_iterator it = coreExpressionMap.find(expr);
-                        if (it == coreExpressionMap.end()) {
-                            delete node;
-                            throw std::runtime_error("Expression not found in coreExpressionMap: " + expr);
-                        }
-                        nodeNumberLeafs = it->second.arity;
 
                         std::vector<std::string> args = ce::getArgs(nodeLabel);
                         for (std::size_t i = 0; i < args.size(); ++i) {
@@ -224,12 +212,10 @@ namespace ce {
                         }
                         nodeLabel.push_back(']');
 
-                        std::pair<TreeNode1*, int> leftRes = parseSubtree(s, index, coreExpressionMap);
-                        std::pair<TreeNode1*, int> rightRes = parseSubtree(s, index, coreExpressionMap);
-                        node->left = leftRes.first;
-                        node->right = rightRes.first;
-
-                        nodeNumberLeafs = leftRes.second + rightRes.second;
+                        TreeNode1*leftRes = parseSubtree(s, index);
+                        TreeNode1* rightRes = parseSubtree(s, index);
+                        node->left = leftRes;
+                        node->right = rightRes;
 
                         if (node->left) {
                             node->arguments.insert(node->left->arguments.begin(), node->left->arguments.end());
@@ -248,12 +234,10 @@ namespace ce {
                         ++index;
                         nodeLabel += "!&";
 
-                        std::pair<TreeNode1*, int> leftRes = parseSubtree(s, index, coreExpressionMap);
-                        std::pair<TreeNode1*, int> rightRes = parseSubtree(s, index, coreExpressionMap);
-                        node->left = leftRes.first;
-                        node->right = rightRes.first;
-
-                        nodeNumberLeafs = leftRes.second + rightRes.second;
+                        TreeNode1* leftRes = parseSubtree(s, index);
+                        TreeNode1* rightRes = parseSubtree(s, index);
+                        node->left = leftRes;
+                        node->right = rightRes;
 
                         if (node->left) {
                             node->arguments.insert(node->left->arguments.begin(), node->left->arguments.end());
@@ -274,12 +258,6 @@ namespace ce {
                         index = endIndex;
 
                         const std::string expr = ce::extractExpressionFromNegation(nodeLabel);
-                        std::map<std::string, ce::CoreExpressionConfig>::const_iterator it = coreExpressionMap.find(expr);
-                        if (it == coreExpressionMap.end()) {
-                            delete node;
-                            throw std::runtime_error("Expression not found in coreExpressionMap: " + expr);
-                        }
-                        nodeNumberLeafs = it->second.arity;
 
                         std::vector<std::string> args = ce::getArgs(nodeLabel);
                         for (std::size_t i = 0; i < args.size(); ++i) {
@@ -294,16 +272,16 @@ namespace ce {
 
                 ++index;
                 node->value = nodeLabel;
-                node->numberLeafs = nodeNumberLeafs;
                 if (node->value.empty()) {
                     delete node;
                     node = NULL;
                 }
-                return std::make_pair(node, nodeNumberLeafs);
+                return node;
             }
         };
 
-        return Parser::parseSubtree(s, index, coreExpressionMap);
+        TreeNode1* result = Parser::parseSubtree(s, index);
+        return result;
     }
 
 

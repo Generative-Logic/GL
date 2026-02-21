@@ -1,0 +1,16 @@
+(&
+	(>[i,p]
+		(in2[i,p,g])
+		(&
+			(preorder[N,+,i,n])
+			(in2[i,p,f])
+		)
+	)
+	(>[i,p]
+		(&
+			(preorder[N,+,i,n])
+			(in2[i,p,f])
+		)
+		(in2[i,p,g])
+	)
+)

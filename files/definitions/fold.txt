@@ -1,0 +1,19 @@
+!(>[M]
+	(interval[N,+,n,m,M])
+	(>[g]
+		(fXY[g,M,N])
+		!(&
+			(&
+				(>[q](in2[n,q,g])(in2[n,q,f]))
+				(in2[m,p,g])
+			)
+			(>[i]
+				(in[i,M])
+				(>[j]
+					(&(in2[i,j,s])(in[j,M]))
+					(>[r](in2[i,r,g])(>[t](in2[j,t,f])(>[q](in2[j,q,g])(in3[r,t,q,+]))))
+				)
+			)
+		)
+	)
+)

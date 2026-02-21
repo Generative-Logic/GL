@@ -27,6 +27,6 @@
 #include <string>
 
 namespace run_modes {
-    void quickRun();
-    void fullRun();
+
+    void fullRun(const std::string& anchor_id);
 }

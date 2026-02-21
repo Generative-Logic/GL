@@ -1,0 +1,480 @@
+Core: =
+Category: atomic
+Signature: (=[u_1,u_2])
+Elements: 
+--------------------------------------------------
+Core: AnchorPeano
+Category: and
+Signature: (AnchorPeano[u_1,u_2,u_3,u_4,u_5,u_6])
+Elements: (NaturalNumbers[u_1,u_2,u_3,u_4,u_5]) (in2[u_2,u_6,u_3])
+--------------------------------------------------
+Core: NaturalNumbers
+Category: and
+Signature: (NaturalNumbers[u_1,u_2,u_3,u_4,u_5])
+Elements: (in[u_2,u_1]) (fXY[u_3,u_1,u_1]) (implication4[u_1,u_2,u_3]) (implication5[u_1,u_3]) (fXYZ[u_4,u_1,u_1,u_1]) (implication11[u_1,u_2,u_4]) (implication12[u_1,u_2,u_4]) (implication13[u_1,u_3,u_4]) (implication18[u_1,u_3,u_4]) (fXYZ[u_5,u_1,u_1,u_1]) (implication15[u_1,u_2,u_5]) (implication16[u_1,u_3,u_5,u_4]) (implication17[u_1,u_3,u_5,u_4])
+--------------------------------------------------
+Core: existence0
+Category: existence
+Signature: (existence0[u_1,u_2,u_3])
+Elements: (in[1,u_1]) (in2[u_2,1,u_3])
+--------------------------------------------------
+Core: existence1
+Category: existence
+Signature: (existence1[u_1,u_2,u_3,u_4])
+Elements: (in[1,u_1]) (in3[u_2,u_3,1,u_4])
+--------------------------------------------------
+Core: fXY
+Category: and
+Signature: (fXY[u_1,u_2,u_3])
+Elements: (implication0[u_1,u_2]) (implication1[u_1,u_3]) (implication2[u_2,u_3,u_1]) (implication3[u_2,u_1])
+--------------------------------------------------
+Core: fXYZ
+Category: and
+Signature: (fXYZ[u_1,u_2,u_3,u_4])
+Elements: (implication6[u_1,u_2]) (implication7[u_1,u_3]) (implication8[u_1,u_4]) (implication9[u_2,u_3,u_4,u_1]) (implication10[u_2,u_3,u_1])
+--------------------------------------------------
+Core: implication0
+Category: implication
+Signature: (implication0[u_1,u_2])
+Elements: (in2[1,2,u_1]) (in[1,u_2])
+--------------------------------------------------
+Core: implication1
+Category: implication
+Signature: (implication1[u_1,u_2])
+Elements: (in2[1,2,u_1]) (in[2,u_2])
+--------------------------------------------------
+Core: implication10
+Category: implication
+Signature: (implication10[u_1,u_2,u_3])
+Elements: (in[1,u_1]) (in[2,u_2]) (in3[1,2,3,u_3]) (in3[1,2,4,u_3]) (=[3,4])
+--------------------------------------------------
+Core: implication11
+Category: implication
+Signature: (implication11[u_1,u_2,u_3])
+Elements: (in[1,u_1]) (in3[1,u_2,2,u_3]) (=[1,2])
+--------------------------------------------------
+Core: implication12
+Category: implication
+Signature: (implication12[u_1,u_2,u_3])
+Elements: (=[1,2]) (in[1,u_1]) (in[2,u_1]) (in3[1,u_2,2,u_3])
+--------------------------------------------------
+Core: implication13
+Category: implication
+Signature: (implication13[u_1,u_2,u_3])
+Elements: (in[1,u_1]) (in2[1,2,u_2]) (in3[3,1,4,u_3]) (in3[3,2,5,u_3]) (in2[4,5,u_2])
+--------------------------------------------------
+Core: implication14
+Category: implication
+Signature: (implication14[u_1,u_2,u_3])
+Elements: (in[1,u_1]) (in2[1,2,u_2]) (in3[3,1,4,u_3]) (in2[4,5,u_2]) (in3[3,2,5,u_3])
+--------------------------------------------------
+Core: implication15
+Category: implication
+Signature: (implication15[u_1,u_2,u_3])
+Elements: (in[1,u_1]) (in3[1,u_2,2,u_3]) (=[2,u_2])
+--------------------------------------------------
+Core: implication16
+Category: implication
+Signature: (implication16[u_1,u_2,u_3,u_4])
+Elements: (in[1,u_1]) (in2[1,2,u_2]) (in3[3,1,4,u_3]) (in3[4,3,5,u_4]) (in3[3,2,5,u_3])
+--------------------------------------------------
+Core: implication17
+Category: implication
+Signature: (implication17[u_1,u_2,u_3,u_4])
+Elements: (in[1,u_1]) (in2[1,2,u_2]) (in3[3,1,4,u_3]) (in3[3,2,5,u_3]) (in3[4,3,5,u_4])
+--------------------------------------------------
+Core: implication18
+Category: implication
+Signature: (implication18[u_1,u_2,u_3])
+Elements: (in[1,u_1]) (in2[1,2,u_2]) (in3[3,1,4,u_3]) (in2[4,5,u_2]) (in3[3,2,5,u_3])
+--------------------------------------------------
+Core: implication2
+Category: implication
+Signature: (implication2[u_1,u_2,u_3])
+Elements: (in[1,u_1]) (existence0[u_2,1,u_3])
+--------------------------------------------------
+Core: implication3
+Category: implication
+Signature: (implication3[u_1,u_2])
+Elements: (in[1,u_1]) (in2[1,2,u_2]) (in2[1,3,u_2]) (=[2,3])
+--------------------------------------------------
+Core: implication4
+Category: implication
+Signature: (implication4[u_1,u_2,u_3])
+Elements: (in[1,u_1]) !(in2[1,u_2,u_3])
+--------------------------------------------------
+Core: implication5
+Category: implication
+Signature: (implication5[u_1,u_2])
+Elements: (in[1,u_1]) (in2[2,1,u_2]) (in2[3,1,u_2]) (=[2,3])
+--------------------------------------------------
+Core: implication6
+Category: implication
+Signature: (implication6[u_1,u_2])
+Elements: (in3[1,2,3,u_1]) (in[1,u_2])
+--------------------------------------------------
+Core: implication7
+Category: implication
+Signature: (implication7[u_1,u_2])
+Elements: (in3[1,2,3,u_1]) (in[2,u_2])
+--------------------------------------------------
+Core: implication8
+Category: implication
+Signature: (implication8[u_1,u_2])
+Elements: (in3[1,2,3,u_1]) (in[3,u_2])
+--------------------------------------------------
+Core: implication9
+Category: implication
+Signature: (implication9[u_1,u_2,u_3,u_4])
+Elements: (in[1,u_1]) (in[2,u_2]) (existence1[u_3,1,2,u_4])
+--------------------------------------------------
+Core: in
+Category: atomic
+Signature: (in[u_1,u_2])
+Elements: 
+--------------------------------------------------
+Core: in2
+Category: atomic
+Signature: (in2[u_1,u_2,u_3])
+Elements: 
+--------------------------------------------------
+Core: in3
+Category: atomic
+Signature: (in3[u_1,u_2,u_3,u_4])
+Elements: 
+--------------------------------------------------
+Core: =
+Category: atomic
+Signature: (=[u_1,u_2])
+Elements: 
+--------------------------------------------------
+Core: AnchorGauss
+Category: and
+Signature: (AnchorGauss[u_1,u_2,u_3,u_4,u_5,u_6,u_7,u_8])
+Elements: (NaturalNumbers[u_1,u_2,u_3,u_4,u_5]) (in2[u_2,u_6,u_3]) (in2[u_6,u_7,u_3]) (identity[u_1,u_8])
+--------------------------------------------------
+Core: AnchorPeano
+Category: and
+Signature: (AnchorPeano[u_1,u_2,u_3,u_4,u_5,u_6])
+Elements: (NaturalNumbers[u_1,u_2,u_3,u_4,u_5]) (in2[u_2,u_6,u_3])
+--------------------------------------------------
+Core: NaturalNumbers
+Category: and
+Signature: (NaturalNumbers[u_1,u_2,u_3,u_4,u_5])
+Elements: (in[u_2,u_1]) (fXY[u_3,u_1,u_1]) (implication4[u_1,u_2,u_3]) (implication5[u_1,u_3]) (fXYZ[u_4,u_1,u_1,u_1]) (implication11[u_1,u_2,u_4]) (implication12[u_1,u_2,u_4]) (implication13[u_1,u_3,u_4]) (implication21[u_1,u_3,u_4]) (fXYZ[u_5,u_1,u_1,u_1]) (implication15[u_1,u_2,u_5]) (implication16[u_1,u_3,u_5,u_4]) (implication17[u_1,u_3,u_5,u_4])
+--------------------------------------------------
+Core: and0
+Category: and
+Signature: (and0[u_1,u_2,u_3,u_4,u_5,u_6,u_7,u_8])
+Elements: (implication25[u_1,u_2,u_3]) (in2[u_4,u_5,u_2]) (implication26[u_6,u_7,u_2,u_3,u_8])
+--------------------------------------------------
+Core: and1
+Category: and
+Signature: (and1[u_1,u_2,u_3,u_4,u_5,u_6,u_7])
+Elements: (implication36[u_1,u_2,u_3,u_4,u_5]) (implication37[u_1,u_2,u_3,u_4,u_5]) (implication38[u_1,u_2,u_3,u_4,u_5,u_6,u_7])
+--------------------------------------------------
+Core: existence0
+Category: existence
+Signature: (existence0[u_1,u_2,u_3])
+Elements: (in[1,u_1]) (in2[u_2,1,u_3])
+--------------------------------------------------
+Core: existence1
+Category: existence
+Signature: (existence1[u_1,u_2,u_3,u_4])
+Elements: (in[1,u_1]) (in3[u_2,u_3,1,u_4])
+--------------------------------------------------
+Core: existence2
+Category: existence
+Signature: (existence2[u_1,u_2,u_3,u_4,u_5,u_6,u_7,u_8])
+Elements: (fXY[1,u_1,u_2]) (and0[u_3,1,u_4,u_5,u_6,u_1,u_7,u_8])
+--------------------------------------------------
+Core: existence3
+Category: existence
+Signature: (existence3[u_1,u_2,u_3,u_4,u_5])
+Elements: (limitSet[u_1,u_2,u_3,u_4,1]) (interval[u_1,u_2,u_5,u_4,1])
+--------------------------------------------------
+Core: existence4
+Category: existence
+Signature: (existence4[u_1,u_2,u_3,u_4,u_5])
+Elements: (limitSequence[u_1,u_2,u_3,u_4,1]) (sequence[u_1,u_2,u_5,u_3,1])
+--------------------------------------------------
+Core: fXY
+Category: and
+Signature: (fXY[u_1,u_2,u_3])
+Elements: (implication0[u_1,u_2]) (implication1[u_1,u_3]) (implication2[u_2,u_3,u_1]) (implication3[u_2,u_1])
+--------------------------------------------------
+Core: fXYZ
+Category: and
+Signature: (fXYZ[u_1,u_2,u_3,u_4])
+Elements: (implication6[u_1,u_2]) (implication7[u_1,u_3]) (implication8[u_1,u_4]) (implication9[u_2,u_3,u_4,u_1]) (implication10[u_2,u_3,u_1])
+--------------------------------------------------
+Core: fold
+Category: existence
+Signature: (fold[u_1,u_2,u_3,u_4,u_5,u_6,u_7])
+Elements: (interval[u_1,u_3,u_5,u_6,1]) (existence2[1,u_1,u_5,u_4,u_6,u_7,u_2,u_3])
+--------------------------------------------------
+Core: identity
+Category: and
+Signature: (identity[u_1,u_2])
+Elements: (implication0[u_2,u_1]) (implication18[u_2]) (implication27[u_1,u_2])
+--------------------------------------------------
+Core: implication0
+Category: implication
+Signature: (implication0[u_1,u_2])
+Elements: (in2[1,2,u_1]) (in[1,u_2])
+--------------------------------------------------
+Core: implication1
+Category: implication
+Signature: (implication1[u_1,u_2])
+Elements: (in2[1,2,u_1]) (in[2,u_2])
+--------------------------------------------------
+Core: implication10
+Category: implication
+Signature: (implication10[u_1,u_2,u_3])
+Elements: (in[1,u_1]) (in[2,u_2]) (in3[1,2,3,u_3]) (in3[1,2,4,u_3]) (=[3,4])
+--------------------------------------------------
+Core: implication11
+Category: implication
+Signature: (implication11[u_1,u_2,u_3])
+Elements: (in[1,u_1]) (in3[1,u_2,2,u_3]) (=[1,2])
+--------------------------------------------------
+Core: implication12
+Category: implication
+Signature: (implication12[u_1,u_2,u_3])
+Elements: (=[1,2]) (in[1,u_1]) (in[2,u_1]) (in3[1,u_2,2,u_3])
+--------------------------------------------------
+Core: implication13
+Category: implication
+Signature: (implication13[u_1,u_2,u_3])
+Elements: (in[1,u_1]) (in2[1,2,u_2]) (in3[3,1,4,u_3]) (in3[3,2,5,u_3]) (in2[4,5,u_2])
+--------------------------------------------------
+Core: implication14
+Category: implication
+Signature: (implication14[u_1,u_2,u_3])
+Elements: (in[1,u_1]) (in2[1,2,u_2]) (in3[3,1,4,u_3]) (in2[4,5,u_2]) (in3[3,2,5,u_3])
+--------------------------------------------------
+Core: implication15
+Category: implication
+Signature: (implication15[u_1,u_2,u_3])
+Elements: (in[1,u_1]) (in3[1,u_2,2,u_3]) (=[2,u_2])
+--------------------------------------------------
+Core: implication16
+Category: implication
+Signature: (implication16[u_1,u_2,u_3,u_4])
+Elements: (in[1,u_1]) (in2[1,2,u_2]) (in3[3,1,4,u_3]) (in3[4,3,5,u_4]) (in3[3,2,5,u_3])
+--------------------------------------------------
+Core: implication17
+Category: implication
+Signature: (implication17[u_1,u_2,u_3,u_4])
+Elements: (in[1,u_1]) (in2[1,2,u_2]) (in3[3,1,4,u_3]) (in3[3,2,5,u_3]) (in3[4,3,5,u_4])
+--------------------------------------------------
+Core: implication18
+Category: implication
+Signature: (implication18[u_1])
+Elements: (in2[1,2,u_1]) (=[1,2])
+--------------------------------------------------
+Core: implication19
+Category: implication
+Signature: (implication19[u_1,u_2])
+Elements: (in[1,u_1]) (=[1,2]) (in2[1,2,u_2])
+--------------------------------------------------
+Core: implication2
+Category: implication
+Signature: (implication2[u_1,u_2,u_3])
+Elements: (in[1,u_1]) (existence0[u_2,1,u_3])
+--------------------------------------------------
+Core: implication20
+Category: implication
+Signature: (implication20[u_1,u_2,u_3])
+Elements: (in[1,u_1]) (in2[1,2,u_2]) (in3[3,1,4,u_3]) (in2[4,5,u_2]) (in3[3,2,5,u_3])
+--------------------------------------------------
+Core: implication21
+Category: implication
+Signature: (implication21[u_1,u_2,u_3])
+Elements: (in[1,u_1]) (in2[1,2,u_2]) (in3[3,1,4,u_3]) (in2[4,5,u_2]) (in3[3,2,5,u_3])
+--------------------------------------------------
+Core: implication22
+Category: implication
+Signature: (implication22[u_1,u_2,u_3,u_4])
+Elements: (in[1,u_1]) (preorder[u_2,u_3,u_4,1])
+--------------------------------------------------
+Core: implication23
+Category: implication
+Signature: (implication23[u_1,u_2,u_3,u_4])
+Elements: (in[1,u_1]) (preorder[u_2,u_3,1,u_4])
+--------------------------------------------------
+Core: implication24
+Category: implication
+Signature: (implication24[u_1,u_2,u_3,u_4,u_5])
+Elements: (preorder[u_1,u_2,u_3,1]) (preorder[u_1,u_2,1,u_4]) (in[1,u_5])
+--------------------------------------------------
+Core: implication25
+Category: implication
+Signature: (implication25[u_1,u_2,u_3])
+Elements: (in2[u_1,1,u_2]) (in2[u_1,1,u_3])
+--------------------------------------------------
+Core: implication26
+Category: implication
+Signature: (implication26[u_1,u_2,u_3,u_4,u_5])
+Elements: (in[1,u_1]) (in2[1,2,u_2]) (in[2,u_1]) (in2[1,3,u_3]) (in2[2,4,u_4]) (in2[2,5,u_3]) (in3[3,4,5,u_5])
+--------------------------------------------------
+Core: implication27
+Category: implication
+Signature: (implication27[u_1,u_2])
+Elements: (in[1,u_1]) (=[1,2]) (in2[1,2,u_2])
+--------------------------------------------------
+Core: implication28
+Category: implication
+Signature: (implication28[u_1,u_2,u_3,u_4])
+Elements: (in2[1,2,u_1]) (preorder[u_2,u_3,1,u_4])
+--------------------------------------------------
+Core: implication29
+Category: implication
+Signature: (implication29[u_1,u_2])
+Elements: (in2[1,2,u_1]) (in2[1,2,u_2])
+--------------------------------------------------
+Core: implication3
+Category: implication
+Signature: (implication3[u_1,u_2])
+Elements: (in[1,u_1]) (in2[1,2,u_2]) (in2[1,3,u_2]) (=[2,3])
+--------------------------------------------------
+Core: implication30
+Category: implication
+Signature: (implication30[u_1,u_2,u_3,u_4,u_5])
+Elements: (preorder[u_1,u_2,1,u_3]) (in2[1,2,u_4]) (in2[1,2,u_5])
+--------------------------------------------------
+Core: implication31
+Category: implication
+Signature: (implication31[u_1,u_2])
+Elements: (in[1,u_1]) (in[1,u_2])
+--------------------------------------------------
+Core: implication32
+Category: implication
+Signature: (implication32[u_1,u_2,u_3,u_4,u_5])
+Elements: (in[1,u_1]) (preorder[u_2,u_3,1,u_4]) (in[1,u_5])
+--------------------------------------------------
+Core: implication33
+Category: implication
+Signature: (implication33[u_1,u_2,u_3,u_4,u_5])
+Elements: (in2[1,2,u_1]) (interval[u_2,u_3,u_4,u_5,3]) (in[1,3])
+--------------------------------------------------
+Core: implication34
+Category: implication
+Signature: (implication34[u_1,u_2,u_3,u_4,u_5])
+Elements: (in2[1,2,u_1]) (interval[u_2,u_3,u_4,u_5,3]) !(=[1,u_5])
+--------------------------------------------------
+Core: implication35
+Category: implication
+Signature: (implication35[u_1,u_2,u_3,u_4,u_5,u_6])
+Elements: (in2[1,2,u_1]) (interval[u_2,u_3,u_4,u_5,3]) (in2[1,2,u_6])
+--------------------------------------------------
+Core: implication36
+Category: implication
+Signature: (implication36[u_1,u_2,u_3,u_4,u_5])
+Elements: (interval[u_1,u_2,u_3,u_4,1]) (in[u_5,1])
+--------------------------------------------------
+Core: implication37
+Category: implication
+Signature: (implication37[u_1,u_2,u_3,u_4,u_5])
+Elements: (interval[u_1,u_2,u_3,u_4,1]) !(=[u_5,u_4])
+--------------------------------------------------
+Core: implication38
+Category: implication
+Signature: (implication38[u_1,u_2,u_3,u_4,u_5,u_6,u_7])
+Elements: (interval[u_1,u_2,u_3,u_4,1]) (in2[u_5,u_6,u_7])
+--------------------------------------------------
+Core: implication39
+Category: implication
+Signature: (implication39[u_1,u_2,u_3,u_4,u_5,u_6])
+Elements: (and1[u_1,u_2,u_3,u_4,1,2,u_5]) (in2[1,2,u_6])
+--------------------------------------------------
+Core: implication4
+Category: implication
+Signature: (implication4[u_1,u_2,u_3])
+Elements: (in[1,u_1]) !(in2[1,u_2,u_3])
+--------------------------------------------------
+Core: implication40
+Category: implication
+Signature: (implication40[u_1,u_2,u_3,u_4,u_5])
+Elements: (preorder[u_1,u_2,1,u_3]) (in2[1,2,u_4]) (in2[1,2,u_5])
+--------------------------------------------------
+Core: implication5
+Category: implication
+Signature: (implication5[u_1,u_2])
+Elements: (in[1,u_1]) (in2[2,1,u_2]) (in2[3,1,u_2]) (=[2,3])
+--------------------------------------------------
+Core: implication6
+Category: implication
+Signature: (implication6[u_1,u_2])
+Elements: (in3[1,2,3,u_1]) (in[1,u_2])
+--------------------------------------------------
+Core: implication7
+Category: implication
+Signature: (implication7[u_1,u_2])
+Elements: (in3[1,2,3,u_1]) (in[2,u_2])
+--------------------------------------------------
+Core: implication8
+Category: implication
+Signature: (implication8[u_1,u_2])
+Elements: (in3[1,2,3,u_1]) (in[3,u_2])
+--------------------------------------------------
+Core: implication9
+Category: implication
+Signature: (implication9[u_1,u_2,u_3,u_4])
+Elements: (in[1,u_1]) (in[2,u_2]) (existence1[u_3,1,2,u_4])
+--------------------------------------------------
+Core: in
+Category: atomic
+Signature: (in[u_1,u_2])
+Elements: 
+--------------------------------------------------
+Core: in2
+Category: atomic
+Signature: (in2[u_1,u_2,u_3])
+Elements: 
+--------------------------------------------------
+Core: in3
+Category: atomic
+Signature: (in3[u_1,u_2,u_3,u_4])
+Elements: 
+--------------------------------------------------
+Core: infiniteSequence
+Category: and
+Signature: (infiniteSequence[u_1,u_2])
+Elements: (fXY[u_1,u_2,u_2])
+--------------------------------------------------
+Core: interval
+Category: and
+Signature: (interval[u_1,u_2,u_3,u_4,u_5])
+Elements: (implication22[u_5,u_1,u_2,u_3]) (implication23[u_5,u_1,u_2,u_4]) (implication24[u_1,u_2,u_3,u_4,u_5]) (in[u_3,u_1]) (in[u_4,u_1])
+--------------------------------------------------
+Core: limitSequence
+Category: and
+Signature: (limitSequence[u_1,u_2,u_3,u_4,u_5])
+Elements: (implication28[u_5,u_1,u_2,u_3]) (implication29[u_5,u_4]) (implication40[u_1,u_2,u_3,u_4,u_5])
+--------------------------------------------------
+Core: limitSet
+Category: and
+Signature: (limitSet[u_1,u_2,u_3,u_4,u_5])
+Elements: (implication31[u_5,u_3]) (implication23[u_5,u_1,u_2,u_4]) (implication32[u_3,u_1,u_2,u_4,u_5])
+--------------------------------------------------
+Core: preorder
+Category: existence
+Signature: (preorder[u_1,u_2,u_3,u_4])
+Elements: (in[1,u_1]) (in3[u_3,1,u_4,u_2])
+--------------------------------------------------
+Core: residual
+Category: and
+Signature: (residual[u_1,u_2,u_3,u_4])
+Elements: (in3[u_3,u_2,u_1,u_4])
+--------------------------------------------------
+Core: sequence
+Category: existence
+Signature: (sequence[u_1,u_2,u_3,u_4,u_5])
+Elements: (interval[u_1,u_2,u_3,u_4,1]) (fXY[u_5,1,u_1])
+--------------------------------------------------
+Core: split
+Category: and
+Signature: (split[u_1,u_2,u_3,u_4,u_5,u_6])
+Elements: (implication33[u_6,u_1,u_2,u_3,u_4]) (implication34[u_6,u_1,u_2,u_3,u_4]) (implication35[u_6,u_1,u_2,u_3,u_4,u_5]) (implication39[u_1,u_2,u_3,u_4,u_5,u_6])
+--------------------------------------------------

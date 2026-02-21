@@ -14,7 +14,7 @@
   
     <script>
     function processText(input) {
-      const indentChar = "\t";
+      const indentChar = "  ";
       let indent = 0, output = "", token = "";
       for (const char of input) {
         if (char === "(") {
@@ -22,7 +22,8 @@
           output += indentChar.repeat(indent) + "(\n"; indent++;
         } else if (char === ")") {
           if (token.trim()) { output += indentChar.repeat(indent) + token.trim() + "\n"; token = ""; }
-          indent--; output += indentChar.repeat(indent) + ")" + "\n";
+          indent = Math.max(0, indent - 1); 
+          output += indentChar.repeat(indent) + ")" + "\n";
         } else {
           token += char;
         }
@@ -30,30 +31,31 @@
       if (token.trim()) output += indentChar.repeat(indent) + token.trim() + "\n";
       return output;
     }
+
     document.addEventListener('DOMContentLoaded', function() {
+      // Inject a reusable dialog into the body
+      document.body.insertAdjacentHTML('beforeend', `
+        <dialog id="expr-modal" style="border:1px solid #d0d7de; border-radius:6px; background:#f6f8fa; color:#000080; padding:1em; max-width:80%; max-height:80vh; overflow:auto; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
+          <pre id="expr-content" style="white-space:pre-wrap; font-family:monospace; margin:0;"></pre>
+        </dialog>
+      `);
+      
+      const modal = document.getElementById('expr-modal');
+      const content = document.getElementById('expr-content');
+
+      // Close modal when clicking anywhere outside the box
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal) modal.close();
+      });
+
       document.body.addEventListener('contextmenu', function(e) {
         const el = e.target.closest('.clickable');
         if (!el) return;
         e.preventDefault();
-        const formatted = processText(el.getAttribute('data-text'));
-        const w = window.open('', 'Expression', 'width=500,height=300');
-        w.document.write(`
-          <!DOCTYPE html>
-          <html lang="en">
-            <head>
-              <meta charset="UTF-8">
-              <title>Expression</title>
-              <style>
-                body { background: #f6f8fa; color: #000080; font-family: monospace; margin: 0; }
-                pre  { padding: 1em; white-space: pre-wrap; }
-                .clickable    { color: lightblue; }
-                .goal-highlight { color: red; font-weight: bold; }
-              </style>
-            </head>
-            <body><pre>${formatted}</pre></body>
-          </html>`);
-        w.document.close();
-        w.onblur = () => w.close();
+        
+        // Populate and open the native modal
+        content.textContent = processText(el.getAttribute('data-text'));
+        modal.showModal();
       });
     });
     </script>
@@ -63,353 +65,369 @@
   <h1>Proof Graph</h1>
   <h2>Table of Contents</h2>
   <ul>
-    <li>1. <a href='chapter1.html'>(&gt;[s,+,*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10,v11](in2[v10,v11,s])(&gt;[](in3[v8,v10,v7,*])(in3[v8,v11,v9,*])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v8*v10)+v8)=(v8*s(v10))</div>
+    <li>1. <a href='chapter1.html'>(&gt;[s,+,*](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4,v5](in2[v4,v5,s])(&gt;[](in3[v2,v4,v1,*])(in3[v2,v5,v3,*])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v2*v4)+v2)=(v2*s(v4))</div>
     </li>
-    <li>2. <a href='chapter2.html'>(&gt;[s,+,*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v10,v11](in2[v10,v11,s])(&gt;[v7,v8](in3[v8,v10,v7,*])(&gt;[v9](in3[v8,v11,v9,*])(in3[v7,v8,v9,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v8*s(v10))=((v8*v10)+v8)</div>
+    <li>2. <a href='chapter2.html'>(&gt;[s,+,*](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2](in2[v1,v2,s])(&gt;[v3,v4](in3[v4,v1,v3,*])(&gt;[v5](in3[v4,v2,v5,*])(in3[v3,v4,v5,+])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v4*s(v1))=((v4*v1)+v4)</div>
     </li>
-    <li>3. <a href='chapter3.html'>(&gt;[s,+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10](in2[v8,v10,s])(&gt;[v11](in2[v9,v11,s])(in3[v7,v10,v11,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">s((v7+v8))=(v7+s(v8))</div>
-      <ul>
-        <li>3.1. <a href='chapter3.html#sub1'>Check for 0</a></li>
-        <li>3.2. <a href='chapter3.html#sub2'>Check induction condition</a></li>
-      </ul>
+    <li>3. <a href='chapter3.html'>(&gt;[s,+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4](in2[v2,v4,s])(&gt;[v5](in2[v3,v5,s])(in3[v1,v4,v5,+])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">s((v1+v2))=(v1+s(v2))</div>
     </li>
-    <li>4. <a href='chapter4.html'>(&gt;[s,+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10](in2[v8,v10,s])(&gt;[v11](in3[v7,v10,v11,+])(in2[v9,v11,s])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v7+s(v8))=s((v7+v8))</div>
+    <li>4. <a href='chapter4.html'>(&gt;[s,+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4](in2[v2,v4,s])(&gt;[v5](in3[v1,v4,v5,+])(in2[v3,v5,s])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v1+s(v2))=s((v1+v2))</div>
     </li>
-    <li>5. <a href='chapter5.html'>(&gt;[1,s,+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8](in2[v7,v8,s])(in3[1,v7,v8,+])))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">s(v7)=(1+v7)</div>
+    <li>5. <a href='chapter5.html'>(&gt;[s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2](in2[v1,v2,s])(in3[i1,v1,v2,+])))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">s(v1)=(i1+v1)</div>
       <ul>
         <li>5.1. <a href='chapter5.html#sub1'>Check for 0</a></li>
         <li>5.2. <a href='chapter5.html#sub2'>Check induction condition</a></li>
       </ul>
     </li>
-    <li>6. <a href='chapter6.html'>(&gt;[1,s,+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8](in3[1,v7,v8,+])(in2[v7,v8,s])))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(1+v7)=s(v7)</div>
+    <li>6. <a href='chapter6.html'>(&gt;[s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2](in3[i1,v1,v2,+])(in2[v1,v2,s])))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(i1+v1)=s(v1)</div>
     </li>
-    <li>7. <a href='chapter7.html'>(&gt;[0,*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8](in3[0,v7,v8,*])(in3[v7,0,v8,*])))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(0*v7)=(v7*0)</div>
+    <li>7. <a href='chapter7.html'>(&gt;[i0,+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2](in3[i0,v1,v2,+])(in3[v1,i0,v2,+])))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(i0+v1)=(v1+i0)</div>
       <ul>
         <li>7.1. <a href='chapter7.html#sub1'>Check for 0</a></li>
         <li>7.2. <a href='chapter7.html#sub2'>Check induction condition</a></li>
       </ul>
     </li>
-    <li>8. <a href='chapter8.html'>(&gt;[0,*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8](in3[v7,0,v8,*])(in3[0,v7,v8,*])))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v7*0)=(0*v7)</div>
+    <li>8. <a href='chapter8.html'>(&gt;[i0,+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2](in3[v1,i0,v2,+])(in3[i0,v1,v2,+])))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v1+i0)=(i0+v1)</div>
     </li>
-    <li>9. <a href='chapter9.html'>(&gt;[0,+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8](in3[0,v7,v8,+])(in3[v7,0,v8,+])))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(0+v7)=(v7+0)</div>
+    <li>9. <a href='chapter9.html'>(&gt;[i0,*](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2](in3[i0,v1,v2,*])(in3[v1,i0,v2,*])))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(i0*v1)=(v1*i0)</div>
       <ul>
         <li>9.1. <a href='chapter9.html#sub1'>Check for 0</a></li>
         <li>9.2. <a href='chapter9.html#sub2'>Check induction condition</a></li>
       </ul>
     </li>
-    <li>10. <a href='chapter10.html'>(&gt;[0,+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8](in3[v7,0,v8,+])(in3[0,v7,v8,+])))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v7+0)=(0+v7)</div>
+    <li>10. <a href='chapter10.html'>(&gt;[i0,*](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2](in3[v1,i0,v2,*])(in3[i0,v1,v2,*])))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v1*i0)=(i0*v1)</div>
     </li>
-    <li>11. <a href='chapter11.html'>(&gt;[s,+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10](in2[v7,v10,s])(&gt;[v11](in2[v9,v11,s])(in3[v10,v8,v11,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">s((v7+v8))=(s(v7)+v8)</div>
+    <li>11. <a href='chapter11.html'>(&gt;[+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4,v5](in3[v1,v4,v5,+])(&gt;[v6](in3[v2,v6,v4,+])(in3[v3,v6,v5,+])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v1+(v2+v6))=((v1+v2)+v6)</div>
       <ul>
         <li>11.1. <a href='chapter11.html#sub1'>Check for 0</a></li>
         <li>11.2. <a href='chapter11.html#sub2'>Check induction condition</a></li>
       </ul>
     </li>
-    <li>12. <a href='chapter12.html'>(&gt;[s,+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10](in2[v7,v10,s])(&gt;[v11](in3[v10,v8,v11,+])(in2[v9,v11,s])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(s(v7)+v8)=s((v7+v8))</div>
+    <li>12. <a href='chapter12.html'>(&gt;[+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4,v5](in3[v2,v5,v4,+])(&gt;[v6](in3[v3,v5,v6,+])(in3[v1,v4,v6,+])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v1+v2)+v5)=(v1+(v2+v5))</div>
     </li>
-    <li>13. <a href='chapter13.html'>(&gt;[+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10,v11](in3[v7,v10,v11,+])(&gt;[v12](in3[v8,v12,v10,+])(in3[v9,v12,v11,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v7+(v8+v12))=((v7+v8)+v12)</div>
+    <li>13. <a href='chapter13.html'>(&gt;[s,+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4](in2[v1,v4,s])(&gt;[v5](in2[v3,v5,s])(in3[v4,v2,v5,+])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">s((v1+v2))=(s(v1)+v2)</div>
       <ul>
         <li>13.1. <a href='chapter13.html#sub1'>Check for 0</a></li>
         <li>13.2. <a href='chapter13.html#sub2'>Check induction condition</a></li>
       </ul>
     </li>
-    <li>14. <a href='chapter14.html'>(&gt;[+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10,v12](in3[v8,v12,v10,+])(&gt;[v11](in3[v9,v12,v11,+])(in3[v7,v10,v11,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v7+v8)+v12)=(v7+(v8+v12))</div>
+    <li>14. <a href='chapter14.html'>(&gt;[s,+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4](in2[v1,v4,s])(&gt;[v5](in3[v4,v2,v5,+])(in2[v3,v5,s])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(s(v1)+v2)=s((v1+v2))</div>
     </li>
-    <li>15. <a href='chapter15.html'>(&gt;[s,+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10](in2[v8,v10,s])(&gt;[v11](in2[v11,v7,s])(in3[v10,v11,v9,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(s(v11)+v8)=(s(v8)+v11)</div>
+    <li>15. <a href='chapter15.html'>(&gt;[s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2](in2[v1,v2,s])(in3[v1,i1,v2,+])))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">s(v1)=(v1+i1)</div>
       <ul>
         <li>15.1. <a href='chapter15.html#sub1'>Check for 0</a></li>
         <li>15.2. <a href='chapter15.html#sub2'>Check induction condition</a></li>
       </ul>
     </li>
-    <li>16. <a href='chapter16.html'>(&gt;[s,+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v10,v8](in2[v8,v10,s])(&gt;[v11,v7](in2[v11,v7,s])(&gt;[v9](in3[v10,v11,v9,+])(in3[v7,v8,v9,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(s(v8)+v11)=(s(v11)+v8)</div>
+    <li>16. <a href='chapter16.html'>(&gt;[s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2](in3[v1,i1,v2,+])(in2[v1,v2,s])))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v1+i1)=s(v1)</div>
     </li>
-    <li>17. <a href='chapter17.html'>(&gt;[+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(in3[v8,v7,v9,+])))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v7+v8)=(v8+v7)</div>
+    <li>17. <a href='chapter17.html'>(&gt;[+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(in3[v2,v1,v3,+])))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v1+v2)=(v2+v1)</div>
       <ul>
         <li>17.1. <a href='chapter17.html#sub1'>Check for 0</a></li>
         <li>17.2. <a href='chapter17.html#sub2'>Check induction condition</a></li>
       </ul>
     </li>
-    <li>18. <a href='chapter18.html'>(&gt;[+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v8,v7,v9,+])(in3[v7,v8,v9,+])))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v8+v7)=(v7+v8)</div>
+    <li>18. <a href='chapter18.html'>(&gt;[+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v2,v1,v3,+])(in3[v1,v2,v3,+])))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v2+v1)=(v1+v2)</div>
     </li>
-    <li>19. <a href='chapter19.html'>(&gt;[s,+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10](in2[v8,v10,s])(&gt;[v11](in2[v9,v11,s])(in3[v10,v7,v11,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">s((v7+v8))=(s(v8)+v7)</div>
+    <li>19. <a href='chapter19.html'>(&gt;[s,+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4](in2[v2,v4,s])(&gt;[v5](in2[v5,v1,s])(in3[v4,v5,v3,+])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(s(v5)+v2)=(s(v2)+v5)</div>
       <ul>
         <li>19.1. <a href='chapter19.html#sub1'>Check for 0</a></li>
         <li>19.2. <a href='chapter19.html#sub2'>Check induction condition</a></li>
       </ul>
     </li>
-    <li>20. <a href='chapter20.html'>(&gt;[s,+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10](in2[v8,v10,s])(&gt;[v11](in3[v10,v7,v11,+])(in2[v9,v11,s])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(s(v8)+v7)=s((v7+v8))</div>
+    <li>20. <a href='chapter20.html'>(&gt;[s,+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2](in2[v2,v1,s])(&gt;[v3,v4](in2[v3,v4,s])(&gt;[v5](in3[v1,v3,v5,+])(in3[v4,v2,v5,+])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(s(v2)+v3)=(s(v3)+v2)</div>
     </li>
-    <li>21. <a href='chapter21.html'>(&gt;[+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10,v11](in3[v7,v10,v11,+])(&gt;[v12](in3[v9,v10,v12,+])(in3[v11,v8,v12,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v7+v8)+v10)=((v7+v10)+v8)</div>
+    <li>21. <a href='chapter21.html'>(&gt;[+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4,v5](in3[v1,v4,v5,+])(&gt;[v6](in3[v3,v4,v6,+])(in3[v5,v2,v6,+])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v1+v2)+v4)=((v1+v4)+v2)</div>
       <ul>
         <li>21.1. <a href='chapter21.html#sub1'>Check for 0</a></li>
         <li>21.2. <a href='chapter21.html#sub2'>Check induction condition</a></li>
       </ul>
     </li>
-    <li>22. <a href='chapter22.html'>(&gt;[+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10,v11](in3[v7,v10,v11,+])(&gt;[v12](in3[v11,v8,v12,+])(in3[v9,v10,v12,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v7+v10)+v8)=((v7+v8)+v10)</div>
+    <li>22. <a href='chapter22.html'>(&gt;[+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4,v5](in3[v1,v4,v5,+])(&gt;[v6](in3[v5,v2,v6,+])(in3[v3,v4,v6,+])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v1+v4)+v2)=((v1+v2)+v4)</div>
     </li>
-    <li>23. <a href='chapter23.html'>(&gt;[s,+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10](in2[v7,v10,s])(&gt;[v11](in2[v11,v8,s])(in3[v10,v11,v9,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v7+s(v11))=(s(v7)+v11)</div>
+    <li>23. <a href='chapter23.html'>(&gt;[s,+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4](in2[v2,v4,s])(&gt;[v5](in2[v3,v5,s])(in3[v4,v1,v5,+])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">s((v1+v2))=(s(v2)+v1)</div>
       <ul>
         <li>23.1. <a href='chapter23.html#sub1'>Check for 0</a></li>
         <li>23.2. <a href='chapter23.html#sub2'>Check induction condition</a></li>
       </ul>
     </li>
-    <li>24. <a href='chapter24.html'>(&gt;[s,+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v10,v7](in2[v7,v10,s])(&gt;[v11,v8](in2[v11,v8,s])(&gt;[v9](in3[v10,v11,v9,+])(in3[v7,v8,v9,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(s(v7)+v11)=(v7+s(v11))</div>
+    <li>24. <a href='chapter24.html'>(&gt;[s,+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4](in2[v2,v4,s])(&gt;[v5](in3[v4,v1,v5,+])(in2[v3,v5,s])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(s(v2)+v1)=s((v1+v2))</div>
     </li>
-    <li>25. <a href='chapter25.html'>(&gt;[+,*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,*])(&gt;[v10,v11](in3[v7,v10,v11,*])(&gt;[v12,v13](in3[v7,v12,v13,*])(&gt;[](in3[v8,v10,v12,+])(in3[v9,v11,v13,+]))))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v7*(v8+v10))=((v7*v8)+(v7*v10))</div>
+    <li>25. <a href='chapter25.html'>(&gt;[s,+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4](in2[v1,v4,s])(&gt;[v5](in2[v3,v5,s])(in3[v2,v4,v5,+])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">s((v1+v2))=(v2+s(v1))</div>
       <ul>
         <li>25.1. <a href='chapter25.html#sub1'>Check for 0</a></li>
         <li>25.2. <a href='chapter25.html#sub2'>Check induction condition</a></li>
       </ul>
     </li>
-    <li>26. <a href='chapter26.html'>(&gt;[+,*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,*])(&gt;[v10,v11](in3[v7,v10,v11,*])(&gt;[v12](in3[v8,v10,v12,+])(&gt;[v13](in3[v9,v11,v13,+])(in3[v7,v12,v13,*]))))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v7*v8)+(v7*v10))=(v7*(v8+v10))</div>
+    <li>26. <a href='chapter26.html'>(&gt;[s,+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4](in2[v1,v4,s])(&gt;[v5](in3[v2,v4,v5,+])(in2[v3,v5,s])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v2+s(v1))=s((v1+v2))</div>
     </li>
-    <li>27. <a href='chapter27.html'>(&gt;[s,+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10](in2[v7,v10,s])(&gt;[v11](in2[v9,v11,s])(in3[v8,v10,v11,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">s((v7+v8))=(v8+s(v7))</div>
+    <li>27. <a href='chapter27.html'>(&gt;[+,i1](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2](in3[i1,v1,v2,+])(in3[v1,i1,v2,+])))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(i1+v1)=(v1+i1)</div>
       <ul>
         <li>27.1. <a href='chapter27.html#sub1'>Check for 0</a></li>
         <li>27.2. <a href='chapter27.html#sub2'>Check induction condition</a></li>
       </ul>
     </li>
-    <li>28. <a href='chapter28.html'>(&gt;[s,+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10](in2[v7,v10,s])(&gt;[v11](in3[v8,v10,v11,+])(in2[v9,v11,s])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v8+s(v7))=s((v7+v8))</div>
+    <li>28. <a href='chapter28.html'>(&gt;[+,i1](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2](in3[v1,i1,v2,+])(in3[i1,v1,v2,+])))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v1+i1)=(i1+v1)</div>
     </li>
-    <li>29. <a href='chapter29.html'>(&gt;[+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10,v11,v12](in3[v10,v11,v12,+])(&gt;[](in3[v8,v7,v11,+])(in3[v10,v9,v12,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v10+(v8+v7))=(v10+(v7+v8))</div>
+    <li>29. <a href='chapter29.html'>(&gt;[+,*](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,*])(&gt;[v4,v5](in3[v1,v4,v5,*])(&gt;[v6,v7](in3[v1,v6,v7,*])(&gt;[](in3[v2,v4,v6,+])(in3[v3,v5,v7,+]))))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v1*(v2+v4))=((v1*v2)+(v1*v4))</div>
       <ul>
         <li>29.1. <a href='chapter29.html#sub1'>Check for 0</a></li>
         <li>29.2. <a href='chapter29.html#sub2'>Check induction condition</a></li>
       </ul>
     </li>
-    <li>30. <a href='chapter30.html'>(&gt;[+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v11](in3[v8,v7,v11,+])(&gt;[v10,v12](in3[v10,v9,v12,+])(in3[v10,v11,v12,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v10+(v7+v8))=(v10+(v8+v7))</div>
+    <li>30. <a href='chapter30.html'>(&gt;[+,*](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,*])(&gt;[v4,v5](in3[v1,v4,v5,*])(&gt;[v6](in3[v2,v4,v6,+])(&gt;[v7](in3[v3,v5,v7,+])(in3[v1,v6,v7,*]))))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v1*v2)+(v1*v4))=(v1*(v2+v4))</div>
     </li>
-    <li>31. <a href='chapter31.html'>(&gt;[+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10,v11](in3[v7,v10,v11,+])(&gt;[v12](in3[v12,v8,v10,+])(in3[v12,v9,v11,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v7+(v12+v8))=(v12+(v7+v8))</div>
+    <li>31. <a href='chapter31.html'>(&gt;[s,+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4](in2[v1,v4,s])(&gt;[v5](in2[v5,v2,s])(in3[v4,v5,v3,+])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v1+s(v5))=(s(v1)+v5)</div>
       <ul>
         <li>31.1. <a href='chapter31.html#sub1'>Check for 0</a></li>
         <li>31.2. <a href='chapter31.html#sub2'>Check induction condition</a></li>
       </ul>
     </li>
-    <li>32. <a href='chapter32.html'>(&gt;[+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10,v12](in3[v12,v8,v10,+])(&gt;[v11](in3[v12,v9,v11,+])(in3[v7,v10,v11,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v12+(v7+v8))=(v7+(v12+v8))</div>
+    <li>32. <a href='chapter32.html'>(&gt;[s,+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2](in2[v2,v1,s])(&gt;[v3,v4](in2[v3,v4,s])(&gt;[v5](in3[v1,v3,v5,+])(in3[v2,v4,v5,+])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(s(v2)+v3)=(v2+s(v3))</div>
     </li>
-    <li>33. <a href='chapter33.html'>(&gt;[+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10,v11,v12](in3[v10,v11,v12,+])(&gt;[](in3[v8,v7,v10,+])(in3[v9,v11,v12,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v8+v7)+v11)=((v7+v8)+v11)</div>
+    <li>33. <a href='chapter33.html'>(&gt;[s,+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4](in2[v1,v4,s])(&gt;[v5](in2[v5,v2,s])(in3[v5,v4,v3,+])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v1+s(v5))=(v5+s(v1))</div>
       <ul>
         <li>33.1. <a href='chapter33.html#sub1'>Check for 0</a></li>
         <li>33.2. <a href='chapter33.html#sub2'>Check induction condition</a></li>
       </ul>
     </li>
-    <li>34. <a href='chapter34.html'>(&gt;[+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10](in3[v8,v7,v10,+])(&gt;[v11,v12](in3[v9,v11,v12,+])(in3[v10,v11,v12,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v7+v8)+v11)=((v8+v7)+v11)</div>
+    <li>34. <a href='chapter34.html'>(&gt;[s,+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2](in2[v2,v1,s])(&gt;[v3,v4](in2[v3,v4,s])(&gt;[v5](in3[v3,v1,v5,+])(in3[v2,v4,v5,+])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v3+s(v2))=(v2+s(v3))</div>
     </li>
-    <li>35. <a href='chapter35.html'>(&gt;[s,+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10](in2[v7,v10,s])(&gt;[v11](in2[v11,v8,s])(in3[v11,v10,v9,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v7+s(v11))=(v11+s(v7))</div>
+    <li>35. <a href='chapter35.html'>(&gt;[+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4,v5](in3[v2,v4,v5,+])(&gt;[v6](in3[v6,v4,v1,+])(in3[v5,v6,v3,+])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v6+v4)+v2)=((v2+v4)+v6)</div>
       <ul>
         <li>35.1. <a href='chapter35.html#sub1'>Check for 0</a></li>
         <li>35.2. <a href='chapter35.html#sub2'>Check induction condition</a></li>
       </ul>
     </li>
-    <li>36. <a href='chapter36.html'>(&gt;[s,+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v10,v7](in2[v7,v10,s])(&gt;[v11,v8](in2[v11,v8,s])(&gt;[v9](in3[v11,v10,v9,+])(in3[v7,v8,v9,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v11+s(v7))=(v7+s(v11))</div>
+    <li>36. <a href='chapter36.html'>(&gt;[+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v3,v1,v2,+])(&gt;[v4,v5](in3[v4,v1,v5,+])(&gt;[v6](in3[v2,v4,v6,+])(in3[v5,v3,v6,+])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v3+v1)+v4)=((v4+v1)+v3)</div>
     </li>
-    <li>37. <a href='chapter37.html'>(&gt;[+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10,v11](in3[v8,v10,v11,+])(&gt;[v12](in3[v12,v10,v7,+])(in3[v11,v12,v9,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v12+v10)+v8)=((v8+v10)+v12)</div>
+    <li>37. <a href='chapter37.html'>(&gt;[+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4,v5](in3[v1,v4,v5,+])(&gt;[v6](in3[v6,v2,v4,+])(in3[v6,v3,v5,+])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v1+(v6+v2))=(v6+(v1+v2))</div>
       <ul>
         <li>37.1. <a href='chapter37.html#sub1'>Check for 0</a></li>
         <li>37.2. <a href='chapter37.html#sub2'>Check induction condition</a></li>
       </ul>
     </li>
-    <li>38. <a href='chapter38.html'>(&gt;[+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v10,v11,v8](in3[v8,v10,v11,+])(&gt;[v12,v7](in3[v12,v10,v7,+])(&gt;[v9](in3[v11,v12,v9,+])(in3[v7,v8,v9,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v8+v10)+v12)=((v12+v10)+v8)</div>
+    <li>38. <a href='chapter38.html'>(&gt;[+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4,v5](in3[v5,v2,v4,+])(&gt;[v6](in3[v5,v3,v6,+])(in3[v1,v4,v6,+])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v5+(v1+v2))=(v1+(v5+v2))</div>
     </li>
-    <li>39. <a href='chapter39.html'>(&gt;[+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10,v11](in3[v7,v10,v11,+])(&gt;[v12](in3[v8,v11,v12,+])(in3[v10,v9,v12,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v8+(v7+v10))=(v10+(v7+v8))</div>
+    <li>39. <a href='chapter39.html'>(&gt;[+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4,v5,v6](in3[v4,v5,v6,+])(&gt;[](in3[v2,v1,v4,+])(in3[v3,v5,v6,+])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v2+v1)+v5)=((v1+v2)+v5)</div>
       <ul>
         <li>39.1. <a href='chapter39.html#sub1'>Check for 0</a></li>
         <li>39.2. <a href='chapter39.html#sub2'>Check induction condition</a></li>
       </ul>
     </li>
-    <li>40. <a href='chapter40.html'>(&gt;[+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10,v11](in3[v7,v10,v11,+])(&gt;[v12](in3[v10,v9,v12,+])(in3[v8,v11,v12,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v10+(v7+v8))=(v8+(v7+v10))</div>
+    <li>40. <a href='chapter40.html'>(&gt;[+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4](in3[v2,v1,v4,+])(&gt;[v5,v6](in3[v3,v5,v6,+])(in3[v4,v5,v6,+])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v1+v2)+v5)=((v2+v1)+v5)</div>
     </li>
-    <li>41. <a href='chapter41.html'>(&gt;[s,+,*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10,v11](in2[v10,v11,s])(&gt;[](in3[v10,v7,v8,*])(in3[v11,v7,v9,*])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v7+(v10*v7))=(s(v10)*v7)</div>
+    <li>41. <a href='chapter41.html'>(&gt;[+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4,v5,v6](in3[v4,v5,v6,+])(&gt;[](in3[v2,v1,v5,+])(in3[v4,v3,v6,+])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v4+(v2+v1))=(v4+(v1+v2))</div>
       <ul>
         <li>41.1. <a href='chapter41.html#sub1'>Check for 0</a></li>
         <li>41.2. <a href='chapter41.html#sub2'>Check induction condition</a></li>
       </ul>
     </li>
-    <li>42. <a href='chapter42.html'>(&gt;[s,+,*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v10,v11](in2[v10,v11,s])(&gt;[v7,v8](in3[v10,v7,v8,*])(&gt;[v9](in3[v11,v7,v9,*])(in3[v7,v8,v9,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(s(v10)*v7)=(v7+(v10*v7))</div>
+    <li>42. <a href='chapter42.html'>(&gt;[+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4](in3[v2,v1,v4,+])(&gt;[v5,v6](in3[v5,v3,v6,+])(in3[v5,v4,v6,+])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v5+(v1+v2))=(v5+(v2+v1))</div>
     </li>
-    <li>43. <a href='chapter43.html'>(&gt;[0,+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8](in3[v7,v8,0,+])(in3[v8,v7,0,+])))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v7+v8)=(v8+v7)</div>
-    </li>
-    <li>44. <a href='chapter44.html'>(&gt;[0,+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8](in3[v8,v7,0,+])(in3[v7,v8,0,+])))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v8+v7)=(v7+v8)</div>
-    </li>
-    <li>45. <a href='chapter45.html'>(&gt;[1,+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8](in3[v7,v8,1,+])(in3[v8,v7,1,+])))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v7+v8)=(v8+v7)</div>
-    </li>
-    <li>46. <a href='chapter46.html'>(&gt;[1,+](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8](in3[v8,v7,1,+])(in3[v7,v8,1,+])))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v8+v7)=(v7+v8)</div>
-    </li>
-    <li>47. <a href='chapter47.html'>(&gt;[s,+,*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10,v11](in2[v10,v11,s])(&gt;[](in3[v7,v10,v8,*])(in3[v7,v11,v9,*])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v7+(v7*v10))=(v7*s(v10))</div>
-    </li>
-    <li>48. <a href='chapter48.html'>(&gt;[s,+,*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v10,v11](in2[v10,v11,s])(&gt;[v7,v8](in3[v7,v10,v8,*])(&gt;[v9](in3[v7,v11,v9,*])(in3[v7,v8,v9,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v7*s(v10))=(v7+(v7*v10))</div>
-    </li>
-    <li>49. <a href='chapter49.html'>(&gt;[s,+,*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10,v11](in2[v10,v11,s])(&gt;[](in3[v10,v8,v7,*])(in3[v11,v8,v9,*])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v10*v8)+v8)=(s(v10)*v8)</div>
-    </li>
-    <li>50. <a href='chapter50.html'>(&gt;[s,+,*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v10,v11](in2[v10,v11,s])(&gt;[v7,v8](in3[v10,v8,v7,*])(&gt;[v9](in3[v11,v8,v9,*])(in3[v7,v8,v9,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(s(v10)*v8)=((v10*v8)+v8)</div>
-    </li>
-    <li>51. <a href='chapter51.html'>(&gt;[s,+,*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10,v11](in2[v10,v11,s])(&gt;[](in3[v10,v7,v8,*])(in3[v7,v11,v9,*])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v7+(v10*v7))=(v7*s(v10))</div>
+    <li>43. <a href='chapter43.html'>(&gt;[+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4,v5](in3[v1,v4,v5,+])(&gt;[v6](in3[v2,v5,v6,+])(in3[v4,v3,v6,+])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v2+(v1+v4))=(v4+(v1+v2))</div>
       <ul>
-        <li>51.1. <a href='chapter51.html#sub1'>Check for 0</a></li>
-        <li>51.2. <a href='chapter51.html#sub2'>Check induction condition</a></li>
+        <li>43.1. <a href='chapter43.html#sub1'>Check for 0</a></li>
+        <li>43.2. <a href='chapter43.html#sub2'>Check induction condition</a></li>
       </ul>
     </li>
-    <li>52. <a href='chapter52.html'>(&gt;[s,+,*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v10,v11](in2[v10,v11,s])(&gt;[v7,v8](in3[v10,v7,v8,*])(&gt;[v9](in3[v7,v11,v9,*])(in3[v7,v8,v9,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v7*s(v10))=(v7+(v10*v7))</div>
+    <li>44. <a href='chapter44.html'>(&gt;[+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4,v5](in3[v1,v4,v5,+])(&gt;[v6](in3[v4,v3,v6,+])(in3[v2,v5,v6,+])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v4+(v1+v2))=(v2+(v1+v4))</div>
     </li>
-    <li>53. <a href='chapter53.html'>(&gt;[s,+,*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10,v11](in2[v10,v11,s])(&gt;[](in3[v10,v8,v7,*])(in3[v8,v11,v9,*])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v10*v8)+v8)=(v8*s(v10))</div>
+    <li>45. <a href='chapter45.html'>(&gt;[i0,+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2](in3[v1,v2,i0,+])(in3[v2,v1,i0,+])))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v1+v2)=(v2+v1)</div>
+    </li>
+    <li>46. <a href='chapter46.html'>(&gt;[i0,+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2](in3[v2,v1,i0,+])(in3[v1,v2,i0,+])))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v2+v1)=(v1+v2)</div>
+    </li>
+    <li>47. <a href='chapter47.html'>(&gt;[+,i1](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2](in3[v1,v2,i1,+])(in3[v2,v1,i1,+])))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v1+v2)=(v2+v1)</div>
+    </li>
+    <li>48. <a href='chapter48.html'>(&gt;[+,i1](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2](in3[v2,v1,i1,+])(in3[v1,v2,i1,+])))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v2+v1)=(v1+v2)</div>
+    </li>
+    <li>49. <a href='chapter49.html'>(&gt;[s,+,*](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4,v5](in2[v4,v5,s])(&gt;[](in3[v4,v1,v2,*])(in3[v5,v1,v3,*])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v1+(v4*v1))=(s(v4)*v1)</div>
+      <ul>
+        <li>49.1. <a href='chapter49.html#sub1'>Check for 0</a></li>
+        <li>49.2. <a href='chapter49.html#sub2'>Check induction condition</a></li>
+      </ul>
+    </li>
+    <li>50. <a href='chapter50.html'>(&gt;[s,+,*](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2](in2[v1,v2,s])(&gt;[v3,v4](in3[v1,v3,v4,*])(&gt;[v5](in3[v2,v3,v5,*])(in3[v3,v4,v5,+])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(s(v1)*v3)=(v3+(v1*v3))</div>
+    </li>
+    <li>51. <a href='chapter51.html'>(&gt;[s,+,*](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4,v5](in2[v4,v5,s])(&gt;[](in3[v1,v4,v2,*])(in3[v1,v5,v3,*])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v1+(v1*v4))=(v1*s(v4))</div>
+    </li>
+    <li>52. <a href='chapter52.html'>(&gt;[s,+,*](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2](in2[v1,v2,s])(&gt;[v3,v4](in3[v3,v1,v4,*])(&gt;[v5](in3[v3,v2,v5,*])(in3[v3,v4,v5,+])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v3*s(v1))=(v3+(v3*v1))</div>
+    </li>
+    <li>53. <a href='chapter53.html'>(&gt;[+,*](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4,v5](in3[v1,v4,v5,*])(&gt;[v6](in3[v2,v4,v6,*])(&gt;[v7](in3[v3,v4,v7,*])(in3[v5,v6,v7,+]))))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v1+v2)*v4)=((v1*v4)+(v2*v4))</div>
       <ul>
         <li>53.1. <a href='chapter53.html#sub1'>Check for 0</a></li>
         <li>53.2. <a href='chapter53.html#sub2'>Check induction condition</a></li>
       </ul>
     </li>
-    <li>54. <a href='chapter54.html'>(&gt;[s,+,*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v10,v11](in2[v10,v11,s])(&gt;[v7,v8](in3[v10,v8,v7,*])(&gt;[v9](in3[v8,v11,v9,*])(in3[v7,v8,v9,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v8*s(v10))=((v10*v8)+v8)</div>
+    <li>54. <a href='chapter54.html'>(&gt;[+,*](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4,v5](in3[v1,v4,v5,*])(&gt;[v6](in3[v2,v4,v6,*])(&gt;[v7](in3[v5,v6,v7,+])(in3[v3,v4,v7,*]))))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v1*v4)+(v2*v4))=((v1+v2)*v4)</div>
     </li>
-    <li>55. <a href='chapter55.html'>(&gt;[*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,*])(in3[v8,v7,v9,*])))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v7*v8)=(v8*v7)</div>
-      <ul>
-        <li>55.1. <a href='chapter55.html#sub1'>Check for 0</a></li>
-        <li>55.2. <a href='chapter55.html#sub2'>Check induction condition</a></li>
-      </ul>
+    <li>55. <a href='chapter55.html'>(&gt;[s,+,*](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4,v5](in2[v4,v5,s])(&gt;[](in3[v4,v2,v1,*])(in3[v5,v2,v3,*])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v4*v2)+v2)=(s(v4)*v2)</div>
     </li>
-    <li>56. <a href='chapter56.html'>(&gt;[*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v8,v7,v9,*])(in3[v7,v8,v9,*])))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v8*v7)=(v7*v8)</div>
+    <li>56. <a href='chapter56.html'>(&gt;[s,+,*](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2](in2[v1,v2,s])(&gt;[v3,v4](in3[v1,v4,v3,*])(&gt;[v5](in3[v2,v4,v5,*])(in3[v3,v4,v5,+])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(s(v1)*v4)=((v1*v4)+v4)</div>
     </li>
-    <li>57. <a href='chapter57.html'>(&gt;[*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,*])(&gt;[v10,v11](in3[v7,v10,v11,*])(&gt;[v12](in3[v8,v12,v10,*])(in3[v9,v12,v11,*])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v7*(v8*v12))=((v7*v8)*v12)</div>
+    <li>57. <a href='chapter57.html'>(&gt;[*](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,*])(in3[v2,v1,v3,*])))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v1*v2)=(v2*v1)</div>
       <ul>
         <li>57.1. <a href='chapter57.html#sub1'>Check for 0</a></li>
         <li>57.2. <a href='chapter57.html#sub2'>Check induction condition</a></li>
       </ul>
     </li>
-    <li>58. <a href='chapter58.html'>(&gt;[*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,*])(&gt;[v10,v12](in3[v8,v12,v10,*])(&gt;[v11](in3[v9,v12,v11,*])(in3[v7,v10,v11,*])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v7*v8)*v12)=(v7*(v8*v12))</div>
+    <li>58. <a href='chapter58.html'>(&gt;[*](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v2,v1,v3,*])(in3[v1,v2,v3,*])))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v2*v1)=(v1*v2)</div>
     </li>
-    <li>59. <a href='chapter59.html'>(&gt;[s,+,*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10,v11](in2[v10,v11,s])(&gt;[](in3[v8,v10,v7,*])(in3[v11,v8,v9,*])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v8*v10)+v8)=(s(v10)*v8)</div>
+    <li>59. <a href='chapter59.html'>(&gt;[s,+,*](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4,v5](in2[v4,v5,s])(&gt;[](in3[v4,v1,v2,*])(in3[v1,v5,v3,*])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v1+(v4*v1))=(v1*s(v4))</div>
       <ul>
         <li>59.1. <a href='chapter59.html#sub1'>Check for 0</a></li>
         <li>59.2. <a href='chapter59.html#sub2'>Check induction condition</a></li>
       </ul>
     </li>
-    <li>60. <a href='chapter60.html'>(&gt;[s,+,*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v10,v11](in2[v10,v11,s])(&gt;[v7,v8](in3[v8,v10,v7,*])(&gt;[v9](in3[v11,v8,v9,*])(in3[v7,v8,v9,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(s(v10)*v8)=((v8*v10)+v8)</div>
+    <li>60. <a href='chapter60.html'>(&gt;[s,+,*](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2](in2[v1,v2,s])(&gt;[v3,v4](in3[v1,v3,v4,*])(&gt;[v5](in3[v3,v2,v5,*])(in3[v3,v4,v5,+])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v3*s(v1))=(v3+(v1*v3))</div>
     </li>
-    <li>61. <a href='chapter61.html'>(&gt;[s,+,*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10,v11](in2[v10,v11,s])(&gt;[](in3[v7,v10,v8,*])(in3[v11,v7,v9,*])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v7+(v7*v10))=(s(v10)*v7)</div>
+    <li>61. <a href='chapter61.html'>(&gt;[s,+,*](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(&gt;[v4,v5](in2[v4,v5,s])(&gt;[](in3[v4,v2,v1,*])(in3[v2,v5,v3,*])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v4*v2)+v2)=(v2*s(v4))</div>
       <ul>
         <li>61.1. <a href='chapter61.html#sub1'>Check for 0</a></li>
         <li>61.2. <a href='chapter61.html#sub2'>Check induction condition</a></li>
       </ul>
     </li>
-    <li>62. <a href='chapter62.html'>(&gt;[s,+,*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v10,v11](in2[v10,v11,s])(&gt;[v7,v8](in3[v7,v10,v8,*])(&gt;[v9](in3[v11,v7,v9,*])(in3[v7,v8,v9,+])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(s(v10)*v7)=(v7+(v7*v10))</div>
+    <li>62. <a href='chapter62.html'>(&gt;[s,+,*](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2](in2[v1,v2,s])(&gt;[v3,v4](in3[v1,v4,v3,*])(&gt;[v5](in3[v4,v2,v5,*])(in3[v3,v4,v5,+])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v4*s(v1))=((v1*v4)+v4)</div>
     </li>
-    <li>63. <a href='chapter63.html'>(&gt;[*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,*])(&gt;[v10,v11](in3[v7,v10,v11,*])(&gt;[v12](in3[v12,v8,v10,*])(in3[v12,v9,v11,*])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v7*(v12*v8))=(v12*(v7*v8))</div>
+    <li>63. <a href='chapter63.html'>(&gt;[*](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,*])(&gt;[v4,v5](in3[v1,v4,v5,*])(&gt;[v6](in3[v2,v6,v4,*])(in3[v3,v6,v5,*])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v1*(v2*v6))=((v1*v2)*v6)</div>
       <ul>
         <li>63.1. <a href='chapter63.html#sub1'>Check for 0</a></li>
         <li>63.2. <a href='chapter63.html#sub2'>Check induction condition</a></li>
       </ul>
     </li>
-    <li>64. <a href='chapter64.html'>(&gt;[*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,*])(&gt;[v10,v12](in3[v12,v8,v10,*])(&gt;[v11](in3[v12,v9,v11,*])(in3[v7,v10,v11,*])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v12*(v7*v8))=(v7*(v12*v8))</div>
+    <li>64. <a href='chapter64.html'>(&gt;[*](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v1,v2,v3,*])(&gt;[v4,v5](in3[v2,v5,v4,*])(&gt;[v6](in3[v3,v5,v6,*])(in3[v1,v4,v6,*])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v1*v2)*v5)=(v1*(v2*v5))</div>
     </li>
-    <li>65. <a href='chapter65.html'>(&gt;[0,*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8](in3[v7,v8,0,*])(in3[v8,v7,0,*])))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v7*v8)=(v8*v7)</div>
+    <li>65. <a href='chapter65.html'>(&gt;[N,i0,s,+,*,i1](AnchorGauss[N,i0,s,+,*,i1,i2,id])(AnchorPeano[N,i0,s,+,*,i1]))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(AnchorPeano[N,i0,s,+,*,i1])</div>
     </li>
-    <li>66. <a href='chapter66.html'>(&gt;[0,*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8](in3[v8,v7,0,*])(in3[v7,v8,0,*])))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v8*v7)=(v7*v8)</div>
+    <li>66. <a href='chapter66.html'>(&gt;[N,i0,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(&gt;[v1,v2](fXY[v1,v2,N])(&gt;[v3](interval[N,+,i0,v3,v2])(sequence[N,+,i0,v3,v1]))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">from (fXY[v1,v2,N]), (interval[N,+,i0,v3,v2]) follows (sequence[N,+,i0,v3,v1])</div>
     </li>
-    <li>67. <a href='chapter67.html'>(&gt;[1,*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8](in3[v7,v8,1,*])(in3[v8,v7,1,*])))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v7*v8)=(v8*v7)</div>
+    <li>67. <a href='chapter67.html'>(&gt;[*](AnchorGauss[N,i0,s,+,*,i1,i2,id])(&gt;[v1,v2,v3](in3[v1,v2,v3,*])(in3[v2,v1,v3,*])))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v1*v2)=(v2*v1)</div>
     </li>
-    <li>68. <a href='chapter68.html'>(&gt;[1,*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8](in3[v8,v7,1,*])(in3[v7,v8,1,*])))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v8*v7)=(v7*v8)</div>
+    <li>68. <a href='chapter68.html'>(&gt;[*](AnchorGauss[N,i0,s,+,*,i1,i2,id])(&gt;[v1,v2,v3](in3[v1,v3,v2,*])(in3[v3,v1,v2,*])))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v1*v3)=(v3*v1)</div>
     </li>
-    <li>69. <a href='chapter69.html'>(&gt;[+,*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10,v11](in3[v7,v10,v11,*])(&gt;[v12](in3[v8,v10,v12,*])(&gt;[v13](in3[v9,v10,v13,*])(in3[v11,v12,v13,+]))))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v7+v8)*v10)=((v7*v10)+(v8*v10))</div>
+    <li>69. <a href='chapter69.html'>(&gt;[+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(in3[v2,v1,v3,+])))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v1+v2)=(v2+v1)</div>
     </li>
-    <li>70. <a href='chapter70.html'>(&gt;[+,*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,+])(&gt;[v10,v11](in3[v7,v10,v11,*])(&gt;[v12](in3[v8,v10,v12,*])(&gt;[v13](in3[v11,v12,v13,+])(in3[v9,v10,v13,*]))))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v7*v10)+(v8*v10))=((v7+v8)*v10)</div>
+    <li>70. <a href='chapter70.html'>(&gt;[+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(&gt;[v1,v2,v3](in3[v1,v3,v2,+])(in3[v3,v1,v2,+])))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v1+v3)=(v3+v1)</div>
     </li>
-    <li>71. <a href='chapter71.html'>(&gt;[*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,*])(&gt;[v10,v11,v12](in3[v10,v11,v12,*])(&gt;[](in3[v8,v7,v10,*])(in3[v9,v11,v12,*])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v8*v7)*v11)=((v7*v8)*v11)</div>
+    <li>71. <a href='chapter71.html'>(&gt;[N,s,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(&gt;[v1,v2](in2[v1,v2,s])(preorder[N,+,v1,v2])))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">from s(v1)=v2 follows (preorder[N,+,v1,v2])</div>
     </li>
-    <li>72. <a href='chapter72.html'>(&gt;[*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,*])(&gt;[v10](in3[v8,v7,v10,*])(&gt;[v11,v12](in3[v9,v11,v12,*])(in3[v10,v11,v12,*])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v7*v8)*v11)=((v8*v7)*v11)</div>
+    <li>72. <a href='chapter72.html'>(&gt;[N,i0,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(&gt;[v1,v2](interval[N,+,i0,v1,v2])(in[v1,v2])))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">from (interval[N,+,i0,v1,v2]) follows v1 in v2</div>
     </li>
-    <li>73. <a href='chapter73.html'>(&gt;[*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,*])(&gt;[v10,v11,v12](in3[v10,v11,v12,*])(&gt;[](in3[v8,v7,v11,*])(in3[v10,v9,v12,*])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v10*(v8*v7))=(v10*(v7*v8))</div>
+    <li>73. <a href='chapter73.html'>(&gt;[N,i0,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(&gt;[v1,v2](interval[N,+,i0,v1,v2])(&gt;[v3](sequence[N,+,i0,v1,v3])(fXY[v3,v2,N]))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">from (interval[N,+,i0,v1,v2]), (sequence[N,+,i0,v1,v3]) follows (fXY[v3,v2,N])</div>
     </li>
-    <li>74. <a href='chapter74.html'>(&gt;[*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,*])(&gt;[v11](in3[v8,v7,v11,*])(&gt;[v10,v12](in3[v10,v9,v12,*])(in3[v10,v11,v12,*])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v10*(v7*v8))=(v10*(v8*v7))</div>
+    <li>74. <a href='chapter74.html'>(&gt;[N,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(&gt;[v1,v2](preorder[N,+,v1,v2])(&gt;[v3](preorder[N,+,v2,v3])(preorder[N,+,v1,v3]))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">from (preorder[N,+,v1,v2]), (preorder[N,+,v2,v3]) follows (preorder[N,+,v1,v3])</div>
     </li>
-    <li>75. <a href='chapter75.html'>(&gt;[*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,*])(&gt;[v10,v11](in3[v7,v10,v11,*])(&gt;[v12](in3[v8,v11,v12,*])(in3[v10,v9,v12,*])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v8*(v7*v10))=(v10*(v7*v8))</div>
+    <li>75. <a href='chapter75.html'>(&gt;[N,s,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(&gt;[v1,v2](in2[v1,v2,s])(&gt;[v3](preorder[N,+,v2,v3])(preorder[N,+,v1,v3]))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">from s(v1)=v2, (preorder[N,+,v2,v3]) follows (preorder[N,+,v1,v3])</div>
     </li>
-    <li>76. <a href='chapter76.html'>(&gt;[*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,*])(&gt;[v10,v11](in3[v7,v10,v11,*])(&gt;[v12](in3[v10,v9,v12,*])(in3[v8,v11,v12,*])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v10*(v7*v8))=(v8*(v7*v10))</div>
+    <li>76. <a href='chapter76.html'>(&gt;[N,s,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(&gt;[v1,v2](in2[v1,v2,s])(&gt;[v3](preorder[N,+,v3,v1])(preorder[N,+,v3,v2]))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">from s(v1)=v2, (preorder[N,+,v3,v1]) follows (preorder[N,+,v3,v2])</div>
     </li>
-    <li>77. <a href='chapter77.html'>(&gt;[*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,*])(&gt;[v10,v11](in3[v7,v10,v11,*])(&gt;[v12](in3[v9,v10,v12,*])(in3[v11,v8,v12,*])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v7*v8)*v10)=((v7*v10)*v8)</div>
+    <li>77. <a href='chapter77.html'>(&gt;[N,i0,s,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(&gt;[v1,v2,v3](limitSet[N,+,v1,v2,v3])(&gt;[v4](in2[v2,v4,s])(&gt;[](interval[N,+,i0,v4,v1])(interval[N,+,i0,v2,v3])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">from (limitSet[N,+,v1,v2,v3]), s(v2)=v4, (interval[N,+,i0,v4,v1]) follows (interval[N,+,i0,v2,v3])</div>
     </li>
-    <li>78. <a href='chapter78.html'>(&gt;[*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,*])(&gt;[v10,v11](in3[v7,v10,v11,*])(&gt;[v12](in3[v11,v8,v12,*])(in3[v9,v10,v12,*])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v7*v10)*v8)=((v7*v8)*v10)</div>
+    <li>78. <a href='chapter78.html'>(&gt;[N,i0,s,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(&gt;[v1,v2](in2[v1,v2,s])(&gt;[v3](interval[N,+,i0,v2,v3])!(&gt;[v4](limitSet[N,+,v3,v1,v4])!(interval[N,+,i0,v1,v4])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">from s(v1)=v2, (interval[N,+,i0,v2,v3]) follows exists (limitSet[N,+,v3,v1,v4]) with (interval[N,+,i0,v1,v4])</div>
     </li>
-    <li>79. <a href='chapter79.html'>(&gt;[*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,*])(&gt;[v10,v11](in3[v8,v10,v11,*])(&gt;[v12](in3[v12,v10,v7,*])(in3[v11,v12,v9,*])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v12*v10)*v8)=((v8*v10)*v12)</div>
+    <li>79. <a href='chapter79.html'>(&gt;[N,i0,s,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(&gt;[v1,v2,v3](limitSequence[N,+,v1,v2,v3])(&gt;[v4](in2[v1,v4,s])(&gt;[](sequence[N,+,i0,v4,v2])(sequence[N,+,i0,v1,v3])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">from (limitSequence[N,+,v1,v2,v3]), s(v1)=v4, (sequence[N,+,i0,v4,v2]) follows (sequence[N,+,i0,v1,v3])</div>
     </li>
-    <li>80. <a href='chapter80.html'>(&gt;[*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v10,v11,v8](in3[v8,v10,v11,*])(&gt;[v12,v7](in3[v12,v10,v7,*])(&gt;[v9](in3[v11,v12,v9,*])(in3[v7,v8,v9,*])))))</a>
-    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">((v8*v10)*v12)=((v12*v10)*v8)</div>
+    <li>80. <a href='chapter80.html'>(&gt;[N,i0,s,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(&gt;[v1,v2](in2[v1,v2,s])(&gt;[v3](sequence[N,+,i0,v2,v3])!(&gt;[v4](limitSequence[N,+,v1,v3,v4])!(sequence[N,+,i0,v1,v4])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">from s(v1)=v2, (sequence[N,+,i0,v2,v3]) follows exists (limitSequence[N,+,v1,v3,v4]) with (sequence[N,+,i0,v1,v4])</div>
+    </li>
+    <li>81. <a href='chapter81.html'>(&gt;[N,i0,s,+,*,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(&gt;[v1,v2,v3](in3[v1,v2,v3,*])(&gt;[v4](fold[N,s,+,id,i0,v1,v4])(&gt;[](in2[v1,v2,s])(in3[i2,v4,v3,*])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(v1*s(v1))=(i2*sum(i=i0..v1))</div>
+      <ul>
+        <li>81.1. <a href='chapter81.html#sub1'>Check for 0</a></li>
+        <li>81.2. <a href='chapter81.html#sub2'>Check induction condition</a></li>
+      </ul>
+    </li>
+    <li>82. <a href='chapter82.html'>(&gt;[N,i0,s,+,*,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(&gt;[v1,v2](fold[N,s,+,id,i0,v2,v1])(&gt;[v3](in2[v2,v3,s])(&gt;[v4](in3[i2,v1,v4,*])(in3[v2,v3,v4,*])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(i2*sum(i=i0..v2))=(v2*s(v2))</div>
+    </li>
+    <li>83. <a href='chapter83.html'>(&gt;[N,i0,s,+,*,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(&gt;[v1,v2,v3](in3[v1,v2,v3,*])(&gt;[v4](fold[N,s,+,id,i0,v2,v4])(&gt;[](in2[v2,v1,s])(in3[i2,v4,v3,*])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(s(v2)*v2)=(i2*sum(i=i0..v2))</div>
+      <ul>
+        <li>83.1. <a href='chapter83.html#sub1'>Check for 0</a></li>
+        <li>83.2. <a href='chapter83.html#sub2'>Check induction condition</a></li>
+      </ul>
+    </li>
+    <li>84. <a href='chapter84.html'>(&gt;[N,i0,s,+,*,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(&gt;[v1,v2](fold[N,s,+,id,i0,v1,v2])(&gt;[v3](in2[v1,v3,s])(&gt;[v4](in3[i2,v2,v4,*])(in3[v3,v1,v4,*])))))</a>
+    <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;">(i2*sum(i=i0..v1))=(s(v1)*v1)</div>
     </li>
   </ul>
 </body>

@@ -1,0 +1,1 @@
+(>[*](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2,v3](in3[v1,v3,v2,*])(in3[v3,v1,v2,*])))	main	mirrored from	(>[*](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2,v3](in3[v1,v2,v3,*])(in3[v2,v1,v3,*])))	main

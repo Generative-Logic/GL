@@ -26,14 +26,14 @@
 import time
 import multiprocessing
 
-import itertools
 import copy
 
 from typing import Tuple
 
 
-from parameters import *
-import re
+
+
+
 from itertools import permutations
 from typing import Dict
 from typing import List, Set
@@ -46,6 +46,13 @@ from pathlib import Path
 
 import os
 import shutil
+from configuration_reader import configuration_reader
+from configuration_reader import ExpressionDescription
+
+from typing import Iterable
+import re
+
+
 
 
 # wherever this file lives, assume the project root is its parent folder
@@ -55,53 +62,43 @@ identity = {i: i for i in range(1, 1000000 + 1)}
 
 _ALL_PERMUTATIONS = {}
 _MAPPINGS_MAP = {}
+_MAPPINGS_MAP_ANCHOR = {}
 _BINARY_SEQS_MAP = {}
-_ANCHOR = ("", 0, {}, "")
+_ANCHOR = ExpressionDescription()
 
-OPERATORS = ["in3", "in2"]
-
-DEFINITIONS_FOLDER = PROJECT_ROOT / 'files/definitions'
-
-core_expression_map = {#"inN":  (1, {"1": "(1)", "N": "P(1)"}, "(x(1)P(1))", "(in[1,N])", 1, "inN[1]", False),
-                       "in":   (2, {"1": "(1)", "2": "P(1)"}, "(x(1)P(1))", "(in[1,2])", 0, "in[1,2]", False),
-                       "=":    (2, {"1": "(1)", "2": "(1)"}, "(x(1)(1))", "(=[1,2])", 1, "=[1,2]", True),
-                       "fXY":  (3, {"1": "P(x(1)(1))", "2": "P(1)", "3": "P(1)"}, "(xP(x(1)(1))(xP(1)P(1)))",
-                                DEFINITIONS_FOLDER/"fXY.txt", 1, "fXY[f,X,Y]", False),
-                       "fXYZ": (4, {"1": "P(x(1)(x(1)(1)))", "2": "P(1)", "3": "P(1)", "4": "P(1)"},
-                                "(xP(x(1)(x(1)(1)))(xP(1)(xP(1)P(1))))",
-                                DEFINITIONS_FOLDER/"fXYZ.txt", 1, "fXY[f,X,Y,Z]",
-                                False),
-                       "in2":  (3, {"1": "(1)", "2": "(1)", "3": "P(x(1)(1))"}, "(x(1)(x(1)P(x(1)(1))))",
-                                "(in2[1,2,3])", 0, "in2[1,2,3]", False),
-                       "in3":  (4, {"1": "(1)", "2": "(1)", "3": "(1)", "4": "P(x(1)(x(1)(1)))"},
-                                "(x(1)(x(1)(x(1)P(x(1)(x(1)(1))))))", "(in3[1,2,3,4])", 0, "in3[1,2,3,4]", True),
-                       "NaturalNumbers": (6, {"1": "P(1)", "2": "(1)", "3": "(1)", "4": "P(x(1)(1))",
-                                              "5": "P(x(1)(x(1)(1)))", "6": "P(x(1)(x(1)(1)))"}, "",
-                                          DEFINITIONS_FOLDER/"NaturalNumbers.txt", 1,
-                                          "NaturalNumbers[N,i0,i1,s,+,*]", False)}
-
-expression_def_set_map = {
-                            #"(in[1,2])": (core_expression_map["in"], 1, "(in["),
-                            "(in2[1,2,3])": (core_expression_map["in2"], 2, "(in2["),
-                            "(in3[1,2,3,4])": (core_expression_map["in3"], 5, "(in3[")
-                            #"(=[1,2])": (core_expression_map["="], 1, "=")
-                        }
-
-anchor = ("(NaturalNumbers[1,2,3,4,5,6])", core_expression_map["NaturalNumbers"][0],
-          core_expression_map["NaturalNumbers"][1], "NaturalNumbers")
-
-exclude_as_first_expression = {"(inN[1])"}
-# expression_def_set_map["fXY[1,2,3]"] = core_expression_map["fXY"]
-# expression_def_set_map["fXYZ[1,2,3,4]"] = core_expression_map["fXYZ"]
-
-depth_counter = 0
+_CONFIGURATION = configuration_reader()
 
 
-# Function to read tree description from a .txt file
-def read_tree_from_file(file_path):
-    with open(file_path, 'r') as file:
-        tree_str = file.read().strip()
-    return tree_str
+_OPERATORS =  []
+_RELATIONS = []
+
+def set_configuration(config: configuration_reader):
+    global _CONFIGURATION
+
+    _CONFIGURATION = config
+
+def set_operators():
+    global _OPERATORS
+
+    _OPERATORS = [ky for ky in _CONFIGURATION.data if
+                 _CONFIGURATION.data[ky].input_args and _CONFIGURATION.data[ky].output_args]
+
+def get_configuration_data():
+    return _CONFIGURATION.data
+
+def get_anchor_name(config: configuration_reader):
+    # 1. Priority: Try to find the specific anchor matching the config ID
+    # (e.g. "AnchorGauss" if loaded from "ConfigGauss.json")
+    if getattr(config, "anchor_id", None):
+        candidate = "Anchor" + config.anchor_id
+        if candidate in config.data:
+            return candidate
+
+    assert False
+
+
+
+
 
 
 def mapping_good(mapping: dict):
@@ -121,21 +118,7 @@ def mapping_good(mapping: dict):
 
     return result
 
-def mapping_good2(mapping: dict, size_first: int):
-    result = 1
 
-    for arg in range(1, size_first + 1):
-        if mapping[arg] != arg:
-            result = 0
-            break
-
-    for arg in range(size_first + 1, len(mapping) + 1):
-        for arg2 in range(arg + 1, len(mapping) + 1):
-            if mapping[arg] == mapping[arg2]:
-                result = 0
-                break
-
-    return result
 
 
 def generate_binary_sequences_as_lists(n):
@@ -148,59 +131,23 @@ def generate_binary_sequences_as_lists(n):
     Returns:
     list: A list of binary sequences, where each sequence is a list of integers.
     """
-    """"
-    if n <= 0:
-        return []
 
-    lst = [
-        sequence
-        for sequence in [[int(bit) for bit in bin(i)[2:].zfill(n)] for i in range(2 ** n)]
-        if not all(bit == 1 for bit in sequence)
-    ]
-    """
     if n == 0:
-        return []
+        return [[]]
 
     lst = [[int(bit) for bit in bin(i)[2:].zfill(n)] for i in range(2 ** n)]
 
     return lst
 
 
-def generate_mappings(m, n):
-    # Create a range of numbers from 1 to m
-    domain = range(1, m + 1)
-    # Create a range of numbers from 1 to n
-    codomain = range(1, n + 1)
-    # Generate all possible mappings using the Cartesian product
-    all_mappings = list(itertools.product(codomain, repeat=m))
-    # Convert each mapping to a dictionary format for better readability
-    mappings_as_dicts = [dict(zip(domain, mapping)) for mapping in all_mappings]
-
-    filtered_mappings = []
-    for mapping in mappings_as_dicts:
-        if mapping_good(mapping):
-            filtered_mappings.append(mapping)
-
-    return filtered_mappings
 
 
-def generate_definition_mappings(m, n):
-    # Create a range of numbers from 1 to m
-    domain = range(1, m + 1)
-    # Create a range of numbers from 1 to n
-    codomain = range(1, n + 1)
-    # Generate all possible mappings using the Cartesian product
-    all_mappings = list(itertools.product(codomain, repeat=m))
-    # Convert each mapping to a dictionary format for better readability
-    mappings_as_dicts = [dict(zip(domain, mapping)) for mapping in all_mappings]
 
-    return mappings_as_dicts
 
 
 class TreeNode1:
-    def __init__(self, value, number_leafs):
+    def __init__(self, value):
         self.value = value
-        self.number_leafs = number_leafs
         self.left = None
         self.right = None
         self.arguments = set()
@@ -240,124 +187,6 @@ def repetitions_exist(s: str) -> bool:
     return len(substrings) != len(set(substrings))
 
 
-
-def compare_trees(root1: TreeNode1, root2: TreeNode1) -> bool:
-    """
-    Compares two trees (root1 and root2) for equality.
-    Returns True if they are the same structure, False otherwise.
-    """
-
-    # 1. Both nodes are None => same
-    if root1 is None and root2 is None:
-        return True
-
-    # 2. One is None and the other is not => different
-    if root1 is None or root2 is None:
-        return False
-
-    # 3. Compare current node data
-    if root1.value != root2.value:
-        return False
-    if root1.number_leafs != root2.number_leafs:
-        return False
-    if root1.arguments != root2.arguments:
-        return False
-
-    # 4. Recursively compare children
-    return (compare_trees(root1.left, root2.left) and
-            compare_trees(root1.right, root2.right))
-
-
-
-
-# Function to parse the binary tree description
-def parse_expr_new(expr):
-    expr = ''.join(expr.split())
-    index = 0
-    label_stack = []
-    node_stack = []
-
-    while True:
-        if expr[index] == '(':
-            index = index + 1
-            if expr[index] == '>':
-                index = index + 1
-                node_label = '>'
-                args_to_remove = get_args(expr[index:])
-                index = expr[index:].find(']') + index + 1
-                node_label = node_label + "[" + ",".join(args_to_remove) + "]"
-                label_stack.append(node_label)
-            elif expr[index] == '&':
-                index = index + 1
-                node_label = '&'
-                label_stack.append(node_label)
-            else:
-                end_index = expr.find(')', index)
-                if end_index == -1:
-                    raise RuntimeError("No closing ')'.")
-                node_label = expr[index:end_index]
-                index = end_index + 1
-                subexpr = extract_expression(node_label)
-                node = TreeNode1("", 0)
-                node.arguments.update(get_args(node_label))
-                node.number_leafs = core_expression_map[subexpr][0]
-                node.value = node_label
-                node_stack.append(node)
-        elif expr[index] == '!(':
-            index = index + 1
-            if expr[index] == '>':
-                index = index + 1
-                node_label = '!>'
-                args_to_remove = get_args(expr[index:])
-                index = expr[index:].find(']') + index + 1
-                node_label = node_label + "[" + ",".join(args_to_remove) + "]"
-                label_stack.append(node_label)
-            elif expr[index] == '&':
-                index = index + 1
-                node_label = '!&'
-                label_stack.append(node_label)
-            else:
-                end_index = expr.find(')', index)
-                if end_index == -1:
-                    raise RuntimeError("No closing ')'.")
-                node_label = expr[index:end_index]
-                node_label = "!(" + node_label + ")"
-                index = end_index + 1
-                subexpr = extract_expression(node_label)
-                node = TreeNode1("", 0)
-                node.arguments.update(get_args(node_label))
-                node.number_leafs = core_expression_map[subexpr][0]
-                node.value = node_label
-                node_stack.append(node)
-        else:
-            assert expr[index] == ")"
-            index = index + 1
-            node = TreeNode1("", 0)
-            node.right = node_stack.pop()
-            node.left = node_stack.pop()
-            node.number_leafs = node.left.number_leafs + node.right.number_leafs
-            node.arguments.update(node.left.arguments)
-            node.arguments.update(node.right.arguments)
-            node.value = label_stack.pop()
-            node.arguments.difference_update(get_args(node.value))
-
-            node_stack.append(node)
-
-            if index == len(expr):
-                break
-
-    root = node_stack.pop()
-    root_number_leafs = root.number_leafs
-
-    """
-    root_old, root_number_leafs_old = parse_expr_old(expr)
-    if not compare_trees(root, root_old):
-        test = 0
-    """
-
-    return root, root_number_leafs
-
-
 # Function to parse the binary tree description
 def parse_expr(tree_str):
     tree_str = tree_str.replace("\n", "")  # Remove spaces
@@ -372,7 +201,7 @@ def parse_expr(tree_str):
         if not s:
             raise RuntimeError("Input 's' cannot be empty. Execution terminated.")
 
-        node = TreeNode1("", 0)
+        node = TreeNode1("")
         node_label = ""
         node_number_leafs = 0
 
@@ -384,9 +213,8 @@ def parse_expr(tree_str):
                 args_to_remove = get_args(s[index:])
                 index = s[index:].find(']') + index + 1
                 node_label = node_label + "[" + ",".join(args_to_remove) + "]"
-                node.left, left_node_number_leafs = parse_subtree(s)  # Process the left child
-                node.right, right_node_number_leafs = parse_subtree(s)  # Process the right child
-                node_number_leafs = left_node_number_leafs + right_node_number_leafs
+                node.left = parse_subtree(s)  # Process the left child
+                node.right = parse_subtree(s)  # Process the right child
                 if node.left is not None:
                     node.arguments.update(node.left.arguments)
                 if node.right is not  None:
@@ -396,9 +224,8 @@ def parse_expr(tree_str):
             elif s[index] == '&':
                 index = index + 1
                 node_label = node_label + '&'
-                node.left, left_node_number_leafs = parse_subtree(s)  # Process the left child
-                node.right, right_node_number_leafs = parse_subtree(s)  # Process the right child
-                node_number_leafs = left_node_number_leafs + right_node_number_leafs
+                node.left = parse_subtree(s)  # Process the left child
+                node.right = parse_subtree(s)  # Process the right child
                 if node.left is not None:
                     node.arguments.update(node.left.arguments)
                 if node.right is not None:
@@ -411,7 +238,6 @@ def parse_expr(tree_str):
                 node_label = s[index:end_index]
                 index = end_index
                 expr = extract_expression(node_label)
-                node_number_leafs = core_expression_map[expr][0]
                 node.arguments.update(get_args(node_label))
 
 
@@ -424,9 +250,8 @@ def parse_expr(tree_str):
                 args_to_remove = get_args(s[index:])
                 index = s[index:].find(']') + index + 1
                 node_label = node_label + "[" + ",".join(args_to_remove) + "]"
-                node.left, left_node_number_leafs = parse_subtree(s)  # Process the left child
-                node.right, right_node_number_leafs = parse_subtree(s)  # Process the right child
-                node_number_leafs = left_node_number_leafs + right_node_number_leafs
+                node.left = parse_subtree(s)  # Process the left child
+                node.right = parse_subtree(s)  # Process the right child
                 if node.left is not None:
                     node.arguments.update(node.left.arguments)
                 if node.right is not  None:
@@ -436,9 +261,8 @@ def parse_expr(tree_str):
             elif s[index] == '&':
                 index = index + 1
                 node_label = node_label + "!&"
-                node.left, left_node_number_leafs = parse_subtree(s)  # Process the left child
-                node.right, right_node_number_leafs = parse_subtree(s)  # Process the right child
-                node_number_leafs = left_node_number_leafs + right_node_number_leafs
+                node.left = parse_subtree(s)  # Process the left child
+                node.right = parse_subtree(s)  # Process the right child
                 if node.left is not None:
                     node.arguments.update(node.left.arguments)
                 if node.right is not  None:
@@ -451,64 +275,24 @@ def parse_expr(tree_str):
                 node_label = s[index:end_index]
                 node_label = "!(" + node_label + ")"
                 index = end_index
-                expr = extract_expression_from_negation(node_label)
-                node_number_leafs = core_expression_map[expr][0]
                 node.arguments.update(get_args(node_label))
         elif s[index] == ")":
             index -= 1
 
         index = index + 1
         node.value = node_label
-        node.number_leafs = node_number_leafs
         if node.value == "":
             node = None
-        return node, node_number_leafs
+        return node
 
-    root, root_number_leafs = parse_subtree(tree_str)
-    return root, root_number_leafs
-
-
-
-def modify_integers_in_string_by_subtraction(s, num_to_subtract):
-    # Find all occurrences of square-bracketed sections with integers separated by commas
-    bracketed_sections = re.findall(r'\[([\d,]+)]', s)
-
-    # Iterate through each section found within the brackets
-    for section in bracketed_sections:
-        # Split the section by commas to get individual integers
-        integers = section.split(',')
-
-        # Subtract the number from each integer
-        modified_integers = [str(int(i) - num_to_subtract) for i in integers]
-
-        # Join the modified integers back with commas
-        new_section = ','.join(modified_integers)
-
-        # Replace the old section with the new section in the string
-        s = s.replace(f'[{section}]', f'[{new_section}]', 1)
-
-    return s
+    root = parse_subtree(tree_str)
+    return root
 
 
-def modify_integers_in_string_by_mapping(s, mp):
-    # Find all occurrences of square-bracketed sections with integers separated by commas
-    bracketed_sections = re.findall(r'\[([\d,]+)]', s)
 
-    # Iterate through each section found within the brackets
-    for section in bracketed_sections:
-        # Split the section by commas to get individual integers
-        integers = section.split(',')
 
-        # Subtract the number from each integer
-        modified_integers = [mp[i] if i in mp else i for i in integers]
 
-        # Join the modified integers back with commas
-        new_section = ','.join(modified_integers)
 
-        # Replace the old section with the new section in the string
-        s = s.replace(f'[{section}]', f'[{new_section}]', 1)
-
-    return s
 
 
 def tree_to_expr(root):
@@ -569,7 +353,7 @@ def parse_def_set(s: str):
         if not s:
             raise RuntimeError("Input 's' cannot be empty. Execution terminated.")
 
-        node = TreeNode1("", 0)
+        node = TreeNode1("")
         node_label = ""
 
         if s[index] == '(':
@@ -971,18 +755,7 @@ def replace_integer_in_string(big_string, target_int, replacement_int):
     return result_string
 
 
-def rename_args(expr, args, first_int_to_use):
-    new_expr = expr
-    repl_int = first_int_to_use
 
-    ordered_integers = find_ordered_integers(args, expr)
-    for arg in ordered_integers:
-        new_expr = replace_integer_in_string(new_expr, arg, str(repl_int))
-        repl_int = repl_int + 1
-
-    next_int_to_use = repl_int
-
-    return new_expr, next_int_to_use
 
 
 def subtract_number_from_ints(expr: str, number: int, numbers_to_replace: Set[int], replace_all: bool) -> str:
@@ -1119,8 +892,7 @@ def find_arg_map(expr: str):
 
                 node_map = {**left_map, **right_map}
                 for arg in args_to_remove:
-                    if arg not in node_map:
-                        test = 0
+
                     del node_map[arg]
 
 
@@ -1138,7 +910,7 @@ def find_arg_map(expr: str):
                 array_args = get_args(node_label)
                 temp_expr = extract_expression(node_label)
 
-                expr_map = core_expression_map[temp_expr][1]
+                expr_map = _CONFIGURATION[temp_expr].definition_sets
                 for i in range(len(array_args)):
                     node_set.add((array_args[i], expr_map[str(i + 1)]))
                     node_map[array_args[i]] = expr_map[str(i + 1)]
@@ -1183,7 +955,7 @@ def find_arg_map(expr: str):
                 temp_expr = extract_expression(node_label)
                 node_label = "!(" + node_label + ")"
                 array_args = get_args(node_label)
-                expr_map = core_expression_map[temp_expr][1]
+                expr_map = _CONFIGURATION[temp_expr].definition_sets
                 for i in range(len(array_args)):
                     node_set.add((array_args[i], expr_map[str(i + 1)]))
                     node_map[array_args[i]] = expr_map[str(i + 1)]
@@ -1290,8 +1062,11 @@ def rename_variables_in_expr(expr:str, deep: bool):
                 array_args = get_args(node_label)
                 temp_expr = extract_expression(node_label)
 
-                expr_map = core_expression_map[temp_expr][1]
+                expr_map = _CONFIGURATION[temp_expr].definition_sets
                 for i in range(len(array_args)):
+                    if str(i + 1) not in expr_map:
+                        test = 0
+
                     node_set.add((array_args[i], expr_map[str(i + 1)]))
                     node_map[array_args[i]] = expr_map[str(i + 1)]
                 for arg in expr_map:
@@ -1350,7 +1125,7 @@ def rename_variables_in_expr(expr:str, deep: bool):
                 temp_expr = extract_expression(node_label)
                 node_label = "!(" + node_label + ")"
                 array_args = get_args(node_label)
-                expr_map = core_expression_map[temp_expr][1]
+                expr_map = _CONFIGURATION[temp_expr].definition_sets
                 for i in range(len(array_args)):
                     node_set.add((array_args[i], expr_map[str(i + 1)]))
                     node_map[array_args[i]] = expr_map[str(i + 1)]
@@ -1398,218 +1173,7 @@ def rename_variables_in_expr(expr:str, deep: bool):
 
     return renamed_expr, root_map, replacement_map
 
-# Function to parse the binary tree description
-def parse_tree(tree_str, definition_type, replace, after_grooming):
-    tree_str = tree_str.replace("\n", "")  # Remove spaces
-    tree_str = tree_str.replace(" ", "")  # Remove spaces
-    tree_str = tree_str.replace("\t", "")  # Remove spaces
-    index = 0
-    arg_set = set()
-    arg_list = []
-    first_int_to_use = 10000
-    unchanged_first_int_to_use = first_int_to_use
-    temp_str = tree_str[:]
-    numbers_to_replace = set()
 
-    # Recursively parse the tree string
-    def parse_subtree(s):
-        nonlocal index
-        node_set = set()
-        node_map = {}
-        node_success = 0
-        node_number_leafs = 0
-        nonlocal arg_set
-        nonlocal arg_list
-        nonlocal first_int_to_use
-        global core_expression_map
-
-        node = TreeNode2("", "", "", 0)
-        node_label = ""
-        full_expression = ""
-
-        if s[index] == '(':
-            index = index + 1
-            if s[index] == '>':
-                index = index + 1
-                node_label = node_label + '>'
-                args_to_remove = get_args(s[index:])
-                index = s[index:].find(']') + index + 1
-                node_label = node_label + "[" + ",".join(args_to_remove) + "]"
-                replacement_map = {}
-                for arg in args_to_remove:
-                    replacement_map[arg] = str(first_int_to_use)
-                    numbers_to_replace.add(first_int_to_use)
-                    first_int_to_use = first_int_to_use + 1
-
-                renamed_args_to_remove = [replacement_map.get(item, item) for item in args_to_remove]
-                node.left, left_set, left_success, full_expression_left, left_node_number_leafs = parse_subtree(
-                    s)  # Process the left child
-                if replace:
-                    full_expression_left = \
-                        replace_keys_in_string(full_expression_left, replacement_map)
-                node.right, right_set, right_success, full_expression_right, right_node_number_leafs = parse_subtree(
-                    s)  # Process the right child
-                if replace:
-                    full_expression_right = \
-                        replace_keys_in_string(full_expression_right, replacement_map)
-                node_number_leafs = left_node_number_leafs + right_node_number_leafs
-                if left_success and right_success:
-                    node_map, node_set, node_success, removed_args = connect_expression_sets(left_set, right_set, '>',
-                                                                                             definition_type == 1,
-                                                                                             args_to_remove,
-                                                                                             after_grooming)
-                    if replace:
-                        full_expression = "(>" + "[" + ",".join(
-                            renamed_args_to_remove) + "]" + full_expression_left + full_expression_right + ")"
-                    else:
-                        full_expression = "(>" + "[" + ",".join(
-                            args_to_remove) + "]" + full_expression_left + full_expression_right + ")"
-                    # if len(removed_args) == 0:
-                    # node_success = 0
-                    if full_expression_left == full_expression_right:
-                        node_success = 0
-            elif s[index] == '&':
-                index = index + 1
-                node_label = node_label + '&'
-                node.left, left_set, left_success, full_expression_left, left_node_number_leafs = parse_subtree(
-                    s)  # Process the left child
-                node.right, right_set, right_success, full_expression_right, right_node_number_leafs = parse_subtree(
-                    s)  # Process the right child
-                node_number_leafs = left_node_number_leafs + right_node_number_leafs
-                if left_success and right_success:
-                    node_map, node_set, node_success, removed_args = connect_expression_sets(left_set,
-                                                                                             right_set,
-                                                                                             '&',
-                                                                                             definition_type == 1,
-                                                                                             [],
-                                                                                             after_grooming)
-                    full_expression = "(&" + full_expression_left + full_expression_right + ")"
-            else:
-                end_index = s.find(')', index)
-                if end_index == -1:
-                    raise RuntimeError("No closing ')'.")
-                node_label = s[index:end_index]
-                array_args = get_args(node_label)
-                for arg in array_args:
-                    if arg not in arg_set:
-                        arg_set.add(arg)
-                        arg_list.append(arg)
-                expr = extract_expression(node_label)
-                node_number_leafs = core_expression_map[expr][0]
-
-                expr_map = core_expression_map[expr][1]
-                for i in range(len(array_args)):
-                    node_set.add((array_args[i], expr_map[str(i + 1)]))
-                    node_map[array_args[i]] = expr_map[str(i + 1)]
-                for arg in expr_map:
-                    if not arg.isdigit():
-                        node_set.add((arg, expr_map[arg]))
-                        node_map[arg] = expr_map[arg]
-
-                node_success = 1
-                index = end_index
-                full_expression = "(" + node_label + ")"
-
-        elif s[index:index + 2] == "!(":
-            index = index + 2
-            if s[index] == '>':
-                index = index + 1
-                node_label = node_label + '>'
-                args_to_remove = get_args(s[index:])
-                index = s[index:].find(']') + index + 1
-                node_label = node_label + "[" + ",".join(args_to_remove) + "]"
-                replacement_map = {}
-                for arg in args_to_remove:
-                    replacement_map[arg] = str(first_int_to_use)
-                    numbers_to_replace.add(first_int_to_use)
-                    first_int_to_use = first_int_to_use + 1
-
-                renamed_args_to_remove = [replacement_map.get(item, item) for item in args_to_remove]
-                node.left, left_set, left_success, full_expression_left, left_node_number_leafs = parse_subtree(
-                    s)  # Process the left child
-                if replace:
-                    full_expression_left = \
-                        replace_keys_in_string(full_expression_left, replacement_map)
-                node.right, right_set, right_success, full_expression_right, right_node_number_leafs = parse_subtree(
-                    s)  # Process the right child
-                if replace:
-                    full_expression_right = \
-                        replace_keys_in_string(full_expression_right, replacement_map)
-                node_number_leafs = left_node_number_leafs + right_node_number_leafs
-                if left_success and right_success:
-                    node_map, node_set, node_success, removed_args = connect_expression_sets(left_set, right_set, '>',
-                                                                                             definition_type == 1,
-                                                                                             args_to_remove,
-                                                                                             after_grooming)
-                    if replace:
-                        full_expression = "!(>" + "[" + ",".join(
-                            renamed_args_to_remove) + "]" + full_expression_left + full_expression_right + ")"
-                    else:
-                        full_expression = "!(>" + "[" + ",".join(
-                            args_to_remove) + "]" + full_expression_left + full_expression_right + ")"
-
-                    if len(removed_args) == 0:
-                        node_success = 0
-                    if full_expression_left == full_expression_right:
-                        node_success = 0
-            elif s[index] == '&':
-                index = index + 1
-                node_label = node_label + "!&"
-                node.left, left_set, left_success, full_expression_left, left_node_number_leafs = parse_subtree(
-                    s)  # Process the left child
-                node.right, right_set, right_success, full_expression_right, right_node_number_leafs = parse_subtree(
-                    s)  # Process the right child
-                node_number_leafs = left_node_number_leafs + right_node_number_leafs
-                if left_success and right_success:
-                    node_map, node_set, node_success, removed_args = connect_expression_sets(left_set, right_set, '&',
-                                                                                             definition_type == 1, [],
-                                                                                             after_grooming)
-                    full_expression = "!(&" + full_expression_left + full_expression_right + ")"
-            else:
-                end_index = s.find(')', index)
-                if end_index == -1:
-                    raise RuntimeError("No closing ')'.")
-                node_label = s[index:end_index]
-                expr = extract_expression(node_label)
-                node_label = "!(" + node_label + ")"
-                array_args = get_args(node_label)
-                for arg in array_args:
-                    if arg not in arg_set:
-                        arg_set.add(arg)
-                        arg_list.append(arg)
-                node_number_leafs = core_expression_map[expr][0]
-
-                expr_map = core_expression_map[expr][1]
-                for i in range(len(array_args)):
-                    node_set.add((array_args[i], expr_map[str(i + 1)]))
-                    node_map[array_args[i]] = expr_map[str(i + 1)]
-                for arg in expr_map:
-                    if not arg.isdigit():
-                        node_set.add((arg, expr_map[arg]))
-                        node_map[arg] = expr_map[arg]
-
-                node_success = 1
-                index = end_index
-                full_expression = node_label
-
-        index = index + 1
-        node.value = node_label
-        node.map = str(node_map)
-        node.full_expression = full_expression
-        node.number_leafs = node_number_leafs
-        return node, node_set, node_success, full_expression, node_number_leafs
-
-    root, root_set, root_success, root_full_expression, root_number_leafs = parse_subtree(temp_str)
-
-    if replace and root_success:
-        root_full_expression = subtract_number_from_ints(root_full_expression, unchanged_first_int_to_use - 1,
-                                                         numbers_to_replace, False)
-
-    root_map = {}
-    for tple in root_set:
-        root_map[tple[0]] = tple[1]
-
-    return root, root_map, root_success, arg_list, root_number_leafs, root_full_expression
 
 
 def connect_expressions(expr1: str,
@@ -1627,12 +1191,13 @@ def connect_expressions(expr1: str,
 
         for arg in mp1:
             if arg in mp2:
-                if mp1[arg] != mp2[arg]:
+                if mp1[arg][0] != mp2[arg][0]:
                     return False
 
         if not connect_to_anchor:
             for arg in atr:
-                if mp1[arg][0] == "P":
+                #if mp1[arg][0][0] == "P" and mp1[arg][1]:
+                if mp1[arg][0][0] == "P" and not (mp1[arg][1] and mp2[arg][1]):
                     return False
 
         return check_passed
@@ -1647,8 +1212,6 @@ def connect_expressions(expr1: str,
 
     right_map = {}
     for arg in map2.keys():
-        if str(int(arg) + shift_num) not in substitution_map:
-            test = 0
         new_arg = substitution_map[str(int(arg) + shift_num)]
         right_map[new_arg] = map2[arg]
         if new_arg in map1.keys():
@@ -1658,17 +1221,13 @@ def connect_expressions(expr1: str,
     removable_args_list = list(removable_args)
     sorted_list = sort_list_according_to_occurrence(removable_args_list, expr1)
     args_to_remove = []
+
     for index in range(len(binary_list)):
         if binary_list[index]:
-            if index not in range(len(sorted_list)):
+
+            if index >= len(sorted_list):
                 test = 0
-            args_to_remove.append(sorted_list[index][0])
-
-    """
-    connected_map, connected_set, success, removed_args = (
-        connect_expression_sets(set1, set2, ">", 0, args_to_remove, 0))
-    """
-
+            args_to_remove.append(sorted_list[index])
 
     connected_map = {**left_map, **right_map}
     for arg in args_to_remove:
@@ -1678,12 +1237,6 @@ def connect_expressions(expr1: str,
 
     if not check_maps(args_to_remove, left_map, right_map):
         success = False
-
-    """
-    new_expr2, root2 = subtract_and_replace_numbers_in_expr(expr2, -shift_num, identity)
-    new_expr1, root1 = subtract_and_replace_numbers_in_expr(expr1, 0, substitution_map)
-    new_expr2, root2 = subtract_and_replace_numbers_in_expr(new_expr2, 0, substitution_map)
-    """
 
     new_expr2 = subtract_number_from_ints(expr2, -shift_num, set(), True)
     new_expr1 = replace_keys_in_string(expr1, substitution_map)
@@ -1697,26 +1250,18 @@ def connect_expressions(expr1: str,
     if new_expr1 == new_expr2:
         success = False
 
-    """"
-    if not connect_to_definition:
-        new_expr1, unused_arg_map1 = rename_variables_in_expr(new_expr1, True)
-        connected_expr, connected_map = rename_variables_in_expr(connected_expr, True)
-    else:
-        new_expr2, unused_arg_map2 = rename_variables_in_expr(new_expr2, True)
-    """
 
     return success, connected_expr, connected_map
 
 
 def get_number_removable_args(mapping: dict):
 
-    return len(mapping.keys()) - len(set(mapping.values()))
+    #return len(mapping.keys()) - len(set(mapping.values()))
 
+    sub_map = {k: v for k, v in mapping.items() if v != k}
+    num = len(set(sub_map.values()))
 
-
-
-
-
+    return num
 
 def expr_good(expr: str):
     good = False
@@ -1729,28 +1274,41 @@ def expr_good(expr: str):
 
     return good
 
-def expr_good3(expr: str, to_exclude):
-    good = True
-
-    for subexpr in to_exclude:
-        if subexpr in expr:
-            good = False
-
-    return good
-
 
 def check_def_sets(arg_map: dict):
     check_positive = True
     counter_map = {}
 
     for arg in arg_map:
-        if arg_map[arg] in counter_map:
-            counter_map[arg_map[arg]] += 1
+        if not arg_map[arg][1]:
+            continue
+
+        if arg_map[arg][0] in counter_map:
+            counter_map[arg_map[arg][0]] += 1
         else:
-            counter_map[arg_map[arg]] = 1
+            counter_map[arg_map[arg][0]] = 1
 
     for def_set in counter_map:
-        if counter_map[def_set] > max_values_for_def_sets[def_set]:
+
+
+
+        if counter_map[def_set] > _CONFIGURATION.parameters.max_values_for_def_sets[def_set]:
+            return False
+
+    counter_map = {}
+
+    for arg in arg_map:
+        if arg_map[arg][1]:
+            continue
+
+        if arg_map[arg][0] in counter_map:
+            counter_map[arg_map[arg][0]] += 1
+        else:
+            counter_map[arg_map[arg][0]] = 1
+
+    for def_set in counter_map:
+
+        if counter_map[def_set] > _CONFIGURATION.parameters.max_values_for_uncomb_def_sets[def_set]:
             return False
 
     return check_positive
@@ -1760,40 +1318,160 @@ def check_complexity_level_for_def_sets(arg_map: dict, complexity_level: int):
     def_sets = set()
 
     for arg in arg_map:
-        def_sets.add(arg_map[arg])
+        def_sets.add(arg_map[arg][0])
 
     for def_set in def_sets:
-        if max_complexity_if_anchor_parameter_connected[def_set] < complexity_level:
+        if _CONFIGURATION.parameters.max_complexity_if_anchor_parameter_connected[def_set] < complexity_level:
             return False
 
     return check_positive
 
 
-def evaluate_operator_exprs2(operator_exprs2: List[str], anchor_attached: bool):
+def qualified_for_equality(expr: str) -> bool:
+    #expr = '(>[9,10](fold[1,3,4,8,2,9,10])(>[11](fold[21,23,24,28,22,10,11])(=[9,11])))'
+
+    # 1. Disintegrate the expression into a chain of elements
+    temp_chain = []
+    head = disintegrate_implication(expr, temp_chain)
+
+    # Combine antecedents and head into a single list
+    full_chain = [element[0] for element in temp_chain]
+    full_chain.append(head)
+
+    # Identify the specific anchor name from the current configuration
+    anchor_name = get_anchor_name(_CONFIGURATION)
+
+    # 2. Filter the chain to exclude the anchor expression if it exists
+    chain = [e for e in full_chain if extract_expression(e) != anchor_name]
+
+    # Detect if an anchor was present (length of full chain > filtered chain)
+    anchor_present = (len(full_chain) > len(chain))
+
+    # 3. Original Logic: strict check for exactly 3 elements (Op1, Op2, Equality)
+    if len(chain) != 3:
+        return False
+
+    e1, e2, e3 = chain[0], chain[1], chain[2]
+
+    # Condition: last is equality
+    if extract_expression(e3) != "=":
+        return False
+
+    # Condition: first two expressions have to be operators
+    core1 = extract_expression(e1)
+    core2 = extract_expression(e2)
+
+    if core1 not in _OPERATORS or core2 not in _OPERATORS:
+        return False
+
+    # Condition: non-atomic (check that short mpl and full_mpl are not equal in config)
+    desc1 = _CONFIGURATION.data[core1]
+    desc2 = _CONFIGURATION.data[core2]
+
+    if desc1.short_mpl_normalized == desc1.full_mpl:
+        return False
+    if desc2.short_mpl_normalized == desc2.full_mpl:
+        return False
+
+    # Condition: first two are identical (implies same operator core)
+    if core1 != core2:
+        return False
+
+    args1 = get_args(e1)
+    args2 = get_args(e2)
+
+    # Retrieve the index of the output argument for this operator
+    if not desc1.indices_output_args:
+        return False
+    out_idx = desc1.indices_output_args[0]
+
+    # Check argument counts match
+    assert (len(args1) == len(args2))
+
+    # Condition: identical except output arg, and output arg has to be diff
+    for i in range(len(args1)):
+        if i == out_idx:
+            # Output arguments must be different (e.g., s(x)=a, s(x)=b -> a!=b)
+            if args1[i] == args2[i]:
+                return False
+        else:
+            # Non-output arguments: Enforce equality ONLY if anchor is present
+            if anchor_present:
+                if args1[i] != args2[i]:
+                    return False
+
+    # Condition: those two output args are compared by equality
+    out1 = args1[out_idx]
+    out2 = args2[out_idx]
+    args3 = get_args(e3)
+
+    # The equality arguments must be exactly the two different outputs
+    if set(args3) != {out1, out2}:
+        return False
+
+    return True
+
+def evaluate_operator_exprs2(expression: str, anchor_attached: bool):
+
+
     arg_map = {}
     evaluation_positive = True
 
+    temp_chain = []
+    head = disintegrate_implication(expression, temp_chain)
+    chain = []
+    for element in temp_chain:
+        chain.append(element[0])
+    chain.append(head)
+
+    op_exprs = []
+    for elem in chain:
+        if extract_expression(elem) in _OPERATORS:
+            op_exprs.append(elem)
+
+    head_is_op = False
+    if extract_expression(head) in _OPERATORS:
+        head_is_op = True
+
     arg_lists_list = []
-    for operator_expr in operator_exprs2:
+    for operator_expr in op_exprs:
         args = get_args(operator_expr)
         arg_lists_list.append(args)
 
+    rel_args = set()
+    rel_args_list = []
+    rel_core_exprs = []
+    for elem in chain:
+        if extract_expression(elem) in _RELATIONS:
+            core_expr = extract_expression(elem)
+            rel_core_exprs.append(core_expr)
+            args = get_args(elem)
+            lst = []
+            for input_index in _CONFIGURATION.data[core_expr].indices_input_args:
+                rel_args.add(args[input_index])
+                lst.append(args[input_index])
+            rel_args_list.append(lst)
+
     position = 0
-    for arg_list in arg_lists_list:
-        for arg_ind in range(len(arg_list) - 1):
+    for expr_ind, arg_list in enumerate(arg_lists_list):
+        core_expr = extract_expression(op_exprs[expr_ind])
+        for arg_ind in range(len(arg_list)):
             arg = arg_list[arg_ind]
             if arg in arg_map:
-                if arg_ind == len(arg_list) - 2:
+                if arg_ind == _CONFIGURATION.data[core_expr].indices_output_args[0]:
                     arg_map[arg][1].add(position)
-                else:
+                if arg_ind in _CONFIGURATION.data[core_expr].indices_input_args:
                     arg_map[arg][0].add(position)
             else:
-                arg_map[arg] = []
-                arg_map[arg].append(set())
-                arg_map[arg].append(set())
-                if arg_ind == len(arg_list) - 2:
+                if arg_ind == _CONFIGURATION.data[core_expr].indices_output_args[0]:
+                    arg_map[arg] = []
+                    arg_map[arg].append(set())
+                    arg_map[arg].append(set())
                     arg_map[arg][1].add(position)
-                else:
+                if arg_ind in _CONFIGURATION.data[core_expr].indices_input_args:
+                    arg_map[arg] = []
+                    arg_map[arg].append(set())
+                    arg_map[arg].append(set())
                     arg_map[arg][0].add(position)
         position += 1
 
@@ -1801,20 +1479,104 @@ def evaluate_operator_exprs2(operator_exprs2: List[str], anchor_attached: bool):
         if len(arg_map[arg][0]) > 0 and len(arg_map[arg][1]) == 0:
             continue
         elif len(arg_map[arg][0]) == 0 and len(arg_map[arg][1]) <= 2:
-            if len(operator_exprs2) - 1 in arg_map[arg][1]:
-                if len(operator_exprs2) == max_number_simple_expressions or anchor_attached:
-                    if len(arg_map[arg][1]) < 2:
+            if len(op_exprs) - 1 in arg_map[arg][1]:
+                if len(op_exprs) == _CONFIGURATION.parameters.max_number_simple_expressions or anchor_attached:
+                    if len(arg_map[arg][1]) < 2 and head_is_op:
                         evaluation_positive = False
                     else:
                         continue
                 else:
                     continue
             else:
-                evaluation_positive = False
+                if head_is_op:
+                    evaluation_positive = False
+                else:
+                    continue
         elif len(arg_map[arg][0]) == 1 and len(arg_map[arg][1]) == 1:
-            continue
+            if not arg_map[arg][0].issubset(arg_map[arg][1]):
+                if arg in rel_args:
+                    evaluation_positive = False
+            else:
+                continue
         else:
             evaluation_positive = False
+
+    for index, rel_args in enumerate(rel_args_list):
+        core_expr = rel_core_exprs[index]
+        if core_expr == "=":
+            counter = 0
+
+            for arg in rel_args:
+                if arg in arg_map:
+                    if arg_map[arg][1]:
+                        counter += 1
+
+            if counter >= 2:
+                if not qualified_for_equality(expression):
+                    evaluation_positive = False
+                else:
+                    test = 0
+
+
+    num_end_operators = 0
+    if anchor_attached:
+        positions = set()
+
+        for arg in arg_map:
+            if not arg_map[arg][0] and arg_map[arg][1]:
+                positions.update(arg_map[arg][1])
+
+        num_end_operators = len(positions)
+        if len(positions) > 2:
+            evaluation_positive = False
+
+
+    if num_end_operators > 1:
+        for rel_args in rel_args_list:
+            assert rel_args[0] in arg_map and rel_args[1] in arg_map
+
+            if not ((arg_map[rel_args[0]][1] and arg_map[rel_args[1]][1] and not arg_map[rel_args[0]][0] and not arg_map[rel_args[1]][0]) or
+                    (arg_map[rel_args[0]][0] and arg_map[rel_args[1]][0] and not arg_map[rel_args[0]][1] and not arg_map[rel_args[1]][1])):
+                evaluation_positive = False
+
+
+
+    if num_end_operators == 2:
+        end_operator_indices = []
+        for index, op_expr in enumerate(op_exprs):
+            core_expr = extract_expression(op_expr)
+            args = get_args(op_expr)
+            output_arg = args[_CONFIGURATION.data[core_expr].indices_output_args[0]]
+            if not arg_map[output_arg][0] and arg_map[output_arg][1]:
+                end_operator_indices.append(index)
+
+        input_args_list = []
+        output_args_list = []
+        for element in op_exprs:
+            core_expr = extract_expression(element)
+            args = get_args(element)
+
+            input_args = [args[ind] for ind in _CONFIGURATION.data[core_expr].indices_input_args]
+            input_args_list.append(input_args)
+
+            output_args = [args[ind] for ind in _CONFIGURATION.data[core_expr].indices_output_args]
+            output_args_list.append(output_args)
+
+        entry_args = find_entry_args2(input_args_list, output_args_list, end_operator_indices[0], set())
+        entry_args_second = find_entry_args2(input_args_list, output_args_list, end_operator_indices[1], set())
+
+        for rel_args in rel_args_list:
+            if rel_args[0] in entry_args:
+                if rel_args[1] not in entry_args_second:
+                    evaluation_positive = False
+
+            if rel_args[1] in entry_args:
+                if rel_args[0] not in entry_args_second:
+                    evaluation_positive = False
+
+
+
+
     return evaluation_positive
 
 def extract_operator_expressions(operators: List[str], expr2: str) -> List[str]:
@@ -1850,9 +1612,33 @@ def extract_operator_expressions(operators: List[str], expr2: str) -> List[str]:
     matches = regex.finditer(expr2)
 
     # Extract the matched substrings
-    result = [match.group(0) for match in matches]
+    result = ["(" + match.group(0) + ")" for match in matches]
 
     return result
+
+def check_prohibited_combinations(expression: str):
+    result = True
+
+    temp_chain = []
+    head = disintegrate_implication(expression, temp_chain)
+    chain = []
+    for element in temp_chain:
+        chain.append(element[0])
+    chain.append(head)
+
+    core_expressions = set()
+    for element in chain:
+        core_expr = extract_expression(element)
+        core_expressions.add(core_expr)
+
+    for prohibited in _CONFIGURATION.prohibited_combinations:
+        if prohibited.issubset(core_expressions):
+            result = False
+            break
+
+    return result
+
+
 
 def expr_good2(expr: str,
                number_simple_expressions,
@@ -1861,51 +1647,46 @@ def expr_good2(expr: str,
 
     def evaluate_operator_exprs(operator_exprs2: List[str], there_are_free_args):
         evaluation_positive = True
-        global OPERATORS
+        global _OPERATORS
 
+        if not (operator_exprs2):
+            return evaluation_positive
         last_expr = operator_exprs2[len(operator_exprs2) - 1]
         last_expr_args = get_args(last_expr)
-        last_arg = last_expr_args[len(last_expr_args) - 2]
+
+        last_expr_core = extract_expression(last_expr)
+        last_arg = last_expr_args[_CONFIGURATION.data[last_expr_core].indices_output_args[0]]
 
         occurrence_counter = 0
         for ind in range(len(operator_exprs2) - 1):
             args = get_args(operator_exprs2[ind])
             if last_arg in args:
                 occurrence_counter += 1
-                if args[len(args) - 2] != last_arg:
+
+                occ_ind = args.index(last_arg)
+                core_expr = extract_expression(operator_exprs2[ind])
+                if occ_ind != _CONFIGURATION.data[core_expr].indices_output_args[0]:
                     evaluation_positive = False
 
-
-
-        if (len(operator_exprs2) >= operator_threshold or
-                (len(operator_exprs2) == (operator_threshold - 1) and there_are_free_args)):
-            for last_expr_arg_ind in range(len(last_expr_args) - 2):
+        if (len(operator_exprs2) >= _CONFIGURATION.parameters.operator_threshold or
+                (len(operator_exprs2) == (_CONFIGURATION.parameters.operator_threshold - 1) and there_are_free_args)):
+            for last_expr_arg_ind in _CONFIGURATION.data[last_expr_core].indices_input_args:
                 occurrence_counter = 0
                 for operator_expr_ind in range(len(operator_exprs2) - 1):
+                    core_expr = extract_expression(operator_exprs2[operator_expr_ind])
                     args = get_args(operator_exprs2[operator_expr_ind])
                     if last_expr_args[last_expr_arg_ind] in args:
                         occurrence_counter += 1
-                        if args[len(args) - 2] != last_expr_args[last_expr_arg_ind]:
+                        #if args[len(args) - 2] != last_expr_args[last_expr_arg_ind]:
+                        if args[_CONFIGURATION.data[core_expr].indices_output_args[0]] != last_expr_args[last_expr_arg_ind]:
                             evaluation_positive = False
                 if occurrence_counter > 1:
                     evaluation_positive = False
 
         return evaluation_positive
 
-
-
-
-
     good = True
-    global OPERATORS
-
-    #expr = "(>[b,c,d](in3[b,c,d,+])(>[a,e](in3[a,d,e,*])(>[f](in3[a,b,f,*])(>[g](in3[a,c,g,*])(in3[f,g,e,+])))))"
-    #expr = "(>[1,2,3,4](in3[1,2,3,4])(>[5,6,7](in2[5,6,7])(>[8](NaturalNumbers[9,10,7,4,8])(>[](in3[1,3,6,8])(in3[6,2,5,8])))))"
-    #connected_map = {}
-
-    #expr = '(>[4,5](in2[4,5,2])(in3[5,4,1,3]))'
-
-    #expr = '(>[b,c,d](in3[b,c,d,+])(>[a,e](in3[a,d,e,+])(>[f](in3[a,b,f,+])(in3[f,c,e,+]))))'
+    global _OPERATORS
 
     if repetitions_exist(expr):
         good = False
@@ -1916,34 +1697,26 @@ def expr_good2(expr: str,
         return good
 
 
-    size_args = len({arg for arg in connected_map if connected_map[arg][:1] != 'P' })
-    if (number_simple_expressions == max_number_simple_expressions and
+    size_args = len({arg for arg in connected_map if connected_map[arg][0][:1] != 'P' and connected_map[arg][1] })
+    if (number_simple_expressions == _CONFIGURATION.parameters.max_number_simple_expressions and
             not check_def_sets(connected_map)):
         good = False
         return good
 
 
-    operator_exprs = extract_operator_expressions(OPERATORS, expr)
+    operator_exprs = extract_operator_expressions(_OPERATORS, expr)
     good = evaluate_operator_exprs(operator_exprs, size_args > 0) and good
-    good = evaluate_operator_exprs2(operator_exprs, False) and good
+    good = evaluate_operator_exprs2(expr, False) and good
+    good = check_prohibited_combinations(expr) and good
 
     return good
-
-def expression_is_simple(expr: str):
-    result = True
-
-    if expr[0:2] == "(>" or expr[0:3] == "!(>":
-        result = False
-
-
-    return result
 
 def numbers_good(expr: str):
     passed = True
 
-    for element in expression_def_set_map:
-        number = expr.count(expression_def_set_map[element][2])
-        if number > expression_def_set_map[element][1]:
+    for element in _CONFIGURATION:
+        number = expr.count(_CONFIGURATION[element].handle)
+        if number > _CONFIGURATION[element].max_count_per_conjecture:
             passed = False
             break
 
@@ -1963,7 +1736,7 @@ def generate_all_permutations(n):
 def disintegrate_implication(expr_for_desintegration, chain):
     head = ""
 
-    root, root_number_leafs = parse_expr(expr_for_desintegration)
+    root = parse_expr(expr_for_desintegration)
 
     node = root
     while True:
@@ -1978,85 +1751,6 @@ def disintegrate_implication(expr_for_desintegration, chain):
             break
 
     return head
-
-def extract_key_value(expr2: str):
-    root, root_number_leafs = parse_expr(expr2)
-    value = ""
-
-    node = root
-    while True:
-        if node is not None:
-            if node.value[0] == ">":
-                node = node.right
-            else:
-                value = tree_to_expr(node)
-                break
-        else:
-            break
-
-    if value == "":
-        key = expr2
-    else:
-        parts = expr2.rsplit(value, 1)
-        key = ''.join(parts)
-
-    return key, value
-
-def sort_first_two_args(expr_for_arg_sorting):
-    def sort_first_two_in_brackets(input_string, prefix):
-        """
-        Finds all instances of "(prefix[" - it will be followed "])" later -
-        in the input string, sorts the first two
-        elements inside the brackets lexicographically, and replaces the original
-        substring with the sorted version.
-
-        Args:
-            input_string (str): The string to process.
-            prefix (str): The variable prefix to search for (e.g., '+', 'foo').
-
-        Returns:
-            str: The processed string with sorted elements.
-        """
-        # Escape the prefix to handle any special regex characters
-        escaped_prefix = re.escape(prefix)
-
-        # Compile the regex pattern dynamically based on the prefix
-        # Removed redundant escape before ']'
-        pattern = re.compile(r'\(' + escaped_prefix + r'\[(.*?)]')
-
-
-        def replace_match(match):
-            # Extract the content inside the brackets
-            content = match.group(1)
-            # Split the content by comma and strip any surrounding whitespace
-            items = [item.strip() for item in content.split(',')]
-
-            if len(items) >= 2:
-                # Sort the first two elements as integers if needed
-                if int(items[0]) > int(items[1]):
-                    items[0], items[1] = items[1], items[0]
-            # No else needed; if fewer than two items, no sorting required
-
-            # Join the items back into a string separated by commas
-            new_content = ','.join(items)
-            # Return the modified substring with "(prefix[" and "]"
-            return f'({prefix}[{new_content}]'
-
-        # Use re.sub with the replacement function to process all matches
-        processed_string = pattern.sub(replace_match, input_string)
-        return processed_string
-
-    complexity = count_operator_occurrences_regex(expr_for_arg_sorting)
-    if complexity <= max_complexity_for_commutative_law:
-        return expr_for_arg_sorting
-
-    sorted_output = expr_for_arg_sorting[:]
-
-    for core_expr in core_expression_map:
-        if core_expression_map[core_expr][6]:
-            sorted_output = sort_first_two_in_brackets(sorted_output, core_expr)
-
-    return sorted_output
 
 def reshuffle(expr: str, perms: [], deep: bool):
 
@@ -2103,11 +1797,6 @@ def reshuffle(expr: str, perms: [], deep: bool):
         return rshffld
 
 
-
-
-
-    #expr = "(>[b,c,d](+[b,c,d])(>[a,e](*[a,d,e])(>[f](*[a,b,f])(>[g](*[a,c,g])(+[f,g,e])))))"
-
     chain = []
     head = ""
 
@@ -2131,16 +1820,28 @@ def reshuffle(expr: str, perms: [], deep: bool):
     return min_reshuffled, min_arg_map, min_replacement_map
 
 
-def init_pool(mappings_map, binary_seqs_map, all_permutations):
+
+def init_pool(mappings_map, binary_seqs_map, all_permutations, mappings_map_anchor, config):
     global _MAPPINGS_MAP
+    global _MAPPINGS_MAP_ANCHOR
     global _BINARY_SEQS_MAP
     global _ALL_PERMUTATIONS
     global _ANCHOR
+    global _CONFIGURATION
+    global _OPERATORS
+    global _RELATIONS
 
     _MAPPINGS_MAP = mappings_map
+    _MAPPINGS_MAP_ANCHOR = mappings_map_anchor
     _BINARY_SEQS_MAP = binary_seqs_map
     _ALL_PERMUTATIONS = all_permutations
-    _ANCHOR = anchor
+    _CONFIGURATION = config
+    anchor_name = get_anchor_name(config)
+    _ANCHOR = _CONFIGURATION[anchor_name]
+    _OPERATORS = [ky for ky in _CONFIGURATION.data if
+                 _CONFIGURATION.data[ky].input_args and _CONFIGURATION.data[ky].output_args]
+    _RELATIONS = [ky for ky in _CONFIGURATION.data if
+                  len(_CONFIGURATION.data[ky].input_args) == 2 and not _CONFIGURATION.data[ky].output_args]
 
 def count_operator_occurrences_regex(s: str) -> int:
     """
@@ -2161,14 +1862,8 @@ def stays_output_variable(full_expr: str, output_variable: str):
     core_expr = extract_expression(full_expr)
     args = get_args(full_expr)
 
-    if core_expr == "in":
-        if args[0] == output_variable:
-            return True
-    if core_expr == "in2":
-        if args[1] == output_variable:
-            return True
-    if core_expr == "in3":
-        if args[2] == output_variable:
+    if core_expr in _OPERATORS:
+        if args[_CONFIGURATION.data[core_expr].indices_output_args[0]] == output_variable:
             return True
 
     return False
@@ -2188,6 +1883,8 @@ def prioritize_anchor(chain: list[str], anchor: str) -> None:
             break
 
 
+
+
 def create_reshuffled_mirrored(expr: str, perms, anchor_first = False):
     temp_chain = []
 
@@ -2198,15 +1895,10 @@ def create_reshuffled_mirrored(expr: str, perms, anchor_first = False):
     head_args = get_args(head)
     head_expr = extract_expression(head)
 
-    output_variable = ""
-    if head_expr == "in":
-        output_variable = head_args[0]
-
-    if head_expr == "in2":
-        output_variable = head_args[1]
-
-    if head_expr == "in3":
-        output_variable = head_args[2]
+    if head_expr in _OPERATORS:
+        output_variable = head_args[_CONFIGURATION.data[head_expr].indices_output_args[0]]
+    else:
+        return ""
 
     assert output_variable != ""
 
@@ -2219,11 +1911,11 @@ def create_reshuffled_mirrored(expr: str, perms, anchor_first = False):
             chain.append(element[0])
 
     if anchor_first:
-        prioritize_anchor(chain, anchor[3])
+        anchor_name = get_anchor_name(_CONFIGURATION)
+        prioritize_anchor(chain, _CONFIGURATION[anchor_name].handle)
 
     if alternative == "":
         return ""
-    assert alternative != ""
 
     chain.append(head)
     chain.append(alternative)
@@ -2242,7 +1934,6 @@ def create_reshuffled_mirrored(expr: str, perms, anchor_first = False):
         for index in range(len(chain)):
             if arg_to_remove in args_chain[index]:
 
-
                 how_to_remove[index].append(arg_to_remove)
                 break
 
@@ -2259,16 +1950,101 @@ def create_reshuffled_mirrored(expr: str, perms, anchor_first = False):
     return reshuffled_expr
 
 
-
-
-
-def contains_excluded_expression1(s: str) -> bool:
+def pattern_in_conjecture(configuration, conjecture: str) -> bool:
     """
-    Return True if `s` contains a substring of the form:
-        (in2[<integer>,3,4])
-    where <integer> is one or more digits.
+    Return True iff any exclusion pattern matches anywhere in `conjecture`.
+
+    Expects `configuration.patterns_to_exclude` to be an iterable of compiled
+    regex objects (as provided by configuration_reader). If it's missing, falls
+    back to compiling `configuration.patterns_to_exclude_raw` on the fly.
     """
-    return bool(pattern_to_exclude1.search(s))
+    pats: Iterable[re.Pattern] = getattr(configuration, "patterns_to_exclude", None)
+    if pats is None:
+        raw = getattr(configuration, "patterns_to_exclude_raw", []) or []
+        pats = [re.compile(s) for s in raw if isinstance(s, str) and s.strip()]
+
+    return any(p.search(conjecture) for p in pats)
+
+def check_def_sets_prior_to_connection(args_statement: {}, args_growing_theorem: {}):
+    check_positive = True
+    counter_map = {}
+
+    for arg in args_statement:
+        if not args_statement[arg][1]:
+            continue
+        if args_statement[arg][0] in counter_map:
+            counter_map[args_statement[arg][0]] += 1
+        else:
+            counter_map[args_statement[arg][0]] = 1
+
+    for arg in args_growing_theorem:
+        if not args_growing_theorem[arg][1]:
+            continue
+        if args_growing_theorem[arg][0] in counter_map:
+            counter_map[args_growing_theorem[arg][0]] += 1
+        else:
+            counter_map[args_growing_theorem[arg][0]] = 1
+
+    for def_set in counter_map:
+
+        if counter_map[def_set] > _CONFIGURATION.parameters.max_values_for_def_sets_prior_connection[def_set]:
+            check_positive = False
+
+    return check_positive
+
+
+def prohibited_heads_good(conjecture: str) -> bool:
+    """
+    Returns False if the head (conclusion) of the conjecture matches
+    any expression in the prohibited_heads list.
+    """
+    # Check if list exists and is not empty
+    if not getattr(_CONFIGURATION, "prohibited_heads", None):
+        return True
+
+    temp_chain = []
+    # Extract the conclusion (head) of the implication chain
+    head = disintegrate_implication(conjecture, temp_chain)
+
+    # Extract the core name (e.g. 'limitSet' from '(limitSet[...])')
+    head_core = extract_expression(head)
+
+    # Check against the prohibited list
+    if head_core in _CONFIGURATION.prohibited_heads:
+        return False
+
+    return True
+
+def count_arguments_filter(conjecture: str) -> bool:
+    """
+    Disintegrates a conjecture and checks if any constituting expression
+    contains duplicate arguments.
+
+    Args:
+        conjecture (str): The MPL conjecture string.
+
+    Returns:
+        bool: False if any expression has the same argument more than once, True otherwise.
+    """
+    # 1. Disintegrate the conjecture
+    chain = []
+    # disintegrate_implication populates 'chain' with antecedents and returns the conclusion (head)
+    head = disintegrate_implication(conjecture, chain)
+
+    # 2. Collect all constituent expressions
+    # The chain contains tuples where the first element is the expression string
+    all_expressions = [item[0] for item in chain]
+    all_expressions.append(head)
+
+    # 3. Check each expression for duplicate arguments
+    for expr in all_expressions:
+        args = get_args(expr)
+
+        # If the count of arguments differs from the count of unique arguments, duplicates exist
+        if len(args) != len(set(args)):
+            return False
+
+    return True
 
 def single_thread_calculation(statement: str,
                               growing_theorem: str,
@@ -2276,8 +2052,11 @@ def single_thread_calculation(statement: str,
                               number_simple_expressions_growing_theorem: int,
                               args_statement: {},
                               args_growing_theorem: {}):
-    def make_all_connection_maps(args_map1: Dict[str, Any], args_map2: Dict[str, Any]) -> List[Dict[str, Any]]:
-        def union_of_dicts(dicts):
+    def make_all_connection_maps(args_map1: Dict[str, Any],
+                                 args_map2: Dict[str, Any],
+                                 with_anchor: bool,
+                                 mappings_map: Dict[int, Dict[Tuple[int, int], List[Dict[int, int]]]]) -> List[Dict[str, Any]]:
+        def union_of_dicts(dicts, sn):
             """
             Merge a sequence of dictionaries into one.
             In case of key conflicts, later dictionaries overwrite earlier ones.
@@ -2285,15 +2064,25 @@ def single_thread_calculation(statement: str,
             result = {}
             for d in dicts:
                 result.update(d)
+
+            for arg in args_map1:
+                shifted_arg = str(int(arg) + sn)
+                if shifted_arg not in result:
+                    result[shifted_arg] = shifted_arg
+
+            for arg in args_map2:
+                if arg not in result:
+                    result[arg] = arg
+
             return result
 
-        def create_union_maps(list_of_lists):
+        def create_union_maps(list_of_lists, sn):
             """
             Given a list of lists of dictionaries, produce all merged maps.
             """
             results = []
             for selection in product(*list_of_lists):
-                merged = union_of_dicts(selection)
+                merged = union_of_dicts(selection, sn)
                 results.append(merged)
             return results
 
@@ -2301,18 +2090,29 @@ def single_thread_calculation(statement: str,
         src_map: Dict[str, set] = {}
         dst_map: Dict[str, set] = {}
 
+        mapping_size = len(args_map1) + len(args_map2)
+
         # Deterministically compute shift number by extracting digits from keys
         shift_num = max(
             int(re.search(r"\d+", arg).group())
             for arg in args_map2.keys()
             if re.search(r"\d+", arg)
         )  # CHANGED: use regex to handle non-integer literal keys
+        shift_num = max({int(arg) for arg in args_map2.keys()})
 
         # Build source and destination groupings
         for arg, val in args_map1.items():
-            src_map.setdefault(val, set()).add(arg)
+            if not with_anchor:
+                if val[1]:
+                    src_map.setdefault(val[0], set()).add(arg)
+            else:
+                src_map.setdefault(val[0], set()).add(arg)
         for arg, val in args_map2.items():
-            dst_map.setdefault(val, set()).add(arg)
+            if not with_anchor:
+                if val[1]:
+                    dst_map.setdefault(val[0], set()).add(arg)
+            else:
+                    dst_map.setdefault(val[0], set()).add(arg)
 
         # Process destination-only sets (sorted lexicographically for determinism)
         for def_set in sorted(dst_map):  # CHANGED: removed key=int to avoid ValueError
@@ -2334,7 +2134,9 @@ def single_thread_calculation(statement: str,
                 ]  # CHANGED: safe extraction with regex
                 args = dst_args + shifted_src
 
-                mappings = _MAPPINGS_MAP[
+
+
+                mappings = mappings_map[
                     len(dst_args) + len(src_args)
                     ][(len(dst_args), len(src_args))]
 
@@ -2357,32 +2159,120 @@ def single_thread_calculation(statement: str,
                 ])
 
         # Combine all blocks into full connection maps
-        all_connection_maps = create_union_maps(mappings_list)
+        all_connection_maps = create_union_maps(mappings_list, shift_num)
         return all_connection_maps
 
-    list_args = [key for key in args_statement.keys() if args_statement[key][0] != "P"]
-    list_args.extend([arg for arg in args_growing_theorem.keys() if args_growing_theorem[arg][0] != "P"])
+    list_args = [key for key in args_statement.keys() if args_statement[key][0][0] != "P" and args_statement[key][1]]
+    list_args.extend([arg for arg in args_growing_theorem.keys() if args_growing_theorem[arg][0][0] != "P" and args_growing_theorem[arg][1]])
+    list_set_args = [key for key in args_statement.keys() if args_statement[key][0][0] == "P" and args_statement[key][1]]
+    list_set_args.extend([arg for arg in args_growing_theorem.keys() if args_growing_theorem[arg][0][0] == "P" and args_growing_theorem[arg][1]])
     number_digits_both = len(list_args)
-    number_sets_both = (len(args_statement) + len(args_growing_theorem)) - number_digits_both
+    number_sets_both = len(list_set_args)
+
 
     connected_list = []
     connected_list2 = []
     reshuffled_list = []
     reshuffled_mirrored_list = []
 
-    if max(number_digits_both, number_sets_both) > max_size_mapping_def_set:
+    #test!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    """
+    growing_theorem = "(>[11](limitSet[1,4,12,9,11])(interval[1,4,2,9,11]))"
+    statement = "(interval[1,4,2,10,12])"
+    number_simple_expressions_growing_theorem = 2
+    number_simple_expressions_statement = 1
+    args_growing_theorem = {"1": ("P(1)", False), "4": ("P(x(1)(x(1)(1)))", False), "12": ("P(1)",True), "9": ("(1)",True), "2": ("(1)",True)}
+    args_statement = {"1": ("P(1)", False), "4": ("P(x(1)(x(1)(1)))", False), "12": ("P(1)",True), "10": ("(1)",True), "2": ("(1)",True)}
+    """
+
+    """
+    growing_theorem = "(interval[1,4,2,9,11])"
+    statement = "(limitSet[1,4,12,9,11])"
+    number_simple_expressions_growing_theorem = 1
+    number_simple_expressions_statement = 1
+    args_growing_theorem = {"1": ("P(1)", False), "4": ("P(x(1)(x(1)(1)))", False), "11": ("P(1)",True), "9": ("(1)",True), "2": ("(1)",True)}
+    args_statement = {"1": ("P(1)", False), "4": ("P(x(1)(x(1)(1)))", False), "12": ("P(1)",True), "9": ("(1)",True), "11": ("P(1)",True)}
+    """
+    """
+    growing_theorem = "(>[12](interval[1,4,2,10,12])(>[11](limitSet[1,4,12,9,11])(interval[1,4,2,9,11])))"
+    statement = "(in2[9,10,3])"
+    number_simple_expressions_growing_theorem = 3
+    number_simple_expressions_statement = 1
+    args_growing_theorem = {"1": ("P(1)", False), "4": ("P(x(1)(x(1)(1)))", False), "9": ("(1)",True), "2": ("(1)",True), "10": ("(1)",True)}
+    args_statement = { "9": ("(1)",True), "10": ("(1)",True), "3": ("P(x(1)(1))", False)}
+    """
+
+    """
+    growing_theorem = "(>[7](fold[1,2,3,4,5,6,7])(=[6,8]))"
+    statement = "(fold[1,2,3,4,5,6,7])"
+    number_simple_expressions_growing_theorem = 2
+    number_simple_expressions_statement = 1
+    args_growing_theorem = {"1": ("P(1)", False), "2": ("P(x(1)(1))", False), "3": ("P(x(1)(x(1)(1)))", False),
+      "4": ("P(x(1)(1))", False), "5": ("(1)", False), "6": ("(1)", True), "8": ("(1)", True)}
+    args_statement = { "1": ("P(1)", False), "2": ("P(x(1)(1))", False), "3": ("P(x(1)(x(1)(1)))", False),
+      "4": ("P(x(1)(1))", False), "5": ("(1)", False), "6": ("(1)", True), "7": ("(1)", True)}
+    """
+
+    """
+    growing_theorem = "(>[1](fXY[1,2,3])(sequence[4,5,6,7,1]))"
+    statement = "(interval[1,2,3,4,5])"
+    number_simple_expressions_growing_theorem = 2
+    number_simple_expressions_statement = 1
+    args_growing_theorem = {"2": ("P(1)", True), "3": ("P(1)", False), "4": ("P(1)", False), "5": ("P(x(1)(x(1)(1)))", False), "6": ("(1)", False), "7": ("(1)", True)}
+    args_statement = {"1": ("P(1)", False), "2": ("P(x(1)(x(1)(1)))", False), "3": ("(1)", False), "4": ("(1)", True), "5": ("P(1)", True)}
+    """
+
+
+    #if max(number_digits_both, number_sets_both) > configuration.parameters.max_size_mapping_def_set:
+        #return connected_list, connected_list2, reshuffled_list, reshuffled_mirrored_list
+
+
+    if not check_def_sets_prior_to_connection(args_statement, args_growing_theorem):
         return connected_list, connected_list2, reshuffled_list, reshuffled_mirrored_list
 
-    connection_maps = make_all_connection_maps(args_growing_theorem, args_statement)
+    if not check_conjecture_complexity_per_operator(growing_theorem, statement):
+        return connected_list, connected_list2, reshuffled_list, reshuffled_mirrored_list
 
-
+    connection_maps = make_all_connection_maps(args_growing_theorem, args_statement, False, _MAPPINGS_MAP)
 
     for connection_map in connection_maps:
+
+        """
+        connection_map = {'1': '1', '10': '10', '12': '12', '13': '13', '14': '2', '16': '16', '2': '2', '21': '21', '24': '12', '4': '4'}
+        """
+
+        """
+        connection_map = {'10': '10', '11': '11', '12': '12', '14': '14', '19': '9', '20': '10', '3': '3', '9': '9'}
+        """
+
+        #test!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+        """
+        connection_map = {'1': '1', '11': '11', '12': '12', '13': '13', '14': '14', '16': '16', '21': '21', '23': '11', '4': '4', '9': '9'}
+        """
+
+        """
+        connection_map = {'1': '1', '10': '10', '11': '11', '12': '12', '13': '6', '15': '7', '2': '2', '3': '3', '4': '4', '5': '5', '6': '6', '7': '7', '8': '8', '9': '9'}
+        """
+
+        """
+        connection_map = {'1': '1', '10': '10', '11': '11', '12': '4', '2': '2', '3': '3', '4': '4', '5': '5', '7': '5', '8': '8', '9': '9'}
+        """
+
+
         number_removable_args = get_number_removable_args(connection_map)
 
+
+
         for binary_list in _BINARY_SEQS_MAP[number_removable_args]:
-            if all(x == 0 for x in binary_list):
-                continue
+
+            """
+            binary_list = [1, 1]
+            #test!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+            """
+
+
+
 
             success, connected_expr, connected_map = \
                 connect_expressions(statement,
@@ -2399,140 +2289,106 @@ def single_thread_calculation(statement: str,
 
 
 
-
-
-
-
                 if not expr_good2(connected_expr, number_simple_expressions, connected_map):
-
-                    """
-                    reshuffled_expr, reshuffled_map, replacement_map = reshuffle(connected_expr, _ALL_PERMUTATIONS,True)
-                    if reshuffled_test_expr2 == reshuffled_expr:
-                        test = 0
-                        expr_good2(connected_expr, number_simple_expressions, connected_map)
-                    """
-
                     continue
 
 
+                if not only_in_head_good(connected_expr):
+                    continue
+
+                if not prohibited_heads_good(connected_expr):
+                    continue
+
 
                 reshuffled_expr, reshuffled_map, replacement_map = reshuffle(connected_expr, _ALL_PERMUTATIONS, True)
-
-
-                test_expr2 = "(>[n,m](in3[n,1,m,+])(in2[n,m,s]))"
-
-                reshuffled_test_expr2, reshuffled_test_map2, replacement_test_map2 = \
-                    reshuffle(test_expr2, _ALL_PERMUTATIONS, True)
-
-                if reshuffled_test_expr2 == reshuffled_expr:
-                    test = 0
-
-
-
-
-
-                """
-                if reshuffled_test_expr2 == reshuffled_expr:
-                    test = 0
-                """
 
                 connected_list.append((reshuffled_expr, reshuffled_map))
 
                 complexity_level = count_operator_occurrences_regex(reshuffled_expr) + 1
 
-                if (check_def_sets(reshuffled_map) and len(reshuffled_map) <= max_number_args_expr and
+                number_combinable_args = len({arg for arg in reshuffled_map if reshuffled_map[arg][1]})
+                if (check_def_sets(reshuffled_map) and number_combinable_args <= _CONFIGURATION.parameters.max_number_args_expr and
                         check_complexity_level_for_def_sets(reshuffled_map, complexity_level)):
-                    connection_maps2 = make_all_connection_maps(reshuffled_map, _ANCHOR[2])
+                    connection_maps2 = make_all_connection_maps(reshuffled_map,
+                                                                _ANCHOR.definition_sets,
+                                                                True,
+                                                                _MAPPINGS_MAP_ANCHOR)
+
 
                     for connection_map2 in connection_maps2:
-
-                        if connection_map2 == {'1': '1', '10': '5', '11': '4', '2': '2', '3': '3', '4': '4', '5': '5', '6': '6', '9': '3'}:
-                            test = 2
 
                         to_continue = False
                         for ky in connection_map2:
 
-                            mp = _ANCHOR[2]
+                            mp = _ANCHOR.definition_sets
                             if int(ky) > len(mp):
                                 if connection_map2[ky] == ky:
                                     to_continue = True
                         if to_continue:
                             continue
 
-                        binary_list2 = [1 for _ in range(len(reshuffled_map))]
+
+
+
+                        number_removable_args = get_number_removable_args(connection_map2)
+                        binary_list2 = [1 for _ in range(number_removable_args)]
+
                         success2, connected_expr2, connected_map2 = \
-                            connect_expressions(_ANCHOR[0],
+                            connect_expressions(_ANCHOR.short_mpl_normalized,
                                                 reshuffled_expr,
-                                                _ANCHOR[2],
+                                                _ANCHOR.definition_sets,
                                                 reshuffled_map,
                                                 connection_map2,
                                                 binary_list2,
                                                 True)
 
+
                         if success2:
-                            #connected_expr2 = sort_first_two_args(connected_expr2)
 
-                            test_expr = "(>[0,s,+](NaturalNumbers[N,0,s,+,*])(>[1](in2[0,1,s])(>[n,m](in3[n,1,m,+])(in2[n,m,s]))))"
-
-                            operator_exprs = extract_operator_expressions(OPERATORS, connected_expr2)
-
-                            #connected_expr2 = '(>[3,4,5](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[](in2[7,3,4])(in3[3,8,9,5]))))'
-
-                            if (not check_input_variables_theorem(connected_expr2) or
-                                    not check_theorem_complexity_per_operator(connected_expr2) or
+                            if ((not check_input_variables_theorem_operator_head(connected_expr2) or
                                     not check_input_variables_order(connected_expr2, _ALL_PERMUTATIONS) or
-                                    contains_excluded_expression1(connected_expr2)):
+                                    pattern_in_conjecture(_CONFIGURATION, connected_expr2))):
                                 continue
 
 
-                            if not evaluate_operator_exprs2(operator_exprs, True):
+                            if not evaluate_operator_exprs2(connected_expr2, True):
                                 continue
 
-
+                            if not control_equality(connected_expr2):
+                                continue
 
                             connected_list2.append(connected_expr2)
 
                             reshuffled_expr2, reshuffled_map2, replacement_map2 = \
                                 reshuffle(connected_expr2, _ALL_PERMUTATIONS, True)
 
-                            """
-                            reshuffled_test_expr, reshuffled_test_map, replacement_test_map = \
-                                reshuffle(test_expr, _ALL_PERMUTATIONS, True)
-
-                            if reshuffled_expr2 == reshuffled_test_expr:
-                                test = 0
-                            """
-
-
                             reshuffled_list.append(reshuffled_expr2)
 
                             reshuffled_mirrored = \
                                 create_reshuffled_mirrored(connected_expr2, _ALL_PERMUTATIONS)
 
-                            """
-                            test_resh_m = create_reshuffled_mirrored(test_expr, _ALL_PERMUTATIONS)
-
-                            if reshuffled_test_expr == reshuffled_expr:
-                                test = 0
-
-                            if test_resh_m == reshuffled_mirrored:
-                                test = 0
-                            """
-
-
+                            #if reshuffled_mirrored:
                             reshuffled_mirrored_list.append(reshuffled_mirrored)
-                            """
-                            print("")
-                            print(connected_expr2)
-                            print(reshuffled_expr2)
-                            print(reshuffled_mirrored)
-                            print("")
-                            """
 
-
-    test = 0
     return connected_list, connected_list2, reshuffled_list, reshuffled_mirrored_list
 
+
+# Literal pattern: "(=[<digits>,<digits>])"
+_PATTERN = re.compile(r"\(=\[\d+,\d+]\)")
+
+def control_equality(conjecture: str) -> bool:
+    result = True
+
+    m = _PATTERN.search(conjecture)
+
+    if m:
+        args = get_args(m.group(0))
+        if int(args[0]) > int(args[1]):
+            result = False
+
+    result = count_arguments_filter(conjecture)
+
+    return result
 
 def create_map(N: int) -> Dict[int, Dict[Tuple[int, int], List[Dict[int, int]]]]:
     """
@@ -2581,47 +2437,146 @@ def create_map(N: int) -> Dict[int, Dict[Tuple[int, int], List[Dict[int, int]]]]
 
     return outer_map
 
+from typing import Dict, Tuple, List
+import itertools
+
+def create_map_anchor(
+    left_part_max_size: int,
+    right_part_max_size: int
+) -> Dict[int, Dict[Tuple[int, int], List[Dict[int, int]]]]:
+    """
+    Creates nested map structures for all totals n with 2 <= n <= N,
+    where N = left_part_max_size + right_part_max_size, but only for
+    splits (p, q) with p + q = n such that:
+        p <= left_part_max_size and q <= right_part_max_size.
+
+    For each valid (p, q) on universe {1, ..., n}:
+      - The left part is {1, ..., p} (fixed points: Q(i) = i for i <= p).
+      - The right part is {p+1, ..., n}.
+      - For any subset T ⊆ right part, elements of T can map arbitrarily
+        (non-injectively; many-to-one allowed) into {1, ..., p}.
+      - Elements in right part not in T stay fixed (Q(i) = i).
+
+    Returns:
+      Dict[n, Dict[(p, q), List[Q]]], where Q is a dict representing a map
+      {1, ..., n} -> {1, ..., n}.
+    """
+    if left_part_max_size < 1 or right_part_max_size < 1:
+        raise ValueError("Both left_part_max_size and right_part_max_size must be at least 1.")
+
+    N = left_part_max_size + right_part_max_size
+    outer_map: Dict[int, Dict[Tuple[int, int], List[Dict[int, int]]]] = {}
+
+    for n in range(2, N + 1):
+        M: Dict[Tuple[int, int], List[Dict[int, int]]] = {}
+
+        # Consider all splits p + q = n
+        for p in range(1, n):
+            q = n - p
+
+            # Respect the thresholds
+            if p > left_part_max_size or q > right_part_max_size:
+                continue
+
+            S = list(range(p + 1, n + 1))  # right part {p+1, ..., n}
+            L: List[Dict[int, int]] = []
+
+            # All subsets T of S
+            for r in range(len(S) + 1):
+                for T in itertools.combinations(S, r):
+                    # All (possibly non-injective) assignments T -> {1, ..., p}
+                    targets = list(range(1, p + 1))
+                    for assignment in itertools.product(targets, repeat=len(T)):
+                        # Start as identity on {1, ..., n}
+                        Q: Dict[int, int] = {i: i for i in range(1, n + 1)}
+                        # Override images for elements in T
+                        for s, t in zip(T, assignment):
+                            Q[s] = t
+                        L.append(Q)
+
+            M[(p, q)] = L
+
+        if M:
+            outer_map[n] = M
+
+    return outer_map
 
 
-def find_entry_args(args_list: list[list[str]], args: list[str]):
+
+
+def find_entry_args2(input_args_list: list[list[str]],
+                     output_args_list: list[list[str]],
+                     index: int,
+                     already_visited):
     entry_args = set()
 
-    for index  in range(0, len(args) - 1):
-        arg = args[index]
+    if index in already_visited:
+        return entry_args
+
+    already_visited.add(index)
+
+    assert len(output_args_list) == len(input_args_list)
+
+    for input_arg in input_args_list[index]:
         found = False
-        for index in range(len(args_list)):
-            if arg == args_list[index][-1]:
+
+        for index2 in range(len(output_args_list)):
+            if input_arg in output_args_list[index2]:
+                assert index2 != len(output_args_list)
+
                 found = True
-                entry_args.update(find_entry_args(args_list, args_list[index]))
+                entry_args.update(find_entry_args2(input_args_list, output_args_list, index2, already_visited))
+
+                break
 
         if not found:
-            entry_args.add(arg)
+            entry_args.add(input_arg)
 
     return entry_args
 
-def check_theorem_complexity_per_operator(theorem: str):
+def only_in_head_good(conjecture: str):
+    result = True
+
+    for handle in _CONFIGURATION.only_in_head_raw:
+        if handle in conjecture:
+            if conjecture.count(handle) == 1:
+                temp_chain = []
+                head = disintegrate_implication(conjecture, temp_chain)
+
+                if handle not in head:
+                    result = False
+                    break
+
+            else:
+                result = False
+                break
+
+    return result
+
+
+def check_conjecture_complexity_per_operator(conjecture: str, new_expression: str):
     result = True
 
     temp_chain = []
-    head = disintegrate_implication(theorem, temp_chain)
+    head = disintegrate_implication(conjecture, temp_chain)
     chain = []
     for element in temp_chain:
         chain.append(element[0])
     chain.append(head)
+    chain.append(new_expression)
 
 
     for element in chain:
         core_expr = extract_expression(element)
 
-        if core_expr in OPERATORS:
 
 
-            if max_values_for_operators[core_expr] < len(chain):
-                result = False
+        if _CONFIGURATION.data[core_expr].max_size_expression < len(chain):
+            result = False
 
     return result
 
-def check_input_variables_theorem(theorem: str):
+def check_input_variables_theorem_operator_head(theorem: str):
     temp_chain = []
     head = disintegrate_implication(theorem, temp_chain)
     chain = []
@@ -2629,136 +2584,66 @@ def check_input_variables_theorem(theorem: str):
         chain.append(element[0])
     chain.append(head)
 
-    zero_arg = ''
-    one_arg = ''
+    anchor_name = get_anchor_name(_CONFIGURATION)
     for element in chain:
-        if anchor[3] in element:
-            zero_arg = get_args(element)[1]
-            one_arg = get_args(element)[2]
+        if _CONFIGURATION[anchor_name].handle in element:
             chain.remove(element)
 
     last_expr = chain[len(chain) - 1]
     core_expr = extract_expression(last_expr)
-    if core_expr not in OPERATORS:
-        result = False
+    if core_expr not in _OPERATORS:
+        result = True
     else:
         args_list = []
         for element in chain:
             core_expr = extract_expression(element)
-            assert core_expr in OPERATORS
             args = get_args(element)
             args_list.append(args[:len(args) - 1])
 
-        last_expr_args = args_list[len(args_list) - 1]
-        output_var = last_expr_args[len(last_expr_args) - 1]
+        input_args_list = []
+        output_args_list = []
+        for element in chain:
+            core_expr = extract_expression(element)
+            args = get_args(element)
 
-        second_last_args = []
-        for index, args in enumerate(args_list):
-            if output_var in args:
-                second_last_args = get_args(chain[index])
-                second_last_args.pop()
+            input_args = [args[ind] for ind in _CONFIGURATION.data[core_expr].indices_input_args]
+            input_args_list.append(input_args)
+
+            output_args = [args[ind] for ind in _CONFIGURATION.data[core_expr].indices_output_args]
+            output_args_list.append(output_args)
+
+
+        assert len(output_args_list[len(chain) - 1]) == 1
+        output_var = output_args_list[len(chain) - 1][0]
+
+        second_last_index = -1
+        for index, args in enumerate(output_args_list):
+            if output_var in output_args_list[index]:
+
+                if index == len(chain) - 1:
+                    return False
+
+
+                second_last_index = index
+
                 break
 
-        entry_args = find_entry_args(args_list, last_expr_args)
-        if zero_arg in entry_args:
-            entry_args.remove(zero_arg)
-        if one_arg in entry_args:
-            entry_args.remove(one_arg)
-        entry_args_second = find_entry_args(args_list, second_last_args)
-        if zero_arg in entry_args_second:
-            entry_args_second.remove(zero_arg)
-        if one_arg in entry_args_second:
-            entry_args_second.remove(one_arg)
+        assert second_last_index >= 0
+
+        entry_args = find_entry_args2(input_args_list, output_args_list, len(chain) - 1, set())
+        entry_args_second = find_entry_args2(input_args_list, output_args_list, second_last_index, set())
+
+        anchor_name = get_anchor_name(_CONFIGURATION)
+        entry_args = entry_args - _CONFIGURATION[anchor_name].definition_sets.keys()
+        entry_args_second = entry_args_second - _CONFIGURATION[anchor_name].definition_sets.keys()
 
         result = entry_args == entry_args_second
 
     return result
 
-def find_digit_args_old(expr: str):
-    def find_substrings(s: str, mapping: dict) -> set:
-        """
-        Given a string s and a mapping (dict) where keys are strings,
-        find for each key all substrings in s that start with key followed by "[" and
-        continue until the closing "]". The matching substring is expected to be preceded by "(",
-        but the returned substring does not include that "(".
-
-        For example, if a key is "in3", the function will capture a substring like
-        "(in3[...]" but return "in3[...]" without the leading "(".
-
-        Args:
-            s (str): The input string.
-            mapping (dict): A dictionary with string keys.
-
-        Returns:
-            set: A set of substrings matching key + "[...]" (without the preceding "(") for each key in mapping.
-        """
-        result = set()
-        for key in mapping.keys():
-            # Use a lookbehind assertion to ensure that the match is preceded by "(" but not include it in the result.
-            pattern = r"(?<=\()" + re.escape(key) + r"\[[^]]*\]"
-            matches = re.findall(pattern, s)
-            result.update(matches)
-        return result
-
-    def map_arguments_with_position(s: str) -> dict:
-        """
-        Given a string in the format "keyA[arg1, arg2, ...]", this function extracts the
-        arguments from inside the square brackets and returns a dictionary mapping each
-        argument to its position in the list (starting with 1).
-
-        Args:
-            s (str): The input string.
-
-        Returns:
-            dict: A dictionary where keys are the arguments (as strings) and values are their positions.
-
-        Raises:
-            ValueError: If the string does not contain a valid bracketed argument list.
-        """
-        # Use a regex to extract the content inside the first pair of square brackets.
-        match = re.search(r"\[([^]]+)]", s)
-        if not match:
-            raise ValueError("The input string does not contain a valid bracketed argument list.")
-
-        # Get the arguments as a string, split by commas, and strip whitespace.
-        args_str = match.group(1)
-        args2 = [arg2.strip() for arg2 in args_str.split(',')]
-
-        # Build and return a dictionary mapping each argument to its position (starting at 1).
-        return {arg2: str(idx + 1) for idx, arg2 in enumerate(args2)}
-
-    subexprs = find_substrings(expr, core_expression_map)
-
-    zero_arg_name = ""
-    for subexpr in subexprs:
-        if anchor[3] in subexpr:
-            anchor_args = get_args(subexpr)
-            zero_arg_name = anchor_args[1]
-
-    digit_args = set()
-    for ky in core_expression_map:
-        for subexpr in subexprs:
-            core_expr = extract_expression(subexpr)
-            if ky == core_expr:
-                arg_map = map_arguments_with_position(subexpr)
-                for arg in arg_map:
-                    if core_expression_map[ky][1][arg_map[arg]][0] != "P":
-                        digit_args.add(arg)
-
-    for operator in OPERATORS:
-        for subexpr in subexprs:
-            core_expr = extract_expression(subexpr)
-            if operator == core_expr:
-                args3 = get_args(subexpr)
-                assert len(args3) - 2 >= 0
-                output = args3[len(args3) - 2]
-                if output in digit_args:
-                    digit_args.remove(output)
 
 
-    if zero_arg_name in digit_args:
-        digit_args.remove(zero_arg_name)
-    return digit_args
+
 
 def find_digit_args(theorem: str):
     temp_chain = []
@@ -2768,54 +2653,67 @@ def find_digit_args(theorem: str):
         chain.append(element[0])
     chain.append(head)
 
-    all_args = set()
+
+    all_input_args = set()
     for element in chain:
         core_expression = extract_expression(element)
 
-        if core_expression in OPERATORS:
-            all_args.update(get_args(element))
+        args = get_args(element)
+        all_input_args.update([args[index] for index in _CONFIGURATION.data[core_expression].indices_input_args])
 
+    anchor_name = get_anchor_name(_CONFIGURATION)
     for element in chain:
-        if anchor[3] in element:
-
-            for arg in get_args(element):
-                if arg in all_args:
-                    all_args.remove(arg)
-
-    for element in chain:
-        core_expression = extract_expression(element)
-
-        if core_expression in OPERATORS:
-
+        if _CONFIGURATION[anchor_name].handle in element:
             args = get_args(element)
-            for index in range(len(args) - 2, len(args)):
-                if args[index] in all_args:
-                    all_args.remove(args[index])
-
-    return all_args
+            all_input_args.difference_update(args)
 
 
+    all_output_args = set()
+    for element in chain:
+        core_expression = extract_expression(element)
 
-def get_left_right(chain: list[str], expression: str, digits: set[str]):
+        args = get_args(element)
+        all_output_args.update([args[index] for index in _CONFIGURATION.data[core_expression].indices_output_args])
+
+
+    all_input_args = all_input_args - all_output_args
+    return all_input_args
+
+
+
+
+def get_left_right(chain: list[str], expression: str, digits: set[str], counter, already_visited):
     left = set()
     right = set()
 
+
+
+    if expression in already_visited:
+        return left, right
+
+    already_visited.add(expression)
+
     core_expression = extract_expression(expression)
-    if not core_expression == 'in3':
-        test = 0
-    assert core_expression == 'in3'
+
+    assert core_expression in _OPERATORS
+    assert len(_CONFIGURATION.data[core_expression].indices_input_args) == 2
 
     args = get_args(expression)
     if args[0] in digits:
         left.add(args[0])
     else:
         for element in chain:
+            #if element == expression:
+                #continue
+
             core_expression_element = extract_expression(element)
-            if core_expression_element == 'in3':
+            if (core_expression_element in _OPERATORS and
+                    len(_CONFIGURATION.data[core_expression_element].indices_input_args) == 2):
                 args_element = get_args(element)
 
-                if args_element[2] == args[0]:
-                    left_element, right_element = get_left_right(chain, element, digits)
+                if (args_element[_CONFIGURATION.data[core_expression_element].indices_output_args[0]] ==
+                        args[_CONFIGURATION.data[core_expression].indices_input_args[0]]):
+                    left_element, right_element = get_left_right(chain, element, digits, counter + 1, already_visited)
                     left.update(left_element)
                     left.update(right_element)
 
@@ -2823,45 +2721,83 @@ def get_left_right(chain: list[str], expression: str, digits: set[str]):
         right.add(args[1])
     else:
         for element in chain:
+            #if element == expression:
+                #continue
+
             core_expression_element = extract_expression(element)
-            if core_expression_element == 'in3':
+            if (core_expression_element in _OPERATORS and
+                    len(_CONFIGURATION.data[core_expression_element].indices_input_args) == 2):
                 args_element = get_args(element)
 
-                if args_element[2] == args[1]:
-                    left_element, right_element = get_left_right(chain, element, digits)
+                if (args_element[_CONFIGURATION.data[core_expression_element].indices_output_args[0]] ==
+                        args[_CONFIGURATION.data[core_expression].indices_input_args[1]]):
+                    left_element, right_element = get_left_right(chain, element, digits, counter + 1, already_visited)
                     right.update(left_element)
                     right.update(right_element)
 
 
     return left, right
 
-def get_right_chain(chain: list[str], head: str):
-    right_chain = [head]
+def get_right_chain(chain: list[str], head: str, already_visited: Set[str]):
+    right_chain = []
+
+    if head in already_visited:
+        return right_chain
+
+    already_visited.add(head)
+
+    right_chain.append(head)
 
     head_args = get_args(head)
-    head_inputs = head_args[:len(head_args) - 2]
+
+    head_core_expr = extract_expression(head)
+
+    head_inputs = [head_args[ind] for ind in _CONFIGURATION.data[head_core_expr].indices_input_args]
 
     for expression in chain:
         core_expr = extract_expression(expression)
-        if core_expr not in OPERATORS:
+        if core_expr not in _OPERATORS:
             continue
 
-        expr_args = get_args(expression)
 
-        expr_output = expr_args[len(expr_args) - 2]
+
+        expr_args = get_args(expression)
+        core_expr = extract_expression(expression)
+
+
+        expr_output = expr_args[_CONFIGURATION.data[core_expr].indices_output_args[0]]
 
         if expr_output in head_inputs:
-            right_chain.extend(get_right_chain(chain, expression))
+            right_chain.extend(get_right_chain(chain, expression, already_visited))
 
     return right_chain
 
 def get_left_right_chains(chain: list[str]):
     no_anchor_chain = chain[1:]
-    right_chain = get_right_chain(no_anchor_chain, chain[-1])
+    right_chain = get_right_chain(no_anchor_chain, chain[-1], set())
 
     left_chain = [x for x in no_anchor_chain if x not in right_chain]
 
     return left_chain, right_chain
+
+def get_operator_id(expr: str):
+    expr_id = ""
+
+    core_expr = extract_expression(expr)
+    if core_expr in _OPERATORS:
+        repl_map = {}
+
+        args = get_args(expr)
+
+        for ind in _CONFIGURATION.data[core_expr].indices_input_args:
+            repl_map[args[ind]] = ""
+
+        for ind in _CONFIGURATION.data[core_expr].indices_output_args:
+            repl_map[args[ind]] = ""
+
+        expr_id = replace_keys_in_string(expr, repl_map)
+
+    return expr_id
 
 def check_input_variable_position(chain: list[str], digits: set[str]):
     result = True
@@ -2871,13 +2807,14 @@ def check_input_variable_position(chain: list[str], digits: set[str]):
     for expression in chain:
         core_expression = extract_expression(expression)
 
-        if core_expression == 'in3':
+        if core_expression in _OPERATORS and len(_CONFIGURATION.data[core_expression].indices_input_args) == 2:
             args = get_args(expression)
 
             for arg_ind in range(2):
 
-                if args[arg_ind] in digits:
-                    key = (args[3], args[arg_ind])
+                arg = args[_CONFIGURATION.data[core_expression].indices_input_args[arg_ind]]
+                if arg in digits:
+                    key = (get_operator_id(expression), arg)
 
                     if key not in order_map:
                         order_map[key] = arg_ind
@@ -2885,22 +2822,18 @@ def check_input_variable_position(chain: list[str], digits: set[str]):
                         if order_map[key] != arg_ind:
                             return False
 
-
-
-
     return result
 
 def remove_outputs(chain: list[str]):
-    removed = []
     replacement_map = {}
 
     for expr in chain:
         core_expr = extract_expression(expr)
-        args = get_args(expr)
 
-        if core_expr in OPERATORS:
-            op_name = args[len(args) - 2]
-            replacement_map[op_name] = ''
+        args = get_args(expr)
+        output_args = [args[index] for index in _CONFIGURATION.data[core_expr].indices_output_args]
+        for arg in output_args:
+            replacement_map[arg] = ''
 
     removed = ''.join(chain)
     removed = replace_keys_in_string(removed, replacement_map)
@@ -2913,6 +2846,9 @@ def check_tautology(left_chain: list[str], right_chain: list[str]):
 
     result = left_removed != right_removed
 
+    if not result:
+        test = 0
+
     return result
 
 def check_functions(chain: list[str]):
@@ -2922,9 +2858,11 @@ def check_functions(chain: list[str]):
     for expr in chain:
         core_expr = extract_expression(expr)
 
-        if core_expr == 'in2':
+        #if core_expr == 'in2':
+        if core_expr in _OPERATORS and len(_CONFIGURATION.data[core_expr].indices_input_args) == 1:
             args = get_args(expr)
-            output = args[len(args) - 2]
+            #output = args[len(args) - 2]
+            output = args[_CONFIGURATION.data[core_expr].indices_output_args[0]]
 
             replacement_map = {output: ''}
             removed = replace_keys_in_string(expr, replacement_map)
@@ -2944,14 +2882,19 @@ def only_one_operator(chain: list[str]):
     no_anchor = chain[1:]
 
     head = no_anchor[-1]
-    head_args = get_args(head)
+    #head_args = get_args(head)
 
-    head_key = (head_args[len(head_args) - 1], extract_expression(head))
+    if extract_expression(head) not in _OPERATORS:
+        return False
+
+    #head_key = (head_args[len(head_args) - 1], extract_expression(head))
+    head_key = get_operator_id(head)
 
     for expr in no_anchor:
-        expr_args = get_args(expr)
+        #expr_args = get_args(expr)
 
-        expr_key = (expr_args[len(expr_args) - 1], extract_expression(expr))
+        #expr_key = (expr_args[len(expr_args) - 1], extract_expression(expr))
+        expr_key = get_operator_id(expr)
 
         if head_key != expr_key:
             result = False
@@ -2969,7 +2912,11 @@ def check_input_variables_order(theorem: str, permutation):
         chain.append(element[0])
     chain.append(head)
 
+
+
     digits = find_digit_args(theorem)
+
+
 
     order_map = {}
     order_set = set()
@@ -2977,13 +2924,16 @@ def check_input_variables_order(theorem: str, permutation):
     for expression in chain:
         core_expression = extract_expression(expression)
 
-        if core_expression == 'in3':
+        if core_expression in _OPERATORS and len(_CONFIGURATION.data[core_expression].indices_input_args) == 2:
             args = get_args(expression)
 
-            if args[0] in digits and args[1] in digits:
-                order_map[(args[3], frozenset({args[0], args[1]}))] = [args[0], args[1]]
+            arg_left = args[_CONFIGURATION.data[core_expression].indices_input_args[0]]
+            arg_right = args[_CONFIGURATION.data[core_expression].indices_input_args[1]]
 
-                key = frozenset({args[0], args[1]})
+            if arg_left in digits and arg_right in digits:
+                order_map[(get_operator_id(expression), frozenset({arg_left, arg_right}))] = [arg_left, arg_right]
+
+                key = frozenset({arg_left, arg_right})
 
                 if key in order_set:
                     result = False
@@ -2995,12 +2945,12 @@ def check_input_variables_order(theorem: str, permutation):
     for expression in chain:
         core_expression = extract_expression(expression)
 
-        if core_expression == 'in3':
+        if core_expression in _OPERATORS and len(_CONFIGURATION.data[core_expression].indices_input_args) == 2:
             args = get_args(expression)
 
-            left, right = get_left_right(chain, expression, digits)
+            left, right = get_left_right(chain, expression, digits, 0, set())
 
-            operator = args[3]
+            operator = get_operator_id(expression)
             for left_arg in left:
                 for right_arg in right:
                     key = (operator, frozenset({left_arg, right_arg}))
@@ -3023,21 +2973,26 @@ def check_input_variables_order(theorem: str, permutation):
         reshuffled_mirrored = create_reshuffled_mirrored(theorem, permutation)
 
         if reshuffled[0] == reshuffled_mirrored:
+
+
+            assert reshuffled_mirrored # reshuffled_mirrored != ""
             result = True
 
     result = result and check_tautology(left_chain, right_chain)
 
-    result = result and check_functions(chain)
+    if not qualified_for_equality(theorem):
+        result = result and check_functions(chain)
 
     return result
+
 
 def get_tertiaries(chain: list[str]):
     tertiaries = set()
 
     for expr in chain:
-        if extract_expression(expr) == 'in3':
-            args = get_args(expr)
-            tertiaries.add(args[-1])
+        core_expression = extract_expression(expr)
+        if core_expression in _OPERATORS and len(_CONFIGURATION.data[core_expression].indices_input_args) == 2:
+            tertiaries.add(get_operator_id(expr))
 
     return tertiaries
 
@@ -3053,41 +3008,78 @@ def check_tertiaries(left_chain: list[str], right_chain: list[str]):
 
     return result
 
+def determine_left_side_boundary(config: configuration_reader):
+    sets = config.data[get_anchor_name(config)].definition_sets
 
-def create_expressions_parallel():
-    expression_map = expression_def_set_map.copy()
+    counter_map = {}
+    for arg in sets:
+        st = sets[arg][0]
+
+        if st in counter_map:
+            counter_map[st] += 1
+        else:
+            counter_map[st] = 1
+
+    boundary = max(counter_map.values(), default=None)
+
+    return boundary
+
+def determine_right_side_boundary(config: configuration_reader):
+    boundary = -1
+    for def_set in config.parameters.max_values_for_def_sets:
+        cand_bound = (config.parameters.max_values_for_uncomb_def_sets[def_set] +
+                      config.parameters.max_values_for_def_sets[def_set])
+
+        if cand_bound > boundary:
+            boundary = cand_bound
+
+    return boundary
+
+
+
+def create_expressions_parallel(config: configuration_reader):
     result_expr_set = set()
     reshuffled_expr_set = set()
     reshuffled_mirrored_expr_set = set()
     control_set = set()
 
 
-    mappings_map = create_map(max_size_mapping_def_set)
 
-    all_permutations = generate_all_permutations(max_number_simple_expressions + 1)
+
+
+    mappings_map = create_map(config.parameters.max_size_mapping_def_set)
+
+    left_side_boundary = determine_left_side_boundary(config)
+    right_side_boundary = determine_right_side_boundary(config)
+    mappings_map_anchor = create_map_anchor(left_side_boundary,
+                                            right_side_boundary)
+
+    all_permutations = generate_all_permutations(config.parameters.max_number_simple_expressions + 1)
 
     binary_seqs_map = {}
-    for num in range(0, max_size_binary_list):
+    for num in range(0, config.parameters.max_size_binary_list):
         binary_seqs_map[num] = generate_binary_sequences_as_lists(num)
 
-    expr_list = list(expression_map.keys())
+    expr_list = list(config[ky].short_mpl_normalized for ky in config.keys() if config[ky].max_count_per_conjecture > 0)
 
     last_visited_map = {i: -1 for i in range(len(expr_list))}
 
     growing_theorems = [expr for expr in expr_list]
     growing_theorems_set = set(growing_theorems)
 
+
     expr_leafs_args_map = {}
     for expr in expr_list:
+        core_expr = extract_expression(expr)
         expr_leafs_args_map[expr] = \
-            (expression_map[expr][0][1], 1)
+            (config[core_expr].definition_sets, 1)
 
     cpu_count = multiprocessing.cpu_count()
     #cpu_count = 1
     with (multiprocessing.Pool(
         processes=cpu_count,           # Number of worker processes
         initializer=init_pool, # Initializer function
-        initargs=(mappings_map, binary_seqs_map, all_permutations,)    # Arguments for the initializer
+        initargs=(mappings_map, binary_seqs_map, all_permutations, mappings_map_anchor, config)    # Arguments for the initializer
     ) as pool):
 
     #with concurrent.futures.ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
@@ -3104,47 +3096,61 @@ def create_expressions_parallel():
         while created:
             created = 0
 
-            input_list_statements = []
-            input_list_growing_theorems = []
-            input_list_args_statement = []
-            input_list_args_growing_theorem = []
-            input_list_number_simple_expressions_statement = []
-            input_list_number_simple_expressions_growing_theorem = []
+
 
             for expr_index in range(len(expr_list)):
                 statement = expr_list[expr_index]
                 args_statement = expr_leafs_args_map[statement][0]
-                number_simple_expressions_statement = expr_leafs_args_map[statement][1]
+                nse_statement = expr_leafs_args_map[statement][1]
 
-                for growing_theorem_index in range(last_visited_map[expr_index] + 1, len(growing_theorems)):
-                    growing_theorem = growing_theorems[growing_theorem_index]
-                    args_growing_theorem = expr_leafs_args_map[growing_theorem][0]
-                    number_simple_expressions_growing_theorem = expr_leafs_args_map[growing_theorem][1]
+                start = last_visited_map[expr_index] + 1
+                end = len(growing_theorems)  # snapshot the current tail for this pass
+                if start >= end:
+                    continue
+
+                # Build inputs for [start, end)
+                input_list_statements = []
+                input_list_growing_theorems = []
+                input_list_args_statement = []
+                input_list_args_growing_theorem = []
+                input_list_number_simple_expressions_statement = []
+                input_list_number_simple_expressions_growing_theorem = []
+
+                for gti in range(start, end):
+                    gt = growing_theorems[gti]
+                    args_gt, nse_gt = expr_leafs_args_map[gt][0], expr_leafs_args_map[gt][1]
+
 
                     input_list_statements.append(statement)
-                    input_list_growing_theorems.append(growing_theorem)
+                    input_list_growing_theorems.append(gt)
                     input_list_args_statement.append(args_statement)
-                    input_list_args_growing_theorem.append(args_growing_theorem)
-                    input_list_number_simple_expressions_statement.append(number_simple_expressions_statement)
-                    (input_list_number_simple_expressions_growing_theorem.
-                     append(number_simple_expressions_growing_theorem))
+                    input_list_args_growing_theorem.append(args_gt)
+                    input_list_number_simple_expressions_statement.append(nse_statement)
+                    input_list_number_simple_expressions_growing_theorem.append(nse_gt)
 
-                    last_visited_map[expr_index] = growing_theorem_index
+                # One dispatch per statement per snapshot
+                args = list(zip(
+                    input_list_statements,
+                    input_list_growing_theorems,
+                    input_list_number_simple_expressions_statement,
+                    input_list_number_simple_expressions_growing_theorem,
+                    input_list_args_statement,
+                    input_list_args_growing_theorem,
+                ))
+                results = pool.starmap(single_thread_calculation, args)
 
-                    args = zip(input_list_statements,
-                               input_list_growing_theorems,
-                               input_list_number_simple_expressions_statement,
-                               input_list_number_simple_expressions_growing_theorem,
+                # process `results` exactly as you already do...
+                # (no change to the body that consumes `results`)
 
-                               input_list_args_statement,
-                               input_list_args_growing_theorem)
-                    if growing_theorem_index == len(growing_theorems) - 1:
-                        results = pool.starmap(single_thread_calculation, args)
+                # Mark the processed window as visited *after* successful dispatch
+                last_visited_map[expr_index] = end - 1
 
-                        for ind in range(len(results)):
+                for ind in range(len(results)):
                             for entry in results[ind][0]:
                                 connected_expr = entry[0]
                                 connected_map = entry[1]
+
+
 
                                 number_simple_expressions = (input_list_number_simple_expressions_statement[ind] +
                                                              input_list_number_simple_expressions_growing_theorem[ind])
@@ -3159,7 +3165,7 @@ def create_expressions_parallel():
                                 if (connected_expr not in growing_theorems_set and
                                         len(non_digits) != 0 and
                                         number_simple_expressions <
-                                        max_number_simple_expressions):
+                                        config.parameters.max_number_simple_expressions):
                                     growing_theorems.append(connected_expr)
                                     growing_theorems_set.add(connected_expr)
                                     created = 1
@@ -3169,54 +3175,33 @@ def create_expressions_parallel():
                             for entry_index, entry in enumerate(results[ind][1]):
                                 connected_expr = entry
 
+
+
                                 if expr_good(connected_expr):
                                     if connected_expr not in result_expr_set:
 
                                         reshuffled = results[ind][2][entry_index]
 
-
                                         reshuffled_mirrored = results[ind][3][entry_index]
 
                                         if reshuffled not in control_set and reshuffled_mirrored not in control_set:
-                                            #assert reshuffled_mirrored not in control_set
-                                            if reshuffled == '(>[1,2,3,4](in3[1,2,3,4])(>[5](NaturalNumbers[6,7,2,5,4,8])(in2[1,3,5])))' or reshuffled_mirrored == '(>[1,2,3](NaturalNumbers[6,7,1,2,3,8])(>[4,5](in2[4,5,2])(in3[4,1,5,3])))':
-                                                test = 0
 
-                                            if reshuffled_mirrored == '(>[1,2,3,4](in3[1,2,3,4])(>[5](NaturalNumbers[6,7,2,5,4,8])(in2[1,3,5])))' or reshuffled == '(>[1,2,3](NaturalNumbers[6,7,1,2,3,8])(>[4,5](in2[4,5,2])(in3[4,1,5,3])))':
-                                                test = 0
 
                                             result_expr_set.add(connected_expr)
                                             reshuffled_expr_set.add(reshuffled)
-                                            reshuffled_mirrored_expr_set.add(reshuffled_mirrored)
+                                            if reshuffled_mirrored:
+                                                reshuffled_mirrored_expr_set.add(reshuffled_mirrored)
                                             control_set.add(reshuffled)
-                                            control_set.add(reshuffled_mirrored)
+                                            if reshuffled_mirrored:
+                                                control_set.add(reshuffled_mirrored)
 
 
 
 
-                                        """
-                                        print("")
-                                        print(connected_expr)
-                                        print(reshuffled)
-                                        print(reshuffled_mirrored)
-                                        print("")
-                                        """
 
-
-
-                        input_list_statements = []
-                        input_list_growing_theorems = []
-                        input_list_args_statement = []
-                        input_list_args_growing_theorem = []
-                        input_list_number_simple_expressions_statement = []
-                        input_list_number_simple_expressions_growing_theorem = []
 
 
         end_time = time.time()
-
-
-
-
 
     sorted_list = list(result_expr_set)
     reshuffled_sorted_list = list(reshuffled_expr_set)
@@ -3226,39 +3211,51 @@ def create_expressions_parallel():
 
     theorems_folder = PROJECT_ROOT / 'files/theorems'
 
-    # if the directory already exists, delete it and everything inside
+    # MODIFIED LOGIC: Clean everything EXCEPT proved_theorems.txt
     if os.path.isdir(theorems_folder):
-        shutil.rmtree(theorems_folder)
+        for item in os.listdir(theorems_folder):
+            if item == "proved_theorems.txt":
+                continue
 
-    os.makedirs(theorems_folder, exist_ok=True)
+            item_path = os.path.join(theorems_folder, item)
+            try:
+                if os.path.isfile(item_path) or os.path.islink(item_path):
+                    os.unlink(item_path)
+                elif os.path.isdir(item_path):
+                    shutil.rmtree(item_path)
+            except Exception as e:
+                print(f"Failed to delete {item_path}. Reason: {e}")
+    else:
+        os.makedirs(theorems_folder, exist_ok=True)
 
+    # Write new theorems (overwriting old ones for this batch, which is intended)
     filename = str(theorems_folder / "theorems.txt")
     try:
         with open(filename, 'w', encoding='utf-8') as file:
             for expr in sorted_list:
                 file.write(expr + "\n")
-        #print(f"Successfully wrote to {filename}")
     except IOError as e:
         print(f"An error occurred while writing to the file: {e}")
-    filename = str(theorems_folder /"reshuffled_theorems.txt")
+
+    filename = str(theorems_folder / "reshuffled_theorems.txt")
     try:
         with open(filename, 'w', encoding='utf-8') as file:
             for expr in reshuffled_sorted_list:
                 file.write(expr + "\n")
-        #print(f"Successfully wrote to {filename}")
     except IOError as e:
         print(f"An error occurred while writing to the file: {e}")
-    filename = str(theorems_folder /"reshuffled_mirrored_theorems.txt")
+
+    filename = str(theorems_folder / "reshuffled_mirrored_theorems.txt")
     try:
         with open(filename, 'w', encoding='utf-8') as file:
             for expr in reshuffled_mirrored_sorted_list:
                 file.write(expr + "\n")
-        #print(f"Successfully wrote to {filename}")
     except IOError as e:
         print(f"An error occurred while writing to the file: {e}")
+
     print("Number conjectures: " + str(len(result_expr_set)))
-    #print(f"Main loop runtime: {end_time - start_time:.5f} seconds")
     return result_expr_set
+
 
 
 

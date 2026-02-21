@@ -1,0 +1,70 @@
+(sequence[N,+,i0,v1,v2])	main	implication	(>[N,i0,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](fXY[v1,v2,N])(>[v3](interval[N,+,i0,v3,v2])(sequence[N,+,i0,v3,v1]))))	main	(AnchorGauss[N,i0,s,+,*,i1,i2,id])	main	(fXY[v2,v3,N])	main	(interval[N,+,i0,v1,v3])	main
+(>[N,i0,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](fXY[v1,v2,N])(>[v3](interval[N,+,i0,v3,v2])(sequence[N,+,i0,v3,v1]))))	main	theorem
+(AnchorGauss[N,i0,s,+,*,i1,i2,id])	main	task formulation
+(fXY[v2,v3,N])	main	implication	(>[](implication0[v2,v3])(>[](implication1[v2,N])(>[](implication2[v3,N,v2])(>[](implication3[v3,v2])(fXY[v2,v3,N])))))	main	(implication0[v2,v3])	main	(implication1[v2,N])	main	(implication2[v3,N,v2])	main	(implication3[v3,v2])	main
+(>[](implication0[v2,v3])(>[](implication1[v2,N])(>[](implication2[v3,N,v2])(>[](implication3[v3,v2])(fXY[v2,v3,N])))))	main	reformulation for integration	(&(&(&(implication0[v2,v3])(implication1[v2,N]))(implication2[v3,N,v2]))(implication3[v3,v2]))	main
+(&(&(&(implication0[v2,v3])(implication1[v2,N]))(implication2[v3,N,v2]))(implication3[v3,v2]))	main	expansion for integration	(fXY[v2,v3,N])	main
+(implication0[v2,v3])	main	validity name	(in[v4,v3])	(implication0[v2,v3])
+(in[v4,v3])	(implication0[v2,v3])	implication	(>[v5](in[v5,v6])(>[](preorder[N,+,v5,v1])(in[v5,v3])))	main	(in[v4,v6])	(implication0[v2,v3])	(preorder[N,+,v4,v1])	(implication0[v2,v3])
+(>[v5](in[v5,v6])(>[](preorder[N,+,v5,v1])(in[v5,v3])))	main	expansion	(implication32[v6,N,+,v1,v3])	main
+(implication32[v6,N,+,v1,v3])	main	disintegration	(&(&(implication31[v3,v6])(implication23[v3,N,+,v1]))(implication32[v6,N,+,v1,v3]))	main
+(&(&(implication31[v3,v6])(implication23[v3,N,+,v1]))(implication32[v6,N,+,v1,v3]))	main	expansion	(limitSet[N,+,v6,v1,v3])	main
+(limitSet[N,+,v6,v1,v3])	main	disintegration	!(>[v3](limitSet[N,+,v6,v1,v3])!(interval[N,+,i0,v1,v3]))	main
+!(>[v3](limitSet[N,+,v6,v1,v3])!(interval[N,+,i0,v1,v3]))	main	expansion	(existence3[N,+,v6,v1,i0])	main
+(existence3[N,+,v6,v1,i0])	main	implication	(>[1,2,3,4](AnchorGauss[1,2,3,4,5,6,7,8])(>[10,12](in2[10,12,3])(>[9](interval[1,4,2,12,9])(existence3[1,4,9,10,2]))))	main	(AnchorGauss[N,i0,s,+,*,i1,i2,id])	main	(in2[v1,v7,s])	main	(interval[N,+,i0,v7,v6])	main
+(>[1,2,3,4](AnchorGauss[1,2,3,4,5,6,7,8])(>[10,12](in2[10,12,3])(>[9](interval[1,4,2,12,9])(existence3[1,4,9,10,2]))))	main	theorem
+(in2[v1,v7,s])	main	task formulation
+(interval[N,+,i0,v7,v6])	main	disintegration	!(>[v6](interval[N,+,i0,v7,v6])!(fXY[v8,v6,N]))	main
+!(>[v6](interval[N,+,i0,v7,v6])!(fXY[v8,v6,N]))	main	expansion	(sequence[N,+,i0,v7,v8])	main
+(sequence[N,+,i0,v7,v8])	main	task formulation
+(in[v4,v6])	(implication0[v2,v3])	implication	(>[v5](in2[v5,v9,v8])(in[v5,v6]))	main	(in2[v4,v10,v8])	(implication0[v2,v3])
+(>[v5](in2[v5,v9,v8])(in[v5,v6]))	main	expansion	(implication0[v8,v6])	main
+(implication0[v8,v6])	main	disintegration	(&(&(&(implication0[v8,v6])(implication1[v8,N]))(implication2[v6,N,v8]))(implication3[v6,v8]))	main
+(&(&(&(implication0[v8,v6])(implication1[v8,N]))(implication2[v6,N,v8]))(implication3[v6,v8]))	main	expansion	(fXY[v8,v6,N])	main
+(fXY[v8,v6,N])	main	disintegration	!(>[v6](interval[N,+,i0,v7,v6])!(fXY[v8,v6,N]))	main
+(in2[v4,v10,v8])	(implication0[v2,v3])	implication	(>[v5,v9](in2[v5,v9,v2])(in2[v5,v9,v8]))	main	(in2[v4,v10,v2])	(implication0[v2,v3])
+(>[v5,v9](in2[v5,v9,v2])(in2[v5,v9,v8]))	main	expansion	(implication29[v2,v8])	main
+(implication29[v2,v8])	main	disintegration	(&(&(implication28[v2,N,+,v1])(implication29[v2,v8]))(implication30[N,+,v1,v8,v2]))	main
+(&(&(implication28[v2,N,+,v1])(implication29[v2,v8]))(implication30[N,+,v1,v8,v2]))	main	expansion	(limitSequence[N,+,v1,v8,v2])	main
+(limitSequence[N,+,v1,v8,v2])	main	task formulation
+(in2[v4,v10,v2])	(implication0[v2,v3])	premise element	(>[v4](in2[v4,v10,v2])(in[v4,v3]))	main
+(>[v4](in2[v4,v10,v2])(in[v4,v3]))	main	expansion for integration	(implication0[v2,v3])	main
+(preorder[N,+,v4,v1])	(implication0[v2,v3])	implication	(>[v5](in2[v5,v9,v2])(preorder[N,+,v5,v1]))	main	(in2[v4,v10,v2])	(implication0[v2,v3])
+(>[v5](in2[v5,v9,v2])(preorder[N,+,v5,v1]))	main	expansion	(implication28[v2,N,+,v1])	main
+(implication28[v2,N,+,v1])	main	disintegration	(&(&(implication28[v2,N,+,v1])(implication29[v2,v8]))(implication30[N,+,v1,v8,v2]))	main
+(implication1[v2,N])	main	disintegration	(&(&(&(implication0[v2,v11])(implication1[v2,N]))(implication2[v11,N,v2]))(implication3[v11,v2]))	main
+(&(&(&(implication0[v2,v11])(implication1[v2,N]))(implication2[v11,N,v2]))(implication3[v11,v2]))	main	expansion	(fXY[v2,v11,N])	main
+(fXY[v2,v11,N])	main	disintegration	!(>[v11](interval[N,+,i0,v1,v11])!(fXY[v2,v11,N]))	main
+!(>[v11](interval[N,+,i0,v1,v11])!(fXY[v2,v11,N]))	main	expansion	(sequence[N,+,i0,v1,v2])	main
+(sequence[N,+,i0,v1,v2])	main	implication	(>[N,i0,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](fXY[v1,v2,N])(>[v3](interval[N,+,i0,v3,v2])(sequence[N,+,i0,v3,v1]))))	main	(AnchorGauss[N,i0,s,+,*,i1,i2,id])	main	(fXY[v2,v3,N])	main	(interval[N,+,i0,v1,v3])	main
+(interval[N,+,i0,v1,v3])	main	disintegration	!(>[v3](limitSet[N,+,v6,v1,v3])!(interval[N,+,i0,v1,v3]))	main
+(implication2[v3,N,v2])	main	validity name	(existence0[N,v12,v2])	(implication2[v3,N,v2])
+(existence0[N,v12,v2])	(implication2[v3,N,v2])	implication	(>[v13](in[v13,N])(>[](in2[v12,v13,v2])(existence0[N,v12,v2])))	main	(in2[v12,v14,v2])	(implication2[v3,N,v2])	(in[v14,N])	(implication2[v3,N,v2])
+(in2[v12,v14,v2])	(implication2[v3,N,v2])	implication	(>[v5](preorder[N,+,v5,v1])(>[v9](in2[v5,v9,v8])(in2[v5,v9,v2])))	main	(in2[v12,v14,v8])	(implication2[v3,N,v2])	(preorder[N,+,v12,v1])	(implication2[v3,N,v2])
+(>[v5](preorder[N,+,v5,v1])(>[v9](in2[v5,v9,v8])(in2[v5,v9,v2])))	main	expansion	(implication30[N,+,v1,v8,v2])	main
+(implication30[N,+,v1,v8,v2])	main	disintegration	(&(&(implication28[v2,N,+,v1])(implication29[v2,v8]))(implication30[N,+,v1,v8,v2]))	main
+(in2[v12,v14,v8])	(implication2[v3,N,v2])	disintegration	!(>[v14](in[v14,N])!(in2[v12,v14,v8]))	(implication2[v3,N,v2])
+!(>[v14](in[v14,N])!(in2[v12,v14,v8]))	(implication2[v3,N,v2])	expansion	(existence0[N,v12,v8])	(implication2[v3,N,v2])
+(existence0[N,v12,v8])	(implication2[v3,N,v2])	implication	(>[v5](in[v5,v6])(existence0[N,v5,v8]))	main	(in[v12,v6])	(implication2[v3,N,v2])
+(>[v5](in[v5,v6])(existence0[N,v5,v8]))	main	expansion	(implication2[v6,N,v8])	main
+(implication2[v6,N,v8])	main	disintegration	(&(&(&(implication0[v8,v6])(implication1[v8,N]))(implication2[v6,N,v8]))(implication3[v6,v8]))	main
+(in[v12,v6])	(implication2[v3,N,v2])	implication	(>[v5](in[v5,v3])(in[v5,v6]))	main	(in[v12,v3])	(implication2[v3,N,v2])
+(>[v5](in[v5,v3])(in[v5,v6]))	main	expansion	(implication31[v3,v6])	main
+(implication31[v3,v6])	main	disintegration	(&(&(implication31[v3,v6])(implication23[v3,N,+,v1]))(implication32[v6,N,+,v1,v3]))	main
+(in[v12,v3])	(implication2[v3,N,v2])	premise element	(>[v12](in[v12,v3])(existence0[N,v12,v2]))	main
+(>[v12](in[v12,v3])(existence0[N,v12,v2]))	main	expansion for integration	(implication2[v3,N,v2])	main
+(preorder[N,+,v12,v1])	(implication2[v3,N,v2])	implication	(>[v5](in[v5,v3])(preorder[N,+,v5,v1]))	main	(in[v12,v3])	(implication2[v3,N,v2])
+(>[v5](in[v5,v3])(preorder[N,+,v5,v1]))	main	expansion	(implication23[v3,N,+,v1])	main
+(implication23[v3,N,+,v1])	main	disintegration	(&(&(implication31[v3,v6])(implication23[v3,N,+,v1]))(implication32[v6,N,+,v1,v3]))	main
+(in[v14,N])	(implication2[v3,N,v2])	disintegration	!(>[v14](in[v14,N])!(in2[v12,v14,v8]))	(implication2[v3,N,v2])
+(implication3[v3,v2])	main	validity name	(=[v15,v16])	(implication3[v3,v2])
+(=[v15,v16])	(implication3[v3,v2])	implication	(>[v5](in[v5,v6])(>[v9](in2[v5,v9,v8])(>[v17](in2[v5,v17,v8])(=[v9,v17]))))	main	(in2[v18,v15,v8])	(implication3[v3,v2])	(in2[v18,v16,v8])	(implication3[v3,v2])	(in[v18,v6])	(implication3[v3,v2])
+(>[v5](in[v5,v6])(>[v9](in2[v5,v9,v8])(>[v17](in2[v5,v17,v8])(=[v9,v17]))))	main	expansion	(implication3[v6,v8])	main
+(implication3[v6,v8])	main	disintegration	(&(&(&(implication0[v8,v6])(implication1[v8,N]))(implication2[v6,N,v8]))(implication3[v6,v8]))	main
+(in2[v18,v15,v8])	(implication3[v3,v2])	implication	(>[v5,v9](in2[v5,v9,v2])(in2[v5,v9,v8]))	main	(in2[v18,v15,v2])	(implication3[v3,v2])
+(in2[v18,v15,v2])	(implication3[v3,v2])	premise element	(>[v18](in[v18,v3])(>[v15](in2[v18,v15,v2])(>[v16](in2[v18,v16,v2])(=[v15,v16]))))	main
+(>[v18](in[v18,v3])(>[v15](in2[v18,v15,v2])(>[v16](in2[v18,v16,v2])(=[v15,v16]))))	main	expansion for integration	(implication3[v3,v2])	main
+(in2[v18,v16,v8])	(implication3[v3,v2])	implication	(>[v5,v9](in2[v5,v9,v2])(in2[v5,v9,v8]))	main	(in2[v18,v16,v2])	(implication3[v3,v2])
+(in2[v18,v16,v2])	(implication3[v3,v2])	premise element	(>[v18](in[v18,v3])(>[v15](in2[v18,v15,v2])(>[v16](in2[v18,v16,v2])(=[v15,v16]))))	main
+(in[v18,v6])	(implication3[v3,v2])	implication	(>[v5](in[v5,v3])(in[v5,v6]))	main	(in[v18,v3])	(implication3[v3,v2])
+(in[v18,v3])	(implication3[v3,v2])	premise element	(>[v18](in[v18,v3])(>[v15](in2[v18,v15,v2])(>[v16](in2[v18,v16,v2])(=[v15,v16]))))	main

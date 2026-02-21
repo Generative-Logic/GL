@@ -1,0 +1,12 @@
+(fXY[v1,v2,N])	main	implication	(>[](implication0[v1,v2])(>[](implication1[v1,N])(>[](implication2[v2,N,v1])(>[](implication3[v2,v1])(fXY[v1,v2,N])))))	main	(implication0[v1,v2])	main	(implication1[v1,N])	main	(implication2[v2,N,v1])	main	(implication3[v2,v1])	main
+(>[](implication0[v1,v2])(>[](implication1[v1,N])(>[](implication2[v2,N,v1])(>[](implication3[v2,v1])(fXY[v1,v2,N])))))	main	reformulation for integration	(&(&(&(implication0[v1,v2])(implication1[v1,N]))(implication2[v2,N,v1]))(implication3[v2,v1]))	main
+(&(&(&(implication0[v1,v2])(implication1[v1,N]))(implication2[v2,N,v1]))(implication3[v2,v1]))	main	expansion	(fXY[v1,v2,N])	main
+(fXY[v1,v2,N])	main	implication	(>[](implication0[v1,v2])(>[](implication1[v1,N])(>[](implication2[v2,N,v1])(>[](implication3[v2,v1])(fXY[v1,v2,N])))))	main	(implication0[v1,v2])	main	(implication1[v1,N])	main	(implication2[v2,N,v1])	main	(implication3[v2,v1])	main
+(implication0[v1,v2])	main	disintegration	(&(&(&(implication0[v1,v2])(implication1[v1,N]))(implication2[v2,N,v1]))(implication3[v2,v1]))	main
+(implication1[v1,N])	main	disintegration	(&(&(&(implication0[v1,v3])(implication1[v1,N]))(implication2[v3,N,v1]))(implication3[v3,v1]))	main
+(&(&(&(implication0[v1,v3])(implication1[v1,N]))(implication2[v3,N,v1]))(implication3[v3,v1]))	main	expansion	(fXY[v1,v3,N])	main
+(fXY[v1,v3,N])	main	disintegration	!(>[v3](interval[N,+,i0,v4,v3])!(fXY[v1,v3,N]))	main
+!(>[v3](interval[N,+,i0,v4,v3])!(fXY[v1,v3,N]))	main	expansion	(sequence[N,+,i0,v4,v1])	main
+(sequence[N,+,i0,v4,v1])	main	task formulation
+(implication2[v2,N,v1])	main	disintegration	(&(&(&(implication0[v1,v2])(implication1[v1,N]))(implication2[v2,N,v1]))(implication3[v2,v1]))	main
+(implication3[v2,v1])	main	disintegration	(&(&(&(implication0[v1,v2])(implication1[v1,N]))(implication2[v2,N,v1]))(implication3[v2,v1]))	main

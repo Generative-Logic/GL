@@ -1,0 +1,16 @@
+(&
+	(>[x]
+		(in[x,L])
+		(&
+			(in[x,M])
+			(preorder[N,+,x,n])
+		)
+	)
+	(>[x]
+		(&
+			(in[x,M])
+			(preorder[N,+,x,n])
+		)
+		(in[x,L])
+	)
+)

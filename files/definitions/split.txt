@@ -1,0 +1,22 @@
+(&
+	(>[i,p]
+		(in2[i,p,g])
+		(>[M]
+			(interval[N,+,n,m,M])
+			(&
+				(&(in[i,M])!(=[i,m]))
+				(in2[i,p,f])
+			)
+		)
+	)
+	(>[i,p]
+		(>[M]
+			(interval[N,+,n,m,M])
+			(&
+				(&(in[i,M])!(=[i,m]))
+				(in2[i,p,f])
+			)
+		)
+		(in2[i,p,g])
+	)
+)

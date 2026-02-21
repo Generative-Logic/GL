@@ -22,23 +22,12 @@
 # Contributions to this project must be made under the terms of the
 # Contributor License Agreement (CLA). See the project's CONTRIBUTING.md file.
 
-import re
 
-max_number_simple_expressions = 5
-max_size_mapping_def_set = 7
-max_number_args_expr = 3
-shifting_parameter = 10000
-default_number_leafs_last_added_expr = 10000
-max_number_args_to_connect_with_definitions = 0
-operator_threshold = 5
-max_number_statements_per_key = 10
-max_values_for_def_sets = {"(1)": 1, "P(x(1)(1))": 1, "P(x(1)(x(1)(1)))": 2, "P(1)": 1}
-max_complexity_if_anchor_parameter_connected = {"(1)": 2, "P(x(1)(1))": 10, "P(x(1)(x(1)(1)))": 10, "P(1)": 10}
-max_size_binary_list = 8
-max_complexity_for_commutative_law = 2
-max_values_for_operators = {'in2': 5, 'in3': 6}
-# compile a regex that matches "(in2[<any-integer>+,3,4])"
-pattern_to_exclude1 = re.compile(r'\(in2\[\d+,3,4]\)')
+
+
+
+
+
 
 
 debug = False

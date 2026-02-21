@@ -24,19 +24,16 @@ Please note that all contributions to this project require a signed Contributor 
 
 There is only one run mode (previously called “Full Mode”).
 
-End-to-end runtime (reference): ~5 minutes on a Dell G16 7630 (overall).
+End-to-end runtime (reference): ~6 minutes on a Dell G16 7630 (overall).
 
-Native prover runtime: ~7 seconds (included in the overall runtime).
-(Your timings will vary by CPU, build type, and OS.)
-
-Memory consumption: Under 1 GB.
 
 ## Prerequisites
 
-Python 3.9+ (standard library + regex).
+Python 3.9+ (standard library only — no external Python packages required)
 
-Visual Studio 2022 with the MSVC toolset (C++17 enabled).
+For Windows users: the bundled native executable GL_Quick_VS/GL_Quick/gl_quick.exe
 
+For non-Windows or if the executable is missing: a C++17 toolchain to rebuild the native component (see below)
 
 ## Quick start
 
@@ -61,7 +58,7 @@ Generated HTML lives under: files/full_proof_graph/index.html (plus chapter*.htm
 
 The native prover is a C++ project compiled with Microsoft Visual Studio on Windows 11.
 
-Windows (Visual Studio 2022+)
+Windows (Visual Studio 2026)
 
 Open GL_Quick_VS/GL_Quick.sln in Visual Studio.
 
@@ -104,4 +101,7 @@ Output HTML: files/full_proof_graph/
 # 3rd party notices
 
 regex — © Matthew Barnett — Apache-2.0 and CNRI-Python.
+
+**nlohmann/json** — © Niels Lohmann — Licensed under MIT.
+https://github.com/nlohmann/json
 

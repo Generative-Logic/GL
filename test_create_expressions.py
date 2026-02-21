@@ -24,33 +24,65 @@
 
 import create_expressions
 from typing import Set
-import parameters
-import analyze_expressions
+
+
 
 from pathlib import Path
+from configuration_reader import configuration_reader
+
 
 
 # wherever this file lives, assume the project root is its parent folder
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 
+
+peano_config_path = PROJECT_ROOT / "files" / "config" / "ConfigPeano.json"
+
+configuration_peano = configuration_reader(peano_config_path)
+
+
+
+gauss_config_path = PROJECT_ROOT / "files" / "config" / "ConfigGauss.json"
+
+configuration_gauss = configuration_reader(gauss_config_path)
+
+# 0: Peano
+# 1. Gauss
+test_variant = 0
+
 _ALL_PERMUTATIONS_TEST = {}
 
-to_be_created =\
+to_be_created_peano =\
     [
-        '(>[+](NaturalNumbers[N,0,1,s,+,*])(>[a,b,c](in3[a,b,c,+])(in3[b,a,c,+])))',
-        '(>[*](NaturalNumbers[N,0,1,s,+,*])(>[a,b,c](in3[a,b,c,*])(in3[b,a,c,*])))',
-        '(>[+,0](NaturalNumbers[N,0,1,s,+,*])(>[a,c](in3[a,0,c,+])(in3[0,a,c,+])))',
-        '(>[*,0](NaturalNumbers[N,0,1,s,+,*])(>[a,c](in3[a,0,c,*])(in3[0,a,c,*])))',
-        '(>[1,s,+](NaturalNumbers[N,0,1,s,+,*])(>[n,m](in3[n,1,m,+])(in2[n,m,s])))',
-        '(>[s,+](NaturalNumbers[N,0,1,s,+,*])(>[a,c](in2[a,c,s])(>[b,d](in3[c,b,d,+])(>[e](in3[a,b,e,+])(in2[e,d,s])))))',
-        '(>[+](NaturalNumbers[N,0,1,s,+,*])(>[b,c,d](in3[b,c,d,+])(>[a,e](in3[a,d,e,+])(>[f](in3[a,b,f,+])(in3[f,c,e,+])))))',
-        '(>[*](NaturalNumbers[N,0,1,s,+,*])(>[b,c,d](in3[b,c,d,*])(>[a,e](in3[a,d,e,*])(>[f](in3[a,b,f,*])(in3[f,c,e,*])))))',
-        '(>[+,*](NaturalNumbers[N,0,1,s,+,*])(>[b,c,d](in3[b,c,d,+])(>[a,e](in3[a,d,e,*])(>[f](in3[a,b,f,*])(>[g](in3[a,c,g,*])(in3[f,g,e,+]))))))',
-        '(>[+,*](NaturalNumbers[N,0,1,s,+,*])(>[a,b,d](in3[a,b,d,+])(>[c,e](in3[d,c,e,*])(>[f](in3[a,c,f,*])(>[g](in3[b,c,g,*])(in3[f,g,e,+]))))))',
-        '(>[+](NaturalNumbers[N,0,1,s,+,*])(>[a,b,d](in3[a,b,d,+])(>[c,e](in3[d,c,e,+])(>[f](in3[a,c,f,+])(in3[f,b,e,+])))))',
-        '(>[s,+,*](NaturalNumbers[N,0,1,s,+,*])(>[a,c](in2[a,c,s])(>[b,d](in3[c,b,d,*])(>[e](in3[a,b,e,*])(in3[e,b,d,+])))))'
+        '(>[+](AnchorPeano[N,0,s,+,*,1])(>[a,b,c](in3[a,b,c,+])(in3[b,a,c,+])))',
+        '(>[*](AnchorPeano[N,0,s,+,*,1])(>[a,b,c](in3[a,b,c,*])(in3[b,a,c,*])))',
+        '(>[+,0](AnchorPeano[N,0,s,+,*,1])(>[a,c](in3[a,0,c,+])(in3[0,a,c,+])))',
+        '(>[*,0](AnchorPeano[N,0,s,+,*,1])(>[a,c](in3[a,0,c,*])(in3[0,a,c,*])))',
+        '(>[1,s,+](AnchorPeano[N,0,s,+,*,1])(>[n,m](in3[n,1,m,+])(in2[n,m,s])))',
+        '(>[s,+](AnchorPeano[N,0,s,+,*,1])(>[a,c](in2[a,c,s])(>[b,d](in3[c,b,d,+])(>[e](in3[a,b,e,+])(in2[e,d,s])))))',
+        '(>[+](AnchorPeano[N,0,s,+,*,1])(>[b,c,d](in3[b,c,d,+])(>[a,e](in3[a,d,e,+])(>[f](in3[a,b,f,+])(in3[f,c,e,+])))))',
+        '(>[*](AnchorPeano[N,0,s,+,*,1])(>[b,c,d](in3[b,c,d,*])(>[a,e](in3[a,d,e,*])(>[f](in3[a,b,f,*])(in3[f,c,e,*])))))',
+        '(>[+,*](AnchorPeano[N,0,s,+,*,1])(>[b,c,d](in3[b,c,d,+])(>[a,e](in3[a,d,e,*])(>[f](in3[a,b,f,*])(>[g](in3[a,c,g,*])(in3[f,g,e,+]))))))',
+        '(>[+,*](AnchorPeano[N,0,s,+,*,1])(>[a,b,d](in3[a,b,d,+])(>[c,e](in3[d,c,e,*])(>[f](in3[a,c,f,*])(>[g](in3[b,c,g,*])(in3[f,g,e,+]))))))',
+        '(>[+](AnchorPeano[N,0,s,+,*,1])(>[a,b,d](in3[a,b,d,+])(>[c,e](in3[d,c,e,+])(>[f](in3[a,c,f,+])(in3[f,b,e,+])))))',
+        '(>[s,+,*](AnchorPeano[N,0,s,+,*,1])(>[a,c](in2[a,c,s])(>[b,d](in3[c,b,d,*])(>[e](in3[a,b,e,*])(in3[e,b,d,+])))))'
     ]
+
+to_be_created_gauss =\
+    [
+        #"(>[1,2,3,4,5,6](AnchorGauss[1,2,3,4,5,6,7,8])(AnchorPeano[1,2,3,4,5,6]))",
+        "(>[1,3,4](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(preorder[1,4,9,10])))",
+        "(>[1,4](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](preorder[1,4,9,10])(>[11](preorder[1,4,10,11])(preorder[1,4,9,11]))))",
+        "(>[1,2,3,4](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10,11](limitSet[1,4,9,10,11])(>[12](in2[10,12,3])(>[](interval[1,4,2,12,9])(interval[1,4,2,10,11])))))",
+        "(>[1,2,3,4](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10,11](limitSequence[1,4,9,10,11])(>[12](in2[9,12,3])(>[](sequence[1,4,2,12,10])(sequence[1,4,2,9,11])))))",
+        "(>[1,2,4](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](fXY[9,10,1])(>[11](interval[1,4,2,11,10])(sequence[1,4,2,11,9]))))",
+        "(>[1,2,4](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](interval[1,4,2,9,10])(in[9,10])))",
+        "(>[1,2,3,4,5,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](fold[1,3,4,8,2,9,10])(>[11](in3[7,10,11,5])(>[12](in2[9,12,3])(in3[9,12,11,5])))))"
+    ]
+
+
+
 
 def read_theorems(file_name: str) -> Set[str]:
     """
@@ -80,13 +112,29 @@ def read_theorems(file_name: str) -> Set[str]:
                 theorems.add(theorem)
     return theorems
 
-def test1():
+def test1(test_variant: str):
+
+    config = None
+    to_be_created = None
+    if test_variant == "Peano":
+        config = configuration_peano
+        to_be_created = to_be_created_peano
+    elif test_variant == "Gauss":
+        config = configuration_gauss
+        to_be_created = to_be_created_gauss
+
+    assert config is not None
+    create_expressions.set_configuration(config)
+    create_expressions.set_operators()
+
     theorems_folder = PROJECT_ROOT / 'files/theorems'
-    file_name = str(theorems_folder / "theorems.txt")
+    file_name = str(theorems_folder / "reshuffled_theorems.txt")
 
     theorem_set = read_theorems(file_name)
 
-    all_permutations = create_expressions.generate_all_permutations(parameters.max_number_simple_expressions + 1)
+
+
+    all_permutations = create_expressions.generate_all_permutations(config.parameters.max_number_simple_expressions + 1)
 
     found = []
     not_found = []
@@ -95,10 +143,11 @@ def test1():
         reshuffled = create_expressions.reshuffle(theorem, all_permutations, True)[0]
         reshuffled_mirrored = create_expressions.create_reshuffled_mirrored(theorem, all_permutations)
 
-        if reshuffled in theorem_set or reshuffled_mirrored in theorem_set:
+        if reshuffled in theorem_set or (reshuffled_mirrored in theorem_set and reshuffled_mirrored != ""):
             found.append(theorem)
         else:
             not_found.append(theorem)
+            create_expressions.create_reshuffled_mirrored(theorem, all_permutations)
 
     print("test_create_expressions.test1")
     print("\n found \n")
@@ -113,12 +162,26 @@ def test1():
 
     print()
 
-def test2():
+
+def test2(test_variant: str):
+    config = None
+    to_be_created = None
+    if test_variant == "Peano":
+        config = configuration_peano
+        to_be_created = to_be_created_peano
+    elif test_variant == "Gauss":
+        config = configuration_gauss
+        to_be_created = to_be_created_gauss
+
+    assert config is not None
+    create_expressions.set_configuration(config)
+    create_expressions.set_operators()
+
     theorems_folder = PROJECT_ROOT / 'files/theorems'
     file_name = str(theorems_folder / "theorems.txt")
     theorem_set = read_theorems(file_name)
 
-    all_permutations = create_expressions.generate_all_permutations(parameters.max_number_simple_expressions + 1)
+    all_permutations = create_expressions.generate_all_permutations(config.parameters.max_number_simple_expressions + 1)
 
     set_of_interest = set()
 
@@ -144,8 +207,7 @@ def test2():
 
         counter += 1
 
-    theorems_folder = PROJECT_ROOT / 'files/theorems'
-    file_name = str(theorems_folder / "theorems.txt")
+    file_name = str(theorems_folder / "created_theorems.txt")
     try:
         with open(file_name, 'w', encoding='utf-8') as file:
             for expr in list_of_interest:
@@ -154,118 +216,10 @@ def test2():
     except IOError as e:
         print(f"An error occurred while writing to the file: {e}")
 
-def test3():
-    theorems_folder = PROJECT_ROOT / 'files/theorems'
-    file_name = str(theorems_folder / "checked_theorems.txt")
-    theorem_set = read_theorems(file_name)
-
-    tmp_lst = list(theorem_set)
-    tmp_lst.sort()
-
-    if '(>[4,5](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11](in2[10,11,4])(>[](in2[10,7,4])(in3[11,8,9,5])))))' in theorem_set:
-        test = 0
-
-    more_lines = [
-        '(>[4,5](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11](in2[10,11,4])(>[](in2[10,7,4])(in3[11,8,9,5])))))',
-        '(>[4,5](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11](in2[10,11,4])(>[](in2[10,8,4])(in3[7,11,9,5])))))',
-        '(>[4,5](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11](in2[10,11,4])(>[](in3[7,8,10,5])(in2[9,11,4])))))',
-        '(>[4,5,6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11](in2[10,11,4])(>[](in3[8,10,7,6])(in3[8,11,9,6])))))',
-        '(>[4,5](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10](in2[7,10,4])(>[](in2[7,8,4])(in3[7,10,9,5])))))',
-        '(>[4,5](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10](in2[8,10,4])(>[](in2[8,7,4])(in3[10,8,9,5])))))',
-        '(>[4,5](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10](in2[8,10,4])(>[11](in2[9,11,4])(in3[7,10,11,5])))))',
-        '(>[5](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11,12](in3[10,11,12,5])(>[](in3[7,8,10,5])(in3[9,11,12,5])))))',
-        '(>[5](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11,12](in3[10,11,12,5])(>[](in3[7,8,11,5])(in3[10,9,12,5])))))',
-        '(>[5,6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11,12](in3[10,11,12,6])(>[](in3[7,8,10,5])(in3[9,11,12,6])))))',
-        '(>[5,6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11,12](in3[10,11,12,6])(>[](in3[7,8,11,5])(in3[10,9,12,6])))))',
-        '(>[5](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11](in3[10,8,11,5])(>[](in3[7,8,10,5])(in3[9,8,11,5])))))',
-        '(>[5,6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11](in3[10,8,11,6])(>[](in3[7,8,10,5])(in3[9,8,11,6])))))',
-        '(>[5](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11](in3[7,10,11,5])(>[](in3[7,8,10,5])(in3[7,9,11,5])))))',
-        '(>[5,6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11](in3[7,10,11,6])(>[](in3[7,8,10,5])(in3[7,9,11,6])))))',
-        '(>[5](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11](in3[8,10,11,5])(>[](in3[7,8,10,5])(in3[8,9,11,5])))))',
-        '(>[5](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11](in3[8,10,11,5])(>[](in3[8,10,7,5])(in3[11,8,9,5])))))',
-        '(>[5,6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11](in3[8,10,11,6])(>[](in3[7,8,10,5])(in3[8,9,11,6])))))',
-        '(>[5,6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11](in3[8,10,11,6])(>[](in3[8,10,7,6])(in3[11,8,9,5])))))',
-        '(>[4,6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,6])(>[10,11](in2[10,11,4])(>[](in2[10,7,4])(in3[11,8,9,6])))))',
-        '(>[4,6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,6])(>[10,11](in2[10,11,4])(>[](in2[10,8,4])(in3[7,11,9,6])))))',
-        '(>[4,6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,6])(>[10,11](in2[10,11,4])(>[](in3[7,8,10,6])(in2[9,11,4])))))',
-        '(>[4,6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,6])(>[10](in2[7,10,4])(>[](in2[7,8,4])(in3[7,10,9,6])))))',
-        '(>[4,6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,6])(>[10](in2[8,10,4])(>[](in2[8,7,4])(in3[10,8,9,6])))))',
-        '(>[5,6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,6])(>[10,11,12](in3[10,11,12,5])(>[](in3[7,8,10,6])(in3[9,11,12,5])))))',
-        '(>[5,6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,6])(>[10,11,12](in3[10,11,12,5])(>[](in3[7,8,11,6])(in3[10,9,12,5])))))',
-        '(>[6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,6])(>[10,11,12](in3[10,11,12,6])(>[](in3[7,8,10,6])(in3[9,11,12,6])))))',
-        '(>[6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,6])(>[10,11,12](in3[10,11,12,6])(>[](in3[7,8,11,6])(in3[10,9,12,6])))))',
-        '(>[5,6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,6])(>[10,11](in3[10,8,11,5])(>[](in3[7,8,10,6])(in3[9,8,11,5])))))',
-        '(>[6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,6])(>[10,11](in3[10,8,11,6])(>[](in3[7,8,10,6])(in3[9,8,11,6])))))',
-        '(>[5,6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,6])(>[10,11](in3[7,10,11,5])(>[](in3[7,8,10,6])(in3[7,9,11,5])))))',
-        '(>[6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,6])(>[10,11](in3[7,10,11,6])(>[](in3[7,8,10,6])(in3[7,9,11,6])))))',
-        '(>[5,6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,6])(>[10,11](in3[8,10,11,5])(>[](in3[7,8,10,6])(in3[8,9,11,5])))))',
-        '(>[5,6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,6])(>[10,11](in3[8,10,11,5])(>[](in3[8,10,7,5])(in3[11,8,9,6])))))',
-        '(>[6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,6])(>[10,11](in3[8,10,11,6])(>[](in3[7,8,10,6])(in3[8,9,11,6])))))',
-        '(>[6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,6])(>[10,11](in3[8,10,11,6])(>[](in3[8,10,7,6])(in3[11,8,9,6])))))'
-    ]
-
-    #tmp_lst = [x for x in tmp_lst if x not in more_lines]
 
 
-    analyze_expressions.analyze_expressions(tmp_lst)
 
 
-    for theorem in analyze_expressions.global_theorem_list:
-        print(theorem)
-
-    """
-    analyze_expressions.global_body_of_proves = analyze_expressions.BodyOfProves()
-
-    theorem_list = []
-    for tuple in analyze_expressions.global_theorem_list:
-        theorem_list.append(tuple[0])
-
-    analyze_expressions.analyze_expressions(theorem_list)
-    """
-
-def test4():
-    global _ALL_PERMUTATIONS_TEST
-
-    theorems_folder = PROJECT_ROOT / 'files/theorems'
-    file_name = str(theorems_folder / "theorems.txt")
-    theorem_set = read_theorems(file_name)
-    checked = set()
-
-    _ALL_PERMUTATIONS_TEST = create_expressions.generate_all_permutations(parameters.size_all_permutations_ana)
-
-
-    for theorem in theorem_set:
-        #theorem = '(>[4,5](NaturalNumbers[1,2,3,4,5])(>[6,7,8](in3[6,7,8,5])(>[9,10](in3[6,9,10,5])(>[11,12](in3[6,11,12,5])(>[](in3[7,9,11,4])(in3[8,10,12,4]))))))'
-        #theorem = '(>[3,4,5](NaturalNumbers[1,2,3,4,5])(>[6,7,8](in3[6,7,8,4])(>[9,10,11](in3[9,10,11,5])(>[12](in3[6,9,12,5])(>[](in2[10,7,3])(in3[8,11,12,5]))))))'
-        #theorem = '(>[2,3,4](NaturalNumbers[1,2,3,4,5])(>[6,7](in2[6,7,3])(>[8](in2[2,8,3])(in3[6,8,7,4]))))'
-        #theorem = '(>[4,5](NaturalNumbers[1,2,3,4,5])(>[6,7,8](in3[6,7,8,5])(>[9,10](in3[6,9,10,5])(>[11,12](in3[6,11,12,5])(>[](in3[7,9,11,4])(in3[10,8,12,4]))))))'
-        #theorem = '(>[4](NaturalNumbers[1,2,3,4,5])(>[6,7,8](in3[6,7,8,4])(in3[7,6,8,4])))'
-        #theorem = '(>[4,5](NaturalNumbers[1,2,3,4,5])(>[6,7,8](in3[6,7,8,4])(>[9,10,11](in3[9,10,11,5])(>[12](in3[7,10,12,5])(>[](in3[10,9,6,4])(in3[12,11,8,4]))))))'
-        #theorem = '(>[4,5](NaturalNumbers[1,2,3,4,5])(>[6,7,8](in3[6,7,8,4])(>[9,10,11](in3[9,10,11,4])(>[12](in3[6,10,12,5])(>[](in3[9,10,7,5])(in3[11,12,8,4]))))))'
-        #theorem = '(>[5,6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,6])(>[10,11](in3[7,10,11,5])(>[12,13](in3[12,7,13,6])(>[](in3[8,12,10,6])(in3[9,13,11,5]))))))'
-        #theorem = '(>[6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,6])(>[10,11](in3[7,10,11,6])(>[12](in3[8,12,10,6])(in3[9,12,11,6])))))'
-        #theorem = "(>[2,5](NaturalNumbers[1,2,3,4,5,6])(>[7,8](in3[2,7,8,5])(in3[7,2,8,5])))"
-        #theorem = '(>[5,6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11](in3[8,10,11,6])(>[](in3[8,10,7,6])(in3[11,8,9,5])))))'
-        #theorem = '(>[5](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(in3[8,7,9,5])))'
-        #theorem = '(>[6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,6])(>[10,11](in3[8,10,11,6])(>[](in3[8,10,7,6])(in3[11,8,9,6])))))'
-        #theorem = '(>[4,6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,6])(>[10](in2[8,10,4])(>[](in2[8,7,4])(in3[10,8,9,6])))))'
-        #theorem = '(>[4,5](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10](in2[8,10,4])(>[](in2[8,7,4])(in3[8,10,9,5])))))'
-        if create_expressions.check_input_variables_theorem(theorem):
-            if create_expressions.check_theorem_complexity_per_operator(theorem):
-                if create_expressions.check_input_variables_order(theorem, _ALL_PERMUTATIONS_TEST):
-                    checked.add(theorem)
-
-    checked = sorted(checked)
-
-    theorems_folder = PROJECT_ROOT / 'files/theorems'
-    file_name = str(theorems_folder / "theorems.txt")
-    try:
-        with open(file_name, 'w', encoding='utf-8') as file:
-            for expr in checked:
-                file.write(expr + "\n")
-        print(f"Successfully wrote to {file_name}")
-    except IOError as e:
-        print(f"An error occurred while writing to the file: {e}")
 
 
 

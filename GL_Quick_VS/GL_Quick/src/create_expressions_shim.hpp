@@ -1,6 +1,6 @@
-
+﻿
 /* Generative Logic : A deterministic reasoning and knowledge generation engine.
- Copyright(C) 2025 Generative Logic UG(haftungsbeschr�nkt)
+ Copyright(C) 2025 Generative Logic UG(haftungsbeschränkt)
 
  This program is free software : you can redistribute it and /or modify
  it under the terms of the GNU Affero General Public License as published by
@@ -35,6 +35,7 @@
 #include <algorithm>
 #include <cassert>
 #include <regex>
+#include <json.hpp>
 
 // This shim replaces small portions of create_expressions.py that analyze_expressions.py calls.
 // Keep surface area minimal: we only expose helpers used in quick mode scaffold.
@@ -60,47 +61,51 @@ inline const std::filesystem::path DEFINITIONS_FOLDER =
 
 struct CoreExpressionConfig {
     int arity;
-    std::map<std::string, std::string> placeholders;
-    std::string binder;
     std::variant<std::string, std::filesystem::path> definition; // inline pattern OR file path
-    int levelFlag;
     std::string signature;
-    bool specialFlag;
 
-    // Default constructor
+    // Slot -> (pattern, mandatory)
+    std::map<std::string, std::pair<std::string, bool>> definitionSets;
+
+    // New fields to match Python's logic
+    std::vector<std::string> inputArgs;
+    std::vector<std::string> outputArgs;
+
+    // Indices for logic replication (calculated from signature)
+    std::vector<int> inputIndices;
+    std::vector<int> outputIndices;
+
     CoreExpressionConfig()
         : arity(0),
-        placeholders(),
-        binder(),
         definition(std::string()),
-        levelFlag(0),
         signature(),
-        specialFlag(false) {
+        definitionSets(),
+        inputArgs(),
+        outputArgs(),
+        inputIndices(),
+        outputIndices() {
     }
 
-    // Full constructor
     CoreExpressionConfig(int arity_,
-        const std::map<std::string, std::string>& placeholders_,
-        const std::string& binder_,
         const std::variant<std::string, std::filesystem::path>& definition_,
-        int levelFlag_,
-        const std::string& signature_,
-        bool specialFlag_)
+        const std::string& signature_)
         : arity(arity_),
-        placeholders(placeholders_),
-        binder(binder_),
         definition(definition_),
-        levelFlag(levelFlag_),
         signature(signature_),
-        specialFlag(specialFlag_) {
+        definitionSets(),
+        inputArgs(),
+        outputArgs(),
+        inputIndices(),
+        outputIndices() {
     }
 };
 
+
 struct AnchorInfo {
-    std::string exampleExpression;                               // "(NaturalNumbers[1,2,3,4,5,6])"
-    int arity;                                                   // coreExpressionMap["NaturalNumbers"].arity
-    std::map<std::string, std::string> definitionSets;          // NEW: definition sets
-    std::string name;                                            // "NaturalNumbers"
+    std::string exampleExpression;                               
+    int arity;                                                   
+    std::map<std::string, std::string> definitionSets;          
+    std::string name;                                            
 
     AnchorInfo()
         : exampleExpression(),
@@ -120,136 +125,85 @@ struct AnchorInfo {
     }
 };
 
-inline AnchorInfo initAnchor(const std::map<std::string, ce::CoreExpressionConfig>& coreExpressionMap) {
-    const std::string key = "NaturalNumbers";
+inline std::string
+findAnchorKey(const std::map<std::string, ce::CoreExpressionConfig>& coreExpressionMap)
+{
+    for (const auto& kv : coreExpressionMap) {
+        const std::string& k = kv.first;
+        // C++17 "starts with" check
+        if (k.rfind("Anchor", 0) == 0) {
+            return k;
+        }
+    }
+    return "";
+}
 
-    std::string exampleExpression = "(NaturalNumbers[1,2,3,4,5,6])";
-    int arity = 0;
-    std::map<std::string, std::string> definitionSets;
-
-    std::map<std::string, ce::CoreExpressionConfig>::const_iterator it = coreExpressionMap.find(key);
-    if (it != coreExpressionMap.end()) {
-        arity = it->second.arity;
-        // placeholders -> definitionSets (same type)
-        definitionSets = it->second.placeholders; // copy
+inline std::string makeAnchorSignature(const std::string& name, int arity)
+{
+    if (arity < 0) {
+        throw std::invalid_argument("arity must be non-negative");
     }
 
-    return AnchorInfo(exampleExpression, arity, definitionSets, key);
+    std::string sig;
+    // approx reserve: "(", name, "[", digits+commas, "])"
+    sig.reserve(1 + name.size() + 1 + arity * 2 + 2);
+
+    sig.push_back('(');
+    sig += name;
+    sig.push_back('[');
+
+    for (int i = 1; i <= arity; ++i) {
+        if (i > 1) sig.push_back(',');
+        sig += std::to_string(i);
+    }
+
+    sig += "])";
+    return sig;
+}
+
+
+inline AnchorInfo initAnchor(const std::map<std::string, ce::CoreExpressionConfig>& coreExpressionMap, const std::string& anchorID) {
+
+    // 1. Construct the specific key requested by the run mode
+    std::string key = "Anchor" + anchorID;
+
+    // 2. Strict check: If the specific key isn't found, halt with an assertion.
+    //    We do NOT fall back to searching for other anchors.
+    if (coreExpressionMap.find(key) == coreExpressionMap.end()) {
+        assert(false && "The requested Anchor ID was not found in the configuration.");
+    }
+
+    std::string exampleExpression;
+    int arity = 0;
+    std::map<std::string, std::string> definitionSetsStr;
+
+    auto it = coreExpressionMap.find(key);
+    if (it != coreExpressionMap.end()) {
+        exampleExpression = makeAnchorSignature(key, it->second.arity);
+        arity = it->second.arity;
+
+        for (const auto& kv : it->second.definitionSets) {
+            definitionSetsStr[kv.first] = kv.second.first;
+        }
+    }
+    return AnchorInfo(exampleExpression, arity, definitionSetsStr, key);
 }
 
 
 
 
-inline const std::map<std::string, CoreExpressionConfig> CORE_EXPRESSION_MAP = {
-    { "inN",
-      CoreExpressionConfig{
-        1,
-        { {"1","(1)"}, {"N","P(1)"} },
-        "(x(1)P(1))",
-        std::string("(in[1,N])"),
-        1,
-        "inN[1]",
-        false
-      }
-    },
-    { "in",
-      CoreExpressionConfig{
-        2,
-        { {"1","(1)"}, {"2","P(1)"} },
-        "(x(1)P(1))",
-        std::string("(in[1,2])"),
-        0,
-        "in[1,2]",
-        false
-      }
-    },
-    { "=",
-      CoreExpressionConfig{
-        2,
-        { {"1","(1)"}, {"2","(1)"} },
-        "(x(1)(1))",
-        std::string("(=[1,2])"),
-        1,
-        "=[1,2]",
-        true
-      }
-    },
-    { "fXY",
-      CoreExpressionConfig{
-        3,
-        { {"1","P(x(1)(1))"}, {"2","P(1)"}, {"3","P(1)"} },
-        "(xP(x(1)(1))(xP(1)P(1)))",
-        DEFINITIONS_FOLDER / "fXY.txt",
-        1,
-        "fXY[f,X,Y]",
-        false
-      }
-    },
-    { "fXYZ",
-      CoreExpressionConfig{
-        4,
-        { {"1","P(x(1)(x(1)(1)))"}, {"2","P(1)"}, {"3","P(1)"}, {"4","P(1)"} },
-        "(xP(x(1)(x(1)(1)))(xP(1)(xP(1)P(1))))",
-        DEFINITIONS_FOLDER / "fXYZ.txt",
-        1,
-        "fXY[f,X,Y,Z]",
-        false
-      }
-    },
-    { "in2",
-      CoreExpressionConfig{
-        3,
-        { {"1","(1)"}, {"2","(1)"}, {"3","P(x(1)(1))"} },
-        "(x(1)(x(1)P(x(1)(1))))",
-        std::string("(in2[1,2,3])"),
-        0,
-        "in2[1,2,3]",
-        false
-      }
-    },
-    { "in3",
-      CoreExpressionConfig{
-        4,
-        { {"1","(1)"}, {"2","(1)"}, {"3","(1)"}, {"4","P(x(1)(x(1)(1)))"} },
-        "(x(1)(x(1)(x(1)P(x(1)(x(1)(1))))))",
-        std::string("(in3[1,2,3,4])"),
-        0,
-        "in3[1,2,3,4]",
-        true
-      }
-    },
-    { "NaturalNumbers",
-      CoreExpressionConfig{
-        6,
-        {
-          {"1","P(1)"},
-          {"2","(1)"},
-          {"3","(1)"},
-          {"4","P(x(1)(1))"},
-          {"5","P(x(1)(x(1)(1)))"},
-          {"6","P(x(1)(x(1)(1)))"}
-        },
-        "",
-        DEFINITIONS_FOLDER / "NaturalNumbers.txt",
-        1,
-        "NaturalNumbers[N,i0,i1,s,+,*]",
-        false
-      }
-    }
-};
 
-inline const std::set<std::string> operators{ "in2", "in3" };
+
+
 
 struct TreeNode1 {
     std::string value;
-    int numberLeafs;
     TreeNode1* left;
     TreeNode1* right;
     std::set<std::string> arguments;
 
     TreeNode1()
         : value(),
-        numberLeafs(0),
         left(NULL),
         right(NULL),
         arguments() {
@@ -257,7 +211,6 @@ struct TreeNode1 {
 
     TreeNode1(const std::string& value_, int numberLeafs_)
         : value(value_),
-        numberLeafs(numberLeafs_),
         left(NULL),
         right(NULL),
         arguments() {
@@ -296,30 +249,216 @@ inline std::string readTreeFromFile(const std::filesystem::path& p) {
     return stripped;
 }
 
-// ---- conversion of modify_core_expression_map() ----
-// In Python it mutates the global dict in-place. Since CORE_EXPRESSION_MAP is const here,
-// we return a resolved copy with file-based definitions replaced by their stripped contents.
-inline std::map<std::string, CoreExpressionConfig> modifyCoreExpressionMap() {
-    std::map<std::string, CoreExpressionConfig> resolved = CORE_EXPRESSION_MAP;
+// Forward declaration required for modifyCoreExpressionMap logic
+inline std::vector<std::string> getArgs(const std::string& expr);
 
-    for (std::map<std::string, CoreExpressionConfig>::iterator it = resolved.begin();
-        it != resolved.end(); ++it) {
 
-        CoreExpressionConfig& cfg = it->second;
+// In GL_Quick_VS/GL_Quick/src/create_expressions_shim.hpp
 
-        if (std::holds_alternative<std::filesystem::path>(cfg.definition)) {
-            std::filesystem::path p = std::get<std::filesystem::path>(cfg.definition);
+inline std::map<std::string, CoreExpressionConfig>
+modifyCoreExpressionMap(const std::filesystem::path& configPath)
+{
+    using json = nlohmann::json;
 
+    auto strip_ws = [](const std::string& s) -> std::string {
+        std::string out; out.reserve(s.size());
+        for (char c : s) {
+            if (c != '\n' && c != ' ' && c != '\t' && c != '\r') out.push_back(c);
+        }
+        return out;
+        };
+
+    // Load JSON
+    std::ifstream in(configPath);
+    if (!in) {
+        return {}; // or throw if you prefer
+    }
+    json j;
+    in >> j;
+
+    std::map<std::string, CoreExpressionConfig> resolved;
+    const std::filesystem::path cfgDir = configPath.parent_path();
+
+    for (auto it = j.begin(); it != j.end(); ++it) {
+        const std::string name = it.key();
+        const json& spec = it.value();
+
+        // Skip non-objects (parameters, arrays, etc.)
+        if (!spec.is_object()) continue;
+
+        // MODIFIED: Skip objects that do not have "arity" (e.g. "parameters", "prover_parameters")
+        if (!spec.contains("arity")) continue;
+
+        // --- arity ---
+        const int arity = spec.value("arity", 0);
+
+        // --- full_mpl (definition): inline or file path ---
+        std::string definition_text;
+        std::string full_mpl_raw = spec.value("full_mpl", std::string{});
+        const bool looks_like_file =
+            (!full_mpl_raw.empty()) &&
+            (full_mpl_raw.size() >= 4 &&
+                full_mpl_raw.rfind(".txt") == full_mpl_raw.size() - 4 ||
+                full_mpl_raw.find('/') != std::string::npos ||
+                full_mpl_raw.find('\\') != std::string::npos);
+
+        if (looks_like_file) {
+            std::filesystem::path p(full_mpl_raw);
+
+            std::vector<std::filesystem::path> candidates;
+            if (p.is_absolute()) {
+                candidates.push_back(p);
+            }
+            else {
+                candidates.push_back(DEFINITIONS_FOLDER / p.filename());
+                candidates.push_back(cfgDir / p);
+                candidates.push_back(cfgDir / p.filename());
+            }
+
+            bool loaded = false;
             std::error_code ec;
-            bool isFile = std::filesystem::is_regular_file(p, ec);
-            if (isFile && !ec) {
-                std::string definition = readTreeFromFile(p);
-                cfg.definition = definition; // replace path with stripped string content
+            for (const auto& cand : candidates) {
+                if (std::filesystem::is_regular_file(cand, ec) && !ec) {
+                    definition_text = readTreeFromFile(cand);
+                    loaded = true;
+                    break;
+                }
+            }
+            if (!loaded) {
+                definition_text = strip_ws(full_mpl_raw); // fallback
             }
         }
+        else {
+            definition_text = strip_ws(full_mpl_raw); // inline MPL -> normalize
+        }
+
+        // --- signature from JSON field "short_mpl" (preferred) ---
+        std::string signature;
+        if (spec.contains("short_mpl") && spec["short_mpl"].is_string()) {
+            signature = strip_ws(spec["short_mpl"].get<std::string>());
+        }
+        else {
+            // fallback: "(Name[1,2,...])"
+            signature.reserve(name.size() + static_cast<std::size_t>(3 * std::max(arity, 1)));
+            signature += "("; signature += name; signature += "[";
+            if (arity > 0) {
+                for (int i = 1; i <= arity; ++i) {
+                    if (i > 1) signature += ",";
+                    signature += std::to_string(i);
+                }
+            }
+            signature += "])";
+        }
+
+        // Assemble base config
+        CoreExpressionConfig cfg(
+            arity,
+            std::variant<std::string, std::filesystem::path>(definition_text),
+            signature
+        );
+
+        // --- definition_sets ---
+        if (spec.contains("definition_sets") && spec["definition_sets"].is_object()) {
+            const json& ds = spec["definition_sets"];
+            for (auto sit = ds.begin(); sit != ds.end(); ++sit) {
+                const std::string slot = sit.key();
+                const json& node = sit.value();
+
+                std::string pattern;
+                bool mandatory = false;
+
+                if (node.is_array()) {
+                    if (!node.empty() && node[0].is_string()) {
+                        pattern = strip_ws(node[0].get<std::string>());
+                    }
+                    if (node.size() >= 2) {
+                        if (node[1].is_boolean()) {
+                            mandatory = node[1].get<bool>();
+                        }
+                        else if (node[1].is_string()) {
+                            const std::string s = node[1].get<std::string>();
+                            mandatory = (s == "true" || s == "True" || s == "1");
+                        }
+                        else if (node[1].is_number_integer()) {
+                            mandatory = (node[1].get<int>() != 0);
+                        }
+                    }
+                }
+                else if (node.is_object()) {
+                    if (node.contains("pattern") && node["pattern"].is_string())
+                        pattern = strip_ws(node["pattern"].get<std::string>());
+                    if (node.contains("mandatory")) {
+                        if (node["mandatory"].is_boolean())
+                            mandatory = node["mandatory"].get<bool>();
+                        else if (node["mandatory"].is_string()) {
+                            const std::string s = node["mandatory"].get<std::string>();
+                            mandatory = (s == "true" || s == "True" || s == "1");
+                        }
+                        else if (node["mandatory"].is_number_integer()) {
+                            mandatory = (node["mandatory"].get<int>() != 0);
+                        }
+                    }
+                }
+                else if (node.is_string()) {
+                    pattern = strip_ws(node.get<std::string>());
+                }
+
+                if (!pattern.empty()) {
+                    cfg.definitionSets[slot] = std::make_pair(pattern, mandatory);
+                }
+            }
+        }
+
+        // --- NEW: Parse input_args and output_args ---
+        if (spec.contains("input_args") && spec["input_args"].is_array()) {
+            cfg.inputArgs = spec["input_args"].get<std::vector<std::string>>();
+        }
+        if (spec.contains("output_args") && spec["output_args"].is_array()) {
+            cfg.outputArgs = spec["output_args"].get<std::vector<std::string>>();
+        }
+
+        // --- NEW: Calculate Indices based on Signature ---
+        std::vector<std::string> signatureParams = getArgs(cfg.signature);
+
+        // Map input argument names to their positions (0-based index)
+        for (const auto& argName : cfg.inputArgs) {
+            auto it = std::find(signatureParams.begin(), signatureParams.end(), argName);
+            if (it != signatureParams.end()) {
+                cfg.inputIndices.push_back(static_cast<int>(std::distance(signatureParams.begin(), it)));
+            }
+        }
+
+        // Map output argument names to their positions
+        for (const auto& argName : cfg.outputArgs) {
+            auto it = std::find(signatureParams.begin(), signatureParams.end(), argName);
+            if (it != signatureParams.end()) {
+                cfg.outputIndices.push_back(static_cast<int>(std::distance(signatureParams.begin(), it)));
+            }
+        }
+
+        resolved.emplace(name, std::move(cfg));
     }
+
     return resolved;
 }
+
+
+
+
+
+
+// (Optional) Backward-compatible wrapper if you still call modifyCoreExpressionMap() with no args.
+// It tries the conventional default: <repo-root>/files/config/core_expressions.json
+inline std::map<std::string, CoreExpressionConfig>
+modifyCoreExpressionMap(std::string anchorID)
+{
+    const auto configPath =
+        std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path()
+        / "files" / "config" / ("Config" + anchorID + ".json");
+
+    return modifyCoreExpressionMap(configPath);
+}
+
 
 inline std::vector<std::string> getArgs(const std::string& expr) {
     std::vector<std::string> out;
@@ -367,6 +506,19 @@ inline std::string extractExpression(const std::string& s) {
     return std::string(); // Python returned ""
 }
 
+inline std::string extractExpressionUniversal(const std::string& s) {
+    std::size_t index = s.find('[');
+    if (index != std::string::npos) {
+        if (!s.empty() && s[0] == '(') {
+            return s.substr(1, index - 1);
+        }
+        else if (s.size() >= 2 && s[0] == '!' && s[1] == '(') {
+            return s.substr(2, index - 2);
+        }
+    }
+    return std::string(); // Python returned ""
+}
+
 inline std::string extractExpressionFromNegation(const std::string& s) {
     std::size_t startIndex = s.find("!(");
     std::size_t endIndex = s.find('[');
@@ -376,9 +528,8 @@ inline std::string extractExpressionFromNegation(const std::string& s) {
     return std::string();
 }
 
-std::pair<TreeNode1*, int> parseExpr(
-    const std::string& treeStrIn,
-    const std::map<std::string, ce::CoreExpressionConfig>& coreExpressionMap);
+TreeNode1* parseExpr(
+    const std::string& treeStrIn);
 
 inline void nodeToStr(const TreeNode1* node, std::string& out) {
     if (node == NULL) {
@@ -673,8 +824,8 @@ inline std::string disintegrateImplication(
     > >& chain,
     const std::map<std::string, CoreExpressionConfig>& coreExpressionMap) {
 
-    std::pair<TreeNode1*, int> pr = parseExpr(exprForDesintegration, coreExpressionMap);
-    TreeNode1* root = pr.first;
+    TreeNode1* root = parseExpr(exprForDesintegration);
+
 
     std::string head;
 
@@ -707,71 +858,7 @@ inline std::string disintegrateImplication(
     return head;
 }
 
-inline std::set<std::string>
-findDigitArgs(const std::string& theorem,
-    const AnchorInfo& anchor,
-    const std::map<std::string, ce::CoreExpressionConfig>& coreExpressionMap) {
-    // temp_chain: [(leftExpr, argsAtNode, leftArgsSet)]
-    std::vector< std::tuple<
-        std::string,                    // left expr
-        std::vector<std::string>,       // args of current '>' node
-        std::set<std::string>           // left node's arguments (set)
-    > > tempChain;
 
-    const std::string head =
-        ce::disintegrateImplication(theorem, tempChain, coreExpressionMap);
-
-    // Build chain: all left exprs + final head
-    std::vector<std::string> chain;
-    chain.reserve(tempChain.size() + 1);
-    for (std::size_t i = 0; i < tempChain.size(); ++i) {
-        chain.push_back(std::get<0>(tempChain[i]));
-    }
-    chain.push_back(head);
-
-    // Collect all args from operator nodes only
-    std::set<std::string> allArgs;
-    for (std::size_t i = 0; i < chain.size(); ++i) {
-        const std::string coreExpression = ce::extractExpression(chain[i]);
-        if (ce::operators.find(coreExpression) != ce::operators.end()) {
-            const std::vector<std::string> args = ce::getArgs(chain[i]);
-            for (std::size_t k = 0; k < args.size(); ++k) {
-                allArgs.insert(args[k]);
-            }
-        }
-    }
-
-    // Remove args of any element that contains the anchor name
-    for (std::size_t i = 0; i < chain.size(); ++i) {
-        if (chain[i].find(anchor.name) != std::string::npos) {
-            const std::vector<std::string> args = ce::getArgs(chain[i]);
-            for (std::size_t k = 0; k < args.size(); ++k) {
-                std::set<std::string>::iterator it = allArgs.find(args[k]);
-                if (it != allArgs.end()) {
-                    allArgs.erase(it);
-                }
-            }
-        }
-    }
-
-    // For operator nodes, remove the last two args (outputs)
-    for (std::size_t i = 0; i < chain.size(); ++i) {
-        const std::string coreExpression = ce::extractExpression(chain[i]);
-        if (ce::operators.find(coreExpression) != ce::operators.end()) {
-            const std::vector<std::string> args = ce::getArgs(chain[i]);
-            if (args.size() >= 2U) {
-                const std::size_t a = args.size() - 2U;
-                const std::size_t b = args.size() - 1U;
-                std::set<std::string>::iterator ita = allArgs.find(args[a]);
-                if (ita != allArgs.end()) allArgs.erase(ita);
-                std::set<std::string>::iterator itb = allArgs.find(args[b]);
-                if (itb != allArgs.end()) allArgs.erase(itb);
-            }
-        }
-    }
-
-    return allArgs;
-}
 
 inline void prioritizeAnchor(std::vector<std::string>& chain, const std::string& anchor) {
     for (std::size_t i = 0; i < chain.size(); ++i) {
@@ -785,19 +872,28 @@ inline void prioritizeAnchor(std::vector<std::string>& chain, const std::string&
 }
 
 inline bool staysOutputVariable(const std::string& fullExpr,
-    const std::string& outputVariable) {
+    const std::string& outputVariable,
+    const std::map<std::string, CoreExpressionConfig>& coreExpressionMap) {
+
     const std::string coreExpr = extractExpression(fullExpr);
+    auto it = coreExpressionMap.find(coreExpr);
+
+    // If not in map or has no output indices defined, it cannot "stay output variable"
+    if (it == coreExpressionMap.end() || it->second.outputIndices.empty()) {
+        return false;
+    }
+
     const std::vector<std::string> args = getArgs(fullExpr);
 
-    if (coreExpr == "in") {
-        if (args.size() >= 1 && args[0] == outputVariable) return true;
+    // Check if outputVariable appears at any of the configured output positions
+    for (int outIdx : it->second.outputIndices) {
+        if (outIdx >= 0 && outIdx < static_cast<int>(args.size())) {
+            if (args[outIdx] == outputVariable) {
+                return true;
+            }
+        }
     }
-    if (coreExpr == "in2") {
-        if (args.size() >= 2 && args[1] == outputVariable) return true;
-    }
-    if (coreExpr == "in3") {
-        if (args.size() >= 3 && args[2] == outputVariable) return true;
-    }
+
     return false;
 }
 
@@ -805,32 +901,38 @@ inline std::string createReshuffledMirrored(const std::string& expr,
     const std::string& anchorName,
     bool anchorFirst,
     const std::map<std::string, CoreExpressionConfig>& coreExpressionMap) {
+
     // Build the implication chain
     std::vector< std::tuple< std::string, std::vector<std::string>, std::set<std::string> > > tempChain;
     const std::string head = disintegrateImplication(expr, tempChain, coreExpressionMap);
 
-    // Determine output variable from head
+    // 1. GENERIC: Determine output variable from head using configuration
     const std::vector<std::string> headArgs = getArgs(head);
     const std::string headExpr = extractExpression(head);
 
     std::string outputVariable;
-    if (headExpr == "in") {
-        if (!headArgs.empty()) outputVariable = headArgs[0];
-    }
-    else if (headExpr == "in2") {
-        if (headArgs.size() >= 2U) outputVariable = headArgs[1];
-    }
-    else if (headExpr == "in3") {
-        if (headArgs.size() >= 3U) outputVariable = headArgs[2];
-    }
-    assert(!outputVariable.empty());
+    auto itHead = coreExpressionMap.find(headExpr);
 
-    // Split chain into "alternative" (the one that keeps output var) and the rest
+    if (itHead != coreExpressionMap.end() && !itHead->second.outputIndices.empty()) {
+        // Assume the first defined output index is the primary output for mirroring
+        int primaryOutputIndex = itHead->second.outputIndices[0];
+        assert(primaryOutputIndex >= 0 && primaryOutputIndex < static_cast<int>(headArgs.size()));
+        outputVariable = headArgs[primaryOutputIndex];
+    }
+
+    // If we couldn't find a configured output variable, we cannot mirror
+    if (outputVariable.empty()) {
+        return std::string();
+    }
+
+    // 2. Split chain into "alternative" and the rest
     std::string alternative;
     std::vector<std::string> chain;
     for (std::size_t i = 0; i < tempChain.size(); ++i) {
         const std::string& leftExpr = std::get<0>(tempChain[i]);
-        if (ce::staysOutputVariable(leftExpr, outputVariable)) {
+
+        // Pass map to the updated staysOutputVariable
+        if (ce::staysOutputVariable(leftExpr, outputVariable, coreExpressionMap)) {
             alternative = leftExpr;
         }
         else {
@@ -846,37 +948,31 @@ inline std::string createReshuffledMirrored(const std::string& expr,
         return std::string();
     }
 
+    // ... (rest of function: rebuilding the expression logic remains the same) ...
     // Final build order: remaining left exprs ... then head, then alternative
     chain.push_back(head);
     chain.push_back(alternative);
 
-    // Collect all args to remove (union over the per-node arg lists from tempChain)
+    // Collect args to remove...
     std::set<std::string> argsToRemove;
-    for (std::size_t i = 0; i < tempChain.size(); ++i) {
-        const std::vector<std::string>& nodeArgs = std::get<1>(tempChain[i]);
-        for (std::size_t k = 0; k < nodeArgs.size(); ++k) {
-            argsToRemove.insert(nodeArgs[k]);
-        }
+    for (const auto& t : tempChain) {
+        const std::vector<std::string>& nodeArgs = std::get<1>(t);
+        argsToRemove.insert(nodeArgs.begin(), nodeArgs.end());
     }
 
-    // For each element in chain, precompute its argument set
+    // Precompute arg sets...
     std::vector< std::set<std::string> > argsChain;
     argsChain.reserve(chain.size());
-    for (std::size_t i = 0; i < chain.size(); ++i) {
-        const std::vector<std::string> a = getArgs(chain[i]);
-        std::set<std::string> as;
-        for (std::size_t k = 0; k < a.size(); ++k) as.insert(a[k]);
-        argsChain.push_back(as);
+    for (const auto& c : chain) {
+        const std::vector<std::string> a = getArgs(c);
+        argsChain.emplace_back(a.begin(), a.end());
     }
 
-    // For each arg_to_remove, record the first index in chain where it occurs
-    if (chain.size() < 1U) {
-        return std::string();
-    }
-    std::vector< std::vector<std::string> > howToRemove(chain.size() - 1U);
-    for (std::set<std::string>::const_iterator it = argsToRemove.begin();
-        it != argsToRemove.end(); ++it) {
-        const std::string& argToRemove = *it;
+    // Determine removal order...
+    if (chain.empty()) return std::string();
+    std::vector< std::vector<std::string> > howToRemove(chain.size() - 1);
+
+    for (const std::string& argToRemove : argsToRemove) {
         for (std::size_t idx = 0; idx < chain.size(); ++idx) {
             if (argsChain[idx].find(argToRemove) != argsChain[idx].end()) {
                 if (idx < howToRemove.size()) {
@@ -887,21 +983,18 @@ inline std::string createReshuffledMirrored(const std::string& expr,
         }
     }
 
-    // Reconstruct expression by nesting from the end
-    std::string newExpr = chain[chain.size() - 1U];
-    for (std::ptrdiff_t ind = static_cast<std::ptrdiff_t>(chain.size()) - 2; ind >= 0; --ind) {
-        // join howToRemove[ind] with commas inside [...]
-        const std::vector<std::string>& v = howToRemove[static_cast<std::size_t>(ind)];
+    // Reconstruct...
+    std::string newExpr = chain.back();
+    for (int ind = static_cast<int>(chain.size()) - 2; ind >= 0; --ind) {
+        const std::vector<std::string>& v = howToRemove[ind];
         std::string joined;
         for (std::size_t j = 0; j < v.size(); ++j) {
             if (j > 0) joined.push_back(',');
             joined += v[j];
         }
-        const std::string substr = std::string("[") + joined + "]";
-        newExpr = std::string("(>") + substr + chain[static_cast<std::size_t>(ind)] + newExpr + ")";
+        newExpr = "(>[" + joined + "]" + chain[ind] + newExpr + ")";
     }
 
-    // Python had a naming glitch; the intent is to return the rebuilt expression.
     return newExpr;
 }
 
@@ -979,6 +1072,12 @@ inline bool expressionIsSimple(const std::string& expr) {
     if (expr.size() >= 3 && expr[0] == '!' && expr[1] == '(' && expr[2] == '>') {
         return false;
     }
+    if (expr.size() >= 2 && expr[0] == '(' && expr[1] == '&') {
+        return false;
+    }
+    if (expr.size() >= 3 && expr[0] == '!' && expr[1] == '(' && expr[2] == '&') {
+        return false;
+    }
     return true;
 }
 
@@ -987,8 +1086,8 @@ inline std::pair<std::string, std::string>
 extractKeyValue(const std::string& expr2,
     const std::map<std::string, ce::CoreExpressionConfig>& coreExpressionMap) {
     // Parse to tree
-    std::pair<TreeNode1*, int> pr = parseExpr(expr2, coreExpressionMap);
-    TreeNode1* root = pr.first;
+    TreeNode1* root = parseExpr(expr2);
+
 
     // Walk to the right until we leave '>' nodes; then stringify that subtree.
     std::string value;

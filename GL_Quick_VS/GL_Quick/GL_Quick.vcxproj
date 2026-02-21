@@ -75,7 +75,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <AdditionalIncludeDirectories>$(ProjectDir)\src</AdditionalIncludeDirectories>
@@ -88,6 +88,7 @@
       <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
       <FloatingPointModel>Fast</FloatingPointModel>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <AdditionalOptions>/Zo %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -106,7 +107,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\analyze_expressions.hpp" />
+    <ClInclude Include="src\argument_analyzer.hpp" />
     <ClInclude Include="src\create_expressions_shim.hpp" />
+    <ClInclude Include="src\json.hpp" />
     <ClInclude Include="src\parameters.hpp" />
     <ClInclude Include="src\run_modes.hpp" />
   </ItemGroup>

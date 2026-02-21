@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>(&gt;[*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,*])(&gt;[v10,v11,v12](in3[v10,v11,v12,*])(&gt;[](in3[v8,v7,v10,*])(in3[v9,v11,v12,*])))))</title>
-  <title>((v8*v7)*v11)=((v7*v8)*v11)</title>
+  <title>(&gt;[N,s,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(&gt;[v1,v2](in2[v1,v2,s])(preorder[N,+,v1,v2])))</title>
+  <title>from s(v1)=v2 follows (preorder[N,+,v1,v2])</title>
   
     <style>
       body { font-family: Arial, sans-serif; margin: 2rem; color: #000080; padding-bottom: 200em;}
@@ -33,12 +33,60 @@
      .mirrored a.theorem-link[href$=".html"] .clickable {
      color: #d73a49 !important;
      }
+     .validity-tag {
+       color: #22863a !important;
+       font-size: 0.78em;
+       margin-left: 0.45em;
+       white-space: nowrap;
+       display: inline-block;
+       font-weight: normal;
+       line-height: 1;
+       vertical-align: baseline;
+     }
+
+     .proof-section { margin-top: 0.8em; }
+     .proof-section-title {
+       font-size: 1.05em;
+       font-weight: 700;
+       color: #586069;
+       margin: 0.2em 0 0.8em 0;
+       text-transform: uppercase;
+       letter-spacing: 0.03em;
+     }
+     .main-proof-section { margin-bottom: 1.2em; }
+     .subproofs-section { border-top: 1px solid #d0d7de; padding-top: 0.8em; }
+     .subproof-card {
+       margin: 0.8em 0 1.1em 0;
+       padding: 0.7em 0.8em;
+       background: #fbfdff;
+       border: 1px solid #d8dee4;
+       border-left: 4px solid #9ecbff;
+       border-radius: 6px;
+     }
+     .subproof-title {
+       font-weight: 700;
+       margin-bottom: 0.35em;
+       color: #24292f;
+     }
+     .subproof-label {
+       color: #57606a;
+       font-weight: 600;
+       margin-left: 0.15em;
+     }
+     .subproof-meta {
+       margin-bottom: 0.55em;
+       color: #57606a;
+       font-size: 0.95em;
+     }
+     .subproof-goal { color: #0366d6; }
+     .proof-empty { color:#6a737d; font-style: italic; }
+
     </style>
     
   
     <script>
     function processText(input) {
-      const indentChar = "\t";
+      const indentChar = "  ";
       let indent = 0, output = "", token = "";
       for (const char of input) {
         if (char === "(") {
@@ -46,7 +94,8 @@
           output += indentChar.repeat(indent) + "(\n"; indent++;
         } else if (char === ")") {
           if (token.trim()) { output += indentChar.repeat(indent) + token.trim() + "\n"; token = ""; }
-          indent--; output += indentChar.repeat(indent) + ")" + "\n";
+          indent = Math.max(0, indent - 1); 
+          output += indentChar.repeat(indent) + ")" + "\n";
         } else {
           token += char;
         }
@@ -54,30 +103,31 @@
       if (token.trim()) output += indentChar.repeat(indent) + token.trim() + "\n";
       return output;
     }
+
     document.addEventListener('DOMContentLoaded', function() {
+      // Inject a reusable dialog into the body
+      document.body.insertAdjacentHTML('beforeend', `
+        <dialog id="expr-modal" style="border:1px solid #d0d7de; border-radius:6px; background:#f6f8fa; color:#000080; padding:1em; max-width:80%; max-height:80vh; overflow:auto; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
+          <pre id="expr-content" style="white-space:pre-wrap; font-family:monospace; margin:0;"></pre>
+        </dialog>
+      `);
+      
+      const modal = document.getElementById('expr-modal');
+      const content = document.getElementById('expr-content');
+
+      // Close modal when clicking anywhere outside the box
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal) modal.close();
+      });
+
       document.body.addEventListener('contextmenu', function(e) {
         const el = e.target.closest('.clickable');
         if (!el) return;
         e.preventDefault();
-        const formatted = processText(el.getAttribute('data-text'));
-        const w = window.open('', 'Expression', 'width=500,height=300');
-        w.document.write(`
-          <!DOCTYPE html>
-          <html lang="en">
-            <head>
-              <meta charset="UTF-8">
-              <title>Expression</title>
-              <style>
-                body { background: #f6f8fa; color: #000080; font-family: monospace; margin: 0; }
-                pre  { padding: 1em; white-space: pre-wrap; }
-                .clickable    { color: lightblue; }
-                .goal-highlight { color: red; font-weight: bold; }
-              </style>
-            </head>
-            <body><pre>${formatted}</pre></body>
-          </html>`);
-        w.document.close();
-        w.onblur = () => w.close();
+        
+        // Populate and open the native modal
+        content.textContent = processText(el.getAttribute('data-text'));
+        modal.showModal();
       });
     });
     </script>
@@ -92,17 +142,19 @@
       <span style="margin-right:1em;"><span style="color:red; font-weight:bold;">■</span> Goal of the proof</span>
       <span style="margin-right:1em;"><span style="color:lightblue;">■</span> Has justification link</span>
       <span style="margin-right:1em;"><span style="color:#888888;">■</span> Readable version</span>
+      <span style="margin-right:1em;"><span style="color:#22863a;">(namespace)</span></span>
+      <span style="margin-right:1em;"><span style="color:magenta; font-weight:bold;">"integration target"</span></span>
       <span>Right-click to expand</span>
     </div>
   </div>
-  <h1>Chapter 71: (&gt;[*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,*])(&gt;[v10,v11,v12](in3[v10,v11,v12,*])(&gt;[](in3[v8,v7,v10,*])(in3[v9,v11,v12,*])))))</h1>
+  <h1>Chapter 71: (&gt;[N,s,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(&gt;[v1,v2](in2[v1,v2,s])(preorder[N,+,v1,v2])))</h1>
   <div style="margin-left:20px; color:#888888; font-weight:bold; font-size:3em;">
-    ((v8*v7)*v11)=((v7*v8)*v11)
+    from s(v1)=v2 follows (preorder[N,+,v1,v2])
   </div><br><br>
 
   <h2>Direct Proof</h2>
   <div class='step-output'>
-<span id='entry0'><span class="clickable" data-text="(&gt;[x,y,z](in3[x,y,z,*])(in[x,N]))">(&gt;[x,y,z](in3[x,y,z,*])(in[x,N]))</span></span>&nbsp;&nbsp;<b>disintegration</b>&nbsp;&nbsp;<a href='#entry11' style='text-decoration:none'><span class="clickable" data-text="(&amp;(&gt;[x,y,z](in3[x,y,z,*])(&amp;(in[x,N])(&amp;(in[y,N])(in[z,N]))))(&amp;(&gt;[x,y](&amp;(in[x,N])(in[y,N]))!(&gt;[z](in[z,N])!(in3[x,y,z,*])))(&gt;[x,y](&amp;(in[x,N])(in[y,N]))(&gt;[z1,z2](&amp;(in3[x,y,z1,*])(in3[x,y,z2,*]))(=[z1,z2])))))">(&amp;(&gt;[x,y,z](in3[x,y,z,*])(&amp;(in[x,N])(&amp;(in[y,N])(in[z,N]))))(&amp;(&gt;[x,y](&amp;(in[x,N])(in[y,N]))!(&gt;[z](in[z,N])!(in3[x,y,z,*])))(&gt;[x,y](&amp;(in[x,N])(in[y,N]))(&gt;[z1,z2](&amp;(in3[x,y,z1,*])(in3[x,y,z2,*]))(=[z1,z2])))))</span></a><br/><br/><br/><span id='entry1'><span class="clickable" data-text="(in[v8,N])">(in[v8,N])</span></span>&nbsp;&nbsp;<b>implication</b>&nbsp;&nbsp;<a href='#entry0' style='text-decoration:none'><span class="clickable" data-text="(&gt;[x,y,z](in3[x,y,z,*])(in[x,N]))">(&gt;[x,y,z](in3[x,y,z,*])(in[x,N]))</span></a>&nbsp;&nbsp;<a href='#entry5' style='text-decoration:none'><span class="clickable" data-text="(in3[v8,v7,v10,*])">(in3[v8,v7,v10,*])</span></a><br/><br/><br/><div class='implication' style='margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;'>RULE:  from x*y=z follows x in N IMPLIES:  from v8*v7=v10 follows v8 in N</div><br/><br/><br/><span id='entry2'><span class="clickable" data-text="(&gt;[x,y,z](in3[x,y,z,*])(in[y,N]))">(&gt;[x,y,z](in3[x,y,z,*])(in[y,N]))</span></span>&nbsp;&nbsp;<b>disintegration</b>&nbsp;&nbsp;<a href='#entry11' style='text-decoration:none'><span class="clickable" data-text="(&amp;(&gt;[x,y,z](in3[x,y,z,*])(&amp;(in[x,N])(&amp;(in[y,N])(in[z,N]))))(&amp;(&gt;[x,y](&amp;(in[x,N])(in[y,N]))!(&gt;[z](in[z,N])!(in3[x,y,z,*])))(&gt;[x,y](&amp;(in[x,N])(in[y,N]))(&gt;[z1,z2](&amp;(in3[x,y,z1,*])(in3[x,y,z2,*]))(=[z1,z2])))))">(&amp;(&gt;[x,y,z](in3[x,y,z,*])(&amp;(in[x,N])(&amp;(in[y,N])(in[z,N]))))(&amp;(&gt;[x,y](&amp;(in[x,N])(in[y,N]))!(&gt;[z](in[z,N])!(in3[x,y,z,*])))(&gt;[x,y](&amp;(in[x,N])(in[y,N]))(&gt;[z1,z2](&amp;(in3[x,y,z1,*])(in3[x,y,z2,*]))(=[z1,z2])))))</span></a><br/><br/><br/><span id='entry3'><span class="clickable" data-text="(in[v7,N])">(in[v7,N])</span></span>&nbsp;&nbsp;<b>implication</b>&nbsp;&nbsp;<a href='#entry2' style='text-decoration:none'><span class="clickable" data-text="(&gt;[x,y,z](in3[x,y,z,*])(in[y,N]))">(&gt;[x,y,z](in3[x,y,z,*])(in[y,N]))</span></a>&nbsp;&nbsp;<a href='#entry5' style='text-decoration:none'><span class="clickable" data-text="(in3[v8,v7,v10,*])">(in3[v8,v7,v10,*])</span></a><br/><br/><br/><div class='implication' style='margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;'>RULE:  from x*y=z follows y in N IMPLIES:  from v8*v7=v10 follows v7 in N</div><br/><br/><br/><span id='entry4'><span class="clickable" data-text="(in3[v7,v8,v9,*])">(in3[v7,v8,v9,*])</span></span>&nbsp;&nbsp;<b>task formulation</b><br/><br/><br/><span id='entry5'><span class="clickable" data-text="(in3[v8,v7,v10,*])">(in3[v8,v7,v10,*])</span></span>&nbsp;&nbsp;<b>task formulation</b><br/><br/><br/><span id='entry7'><span class="clickable" data-text="(in3[v7,v8,v10,*])">(in3[v7,v8,v10,*])</span></span>&nbsp;&nbsp;<b>implication</b>&nbsp;&nbsp;<a href='#entry6' style='text-decoration:none'><a href="chapter55.html" class="theorem-link"><span class="clickable" data-text="(&gt;[*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,*])(in3[v8,v7,v9,*])))">(&gt;[*](NaturalNumbers[N,0,1,s,+,*])(&gt;[v7,v8,v9](in3[v7,v8,v9,*])(in3[v8,v7,v9,*])))</span></a></a>&nbsp;&nbsp;<a href='#entry8' style='text-decoration:none'><span class="clickable" data-text="(NaturalNumbers[N,0,1,s,+,*])">(NaturalNumbers[N,0,1,s,+,*])</span></a>&nbsp;&nbsp;<a href='#entry5' style='text-decoration:none'><span class="clickable" data-text="(in3[v8,v7,v10,*])">(in3[v8,v7,v10,*])</span></a><br/><br/><br/><div class='implication' style='margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;'>RULE:  (v7*v8)=v9=(v8*v7) IMPLIES:  (v8*v7)=v10=(v7*v8)</div><br/><br/><br/><span id='entry8'><span class="clickable" data-text="(NaturalNumbers[N,0,1,s,+,*])">(NaturalNumbers[N,0,1,s,+,*])</span></span>&nbsp;&nbsp;<b>task formulation</b><br/><br/><br/><span id='entry9'><span class="clickable" data-text="(&amp;(&amp;(in[0,N])(&amp;(in2[0,1,s])(&amp;(fXY[s,N,N])(&amp;(&gt;[n](in[n,N])!(in2[n,0,s]))(&gt;[m](in[m,N])(&gt;[n1,n2](&amp;(in2[n1,m,s])(in2[n2,m,s]))(=[n1,n2])))))))(&amp;(&amp;(fXYZ[+,N,N,N])(&amp;(&gt;[a](in[a,N])(&gt;[b](in3[a,0,b,+])(=[a,b])))(&gt;[b](in[b,N])(&gt;[a,c,d](&amp;(in2[b,c,s])(in3[a,b,d,+]))(&amp;(&gt;[e](in3[a,c,e,+])(in2[d,e,s]))(&gt;[e](in2[d,e,s])(in3[a,c,e,+])))))))(&amp;(fXYZ[*,N,N,N])(&amp;(&gt;[a](in[a,N])(&gt;[b](in3[a,0,b,*])(=[b,0])))(&gt;[b](in[b,N])(&gt;[a,c,d](&amp;(in2[b,c,s])(in3[a,b,d,*]))(&amp;(&gt;[e](in3[d,a,e,+])(in3[a,c,e,*]))(&gt;[e](in3[a,c,e,*])(in3[d,a,e,+])))))))))">(&amp;(&amp;(in[0,N])(&amp;(in2[0,1,s])(&amp;(fXY[s,N,N])(&amp;(&gt;[n](in[n,N])!(in2[n,0,s]))(&gt;[m](in[m,N])(&gt;[n1,n2](&amp;(in2[n1,m,s])(in2[n2,m,s]))(=[n1,n2])))))))(&amp;(&amp;(fXYZ[+,N,N,N])(&amp;(&gt;[a](in[a,N])(&gt;[b](in3[a,0,b,+])(=[a,b])))(&gt;[b](in[b,N])(&gt;[a,c,d](&amp;(in2[b,c,s])(in3[a,b,d,+]))(&amp;(&gt;[e](in3[a,c,e,+])(in2[d,e,s]))(&gt;[e](in2[d,e,s])(in3[a,c,e,+])))))))(&amp;(fXYZ[*,N,N,N])(&amp;(&gt;[a](in[a,N])(&gt;[b](in3[a,0,b,*])(=[b,0])))(&gt;[b](in[b,N])(&gt;[a,c,d](&amp;(in2[b,c,s])(in3[a,b,d,*]))(&amp;(&gt;[e](in3[d,a,e,+])(in3[a,c,e,*]))(&gt;[e](in3[a,c,e,*])(in3[d,a,e,+])))))))))</span></span>&nbsp;&nbsp;<b>expansion</b>&nbsp;&nbsp;<a href='#entry8' style='text-decoration:none'><span class="clickable" data-text="(NaturalNumbers[N,0,1,s,+,*])">(NaturalNumbers[N,0,1,s,+,*])</span></a><br/><br/><br/><span id='entry10'><span class="clickable" data-text="(fXYZ[*,N,N,N])">(fXYZ[*,N,N,N])</span></span>&nbsp;&nbsp;<b>disintegration</b>&nbsp;&nbsp;<a href='#entry9' style='text-decoration:none'><span class="clickable" data-text="(&amp;(&amp;(in[0,N])(&amp;(in2[0,1,s])(&amp;(fXY[s,N,N])(&amp;(&gt;[n](in[n,N])!(in2[n,0,s]))(&gt;[m](in[m,N])(&gt;[n1,n2](&amp;(in2[n1,m,s])(in2[n2,m,s]))(=[n1,n2])))))))(&amp;(&amp;(fXYZ[+,N,N,N])(&amp;(&gt;[a](in[a,N])(&gt;[b](in3[a,0,b,+])(=[a,b])))(&gt;[b](in[b,N])(&gt;[a,c,d](&amp;(in2[b,c,s])(in3[a,b,d,+]))(&amp;(&gt;[e](in3[a,c,e,+])(in2[d,e,s]))(&gt;[e](in2[d,e,s])(in3[a,c,e,+])))))))(&amp;(fXYZ[*,N,N,N])(&amp;(&gt;[a](in[a,N])(&gt;[b](in3[a,0,b,*])(=[b,0])))(&gt;[b](in[b,N])(&gt;[a,c,d](&amp;(in2[b,c,s])(in3[a,b,d,*]))(&amp;(&gt;[e](in3[d,a,e,+])(in3[a,c,e,*]))(&gt;[e](in3[a,c,e,*])(in3[d,a,e,+])))))))))">(&amp;(&amp;(in[0,N])(&amp;(in2[0,1,s])(&amp;(fXY[s,N,N])(&amp;(&gt;[n](in[n,N])!(in2[n,0,s]))(&gt;[m](in[m,N])(&gt;[n1,n2](&amp;(in2[n1,m,s])(in2[n2,m,s]))(=[n1,n2])))))))(&amp;(&amp;(fXYZ[+,N,N,N])(&amp;(&gt;[a](in[a,N])(&gt;[b](in3[a,0,b,+])(=[a,b])))(&gt;[b](in[b,N])(&gt;[a,c,d](&amp;(in2[b,c,s])(in3[a,b,d,+]))(&amp;(&gt;[e](in3[a,c,e,+])(in2[d,e,s]))(&gt;[e](in2[d,e,s])(in3[a,c,e,+])))))))(&amp;(fXYZ[*,N,N,N])(&amp;(&gt;[a](in[a,N])(&gt;[b](in3[a,0,b,*])(=[b,0])))(&gt;[b](in[b,N])(&gt;[a,c,d](&amp;(in2[b,c,s])(in3[a,b,d,*]))(&amp;(&gt;[e](in3[d,a,e,+])(in3[a,c,e,*]))(&gt;[e](in3[a,c,e,*])(in3[d,a,e,+])))))))))</span></a><br/><br/><br/><span id='entry11'><span class="clickable" data-text="(&amp;(&gt;[x,y,z](in3[x,y,z,*])(&amp;(in[x,N])(&amp;(in[y,N])(in[z,N]))))(&amp;(&gt;[x,y](&amp;(in[x,N])(in[y,N]))!(&gt;[z](in[z,N])!(in3[x,y,z,*])))(&gt;[x,y](&amp;(in[x,N])(in[y,N]))(&gt;[z1,z2](&amp;(in3[x,y,z1,*])(in3[x,y,z2,*]))(=[z1,z2])))))">(&amp;(&gt;[x,y,z](in3[x,y,z,*])(&amp;(in[x,N])(&amp;(in[y,N])(in[z,N]))))(&amp;(&gt;[x,y](&amp;(in[x,N])(in[y,N]))!(&gt;[z](in[z,N])!(in3[x,y,z,*])))(&gt;[x,y](&amp;(in[x,N])(in[y,N]))(&gt;[z1,z2](&amp;(in3[x,y,z1,*])(in3[x,y,z2,*]))(=[z1,z2])))))</span></span>&nbsp;&nbsp;<b>expansion</b>&nbsp;&nbsp;<a href='#entry10' style='text-decoration:none'><span class="clickable" data-text="(fXYZ[*,N,N,N])">(fXYZ[*,N,N,N])</span></a><br/><br/><br/><span id='entry12'><span class="clickable" data-text="(&gt;[x,y](in[x,N])(&gt;[](in[y,N])(&gt;[z1,z2](in3[x,y,z1,*])(&gt;[](in3[x,y,z2,*])(=[z1,z2])))))">(&gt;[x,y](in[x,N])(&gt;[](in[y,N])(&gt;[z1,z2](in3[x,y,z1,*])(&gt;[](in3[x,y,z2,*])(=[z1,z2])))))</span></span>&nbsp;&nbsp;<b>disintegration</b>&nbsp;&nbsp;<a href='#entry11' style='text-decoration:none'><span class="clickable" data-text="(&amp;(&gt;[x,y,z](in3[x,y,z,*])(&amp;(in[x,N])(&amp;(in[y,N])(in[z,N]))))(&amp;(&gt;[x,y](&amp;(in[x,N])(in[y,N]))!(&gt;[z](in[z,N])!(in3[x,y,z,*])))(&gt;[x,y](&amp;(in[x,N])(in[y,N]))(&gt;[z1,z2](&amp;(in3[x,y,z1,*])(in3[x,y,z2,*]))(=[z1,z2])))))">(&amp;(&gt;[x,y,z](in3[x,y,z,*])(&amp;(in[x,N])(&amp;(in[y,N])(in[z,N]))))(&amp;(&gt;[x,y](&amp;(in[x,N])(in[y,N]))!(&gt;[z](in[z,N])!(in3[x,y,z,*])))(&gt;[x,y](&amp;(in[x,N])(in[y,N]))(&gt;[z1,z2](&amp;(in3[x,y,z1,*])(in3[x,y,z2,*]))(=[z1,z2])))))</span></a><br/><br/><br/><span id='entry13'><span class="clickable" data-text="(=[v10,v9])">(=[v10,v9])</span></span>&nbsp;&nbsp;<b>implication</b>&nbsp;&nbsp;<a href='#entry12' style='text-decoration:none'><span class="clickable" data-text="(&gt;[x,y](in[x,N])(&gt;[](in[y,N])(&gt;[z1,z2](in3[x,y,z1,*])(&gt;[](in3[x,y,z2,*])(=[z1,z2])))))">(&gt;[x,y](in[x,N])(&gt;[](in[y,N])(&gt;[z1,z2](in3[x,y,z1,*])(&gt;[](in3[x,y,z2,*])(=[z1,z2])))))</span></a>&nbsp;&nbsp;<a href='#entry7' style='text-decoration:none'><span class="clickable" data-text="(in3[v7,v8,v10,*])">(in3[v7,v8,v10,*])</span></a>&nbsp;&nbsp;<a href='#entry4' style='text-decoration:none'><span class="clickable" data-text="(in3[v7,v8,v9,*])">(in3[v7,v8,v9,*])</span></a>&nbsp;&nbsp;<a href='#entry3' style='text-decoration:none'><span class="clickable" data-text="(in[v7,N])">(in[v7,N])</span></a>&nbsp;&nbsp;<a href='#entry1' style='text-decoration:none'><span class="clickable" data-text="(in[v8,N])">(in[v8,N])</span></a><br/><br/><br/><div class='implication' style='margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;'>RULE:  from x*y=z1 and x*y=z2 follows z1=z2 IMPLIES:  from v7*v8=v10 and v7*v8=v9 follows v10=v9</div><br/><br/><br/><span id='entry14'><span class="clickable" data-text="(in3[v10,v11,v12,*])">(in3[v10,v11,v12,*])</span></span>&nbsp;&nbsp;<b>task formulation</b><br/><br/><br/><span id='entry15'><span class="clickable" style="color:red; font-weight:bold"><span class="clickable" data-text="(in3[v9,v11,v12,*])">(in3[v9,v11,v12,*])</span></span></span>&nbsp;&nbsp;<b>equality1</b>&nbsp;&nbsp;<a href='#entry14' style='text-decoration:none'><span class="clickable" data-text="(in3[v10,v11,v12,*])">(in3[v10,v11,v12,*])</span></a>&nbsp;&nbsp;<a href='#entry13' style='text-decoration:none'><span class="clickable" data-text="(=[v10,v9])">(=[v10,v9])</span></a>
+<div class='proof-section main-proof-section'><div class='proof-section-title'>Main stack</div><span id='m-entry0'><span class="clickable" data-text="(&amp;(&amp;(&amp;(&amp;(&amp;(&amp;(&amp;(&amp;(&amp;(&amp;(&amp;(&amp;(in[i0,N])(fXY[s,N,N]))(implication4[N,i0,s]))(implication5[N,s]))(fXYZ[+,N,N,N]))(implication11[N,i0,+]))(implication12[N,i0,+]))(implication13[N,s,+]))(implication21[N,s,+]))(fXYZ[*,N,N,N]))(implication15[N,i0,*]))(implication16[N,s,*,+]))(implication17[N,s,*,+]))">(&amp;(&amp;(&amp;(&amp;(&amp;(&amp;(&amp;(&amp;(&amp;(&amp;(&amp;(&amp;(in[i0,N])(fXY[s,N,N]))(implication4[N,i0,s]))(implication5[N,s]))(fXYZ[+,N,N,N]))(implication11[N,i0,+]))(implication12[N,i0,+]))(implication13[N,s,+]))(implication21[N,s,+]))(fXYZ[*,N,N,N]))(implication15[N,i0,*]))(implication16[N,s,*,+]))(implication17[N,s,*,+]))</span> <span class="validity-tag">(main)</span></span>&nbsp;&nbsp;<b>expansion</b>&nbsp;&nbsp;<a href='#m-entry10' style='text-decoration:none'><span class="clickable" data-text="(NaturalNumbers[N,i0,s,+,*])">(NaturalNumbers[N,i0,s,+,*])</span></a> <span class="validity-tag">(main)</span><br/><br/><br/><span id='m-entry1'><span class="clickable" data-text="(fXY[s,N,N])">(fXY[s,N,N])</span> <span class="validity-tag">(main)</span></span>&nbsp;&nbsp;<b>disintegration</b>&nbsp;&nbsp;<a href='#m-entry0' style='text-decoration:none'><span class="clickable" data-text="(&amp;(&amp;(&amp;(&amp;(&amp;(&amp;(&amp;(&amp;(&amp;(&amp;(&amp;(&amp;(in[i0,N])(fXY[s,N,N]))(implication4[N,i0,s]))(implication5[N,s]))(fXYZ[+,N,N,N]))(implication11[N,i0,+]))(implication12[N,i0,+]))(implication13[N,s,+]))(implication21[N,s,+]))(fXYZ[*,N,N,N]))(implication15[N,i0,*]))(implication16[N,s,*,+]))(implication17[N,s,*,+]))">(&amp;(&amp;(&amp;(&amp;(&amp;(&amp;(&amp;(&amp;(&amp;(&amp;(&amp;(&amp;(in[i0,N])(fXY[s,N,N]))(implication4[N,i0,s]))(implication5[N,s]))(fXYZ[+,N,N,N]))(implication11[N,i0,+]))(implication12[N,i0,+]))(implication13[N,s,+]))(implication21[N,s,+]))(fXYZ[*,N,N,N]))(implication15[N,i0,*]))(implication16[N,s,*,+]))(implication17[N,s,*,+]))</span></a> <span class="validity-tag">(main)</span><br/><br/><br/><span id='m-entry2'><span class="clickable" data-text="(&amp;(&amp;(&amp;(implication0[s,N])(implication1[s,N]))(implication2[N,N,s]))(implication3[N,s]))">(&amp;(&amp;(&amp;(implication0[s,N])(implication1[s,N]))(implication2[N,N,s]))(implication3[N,s]))</span> <span class="validity-tag">(main)</span></span>&nbsp;&nbsp;<b>expansion</b>&nbsp;&nbsp;<a href='#m-entry1' style='text-decoration:none'><span class="clickable" data-text="(fXY[s,N,N])">(fXY[s,N,N])</span></a> <span class="validity-tag">(main)</span><br/><br/><br/><span id='m-entry3'><span class="clickable" data-text="(implication1[s,N])">(implication1[s,N])</span> <span class="validity-tag">(main)</span></span>&nbsp;&nbsp;<b>disintegration</b>&nbsp;&nbsp;<a href='#m-entry2' style='text-decoration:none'><span class="clickable" data-text="(&amp;(&amp;(&amp;(implication0[s,N])(implication1[s,N]))(implication2[N,N,s]))(implication3[N,s]))">(&amp;(&amp;(&amp;(implication0[s,N])(implication1[s,N]))(implication2[N,N,s]))(implication3[N,s]))</span></a> <span class="validity-tag">(main)</span><br/><br/><br/><span id='m-entry4'><span class="clickable" data-text="(&gt;[v4](in2[v5,v4,s])(in[v4,N]))">(&gt;[v4](in2[v5,v4,s])(in[v4,N]))</span> <span class="validity-tag">(main)</span></span>&nbsp;&nbsp;<b>expansion</b>&nbsp;&nbsp;<a href='#m-entry3' style='text-decoration:none'><span class="clickable" data-text="(implication1[s,N])">(implication1[s,N])</span></a> <span class="validity-tag">(main)</span><br/><br/><br/><span id='m-entry5'><span class="clickable" data-text="(in[i1,N])">(in[i1,N])</span> <span class="validity-tag">(main)</span></span>&nbsp;&nbsp;<b>implication</b>&nbsp;&nbsp;<a href='#m-entry4' style='text-decoration:none'><span class="clickable" data-text="(&gt;[v4](in2[v5,v4,s])(in[v4,N]))">(&gt;[v4](in2[v5,v4,s])(in[v4,N]))</span></a> <span class="validity-tag">(main)</span>&nbsp;&nbsp;<a href='#m-entry7' style='text-decoration:none'><span class="clickable" data-text="(in2[i0,i1,s])">(in2[i0,i1,s])</span></a> <span class="validity-tag">(main)</span><br/><br/><br/><div class='implication' style='margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;'>RULE:  from s(v5)=v4 follows v4 in N IMPLIES:  from s(i0)=i1 follows i1 in N</div><br/><br/><br/><span id='m-entry6'><span class="clickable" data-text="(in2[v1,v2,s])">(in2[v1,v2,s])</span> <span class="validity-tag">(main)</span></span>&nbsp;&nbsp;<b>task formulation</b><br/><br/><br/><span id='m-entry7'><span class="clickable" data-text="(in2[i0,i1,s])">(in2[i0,i1,s])</span> <span class="validity-tag">(main)</span></span>&nbsp;&nbsp;<b>disintegration</b>&nbsp;&nbsp;<a href='#m-entry9' style='text-decoration:none'><span class="clickable" data-text="(&amp;(&amp;(&amp;(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))">(&amp;(&amp;(&amp;(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))</span></a> <span class="validity-tag">(main)</span><br/><br/><br/><span id='m-entry8'><span class="clickable" data-text="(AnchorGauss[N,i0,s,+,*,i1,i2,id])">(AnchorGauss[N,i0,s,+,*,i1,i2,id])</span> <span class="validity-tag">(main)</span></span>&nbsp;&nbsp;<b>task formulation</b><br/><br/><br/><span id='m-entry9'><span class="clickable" data-text="(&amp;(&amp;(&amp;(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))">(&amp;(&amp;(&amp;(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))</span> <span class="validity-tag">(main)</span></span>&nbsp;&nbsp;<b>expansion</b>&nbsp;&nbsp;<a href='#m-entry8' style='text-decoration:none'><span class="clickable" data-text="(AnchorGauss[N,i0,s,+,*,i1,i2,id])">(AnchorGauss[N,i0,s,+,*,i1,i2,id])</span></a> <span class="validity-tag">(main)</span><br/><br/><br/><span id='m-entry10'><span class="clickable" data-text="(NaturalNumbers[N,i0,s,+,*])">(NaturalNumbers[N,i0,s,+,*])</span> <span class="validity-tag">(main)</span></span>&nbsp;&nbsp;<b>disintegration</b>&nbsp;&nbsp;<a href='#m-entry9' style='text-decoration:none'><span class="clickable" data-text="(&amp;(&amp;(&amp;(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))">(&amp;(&amp;(&amp;(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))</span></a> <span class="validity-tag">(main)</span><br/><br/><br/><span id='m-entry11'><span class="clickable" data-text="(&amp;(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))">(&amp;(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))</span> <span class="validity-tag">(main)</span></span>&nbsp;&nbsp;<b>expansion</b>&nbsp;&nbsp;<a href='#m-entry13' style='text-decoration:none'><span class="clickable" data-text="(AnchorPeano[N,i0,s,+,*,i1])">(AnchorPeano[N,i0,s,+,*,i1])</span></a> <span class="validity-tag">(main)</span><br/><br/><br/><span id='m-entry12'><span class="clickable" data-text="(&gt;[](NaturalNumbers[1,2,3,4,5])(&gt;[](in2[2,6,3])(AnchorPeano[1,2,3,4,5,6])))">(&gt;[](NaturalNumbers[1,2,3,4,5])(&gt;[](in2[2,6,3])(AnchorPeano[1,2,3,4,5,6])))</span> <span class="validity-tag">(main)</span></span>&nbsp;&nbsp;<b>reformulation for integration</b>&nbsp;&nbsp;<a href='#m-entry11' style='text-decoration:none'><span class="clickable" data-text="(&amp;(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))">(&amp;(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))</span></a> <span class="validity-tag">(main)</span><br/><br/><br/><span id='m-entry13'><span class="clickable" data-text="(AnchorPeano[N,i0,s,+,*,i1])">(AnchorPeano[N,i0,s,+,*,i1])</span> <span class="validity-tag">(main)</span></span>&nbsp;&nbsp;<b>implication</b>&nbsp;&nbsp;<a href='#m-entry12' style='text-decoration:none'><span class="clickable" data-text="(&gt;[](NaturalNumbers[1,2,3,4,5])(&gt;[](in2[2,6,3])(AnchorPeano[1,2,3,4,5,6])))">(&gt;[](NaturalNumbers[1,2,3,4,5])(&gt;[](in2[2,6,3])(AnchorPeano[1,2,3,4,5,6])))</span></a> <span class="validity-tag">(main)</span>&nbsp;&nbsp;<a href='#m-entry10' style='text-decoration:none'><span class="clickable" data-text="(NaturalNumbers[N,i0,s,+,*])">(NaturalNumbers[N,i0,s,+,*])</span></a> <span class="validity-tag">(main)</span>&nbsp;&nbsp;<a href='#m-entry7' style='text-decoration:none'><span class="clickable" data-text="(in2[i0,i1,s])">(in2[i0,i1,s])</span></a> <span class="validity-tag">(main)</span><br/><br/><br/><div class='implication' style='margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;'>RULE:  from (NaturalNumbers[1,2,3,4,5]), 3(2)=6 follows (AnchorPeano[1,2,3,4,5,6]) IMPLIES:  from (NaturalNumbers[N,i0,s,+,*]), s(i0)=i1 follows (AnchorPeano[N,i0,s,+,*,i1])</div><br/><br/><br/><span id='m-entry14'><a href="chapter15.html" class="theorem-link"><span class="clickable" data-text="(&gt;[s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2](in2[v1,v2,s])(in3[v1,i1,v2,+])))">(&gt;[s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2](in2[v1,v2,s])(in3[v1,i1,v2,+])))</span></a> <span class="validity-tag">(main)</span></span>&nbsp;&nbsp;<b>broadcast</b><br/><br/><br/><span id='m-entry15'><span class="clickable" data-text="(in3[v1,i1,v2,+])">(in3[v1,i1,v2,+])</span> <span class="validity-tag">(main)</span></span>&nbsp;&nbsp;<b>implication</b>&nbsp;&nbsp;<a href='#m-entry14' style='text-decoration:none'><a href="chapter15.html" class="theorem-link"><span class="clickable" data-text="(&gt;[s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2](in2[v1,v2,s])(in3[v1,i1,v2,+])))">(&gt;[s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2](in2[v1,v2,s])(in3[v1,i1,v2,+])))</span></a></a> <span class="validity-tag">(main)</span>&nbsp;&nbsp;<a href='#m-entry13' style='text-decoration:none'><span class="clickable" data-text="(AnchorPeano[N,i0,s,+,*,i1])">(AnchorPeano[N,i0,s,+,*,i1])</span></a> <span class="validity-tag">(main)</span>&nbsp;&nbsp;<a href='#m-entry6' style='text-decoration:none'><span class="clickable" data-text="(in2[v1,v2,s])">(in2[v1,v2,s])</span></a> <span class="validity-tag">(main)</span><br/><br/><br/><div class='implication' style='margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;'>RULE:  s(v1)=(v1+i1) IMPLIES:  s(v1)=(v1+i1)</div><br/><br/><br/><span id='m-entry19'><span class="clickable" data-text="(preorder[N,+,v1,v2])">(preorder[N,+,v1,v2])</span> <span class="validity-tag">(main)</span></span>&nbsp;&nbsp;<b>implication</b>&nbsp;&nbsp;<a href='#m-entry18' style='text-decoration:none'><span class="clickable" data-text="(&gt;[v3](in[v3,N])(&gt;[](in3[v1,v3,v2,+])(preorder[N,+,v1,v2])))">(&gt;[v3](in[v3,N])(&gt;[](in3[v1,v3,v2,+])(preorder[N,+,v1,v2])))</span></a> <span class="validity-tag">(main)</span>&nbsp;&nbsp;<a href='#m-entry15' style='text-decoration:none'><span class="clickable" data-text="(in3[v1,i1,v2,+])">(in3[v1,i1,v2,+])</span></a> <span class="validity-tag">(main)</span>&nbsp;&nbsp;<a href='#m-entry5' style='text-decoration:none'><span class="clickable" data-text="(in[i1,N])">(in[i1,N])</span></a> <span class="validity-tag">(main)</span><br/><br/><br/><div class='implication' style='margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;'>RULE:  from v3 in N, v1+v3=v2 follows (preorder[N,+,v1,v2]) IMPLIES:  from v1+i1=v2, i1 in N follows (preorder[N,+,v1,v2])</div><br/><br/><br/><span id='m-entry17'><span class="clickable" data-text="!(&gt;[v3](in[v3,N])!(in3[v1,v3,v2,+]))">!(&gt;[v3](in[v3,N])!(in3[v1,v3,v2,+]))</span> <span class="validity-tag">(main)</span></span>&nbsp;&nbsp;<b>expansion for integration</b>&nbsp;&nbsp;<a href='#m-entry19' style='text-decoration:none'><span style="color:magenta !important; font-weight:bold !important;">"(preorder[N,+,v1,v2])"</span></a> <span class="validity-tag">(main)</span><br/><br/><br/><span id='m-entry18'><span class="clickable" data-text="(&gt;[v3](in[v3,N])(&gt;[](in3[v1,v3,v2,+])(preorder[N,+,v1,v2])))">(&gt;[v3](in[v3,N])(&gt;[](in3[v1,v3,v2,+])(preorder[N,+,v1,v2])))</span> <span class="validity-tag">(main)</span></span>&nbsp;&nbsp;<b>reformulation for integration</b>&nbsp;&nbsp;<a href='#m-entry17' style='text-decoration:none'><span class="clickable" data-text="!(&gt;[v3](in[v3,N])!(in3[v1,v3,v2,+]))">!(&gt;[v3](in[v3,N])!(in3[v1,v3,v2,+]))</span></a> <span class="validity-tag">(main)</span><br/><br/><br/><span id='m-entry19'><span class="clickable" style="color:red; font-weight:bold"><span class="clickable" data-text="(preorder[N,+,v1,v2])">(preorder[N,+,v1,v2])</span></span> <span class="validity-tag">(main)</span></span>&nbsp;&nbsp;<b>implication</b>&nbsp;&nbsp;<a href='#m-entry18' style='text-decoration:none'><span class="clickable" data-text="(&gt;[v3](in[v3,N])(&gt;[](in3[v1,v3,v2,+])(preorder[N,+,v1,v2])))">(&gt;[v3](in[v3,N])(&gt;[](in3[v1,v3,v2,+])(preorder[N,+,v1,v2])))</span></a> <span class="validity-tag">(main)</span>&nbsp;&nbsp;<a href='#m-entry15' style='text-decoration:none'><span class="clickable" data-text="(in3[v1,i1,v2,+])">(in3[v1,i1,v2,+])</span></a> <span class="validity-tag">(main)</span>&nbsp;&nbsp;<a href='#m-entry5' style='text-decoration:none'><span class="clickable" data-text="(in[i1,N])">(in[i1,N])</span></a> <span class="validity-tag">(main)</span><br/><br/><br/><div class='implication' style='margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;'>RULE:  from v3 in N, v1+v3=v2 follows (preorder[N,+,v1,v2]) IMPLIES:  from v1+i1=v2, i1 in N follows (preorder[N,+,v1,v2])</div></div>
   </div>
 </body>
 </html>
