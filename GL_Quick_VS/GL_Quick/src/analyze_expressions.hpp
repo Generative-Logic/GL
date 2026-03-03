@@ -376,7 +376,8 @@ namespace gl {
         
         std::set<ExpressionWithValidity> consumedAdmissionKeys;
 
-
+        // Guard against recursive re-entry into revisitRejected2
+        std::set<ExpressionWithValidity> revisitInProgress;
 
         // Default constructor (mirrors Python __init__)
         LocalMemory()
@@ -395,7 +396,8 @@ namespace gl {
             admissionMapIntegration(),
             admissionSetIntegration(),
             triggersForAdmissionSetIntegration(),
-            consumedAdmissionKeys() 
+            consumedAdmissionKeys(),
+            revisitInProgress()
         {
         }
 
@@ -417,6 +419,7 @@ namespace gl {
             admissionSetIntegration.clear();
             triggersForAdmissionSetIntegration.clear();
             consumedAdmissionKeys.clear();
+            revisitInProgress.clear();
         }
     };
 
@@ -559,53 +562,31 @@ namespace gl {
         }
     };
 
+
     struct Mail {
-        // (statement, levels)
         std::set< std::pair<std::string, std::set<int> > > statements;
+        std::set< std::tuple<std::vector<std::string>, std::string, std::set<std::string>, std::set<int>, std::string> > implications;
 
-        // (chain, head, remaining_args_key, levels, original_implication)
-        std::set<
-            std::tuple<
-            std::vector<std::string>,  // chain
-            std::string,               // head
-            std::set<std::string>,     // remaining_args_key
-            std::set<int>,             // levels
-            std::string                // original implication / or_impl
-            >
-        > implications;
+        // CHANGED: Tracking multiple origins (Vector of Pairs)
+        std::map<ExpressionWithValidity, std::vector<std::pair<std::string, std::vector<ExpressionWithValidity>>>> exprOriginMap;
 
-        // expr -> history (list of origins)
-        std::map<ExpressionWithValidity, std::pair<std::string, std::vector<ExpressionWithValidity>>> exprOriginMap;
-
-        Mail()
-            : statements(),
-            implications(),
-            exprOriginMap() {
-        }
+        Mail() : statements(), implications(), exprOriginMap() {}
     };
 
     
 
     struct EquivalenceClass {
-        // Fields (camelCase)
-        std::set<std::string> variables;                                              // set[str]
-        std::map<std::set<std::string>, std::set<int> > equalityLevelsMap;           // set[str] -> set[int]
-        std::map<ExpressionWithValidity, std::pair<std::string, std::vector<ExpressionWithValidity>>> equalityOriginMap;          // EncodedExpression -> list[str]
+        std::set<std::string> variables;
+        std::map<std::set<std::string>, std::set<int> > equalityLevelsMap;
 
-        
-        EquivalenceClass()
-            : variables(),
-            equalityLevelsMap(),
-            equalityOriginMap() {
-        }
+        // CHANGED: Tracking multiple origins
+        std::map<ExpressionWithValidity, std::vector<std::pair<std::string, std::vector<ExpressionWithValidity>>>> equalityOriginMap;
 
-        // Full constructor
+        EquivalenceClass() : variables(), equalityLevelsMap(), equalityOriginMap() {}
         EquivalenceClass(const std::set<std::string>& variables_,
             const std::map<std::set<std::string>, std::set<int> >& equalityLevelsMap_,
-            const std::map<ExpressionWithValidity, std::pair<std::string, std::vector<ExpressionWithValidity>>>& equalityOriginMap_)
-            : variables(variables_),
-            equalityLevelsMap(equalityLevelsMap_),
-            equalityOriginMap(equalityOriginMap_) {
+            const std::map<ExpressionWithValidity, std::vector<std::pair<std::string, std::vector<ExpressionWithValidity>>>>& equalityOriginMap_)
+            : variables(variables_), equalityLevelsMap(equalityLevelsMap_), equalityOriginMap(equalityOriginMap_) {
         }
     };
 
@@ -641,7 +622,7 @@ namespace gl {
         bool isActive;
         bool isPartOfRecursion;
         int deltaNumberStatements;
-        std::map<ExpressionWithValidity, std::pair<std::string, std::vector<ExpressionWithValidity> > > exprOriginMap;
+        std::map<ExpressionWithValidity, std::vector<std::pair<std::string, std::vector<ExpressionWithValidity> > > > exprOriginMap;
         int recursionCounter;
         int contradictionIndex;
         std::set<ExpressionWithValidity> integrationPrepared;
@@ -896,6 +877,9 @@ namespace gl {
 
 
 
+
+
+
         // New kernels
         BodyOfProves& performElementaryLogicalStep(BodyOfProves& body,
             unsigned coreId,
@@ -975,6 +959,10 @@ namespace gl {
         void proveKernel(const std::vector<BodyOfProves*>& bodies,
             const ParentChildrenMap& index,
             PerCoreMailboxes& boxes);
+
+        void overwriteOrigins(std::map<ExpressionWithValidity, std::vector<std::pair<std::string, std::vector<ExpressionWithValidity>>>>& left,
+            const std::map<ExpressionWithValidity, std::vector<std::pair<std::string, std::vector<ExpressionWithValidity>>>>& right,
+            int maxOrigins);
 
         // Keep ONLY this prove()
         void prove(int numberIterations,
@@ -1126,10 +1114,25 @@ namespace gl {
         // Appends a newly proved theorem to the persistent file storage.
         void saveProvedTheorems();
 
+        // NEW: Saves the surviving theorems after the Compressor is finished.
+        void saveCompressedTheorems(const std::vector<std::string>& compressedTheorems);
+
+        // Saves only the essential (compressor-surviving) theorems to proved_theorems.txt.
+        // This is the sole cross-batch propagation path: only essential theorems
+        // are inherited by subsequent batches.
+        void saveProvedTheoremsFiltered(const std::vector<std::string>& essentialTheorems);
 
 
-
-        
+        // Helper to append origins safely up to max limit
+        inline void addOrigin(std::map<ExpressionWithValidity, std::vector<std::pair<std::string, std::vector<ExpressionWithValidity>>>>& map,
+            const ExpressionWithValidity& ev,
+            const std::pair<std::string, std::vector<ExpressionWithValidity>>& origin,
+            int maxOrigins) const {
+            auto& vec = map[ev];
+            if (vec.size() < static_cast<size_t>(maxOrigins)) {
+                if (std::find(vec.begin(), vec.end(), origin) == vec.end()) vec.push_back(origin);
+            }
+        }
 
         
 //#pragma optimize("", off)
@@ -1455,20 +1458,20 @@ namespace gl {
             }
 
             std::vector<std::vector<std::string> > whenRemoved(key.size());
-            for (std::set<std::string>::const_iterator it = removedArgs.begin(); it != removedArgs.end(); ++it) {
-                const std::string& arg = *it;
-                for (std::size_t idx = 0; idx < argsChain.size(); ++idx) {
-                    const std::vector<std::string>& args = argsChain[idx];
-                    if (std::find(args.begin(), args.end(), arg) != args.end()) {
+            std::set<std::string> placed;
+            for (std::size_t idx = 0; idx < argsChain.size(); ++idx) {
+                const std::vector<std::string>& args = argsChain[idx];
+                for (std::size_t j = 0; j < args.size(); ++j) {
+                    const std::string& arg = args[j];
+                    if (removedArgs.count(arg) && placed.find(arg) == placed.end()) {
+                        placed.insert(arg);
                         if (idx < key.size()) whenRemoved[idx].push_back(arg);
-                        break;
                     }
                 }
             }
 
             for (std::size_t i = key.size(); i-- > 0; ) {
                 std::vector<std::string>& lst = whenRemoved[i];
-                std::sort(lst.begin(), lst.end(), NumericLess());
 
                 std::string joined;
                 for (std::size_t j = 0; j < lst.size(); ++j) {
@@ -4025,10 +4028,11 @@ namespace gl {
                         originImplicationExpansion.second.push_back(ExpressionWithValidity(cleanSignature, validityName));
 
                         ExpressionWithValidity ev(expandedImplication, validityName);
-                        if (mb.exprOriginMap.find(ev) == mb.exprOriginMap.end()) {
-                            mb.exprOriginMap[ev] = originImplicationExpansion;
-                            mb.mailOut.exprOriginMap[ev] = originImplicationExpansion;
-                        }
+
+                        // The addOrigin helper replaces the if() check, handling both 
+                        // the max origin limits and preventing duplicate paths.
+                        addOrigin(mb.exprOriginMap, ev, originImplicationExpansion, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
+                        addOrigin(mb.mailOut.exprOriginMap, ev, originImplicationExpansion, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
                     }
 
                     for (size_t i = 0; i < renamedChain.size() - 1; ++i) {
@@ -4041,11 +4045,9 @@ namespace gl {
                             originPremiseElement.second.push_back(ExpressionWithValidity(expandedImplication, validityName));
                             
                             ExpressionWithValidity ev(elem, cleanSignature);
-                            if (mb.exprOriginMap.find(ev) == mb.exprOriginMap.end()) {
-                                mb.exprOriginMap[ev] = originPremiseElement;
-                                mb.mailOut.exprOriginMap[ev] = originPremiseElement;
-                            }
 
+                            addOrigin(mb.exprOriginMap, ev, originPremiseElement, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
+                            addOrigin(mb.mailOut.exprOriginMap, ev, originPremiseElement, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
                         }
 
                         this->addExprToMemoryBlock(elem, mb, -1, 0, std::set<int>(), originPremiseElement, -1, -1, cleanSignature, false);
@@ -4115,10 +4117,9 @@ namespace gl {
                         originExpansion.second.push_back(ExpressionWithValidity(cleanSignature, validityName));
 
                         ExpressionWithValidity ev(expandedSignature, validityName);
-                        if (mb.exprOriginMap.find(ev) == mb.exprOriginMap.end()) {
-                            mb.exprOriginMap[ev] = originExpansion;
-                            mb.mailOut.exprOriginMap[ev] = originExpansion;
-                        }
+
+                        addOrigin(mb.exprOriginMap, ev, originExpansion, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
+                        addOrigin(mb.mailOut.exprOriginMap, ev, originExpansion, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
 
                         integrationInstruction = buildIntegrationInstruction(le.elements, le.signature);
                         std::pair<std::string, std::vector<ExpressionWithValidity>> originInstruction;
@@ -4126,10 +4127,9 @@ namespace gl {
                         originInstruction.second.push_back(ExpressionWithValidity(expandedSignature, validityName));
 
                         ExpressionWithValidity iiv(integrationInstruction, validityName);
-                        if (mb.exprOriginMap.find(iiv) == mb.exprOriginMap.end()) {
-                            mb.exprOriginMap[iiv] = originInstruction;
-                            mb.mailOut.exprOriginMap[iiv] = originInstruction;
-                        }
+
+                        addOrigin(mb.exprOriginMap, iiv, originInstruction, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
+                        addOrigin(mb.mailOut.exprOriginMap, iiv, originInstruction, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
                     }
 
                     this->addToHashMemory(le.elements,
@@ -4749,7 +4749,7 @@ namespace gl {
                         exprLevelsMap[newExpr] = newLevels;
 
                         if (parameters.trackHistory) {
-                            if (memoryBlock.exprOriginMap.find(newExprEnc) == memoryBlock.exprOriginMap.end()) {
+                            if (parameters.compressor_mode || memoryBlock.exprOriginMap.find(newExprEnc) == memoryBlock.exprOriginMap.end()) {
                                 // sorted equality list
                                 std::vector<std::string> eqs(setEqualities.begin(), setEqualities.end());
                                 std::sort(eqs.begin(), eqs.end());
@@ -4767,7 +4767,7 @@ namespace gl {
 				EncodedExpression appliedEnc(applied, expr2.validityName);
 				ExpressionWithValidity appliedWithValidity(applied, expr2.validityName);
 
-                if (memoryBlock.statementLevelsMap.find(appliedEnc) != memoryBlock.statementLevelsMap.end()) {
+                if (!parameters.compressor_mode && memoryBlock.statementLevelsMap.find(appliedEnc) != memoryBlock.statementLevelsMap.end()) {
                     continue;
                 }
 
@@ -4809,28 +4809,30 @@ namespace gl {
                         );
                     }
 
-                    if (parameters.trackHistory) {
-                        if (memoryBlock.exprOriginMap.find(appliedWithValidity) == memoryBlock.exprOriginMap.end()) {
-                            std::pair<std::string, std::vector<ExpressionWithValidity>> origin;
-                            origin.first = "equality1";
-                            origin.second.push_back(ExpressionWithValidity(expr2.original, expr2.validityName));
 
-                            std::map<std::string, std::vector<std::string> >::const_iterator oit =
-                                exprOriginMapLocal.find(applied);
-                            if (oit != exprOriginMapLocal.end()) {
-                                const std::vector<std::string>& tail = oit->second;
-                                for (std::size_t i = 0; i < tail.size(); ++i)
-                                {
-									origin.second.push_back(ExpressionWithValidity(tail[i], expr2.validityName));
-                                }
+                }
+
+                if (parameters.trackHistory) {
+                    //if (memoryBlock.exprOriginMap.find(appliedWithValidity) == memoryBlock.exprOriginMap.end()) 
+                    {
+                        std::pair<std::string, std::vector<ExpressionWithValidity>> origin;
+                        origin.first = "equality1";
+                        origin.second.push_back(ExpressionWithValidity(expr2.original, expr2.validityName));
+
+                        std::map<std::string, std::vector<std::string> >::const_iterator oit =
+                            exprOriginMapLocal.find(applied);
+                        if (oit != exprOriginMapLocal.end()) {
+                            const std::vector<std::string>& tail = oit->second;
+                            for (std::size_t i = 0; i < tail.size(); ++i)
+                            {
+                                origin.second.push_back(ExpressionWithValidity(tail[i], expr2.validityName));
                             }
-
-                            memoryBlock.exprOriginMap[appliedWithValidity] = origin;
-
-
-                           memoryBlock.mailOut.exprOriginMap[appliedWithValidity] = origin;
-
                         }
+
+                        // Using the helper to append the origin to the vector while respecting limits
+                        addOrigin(memoryBlock.exprOriginMap, appliedWithValidity, origin, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
+                        addOrigin(memoryBlock.mailOut.exprOriginMap, appliedWithValidity, origin, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
+
                     }
                 }
             }
@@ -4852,20 +4854,14 @@ namespace gl {
             }
         }
 
-        static void overwriteOrigins(std::map<ExpressionWithValidity, std::pair<std::string, std::vector<ExpressionWithValidity>>>& left,
-            const std::map<ExpressionWithValidity, std::pair<std::string, std::vector<ExpressionWithValidity>>>& right) {
-            for (std::map<ExpressionWithValidity, std::pair<std::string, std::vector<ExpressionWithValidity>>>::const_iterator it = right.begin();
-                it != right.end(); ++it) {
-                left[it->first] = it->second;
-            }
-        }
+
 
         inline void mergeTwoEquivalenceClasses(EquivalenceClass& classA,
             const EquivalenceClass& classB,
             const std::set<std::string>& eqArgs,
             const std::set<int>& levels,
             BodyOfProves& memoryBlock,
-            const std::string validityName) const {
+            const std::string validityName) {
             // If A ⊆ B: union and right-precedence dict union (B | A), then return.
             if (isSubsetOf(classA.variables, classB.variables)) {
                 // variables := B ∪ A
@@ -4880,10 +4876,14 @@ namespace gl {
                 std::map<std::set<std::string>, std::set<int> > newLevels = classB.equalityLevelsMap;
                 overwriteLevels(newLevels, classA.equalityLevelsMap);
                 classA.equalityLevelsMap.swap(newLevels);
-
+                
                 // equalityOriginMap := (B | A)
-                std::map<ExpressionWithValidity, std::pair<std::string, std::vector<ExpressionWithValidity>>> newOrigins = classB.equalityOriginMap;
-                overwriteOrigins(newOrigins, classA.equalityOriginMap);
+                // The map now stores a vector of origins to allow multiple derivation paths
+                std::map<ExpressionWithValidity, std::vector<std::pair<std::string, std::vector<ExpressionWithValidity>>>> newOrigins = classB.equalityOriginMap;
+
+                // Pass the compression limit so overwriteOrigins knows when to stop merging paths
+                overwriteOrigins(newOrigins, classA.equalityOriginMap, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
+
                 classA.equalityOriginMap.swap(newOrigins);
 
                 return;
@@ -4905,7 +4905,7 @@ namespace gl {
 
             // Build merged maps (levels + optional origin history)
             std::map<std::set<std::string>, std::set<int> > mergedMap;
-            std::map<ExpressionWithValidity, std::pair<std::string, std::vector<ExpressionWithValidity>> > mergedOriginMap;
+            std::map<ExpressionWithValidity, std::vector<std::pair<std::string, std::vector<ExpressionWithValidity>>> > mergedOriginMap;
 
             for (std::set<std::string>::const_iterator ita = classA.variables.begin();
                 ita != classA.variables.end(); ++ita) {
@@ -4973,18 +4973,16 @@ namespace gl {
                             or2.second.push_back(ExpressionWithValidity(std::string("(=[") + commonArg + "," + varA + "])", validityName));
 
 							const ExpressionWithValidity eq1Enc(eq1, validityName);
-                            if (memoryBlock.exprOriginMap.find(eq1Enc) == memoryBlock.exprOriginMap.end()) {
-                                mergedOriginMap[eq1Enc] = or1;
-                                const ExpressionWithValidity eq1Enc(eq1, validityName);
-                                memoryBlock.exprOriginMap[eq1Enc] = or1;
-							    memoryBlock.mailOut.exprOriginMap[eq1Enc] = or1;
 
-                                const ExpressionWithValidity eq2Enc(eq2, validityName);
-                                mergedOriginMap[eq2Enc] = or2;
-                                memoryBlock.exprOriginMap[eq2Enc] = or2;
-                                memoryBlock.mailOut.exprOriginMap[eq2Enc] = or2;
+                            // Check if eq1Enc exists; addOrigin handles the vector insertion and limit
+                            addOrigin(mergedOriginMap, eq1Enc, or1, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
+                            addOrigin(memoryBlock.exprOriginMap, eq1Enc, or1, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
+                            addOrigin(memoryBlock.mailOut.exprOriginMap, eq1Enc, or1, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
 
-                            }
+                            const ExpressionWithValidity eq2Enc(eq2, validityName);
+                            addOrigin(mergedOriginMap, eq2Enc, or2, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
+                            addOrigin(memoryBlock.exprOriginMap, eq2Enc, or2, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
+                            addOrigin(memoryBlock.mailOut.exprOriginMap, eq2Enc, or2, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
                         }
                     }
                 }
@@ -5011,14 +5009,22 @@ namespace gl {
 
             // classA.equalityOriginMap = classB.equalityOriginMap | classA.equalityOriginMap
             {
-                std::map<ExpressionWithValidity, std::pair<std::string, std::vector<ExpressionWithValidity>>> tmpMap = classB.equalityOriginMap;
-                overwriteOrigins(tmpMap, classA.equalityOriginMap); // right (A) overrides
+                // The map now uses a vector of origins to allow the Compressor to track multiple derivation paths
+                std::map<ExpressionWithValidity, std::vector<std::pair<std::string, std::vector<ExpressionWithValidity>>>> tmpMap = classB.equalityOriginMap;
+
+                // Merge origins from Class A into the temporary map, respecting the max_origins limit
+                overwriteOrigins(tmpMap, classA.equalityOriginMap, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
+
                 classA.equalityOriginMap.swap(tmpMap);
             }
             // classA.equalityOriginMap = merged_origin_map | classA.equality_origin_map
             {
-                std::map<ExpressionWithValidity, std::pair<std::string, std::vector<ExpressionWithValidity>>> tmpMap = mergedOriginMap;
-                overwriteOrigins(tmpMap, classA.equalityOriginMap); // right (existing A) overrides
+                // Update the type to a map of vectors to align with the new Compressor data structure
+                std::map<ExpressionWithValidity, std::vector<std::pair<std::string, std::vector<ExpressionWithValidity>>>> tmpMap = mergedOriginMap;
+
+                // Pass the max_origins limit to overwriteOrigins to manage path merging
+                overwriteOrigins(tmpMap, classA.equalityOriginMap, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
+
                 classA.equalityOriginMap.swap(tmpMap);
             }
         }
@@ -5154,23 +5160,23 @@ namespace gl {
             EquivalenceClass mergedClass;
             mergedClass.variables = eqArgs;
             mergedClass.equalityLevelsMap[eqArgs] = levels;
-            mergedClass.equalityOriginMap[eqltyEnc] = origin;
+            addOrigin(mergedClass.equalityOriginMap, eqltyEnc, origin, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
             std::pair<std::string, std::vector<ExpressionWithValidity>> mirroredOrigin;
             mirroredOrigin.first = "symmetry of equality";
             mirroredOrigin.second.push_back(ExpressionWithValidity(eqlty, validityName));
-            mergedClass.equalityOriginMap[mirroredEnc] = mirroredOrigin;
+            addOrigin(mergedClass.equalityOriginMap, mirroredEnc, mirroredOrigin, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
 
             if (parameters.trackHistory) {
 				const ExpressionWithValidity eqltyEnc(eqlty, validityName);
-                if (mb.exprOriginMap.find(eqltyEnc) == mb.exprOriginMap.end()) {
-                    mb.exprOriginMap[eqltyEnc] = origin;
-                    mb.mailOut.exprOriginMap[eqltyEnc] = origin;
-                }
-				const ExpressionWithValidity mirroredEnc(mirrored, validityName);
-                if (mb.exprOriginMap.find(mirroredEnc) == mb.exprOriginMap.end()) {
-                    mb.exprOriginMap[mirroredEnc] = mirroredOrigin;
-                    mb.mailOut.exprOriginMap[mirroredEnc] = mirroredOrigin;
-                }
+                // addOrigin handles the vector push_back, duplicate checking, 
+                // and respects parameters.compressor_max_origins_per_expr.
+                addOrigin(mb.exprOriginMap, eqltyEnc, origin, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
+                addOrigin(mb.mailOut.exprOriginMap, eqltyEnc, origin, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
+                const ExpressionWithValidity mirroredEnc(mirrored, validityName);
+                // addOrigin handles the vector push_back and ensures we don't 
+                // exceed parameters.compressor_max_origins_per_expr.
+                addOrigin(mb.exprOriginMap, mirroredEnc, mirroredOrigin, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
+                addOrigin(mb.mailOut.exprOriginMap, mirroredEnc, mirroredOrigin, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
             }
 
             // Merge all eq-classes that overlap with eq_args
@@ -5224,9 +5230,13 @@ namespace gl {
 
             // expr_origin_map = merged_class.equality_origin_map | mb.expr_origin_map
             {
-                std::map<ExpressionWithValidity, std::pair<std::string, std::vector<ExpressionWithValidity>>> merged = mergedClass.equalityOriginMap;
-                // right-precedence union
-                overwriteOrigins(merged, mb.exprOriginMap);
+                // Updated to use a vector of origins
+                std::map<ExpressionWithValidity, std::vector<std::pair<std::string, std::vector<ExpressionWithValidity>>>> merged = mergedClass.equalityOriginMap;
+
+                // right-precedence union: merge mb.exprOriginMap into 'merged'
+                // Respects the compressor_max_origins_per_expr limit during the merge
+                overwriteOrigins(merged, mb.exprOriginMap, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
+
                 mb.exprOriginMap.swap(merged);
             }
 
@@ -5285,11 +5295,10 @@ namespace gl {
                         memoryBlock.statementLevelsMap[encodedExpr] = levels;
 
                         if (parameters.trackHistory) {
-                            if (memoryBlock.exprOriginMap.find(exprWithValidity) == memoryBlock.exprOriginMap.end()) {
-                                memoryBlock.exprOriginMap[exprWithValidity] = origin;
-                                // should not already exist in mailOut
-                                memoryBlock.mailOut.exprOriginMap[exprWithValidity] = origin;
-                            }
+                            // addOrigin handles existence checks, vector push_back, 
+                            // and respects the compressor_max_origins_per_expr limit.
+                            addOrigin(memoryBlock.exprOriginMap, exprWithValidity, origin, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
+                            addOrigin(memoryBlock.mailOut.exprOriginMap, exprWithValidity, origin, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
                         }
 
                         memoryBlock.encodedStatements.push_back(EncodedExpression(expr, validityName));
@@ -5308,9 +5317,8 @@ namespace gl {
                             if (parameters.trackHistory) {
                                 if (memoryBlock.mailOut.exprOriginMap.find(exprWithValidity) ==
                                     memoryBlock.mailOut.exprOriginMap.end()) {
-                                    
 
-                                    memoryBlock.mailOut.exprOriginMap[exprWithValidity] = origin;
+                                    addOrigin(memoryBlock.mailOut.exprOriginMap, exprWithValidity, origin, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
                                 }
                             }
                         }
@@ -5470,38 +5478,30 @@ namespace gl {
             return std::string();
         }
 
-        // analyze_expressions.hpp  inside struct ExpressionAnalyzer
-        inline void sendMail(const BodyOfProves& sender,
-            const Mail& mail,
-            unsigned coreId,
-            const ParentChildrenMap& index,
-            PerCoreMailboxes& boxes) const
-        {
+
+        inline void sendMail(const BodyOfProves& sender, const Mail& mail, unsigned coreId, const ParentChildrenMap& index, PerCoreMailboxes& boxes) const {
             if (mail.statements.empty() && mail.implications.empty() && mail.exprOriginMap.empty()) return;
-
             const unsigned cores = logicalCores;
-            assert((0 <= coreId) && (coreId < logicalCores));
             const unsigned slot = coreId;
-
             auto pit = index.find(const_cast<BodyOfProves*>(&sender));
             if (pit == index.end()) return;
             const std::vector<BodyOfProves*>& children = pit->second;
 
             for (BodyOfProves* child : children) {
                 if (!child) continue;
-
                 auto it = boxes.find(child);
-                if (it == boxes.end()) continue;                 // must be preallocated
+                if (it == boxes.end()) continue;
                 std::vector<Mail>& slots = it->second;
-                if (slots.size() != cores) continue;             // hard guard
+                if (slots.size() != cores) continue;
 
                 Mail& dst = slots[slot];
                 dst.statements.insert(mail.statements.begin(), mail.statements.end());
                 dst.implications.insert(mail.implications.begin(), mail.implications.end());
 
-                std::map<ExpressionWithValidity, std::pair<std::string, std::vector<ExpressionWithValidity>>> merged = mail.exprOriginMap; // rhs wins
-                for (const auto& kv : dst.exprOriginMap) merged[kv.first] = kv.second;
-                dst.exprOriginMap.swap(merged);
+                // RESTORED OLD LOGIC: Just overwrite (RHS wins), isolated LBs don't need complex mail merging.
+                for (const auto& kv : mail.exprOriginMap) {
+                    dst.exprOriginMap[kv.first] = kv.second;
+                }
             }
         }
 

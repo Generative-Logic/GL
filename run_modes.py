@@ -136,15 +136,19 @@ def full_run():
     empty_simple_facts()
     empty_raw_proof_graph()  # <--- NEW: Clear proof graph only once at the start
 
-    # Empty proved_theorems.txt at the very start (Python should not touch it afterwards)
+    # Empty theorem output files at the very start
     theorems_dir = PROJECT_ROOT / "files" / "theorems"
     theorems_dir.mkdir(parents=True, exist_ok=True)
 
-    proved_theorems_file = theorems_dir / "proved_theorems.txt"
-    with open(proved_theorems_file, 'w', encoding='utf-8') as f:
-        f.write("")  # Clear file content
+    for fname in [
+        "proved_theorems.txt",          # cross-batch propagation (essential only)
+        "compressed_out_theorems.txt",   # diagnostic: compressor's rejected set
+    ]:
+        fpath = theorems_dir / fname
+        with open(fpath, 'w', encoding='utf-8') as f:
+            f.write("")
 
-    # You can list both tags here now that the C++ side appends instead of overwriting
+    # proved_theorems.txt is rewritten after each batch with the globally compressed set
     tags = ["Peano", "Gauss"]
 
     # 2. Iterative Execution
@@ -202,5 +206,3 @@ def full_run():
     generate_full_proof_graph.generate_proof_graph_pages(configuration_visu)
 
 
-if __name__ == "__main__":
-    full_run()

@@ -1156,6 +1156,9 @@ def makes_file_path_map(theorem_list, base_dir=None):
         elif m == "mirrored statement":
             files.append(base_dir / f"{idx}_mirrored_statement.txt")
             idx += 1
+        elif m == "reformulated statement":
+            files.append(base_dir / f"{idx}_reformulated_statement.txt")
+            idx += 1
         else:
             safe = re.sub(r"[^A-Za-z0-9._\-+]+", "_", m)[:64] or "unknown"
             files.append(base_dir / f"{idx}_unknown_{safe}.txt")
@@ -1444,6 +1447,13 @@ def generate_proof_graph_pages(config: configuration_reader):
                 "  <h2>Mirrored</h2>",
                 "  <div class='step-output'>",
                 mirrored(name, var),
+                "  </div>",
+            ])
+        elif method.lower() == "reformulated statement":
+            body.extend([
+                "  <h2>Reformulated</h2>",
+                "  <div class='step-output'>",
+                reformulated(name, file_path_map[name][0]),
                 "  </div>",
             ])
         body.append("</body>")

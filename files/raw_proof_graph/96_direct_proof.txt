@@ -3,7 +3,6 @@
 !(>[pi_1_1](in[pi_1_1,1])!(in3[9,pi_1_1,10,4]))	main	expansion for integration	(preorder[1,4,9,10])	main
 (preorder[1,4,9,10])	main	implication	(>[pi_1_1](in[pi_1_1,1])(>[](in3[9,pi_1_1,10,4])(preorder[1,4,9,10])))	main	(in3[9,6,10,4])	main	(in[6,1])	main
 (in3[9,6,10,4])	main	implication	(>[3,4,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in2[7,8,3])(in3[7,6,8,4])))	main	(AnchorPeano[1,2,3,4,5,6])	main	(in2[9,10,3])	main
-(>[3,4,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in2[7,8,3])(in3[7,6,8,4])))	main	broadcast
 (AnchorPeano[1,2,3,4,5,6])	main	implication	(>[](NaturalNumbers[1,2,3,4,5])(>[](in2[2,6,3])(AnchorPeano[1,2,3,4,5,6])))	main	(NaturalNumbers[1,2,3,4,5])	main	(in2[2,6,3])	main
 (>[](NaturalNumbers[1,2,3,4,5])(>[](in2[2,6,3])(AnchorPeano[1,2,3,4,5,6])))	main	reformulation for integration	(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))	main
 (&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))	main	expansion	(AnchorPeano[1,2,3,4,5,6])	main

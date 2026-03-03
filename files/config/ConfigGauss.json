@@ -368,7 +368,7 @@
   ,
   "prover_parameters": {
     "sizeAllBinariesAna": 10,
-    "maxIterationNumberProof": 30,
+    "maxIterationNumberProof": 40,
     "numberIterationsConjectureFiltering": 1,
     "maxSizeDefSetMapping": 5,
     "maxSizeTargetSetMapping": 12,
@@ -385,6 +385,8 @@
     "counterExampleBoundary": 6,
     "minLenLongKey": 5,
     "maxLenHypoKey": 2,
-    "debug": false
+    "debug": false,
+    "max_origin_per_expr": 1,
+    "compressor_max_origins_per_expr": 30
   }
 }

@@ -124,7 +124,7 @@ def make_readable_simple_implication_title(chain: list[str]):
     for index, element in enumerate(chain[:-1]):
         output = get_output_arg(element)
         if output == head_output and output != '':
-            readable = rewrite_expression(element) + '=' + rewrite_expression(head)
+            readable = rewrite_expression(element) + '=' + head_output + '=' + rewrite_expression(head)
             break
 
     if not readable:
@@ -462,5 +462,13 @@ def format_mirroring(sublist):
     original = make_readable_title(sublist[2])
 
     output = mirrored + ' mirrored from ' + original
+
+    return output
+
+def format_reformulation(sublist):
+    reformulated = make_readable_title(sublist[0])
+    original = make_readable_title(sublist[2])
+
+    output = reformulated + ' reformulated from ' + original
 
     return output

@@ -1,0 +1,88 @@
+(in3[i2,v1,v2,*])	main	equality1	(in3[i2,v3,v2,*])	main	(=[v3,v1])	main
+(in3[i2,v3,v2,*])	main	implication	(>[i0,*](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in3[i0,v1,v2,*])(in3[v1,i0,v2,*])))	main	(AnchorPeano[N,v3,s,+,*,i1])	main	(in3[v3,i2,v2,*])	main
+(AnchorPeano[N,v3,s,+,*,i1])	main	equality1	(AnchorPeano[N,i0,s,+,*,i1])	main	(=[i0,v3])	main
+(AnchorPeano[N,i0,s,+,*,i1])	main	implication	(>[](NaturalNumbers[1,2,3,4,5])(>[](in2[2,6,3])(AnchorPeano[1,2,3,4,5,6])))	main	(NaturalNumbers[N,i0,s,+,*])	main	(in2[i0,i1,s])	main
+(>[](NaturalNumbers[1,2,3,4,5])(>[](in2[2,6,3])(AnchorPeano[1,2,3,4,5,6])))	main	reformulation for integration	(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))	main
+(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))	main	expansion	(AnchorPeano[N,i0,s,+,*,i1])	main
+(NaturalNumbers[N,i0,s,+,*])	main	disintegration	(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main
+(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main	expansion	(AnchorGauss[N,i0,s,+,*,i1,i2,id])	main
+(AnchorGauss[N,i0,s,+,*,i1,i2,id])	main	task formulation
+(in2[i0,i1,s])	main	disintegration	(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main
+(=[i0,v3])	main	symmetry of equality	(=[v3,i0])	main
+(=[v3,i0])	main	recursion
+(in3[v3,i2,v2,*])	main	equality1	(in3[v2,i2,i0,*])	main	(=[v2,v3])	main	(=[i0,v2])	main
+(in3[v2,i2,i0,*])	main	implication	(>[v4](in[v4,N])(>[v5](in2[v4,v5,s])(>[v6,v7](in3[v6,v4,v7,*])(>[v8](in3[v7,v6,v8,+])(in3[v6,v5,v8,*])))))	main	(in2[i1,i2,s])	main	(in3[v3,v2,i0,+])	main	(in3[v2,i1,v3,*])	main	(in[i1,N])	main
+(>[v4](in[v4,N])(>[v5](in2[v4,v5,s])(>[v6,v7](in3[v6,v4,v7,*])(>[v8](in3[v7,v6,v8,+])(in3[v6,v5,v8,*])))))	main	expansion	(implication16[N,s,*,+])	main
+(implication16[N,s,*,+])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication4[N,i0,s]))(implication5[N,s]))(fXYZ[+,N,N,N]))(implication11[N,i0,+]))(implication12[N,i0,+]))(implication13[N,s,+]))(implication21[N,s,+]))(fXYZ[*,N,N,N]))(implication15[N,i0,*]))(implication16[N,s,*,+]))(implication17[N,s,*,+]))	main
+(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication4[N,i0,s]))(implication5[N,s]))(fXYZ[+,N,N,N]))(implication11[N,i0,+]))(implication12[N,i0,+]))(implication13[N,s,+]))(implication21[N,s,+]))(fXYZ[*,N,N,N]))(implication15[N,i0,*]))(implication16[N,s,*,+]))(implication17[N,s,*,+]))	main	expansion	(NaturalNumbers[N,i0,s,+,*])	main
+(in2[i1,i2,s])	main	disintegration	(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main
+(in3[v3,v2,i0,+])	main	equality1	(in3[v2,i0,v2,+])	main	(=[v2,v3])	main	(=[v2,i0])	main	(=[i0,v2])	main
+(in3[v2,i0,v2,+])	main	equality1	(in3[v2,i0,v9,+])	main	(=[v9,v2])	main
+(in3[v2,i0,v9,+])	main	implication	(>[v4,v5](=[v4,v5])(>[](in[v4,N])(>[](in[v5,N])(in3[v4,i0,v5,+]))))	main	(=[v2,v9])	main	(in[v2,N])	main	(in[v9,N])	main
+(>[v4,v5](=[v4,v5])(>[](in[v4,N])(>[](in[v5,N])(in3[v4,i0,v5,+]))))	main	expansion	(implication12[N,i0,+])	main
+(implication12[N,i0,+])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication4[N,i0,s]))(implication5[N,s]))(fXYZ[+,N,N,N]))(implication11[N,i0,+]))(implication12[N,i0,+]))(implication13[N,s,+]))(implication21[N,s,+]))(fXYZ[*,N,N,N]))(implication15[N,i0,*]))(implication16[N,s,*,+]))(implication17[N,s,*,+]))	main
+(=[v2,v9])	main	implication	(>[v4](in[v4,N])(>[v5](in[v5,N])(>[v6](in3[v4,v5,v6,*])(>[v7](in3[v4,v5,v7,*])(=[v6,v7])))))	main	(in3[v3,v10,v2,*])	main	(in3[v3,v10,v9,*])	main	(in[v3,N])	main	(in[v10,N])	main
+(>[v4](in[v4,N])(>[v5](in[v5,N])(>[v6](in3[v4,v5,v6,*])(>[v7](in3[v4,v5,v7,*])(=[v6,v7])))))	main	expansion	(implication10[N,N,*])	main
+(implication10[N,N,*])	main	disintegration	(&(&(&(&(implication6[*,N])(implication7[*,N]))(implication8[*,N]))(implication9[N,N,N,*]))(implication10[N,N,*]))	main
+(&(&(&(&(implication6[*,N])(implication7[*,N]))(implication8[*,N]))(implication9[N,N,N,*]))(implication10[N,N,*]))	main	expansion	(fXYZ[*,N,N,N])	main
+(fXYZ[*,N,N,N])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication4[N,i0,s]))(implication5[N,s]))(fXYZ[+,N,N,N]))(implication11[N,i0,+]))(implication12[N,i0,+]))(implication13[N,s,+]))(implication21[N,s,+]))(fXYZ[*,N,N,N]))(implication15[N,i0,*]))(implication16[N,s,*,+]))(implication17[N,s,*,+]))	main
+(in3[v3,v10,v2,*])	main	implication	(>[*](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v2,v1,v3,*])(in3[v1,v2,v3,*])))	main	(AnchorPeano[N,i0,s,+,*,i1])	main	(in3[v10,v3,v2,*])	main
+(in3[v10,v3,v2,*])	main	task formulation
+(in3[v3,v10,v9,*])	main	disintegration	!(>[v9](in[v9,N])!(in3[v3,v10,v9,*]))	main
+!(>[v9](in[v9,N])!(in3[v3,v10,v9,*]))	main	expansion	(existence1[N,v3,v10,*])	main
+(existence1[N,v3,v10,*])	main	implication	(>[v4](in[v4,N])(>[v5](in[v5,N])(existence1[N,v4,v5,*])))	main	(in[v3,N])	main	(in[v10,N])	main
+(>[v4](in[v4,N])(>[v5](in[v5,N])(existence1[N,v4,v5,*])))	main	expansion	(implication9[N,N,N,*])	main
+(implication9[N,N,N,*])	main	disintegration	(&(&(&(&(implication6[*,N])(implication7[*,N]))(implication8[*,N]))(implication9[N,N,N,*]))(implication10[N,N,*]))	main
+(in[v3,N])	main	disintegration	(&(&(&(&(implication22[v11,N,+,i0])(implication23[v11,N,+,v3]))(implication24[N,+,i0,v3,v11]))(in[i0,N]))(in[v3,N]))	main
+(&(&(&(&(implication22[v11,N,+,i0])(implication23[v11,N,+,v3]))(implication24[N,+,i0,v3,v11]))(in[i0,N]))(in[v3,N]))	main	expansion	(interval[N,+,i0,v3,v11])	main
+(interval[N,+,i0,v3,v11])	main	disintegration	!(>[v11](interval[N,+,i0,v3,v11])!(fXY[v12,v11,N]))	main
+!(>[v11](interval[N,+,i0,v3,v11])!(fXY[v12,v11,N]))	main	expansion	(sequence[N,+,i0,v3,v12])	main
+(sequence[N,+,i0,v3,v12])	main	implication	(>[N,i0,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](fXY[v1,v2,N])(>[v3](interval[N,+,i0,v3,v2])(sequence[N,+,i0,v3,v1]))))	main	(AnchorGauss[N,i0,s,+,*,i1,i2,id])	main	(fXY[v12,v13,N])	main	(interval[N,+,i0,v3,v13])	main
+(>[N,i0,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](fXY[v1,v2,N])(>[v3](interval[N,+,i0,v3,v2])(sequence[N,+,i0,v3,v1]))))	main	theorem
+(fXY[v12,v13,N])	main	disintegration	!(>[v12](fXY[v12,v13,N])!(and0[i0,v12,id,v3,v1,v13,s,+]))	main
+!(>[v12](fXY[v12,v13,N])!(and0[i0,v12,id,v3,v1,v13,s,+]))	main	expansion	(existence2[v13,N,i0,id,v3,v1,s,+])	main
+(existence2[v13,N,i0,id,v3,v1,s,+])	main	disintegration	!(>[v13](interval[N,+,i0,v3,v13])!(existence2[v13,N,i0,id,v3,v1,s,+]))	main
+!(>[v13](interval[N,+,i0,v3,v13])!(existence2[v13,N,i0,id,v3,v1,s,+]))	main	expansion	(fold[N,s,+,id,i0,v3,v1])	main
+(fold[N,s,+,id,i0,v3,v1])	main	task formulation
+(interval[N,+,i0,v3,v13])	main	disintegration	!(>[v13](interval[N,+,i0,v3,v13])!(existence2[v13,N,i0,id,v3,v1,s,+]))	main
+(in[v10,N])	main	implication	(>[v4](in3[v4,v5,v6,*])(in[v4,N]))	main	(in3[v10,v3,v2,*])	main
+(>[v4](in3[v4,v5,v6,*])(in[v4,N]))	main	expansion	(implication6[*,N])	main
+(implication6[*,N])	main	disintegration	(&(&(&(&(implication6[*,N])(implication7[*,N]))(implication8[*,N]))(implication9[N,N,N,*]))(implication10[N,N,*]))	main
+(in[v2,N])	main	implication	(>[v6](in3[v4,v5,v6,*])(in[v6,N]))	main	(in3[v10,v3,v2,*])	main
+(>[v6](in3[v4,v5,v6,*])(in[v6,N]))	main	expansion	(implication8[*,N])	main
+(implication8[*,N])	main	disintegration	(&(&(&(&(implication6[*,N])(implication7[*,N]))(implication8[*,N]))(implication9[N,N,N,*]))(implication10[N,N,*]))	main
+(in[v9,N])	main	disintegration	!(>[v9](in[v9,N])!(in3[v3,v10,v9,*]))	main
+(=[v9,v2])	main	symmetry of equality	(=[v2,v9])	main
+(=[v2,v3])	main	equality2	(=[v2,i0])	main	(=[i0,v3])	main
+(=[v2,i0])	main	implication	(>[v4](in[v4,N])(>[v5](in3[v4,i0,v5,*])(=[v5,i0])))	main	(in3[v10,i0,v2,*])	main	(in[v10,N])	main
+(>[v4](in[v4,N])(>[v5](in3[v4,i0,v5,*])(=[v5,i0])))	main	expansion	(implication15[N,i0,*])	main
+(implication15[N,i0,*])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication4[N,i0,s]))(implication5[N,s]))(fXYZ[+,N,N,N]))(implication11[N,i0,+]))(implication12[N,i0,+]))(implication13[N,s,+]))(implication21[N,s,+]))(fXYZ[*,N,N,N]))(implication15[N,i0,*]))(implication16[N,s,*,+]))(implication17[N,s,*,+]))	main
+(in3[v10,i0,v2,*])	main	equality1	(in3[v10,v3,v2,*])	main	(=[v3,i0])	main
+(=[i0,v2])	main	symmetry of equality	(=[v2,i0])	main
+(in3[v2,i1,v3,*])	main	equality1	(in3[v3,i1,v2,*])	main	(=[v3,v2])	main	(=[v2,v3])	main
+(in3[v3,i1,v2,*])	main	equality1	(in3[v3,v10,v2,*])	main	(=[v10,i1])	main
+(=[v10,i1])	main	symmetry of equality	(=[i1,v10])	main
+(=[i1,v10])	main	implication	(>[v4](in[v4,N])(>[v5](in2[v4,v5,s])(>[v6](in2[v4,v6,s])(=[v5,v6]))))	main	(in2[v3,i1,s])	main	(in2[v3,v10,s])	main	(in[v3,N])	main
+(>[v4](in[v4,N])(>[v5](in2[v4,v5,s])(>[v6](in2[v4,v6,s])(=[v5,v6]))))	main	expansion	(implication3[N,s])	main
+(implication3[N,s])	main	disintegration	(&(&(&(implication0[s,N])(implication1[s,N]))(implication2[N,N,s]))(implication3[N,s]))	main
+(&(&(&(implication0[s,N])(implication1[s,N]))(implication2[N,N,s]))(implication3[N,s]))	main	expansion	(fXY[s,N,N])	main
+(fXY[s,N,N])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication4[N,i0,s]))(implication5[N,s]))(fXYZ[+,N,N,N]))(implication11[N,i0,+]))(implication12[N,i0,+]))(implication13[N,s,+]))(implication21[N,s,+]))(fXYZ[*,N,N,N]))(implication15[N,i0,*]))(implication16[N,s,*,+]))(implication17[N,s,*,+]))	main
+(in2[v3,i1,s])	main	equality1	(in2[i0,i1,s])	main	(=[i0,v3])	main
+(in2[v3,v10,s])	main	task formulation
+(=[v3,v2])	main	equality2	(=[v3,i0])	main	(=[i0,v2])	main
+(in[i1,N])	main	implication	(>[v5](in2[v4,v5,s])(in[v5,N]))	main	(in2[i0,i1,s])	main
+(>[v5](in2[v4,v5,s])(in[v5,N]))	main	expansion	(implication1[s,N])	main
+(implication1[s,N])	main	disintegration	(&(&(&(implication0[s,N])(implication1[s,N]))(implication2[N,N,s]))(implication3[N,s]))	main
+(=[v3,v1])	main	implication	(>[v4,v5](in2[v4,v5,id])(=[v4,v5]))	main	(in2[v3,v1,id])	main
+(>[v4,v5](in2[v4,v5,id])(=[v4,v5]))	main	expansion	(implication18[id])	main
+(implication18[id])	main	disintegration	(&(&(implication0[id,N])(implication18[id]))(implication27[N,id]))	main
+(&(&(implication0[id,N])(implication18[id]))(implication27[N,id]))	main	expansion	(identity[N,id])	main
+(identity[N,id])	main	disintegration	(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main
+(in2[v3,v1,id])	main	equality1	(in2[i0,v1,id])	main	(=[i0,v3])	main
+(in2[i0,v1,id])	main	implication	(>[v4](in2[i0,v4,v12])(in2[i0,v4,id]))	main	(in2[i0,v1,v12])	main
+(>[v4](in2[i0,v4,v12])(in2[i0,v4,id]))	main	expansion	(implication25[i0,v12,id])	main
+(implication25[i0,v12,id])	main	disintegration	(&(&(implication25[i0,v12,id])(in2[v3,v1,v12]))(implication26[v13,s,v12,id,+]))	main
+(&(&(implication25[i0,v12,id])(in2[v3,v1,v12]))(implication26[v13,s,v12,id,+]))	main	expansion	(and0[i0,v12,id,v3,v1,v13,s,+])	main
+(and0[i0,v12,id,v3,v1,v13,s,+])	main	disintegration	!(>[v12](fXY[v12,v13,N])!(and0[i0,v12,id,v3,v1,v13,s,+]))	main
+(in2[i0,v1,v12])	main	equality1	(in2[v3,v1,v12])	main	(=[v3,i0])	main
+(in2[v3,v1,v12])	main	disintegration	(&(&(implication25[i0,v12,id])(in2[v3,v1,v12]))(implication26[v13,s,v12,id,+]))	main

@@ -1,0 +1,1 @@
+(>[N,i0,s,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[v3](sequence[N,+,i0,v2,v3])(existence4[N,+,v1,v3,i0]))))	main	reformulated from	(>[N,i0,s,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2,v3](limitSequence[N,+,v1,v2,v3])(>[v4](in2[v1,v4,s])(>[](sequence[N,+,i0,v4,v2])(sequence[N,+,i0,v1,v3])))))	main

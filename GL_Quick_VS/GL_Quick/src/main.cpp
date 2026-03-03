@@ -1,5 +1,5 @@
 /* Generative Logic : A deterministic reasoning and knowledge generation engine.
- Copyright(C) 2025 Generative Logic UG(haftungsbeschränkt)
+ Copyright(C) 2025 Generative Logic UG(haftungsbeschrï¿½nkt)
 
  This program is free software : you can redistribute it and /or modify
  it under the terms of the GNU Affero General Public License as published by
@@ -24,9 +24,12 @@
 
 #include <iostream>
 #include <chrono>
+#include <mimalloc.h>
 #include "run_modes.hpp"
 
 int main(int argc, char* argv[]) {
+    int v = mi_version();  // ensure mimalloc override DLL is loaded
+    std::cout << "mimalloc version: " << v << std::endl;
     auto start = std::chrono::high_resolution_clock::now();
 
     // Grab anchor id if provided (e.g., "Peano" or "Gauss")

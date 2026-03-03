@@ -73,6 +73,116 @@ def get_anchor_mapping_from_expr(expr_str: str, config: configuration_reader) ->
     return repl_map
 
 
+def _build_fname_list(theorems):
+    """
+    Given a list of theorem entries [expr, method, var, ...],
+    return a parallel list of (fname_list) for each entry.
+    """
+    result = []
+    idx = 0
+    for parts in theorems:
+        method = parts[1].lower() if len(parts) > 1 else ""
+        if method == "induction":
+            fnames = [f"{idx}_check_zero.txt", f"{idx + 1}_check_induction_condition.txt"]
+            idx += 2
+        elif method == "direct":
+            fnames = [f"{idx}_direct_proof.txt"]
+            idx += 1
+        elif method == "debug":
+            fnames = [f"{idx}_debug.txt"]
+            idx += 1
+        elif method == "mirrored statement":
+            fnames = [f"{idx}_mirrored_statement.txt"]
+            idx += 1
+        elif method == "reformulated statement":
+            fnames = [f"{idx}_reformulated_statement.txt"]
+            idx += 1
+        else:
+            safe = re.sub(r"[^A-Za-z0-9._\-+]+", "_", method)[:64] or "unknown"
+            fnames = [f"{idx}_unknown_{safe}.txt"]
+            idx += 1
+        result.append(fnames)
+    return result
+
+
+def _prune_proof_graph(raw_theorems, raw_stacks):
+    """
+    Remove theorems that did NOT survive pruning AND are not needed
+    by any surviving theorem's proof chain.
+
+    Returns (filtered_theorems, filtered_stacks) with re-indexed filenames.
+    """
+    proved_file = PROJECT_ROOT / "files" / "theorems" / "proved_theorems.txt"
+    essential = set()
+    if proved_file.exists():
+        with open(proved_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    essential.add(line)
+
+    if not essential:
+        return raw_theorems, raw_stacks
+
+    all_thm_exprs = set(t[0] for t in raw_theorems)
+
+    # Map each theorem → its old stack filenames
+    fname_lists = _build_fname_list(raw_theorems)
+    expr_to_old_fnames: dict[str, list[str]] = {}
+    for i, parts in enumerate(raw_theorems):
+        expr_to_old_fnames.setdefault(parts[0], []).extend(fname_lists[i])
+
+    # Precompute var-field deps (mirrored/reformulated → source theorem)
+    var_deps: dict[str, set[str]] = {}
+    for parts in raw_theorems:
+        expr = parts[0]
+        method = parts[1].lower() if len(parts) > 1 else ""
+        var_field = parts[2] if len(parts) > 2 else ""
+        if method in ("mirrored statement", "reformulated statement") and var_field in all_thm_exprs:
+            var_deps.setdefault(expr, set()).add(var_field)
+
+    # ---- Collect dependencies from proof stacks (exact match) ----
+    def get_deps(expr):
+        deps = set()
+        for fname in expr_to_old_fnames.get(expr, []):
+            for row in raw_stacks.get(fname, []):
+                for cell in row:
+                    if cell in all_thm_exprs:
+                        deps.add(cell)
+        # Var-field deps
+        deps.update(var_deps.get(expr, set()))
+        deps.discard(expr)
+        return deps
+
+    # ---- BFS from essential theorems ----
+    needed = set()
+    queue = list(essential & all_thm_exprs)
+    visited = set(queue)
+    while queue:
+        thm = queue.pop(0)
+        needed.add(thm)
+        for dep in get_deps(thm):
+            if dep not in visited:
+                visited.add(dep)
+                queue.append(dep)
+
+    # ---- Filter theorems and re-index stack files ----
+    filtered_theorems = [t for t in raw_theorems if t[0] in needed]
+    new_fname_lists = _build_fname_list(filtered_theorems)
+
+    filtered_stacks = {}
+    for i, parts in enumerate(filtered_theorems):
+        old_fnames = expr_to_old_fnames.get(parts[0], [])
+        new_fnames = new_fname_lists[i]
+        for old_fn, new_fn in zip(old_fnames, new_fnames):
+            if old_fn in raw_stacks:
+                filtered_stacks[new_fn] = raw_stacks[old_fn]
+
+    removed = len(raw_theorems) - len(filtered_theorems)
+    print(f"Proof graph pruning: kept {len(filtered_theorems)}, removed {removed} unused theorems.")
+    return filtered_theorems, filtered_stacks
+
+
 def create_processed_proof_graph(config: configuration_reader):
     create_expressions.set_configuration(config)
 
@@ -93,9 +203,26 @@ def create_processed_proof_graph(config: configuration_reader):
                 if len(parts) >= 3:
                     raw_theorems.append(parts)
 
+    # Load all raw stacks into RAM
+    raw_stacks = {}
+    for file in raw_dir.glob("*.txt"):
+        if file.name in ("global_theorem_list.txt", "compiled_expressions.txt"):
+            continue
+        stack = []
+        with open(file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.rstrip("\n\r")
+                stack.append(line.split("\t") if line else [])
+        raw_stacks[file.name] = stack
+
+    # -------------------------------------------------------------------------
+    # STEP 0: Prune proof graph — remove unused non-essential theorems
+    # -------------------------------------------------------------------------
+    raw_theorems, raw_stacks = _prune_proof_graph(raw_theorems, raw_stacks)
+
+    # Rebuild derived indices from (possibly filtered) raw_theorems
     raw_thm_to_idx = {thm[0]: i for i, thm in enumerate(raw_theorems)}
 
-    # Build exact map from filename -> raw_thm_expr to fix index misalignment
     fname_to_raw_thm = {}
     file_idx = 0
     for parts in raw_theorems:
@@ -114,22 +241,13 @@ def create_processed_proof_graph(config: configuration_reader):
         elif method == "mirrored statement":
             fname_to_raw_thm[f"{file_idx}_mirrored_statement.txt"] = thm_expr
             file_idx += 1
+        elif method == "reformulated statement":
+            fname_to_raw_thm[f"{file_idx}_reformulated_statement.txt"] = thm_expr
+            file_idx += 1
         else:
             safe = re.sub(r"[^A-Za-z0-9._\-+]+", "_", method)[:64] or "unknown"
             fname_to_raw_thm[f"{file_idx}_unknown_{safe}.txt"] = thm_expr
             file_idx += 1
-
-    # Load all raw stacks into RAM
-    raw_stacks = {}
-    for file in raw_dir.glob("*.txt"):
-        if file.name in ("global_theorem_list.txt", "compiled_expressions.txt"):
-            continue
-        stack = []
-        with open(file, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.rstrip("\n\r")
-                stack.append(line.split("\t") if line else [])
-        raw_stacks[file.name] = stack
 
     ram_stacks = copy.deepcopy(raw_stacks)
 

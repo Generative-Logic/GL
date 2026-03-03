@@ -31,7 +31,7 @@
 (in3[rec,10,it_0_lev_4_70,4])	main	disintegration	!(>[it_0_lev_4_70](in[it_0_lev_4_70,1])!(in3[rec,10,it_0_lev_4_70,4]))	main
 !(>[it_0_lev_4_70](in[it_0_lev_4_70,1])!(in3[rec,10,it_0_lev_4_70,4]))	main	expansion	(existence1[1,rec,10,4])	main
 (existence1[1,rec,10,4])	main	implication	(>[1](in[1,u_1])(>[2](in[2,u_1])(existence1[u_1,1,2,u_4])))	main	(in[10,1])	main	(in[rec,1])	main
-(in[10,1])	main	implication	(>[2](in3[1,2,3,u_4])(in[2,u_1]))	main	(in3[12,10,7,4])	main
+(in[10,1])	main	implication	(>[2](in3[1,2,3,u_4])(in[2,u_1]))	main	(in3[8,10,11,4])	main
 (>[2](in3[1,2,3,u_4])(in[2,u_1]))	main	expansion	(implication7[4,1])	main
 (implication7[4,1])	main	disintegration	(&(&(&(&(implication6[4,1])(implication7[4,1]))(implication8[4,1]))(implication9[1,1,1,4]))(implication10[1,1,4]))	main
 (in3[it_0_lev_4_70,12,it_0_lev_4_115,4])	main	implication	(>[9](in3[u_7,u_rec,9,u_4])(>[11](in3[u_rec,u_10,11,u_4])(>[](in3[u_12,u_10,u_7,u_4])(in3[11,u_12,9,u_4]))))	main	(in3[12,10,7,4])	main	(in3[7,rec,it_0_lev_4_115,4])	main	(in3[rec,10,it_0_lev_4_70,4])	main

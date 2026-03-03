@@ -34,6 +34,7 @@ Each theorem tuple is now (theorem_name:str, method:str, var_name:str).
 Default output directory: full_proof_graph
 """
 import copy
+import json
 import os
 import html
 
@@ -100,13 +101,61 @@ def wrap_clickable(text):
         s = m.group(0)  # the raw token, e.g. "(v7*v8)=(v8*v7)"
         esc = html.escape(s, quote=True)
         target = _resolve_theorem_target(s)
-        # span for the normal “expand on right-click”
+        # span for the normal "expand on right-click"
         span = f'<span class="clickable" data-text="{esc}">{esc}</span>'
         # if it exactly matches one of our theorems, link it
         return f'<a href="{target}" class="theorem-link">{span}</a>' if target else span
 
     pattern = r"!?\([^ ]*?\)(?= |$)"
     return re.sub(pattern, repl, text)
+
+
+def _htmlify_readable(text):
+    """Convert plain-text readable title to HTML with mathematical notation."""
+    h = html.escape(text)
+    # (preorder[N,+,a,b]) -> a < b
+    h = re.sub(
+        r'\(preorder\[([^,]+),([^,]+),([^,]+),([^\]]+)\]\)',
+        lambda m: f'{m.group(3)} &lt; {m.group(4)}',
+        h)
+    # (interval[N,+,start,end,set]) -> set = [start,end]
+    h = re.sub(
+        r'\(interval\[([^,]+),([^,]+),([^,]+),([^,]+),([^\]]+)\]\)',
+        lambda m: f'{m.group(5)} = [{m.group(3)},{m.group(4)}]',
+        h)
+    # (fXY[a,B,C]) -> a: B -> C
+    h = re.sub(
+        r'\(fXY\[([^,]+),([^,]+),([^\]]+)\]\)',
+        lambda m: f'{m.group(1)}: {m.group(2)} \u2192 {m.group(3)}',
+        h)
+    # (sequence[N,+,c,a,b]) -> (b_i)_{i in [c,a]}  with subscripts
+    h = re.sub(
+        r'\(sequence\[([^,]+),([^,]+),([^,]+),([^,]+),([^\]]+)\]\)',
+        lambda m: f'({m.group(5)}<sub>i</sub>)<sub>i\u2208[{m.group(3)},{m.group(4)}]</sub>',
+        h)
+    # sum(i=start..end) -> vertical sigma with bounds above/below, summing i
+    def _fmt_sum(m):
+        lo, hi, fn = m.group(1), m.group(2), m.group(3)
+        body = f'{fn}(i)' if fn else 'i'
+        sigma = (
+            '<span class="sm" style="display:inline-flex;flex-direction:column;'
+            'align-items:center;vertical-align:middle;margin:0 2px;line-height:1">'
+            f'<span style="font-size:0.6em">{hi}</span>'
+            '<span style="font-size:1.8em;line-height:0.8;margin-bottom:8px">\u2211</span>'
+            f'<span style="font-size:0.6em;margin-top:8px">i={lo}</span>'
+            '</span>'
+        )
+        return f'{sigma} {body}'
+    h = re.sub(r'sum\(i=([^.]+)\.\.([^)]+)\)(?: (\w+)\(i\))?', _fmt_sum, h)
+    # enlarge parentheses that directly wrap a sigma block
+    h = re.sub(
+        r'\(([^()]*?<span class="sm".*?</span>[^()]*?)\)',
+        lambda m: (
+            '<span style="font-size:2em;vertical-align:middle;font-weight:normal">(</span>'
+            + m.group(1) +
+            '<span style="font-size:2em;vertical-align:middle;font-weight:normal">)</span>'
+        ), h)
+    return h
 
 
 def _format_validity_tag(validity: str) -> str:
@@ -230,7 +279,9 @@ def format_stack_entries(stack, prefix='', cursor_index=None, reverse_entries=Tr
                 ref_html = f'<span style="color:magenta !important; font-weight:bold !important;">"{clean_text}"</span>'
             # -----------------------------------------
 
-            if norm_ref in key_map:
+            if is_integration_target:
+                linked_ref = ref_html
+            elif norm_ref in key_map:
                 linked_ref = f"<a href='#{key_map[norm_ref]}' style='text-decoration:none'>{ref_html}</a>"
             elif norm_ref in external_anchor_map:
                 linked_ref = f"<a href='#{external_anchor_map[norm_ref]}' style='text-decoration:none'>{ref_html}</a>"
@@ -261,7 +312,7 @@ def format_stack_entries(stack, prefix='', cursor_index=None, reverse_entries=Tr
                 if impl_text:
                     impl_html = (
                         f"<div class='implication' style='margin-left:20px; color:#888888; "
-                        f"font-weight:bold; font-size:1.3em;'>{html.escape(impl_text)}</div>"
+                        f"font-weight:bold; font-size:1.3em;'>{_htmlify_readable(impl_text)}</div>"
                     )
                     lines.append(impl_html)
 
@@ -271,9 +322,19 @@ def format_stack_entries(stack, prefix='', cursor_index=None, reverse_entries=Tr
                 mirrored_text = format_mirroring(helper_list)
                 mirrored_html = (
                     f"<div class='mirrored' style='margin-left:20px; color:#888888; "
-                    f"font-weight:bold; font-size:1.3em;'>{html.escape(mirrored_text)}</div>"
+                    f"font-weight:bold; font-size:1.3em;'>{_htmlify_readable(mirrored_text)}</div>"
                 )
                 lines.append(mirrored_html)
+
+        if len(entry) > 2 and entry[2] == 'reformulated from':
+            if len(entry) > 3:
+                helper_list = [entry[0], "reformulated from", entry[3]]
+                reformulated_text = visu_helpers.format_reformulation(helper_list)
+                reformulated_html = (
+                    f"<div class='reformulated' style='margin-left:20px; color:#888888; "
+                    f"font-weight:bold; font-size:1.3em;'>{_htmlify_readable(reformulated_text)}</div>"
+                )
+                lines.append(reformulated_html)
 
     return "<br/><br/><br/>".join(lines)
 
@@ -907,6 +968,16 @@ def render_stack_with_subproofs(stack: list[list[str]], prefix: str = "") -> str
         sp["anchor_id"] = anchor_id
         subproof_anchor_map[sp["implication_norm"]] = anchor_id
 
+    # Build main stack key map so subproofs can link back to main stack entries
+    main_prefix_str = f"{prefix}m"
+    main_rev = list(main_stack)[::-1]
+    main_key_map = {}
+    for midx, mentry in enumerate(main_rev):
+        if not mentry:
+            continue
+        mnorm = re.sub(r'\s+', '', mentry[0]).lower()
+        main_key_map[mnorm] = f"{main_prefix_str}-entry{midx}"
+
     blocks.append("<div class='proof-section main-proof-section'>")
     blocks.append("<div class='proof-section-title'>Main stack</div>")
     if main_stack:
@@ -914,6 +985,9 @@ def render_stack_with_subproofs(stack: list[list[str]], prefix: str = "") -> str
     else:
         blocks.append("<div class='proof-empty'>No main-stack entries.</div>")
     blocks.append("</div>")
+
+    # Merge main key map with subproof anchors for cross-referencing inside subproofs
+    subproof_external_map = {**main_key_map, **subproof_anchor_map}
 
     if subproofs:
         blocks.append("<div class='proof-section subproofs-section'>")
@@ -938,7 +1012,8 @@ def render_stack_with_subproofs(stack: list[list[str]], prefix: str = "") -> str
                         sp["display_stack"],
                         prefix=f"{prefix}sp{j}",
                         reverse_entries=False,
-                        goal_key_norm=sp["goal_norm"]
+                        goal_key_norm=sp["goal_norm"],
+                        external_anchor_map=subproof_external_map
                     )
                 )
             else:
@@ -984,6 +1059,12 @@ def debugging(path_plus_end, file_path, prefix=''):
 def mirrored(theorem, file_path, prefix=''):
     # Actually read the beautifully processed file instead of hardcoding a fake stack!
     stack = read_stack(file_path, "mirrored statement")
+    rename_stack(stack, theorem)
+    return render_stack_with_subproofs(stack, prefix)
+
+
+def reformulated(theorem, file_path, prefix=''):
+    stack = read_stack(file_path, "reformulated statement")
     rename_stack(stack, theorem)
     return render_stack_with_subproofs(stack, prefix)
 
@@ -1058,6 +1139,9 @@ def makes_file_path_map(theorem_list, base_dir=None):
         elif m == "mirrored statement":
             files.append(base_dir / f"{idx}_mirrored_statement.txt")
             idx += 1
+        elif m == "reformulated statement":
+            files.append(base_dir / f"{idx}_reformulated_statement.txt")
+            idx += 1
         else:
             safe = re.sub(r"[^A-Za-z0-9._\-+]+", "_", m)[:64] or "unknown"
             files.append(base_dir / f"{idx}_unknown_{safe}.txt")
@@ -1070,6 +1154,167 @@ def makes_file_path_map(theorem_list, base_dir=None):
             result[name] = files
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# GL Binary Map — parse compiled_expressions.txt for popup definitions
+# ---------------------------------------------------------------------------
+
+def _gl_split_elements(elements_raw):
+    """Split elements string into individual elements, handling negation prefix."""
+    elements = []
+    current = ''
+    depth = 0
+    for ch in elements_raw:
+        if ch == '(':
+            depth += 1
+            current += ch
+        elif ch == ')':
+            depth -= 1
+            current += ch
+            if depth == 0:
+                elements.append(current.strip())
+                current = ''
+        elif depth == 0 and ch == '!':
+            current += ch
+        elif depth == 0 and ch == ' ':
+            current = ''
+        else:
+            current += ch
+    return elements
+
+
+def _gl_get_bracket_tokens(expr):
+    """Get all tokens from bracket args in order of first appearance."""
+    tokens = []
+    for m in re.finditer(r'\[([^\]]*)\]', expr):
+        for tok in m.group(1).split(','):
+            tok = tok.strip()
+            if tok and tok not in tokens:
+                tokens.append(tok)
+    return tokens
+
+
+def _gl_rename_vars(expr, var_map):
+    """Replace variable tokens inside brackets using var_map."""
+    def _repl(m):
+        args = m.group(1).split(',')
+        return '[' + ','.join(var_map.get(a.strip(), a.strip()) for a in args) + ']'
+    return re.sub(r'\[([^\]]*)\]', _repl, expr)
+
+
+def _gl_make_conjunction(elements):
+    """Build nested right-associated conjunction: (&e1(&e2 e3))"""
+    if len(elements) == 0:
+        return ''
+    if len(elements) == 1:
+        return elements[0]
+    if len(elements) == 2:
+        return '(&' + elements[0] + elements[1] + ')'
+    return '(&' + elements[0] + _gl_make_conjunction(elements[1:]) + ')'
+
+
+def build_gl_binary_map(compiled_expr_path):
+    """Parse compiled_expressions.txt and build gl_binary_map for popup display."""
+    gl_binary_map = {}
+    if not os.path.exists(compiled_expr_path):
+        return gl_binary_map
+
+    with open(compiled_expr_path, 'r', encoding='utf-8') as f:
+        text = f.read()
+
+    for block in text.split('--------------------------------------------------'):
+        block = block.strip()
+        if not block:
+            continue
+
+        entry = {}
+        for line in block.split('\n'):
+            line = line.strip()
+            if line.startswith('Core: '):
+                entry['core'] = line[6:]
+            elif line.startswith('Category: '):
+                entry['category'] = line[10:]
+            elif line.startswith('Signature: '):
+                entry['signature'] = line[11:]
+            elif line.startswith('Elements: '):
+                entry['elements_raw'] = line[10:].strip()
+
+        if entry.get('category') == 'atomic' or not entry.get('elements_raw'):
+            continue
+
+        core = entry['core']
+        category = entry['category']
+        signature = entry['signature']
+
+        # Parse signature args → u_ to x mapping
+        sig_args = []
+        m = re.search(r'\[([^\]]*)\]', signature)
+        if m:
+            sig_args = [a.strip() for a in m.group(1).split(',')]
+        u_to_x = {}
+        xi = 1
+        for arg in sig_args:
+            if arg.startswith('u_') and arg not in u_to_x:
+                u_to_x[arg] = f'x{xi}'
+                xi += 1
+
+        # Parse elements
+        elements = _gl_split_elements(entry['elements_raw'])
+
+        # Find bound vars (non-u_ tokens) across all elements → y mapping
+        bound_to_y = {}
+        yi = 1
+        for elem in elements:
+            for tok in _gl_get_bracket_tokens(elem):
+                if tok not in u_to_x and tok not in bound_to_y:
+                    bound_to_y[tok] = f'y{yi}'
+                    yi += 1
+
+        # Combined variable mapping
+        var_map = {**u_to_x, **bound_to_y}
+
+        # Rename signature and elements
+        renamed_sig = _gl_rename_vars(signature, var_map)
+        renamed_elems = [_gl_rename_vars(e, var_map) for e in elements]
+
+        # Collect bound var names (yN) for quantifiers
+        if category == 'existence':
+            # Only bound vars from elements[0]
+            qvars = []
+            for tok in _gl_get_bracket_tokens(elements[0]):
+                if tok in bound_to_y and bound_to_y[tok] not in qvars:
+                    qvars.append(bound_to_y[tok])
+        else:
+            qvars = list(bound_to_y.values())
+
+        bound_str = ','.join(qvars)
+
+        # Reconstruct MPL based on category
+        if category == 'and':
+            mpl = _gl_make_conjunction(renamed_elems)
+        elif category == 'existence':
+            first = renamed_elems[0]
+            second = renamed_elems[1] if len(renamed_elems) > 1 else ''
+            if second.startswith('!'):
+                neg_second = second[1:]
+            else:
+                neg_second = '!' + second
+            mpl = '!(>[' + bound_str + ']' + first + neg_second + ')'
+        elif category == 'implication':
+            premises = renamed_elems[:-1]
+            conclusion = renamed_elems[-1]
+            premises_conj = _gl_make_conjunction(premises)
+            mpl = '(>[' + bound_str + ']' + premises_conj + conclusion + ')'
+        else:
+            mpl = _gl_make_conjunction(renamed_elems)
+
+        gl_binary_map[core] = {
+            'signature': renamed_sig,
+            'mpl': mpl
+        }
+
+    return gl_binary_map
 
 
 def generate_proof_graph_pages(config: configuration_reader):
@@ -1090,9 +1335,16 @@ def generate_proof_graph_pages(config: configuration_reader):
     theorem_list = read_theorem_list()
     file_path_map = makes_file_path_map(theorem_list)
 
-    # JavaScript for left-click/right-click expansion; popup named “Expression” with deep-navy styling
+    # Build GL binary map from compiled expressions
+    compiled_expr_path = PROJECT_ROOT / "files" / "processed_proof_graph" / "compiled_expressions.txt"
+    gl_binary_map = build_gl_binary_map(str(compiled_expr_path))
+    gl_binary_json = json.dumps(gl_binary_map, ensure_ascii=False)
+
+    # JavaScript for left-click/right-click expansion; popup named "Expression" with deep-navy styling
     popup_script = """
     <script>
+    const GL_BINARY_MAP = """ + gl_binary_json + """;
+
     function processText(input) {
       const indentChar = "  ";
       let indent = 0, output = "", token = "";
@@ -1132,9 +1384,34 @@ def generate_proof_graph_pages(config: configuration_reader):
         const el = e.target.closest('.clickable');
         if (!el) return;
         e.preventDefault();
-        
-        // Populate and open the native modal
-        content.textContent = processText(el.getAttribute('data-text'));
+
+        const rawText = el.getAttribute('data-text');
+        let output = processText(rawText);
+        let glBinary = '';
+
+        // GL binary section for simple expressions (not conjunctions/implications)
+        const isSimple = rawText &&
+            !rawText.startsWith('(&') &&
+            !rawText.startsWith('!(&') &&
+            !rawText.startsWith('(>') &&
+            !rawText.startsWith('!(>');
+        if (isSimple) {
+            const match = rawText.match(/^!?\\(([A-Za-z_][A-Za-z0-9_]*)\\[/);
+            if (match) {
+                const entry = GL_BINARY_MAP[match[1]];
+                if (entry) {
+                    output += '\\n\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\n\\n';
+                    glBinary = '<b style="font-size:1.15em">GL binary:</b>\\n\\n';
+                    glBinary += escapeHtml(entry.signature + ' :=\\n\\n');
+                    glBinary += escapeHtml(processText(entry.mpl));
+                }
+            }
+        }
+
+        function escapeHtml(s) {
+            return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        }
+        content.innerHTML = escapeHtml(output) + (glBinary ? glBinary : '');
         modal.showModal();
       });
     });
@@ -1234,6 +1511,7 @@ def generate_proof_graph_pages(config: configuration_reader):
     ul ul {{ padding-left: 1.5rem; font-size: 0.9em; }}
     li {{ margin-bottom: 0.5em; }}
     a {{ text-decoration: none; color: #0366d6; }}
+    .clickable {{ cursor: pointer; }}
   </style>
   {popup_script}
 </head>
@@ -1268,12 +1546,15 @@ def generate_proof_graph_pages(config: configuration_reader):
 
     for idx, (name, method, _) in enumerate(theorem_list, start=1):
         filename = f"chapter{idx}.html"
-        toc.append(f"    <li>{idx}. <a href='{filename}'>{html.escape(rename_theorem(name))}</a>")
+        theorem_display = rename_theorem(name)
+        theorem_esc = html.escape(theorem_display, quote=True)
+        theorem_span = f'<span class="clickable" data-text="{theorem_esc}">{theorem_esc}</span>'
+        toc.append(f"    <li>{idx}. <a href='{filename}' style='text-decoration:none'>{theorem_span}</a>")
         # force a new line and style it
         if not debug:
             toc.append(
                 f"    <div style=\"margin-left:20px; color:#888888; font-weight:bold; font-size:1.3em;\">"
-                f"{html.escape(visu_helpers.make_readable_title(rename_theorem(name)))}</div>"
+                f"{_htmlify_readable(visu_helpers.make_readable_title(rename_theorem(name)))}</div>"
             )
 
         if method.lower() == "induction":
@@ -1317,9 +1598,9 @@ def generate_proof_graph_pages(config: configuration_reader):
       <span>Right-click to expand</span>
     </div>
   </div>
-  <h1>Chapter {idx}: {html.escape(rename_theorem(name))}</h1>
+  <h1>Chapter {idx}: <span class="clickable" data-text="{html.escape(rename_theorem(name), quote=True)}">{html.escape(rename_theorem(name))}</span></h1>
   {f'''<div style="margin-left:20px; color:#888888; font-weight:bold; font-size:3em;">
-    {html.escape(visu_helpers.make_readable_title(rename_theorem(name)))}
+    {_htmlify_readable(visu_helpers.make_readable_title(rename_theorem(name)))}
   </div><br><br>''' if not debug else ''}
 """
 
@@ -1349,6 +1630,13 @@ def generate_proof_graph_pages(config: configuration_reader):
                 "  <div class='step-output'>",
                 # Pass the file path from the map instead of the raw 'var' string
                 mirrored(name, file_path_map[name][0]),
+                "  </div>",
+            ])
+        elif method.lower() == "reformulated statement":
+            body.extend([
+                "  <h2>Reformulated</h2>",
+                "  <div class='step-output'>",
+                reformulated(name, file_path_map[name][0]),
                 "  </div>",
             ])
         body.append("</body>")

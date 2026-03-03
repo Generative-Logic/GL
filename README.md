@@ -105,3 +105,5 @@ regex — © Matthew Barnett — Apache-2.0 and CNRI-Python.
 **nlohmann/json** — © Niels Lohmann — Licensed under MIT.
 https://github.com/nlohmann/json
 
+mimalloc — General-purpose memory allocator by Microsoft, used as a drop-in replacement for the default allocator.
+

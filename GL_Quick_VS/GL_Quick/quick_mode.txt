@@ -1,0 +1,28 @@
+Deep size: 1232 bytes
+Hash burst: 0
+(>[3,4,5](NaturalNumbers[1,2,3,4,5,6])(>[7,8](in2[7,8,4])(in3[3,7,8,5])))
+Hash burst: 1
+(>[2,6](NaturalNumbers[1,2,3,4,5,6])(>[7,8](in3[2,7,8,6])(in3[7,2,8,6])))
+Hash burst: 2
+(>[2,5](NaturalNumbers[1,2,3,4,5,6])(>[7,8](in3[2,7,8,5])(in3[7,2,8,5])))
+Hash burst: 3
+(>[4,5](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10](in2[7,10,4])(>[11](in2[9,11,4])(in3[10,8,11,5])))))
+Hash burst: 4
+(>[5](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(in3[8,7,9,5])))
+Hash burst: 5
+(>[5](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11](in3[7,10,11,5])(>[12](in3[8,12,10,5])(in3[9,12,11,5])))))
+Hash burst: 6
+(>[6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,6])(in3[8,7,9,6])))
+Hash burst: 7
+Hash burst: 8
+(>[6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,6])(>[10,11](in3[7,10,11,6])(>[12](in3[8,12,10,6])(in3[9,12,11,6])))))
+Hash burst: 9
+Hash burst: 10
+(>[4,5,6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11](in2[10,11,4])(>[](in3[10,8,7,6])(in3[11,8,9,6])))))
+Hash burst: 11
+Hash burst: 12
+Hash burst: 13
+Hash burst: 14
+Hash burst: 15
+Hash burst: 16
+Runtime prove(): 0.005302 seconds
