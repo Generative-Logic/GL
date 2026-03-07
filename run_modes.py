@@ -35,6 +35,7 @@ from configuration_reader import configuration_reader
 from pathlib import Path
 import subprocess
 import process_proof_graphs
+import verifier
 
 # wherever this file lives, assume the project root is its parent folder
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -132,9 +133,18 @@ def full_run():
 
 
 
+
+
+
     # 1. Global Setup (Run Once)
     empty_simple_facts()
     empty_raw_proof_graph()  # <--- NEW: Clear proof graph only once at the start
+
+    # Clear GL_binaries directory
+    gl_binaries_dir = PROJECT_ROOT / "files" / "GL_binaries"
+    if gl_binaries_dir.exists():
+        shutil.rmtree(gl_binaries_dir)
+    gl_binaries_dir.mkdir(parents=True, exist_ok=True)
 
     # Empty theorem output files at the very start
     theorems_dir = PROJECT_ROOT / "files" / "theorems"
@@ -204,5 +214,11 @@ def full_run():
     configuration_visu = configuration_reader(visu_config_path)
     process_proof_graphs.create_processed_proof_graph(configuration_visu)
     generate_full_proof_graph.generate_proof_graph_pages(configuration_visu)
+
+    # 4. Verification
+    print("\n--- Running Proof Graph Verifier ---")
+    base_dir = str(PROJECT_ROOT / "files" / "processed_proof_graph")
+    state = verifier.run_verifier(base_dir)
+    verifier.print_report(state)
 
 

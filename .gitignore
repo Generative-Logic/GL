@@ -205,3 +205,36 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Visual Studio build artifacts
+.vs/
+x64/
+Debug/
+Release/
+*.exe
+!GL_Quick_VS/GL_Quick/gl_quick.exe
+*.pdb
+*.obj
+*.idb
+*.ipdb
+*.iobj
+*.tlog
+*.lastbuildstate
+*.log
+*.ilk
+*.exp
+*.lib
+*.vcxproj.user
+
+# Backup files
+*.bak
+
+# PyCharm / JetBrains
+.idea/
+
+# Claude Code
+.claude/
+
+# vcpkg build cache
+vcpkg_installed/
+

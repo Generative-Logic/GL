@@ -304,7 +304,6 @@ class configuration_reader(MappingABC):
         self.prohibited_combinations: List[Set[str]] = []
         self.prohibited_heads: List[str] = []
         self.anchor_id: str = ""
-        self.anchor_id: str = ""
 
         # Auto-load if a valid path is supplied and exists; otherwise remain empty.
         if self.config_path and self.config_path.exists():

@@ -782,6 +782,7 @@ namespace gl {
 
 		std::map<std::string, ce::CoreExpressionConfig> coreExpressionMap; // Load and resolve core expressions    
         ce::AnchorInfo anchorInfo;
+        std::string anchorID_;
 
         std::vector<BodyOfProves*> permanentBodies;
         std::vector<BodyOfProves*> permanentBodiesCE;
@@ -1055,7 +1056,7 @@ namespace gl {
         void findEnds(const std::vector<std::string>& path, const std::filesystem::path& outDirParam);
 
         // In class ExpressionAnalyzer:
-        void exportCompiledExpressions(const std::filesystem::path& outDir);
+        void exportCompiledExpressionsJSON(const std::filesystem::path& outDir);
 
 
         void generateRawProofGraph(
@@ -1454,6 +1455,69 @@ namespace gl {
                         it->second += 1;
                         if (it->second > 1) removedArgs.insert(arg);
                     }
+                }
+            }
+
+            std::vector<std::vector<std::string> > whenRemoved(key.size());
+            std::set<std::string> placed;
+            for (std::size_t idx = 0; idx < argsChain.size(); ++idx) {
+                const std::vector<std::string>& args = argsChain[idx];
+                for (std::size_t j = 0; j < args.size(); ++j) {
+                    const std::string& arg = args[j];
+                    if (removedArgs.count(arg) && placed.find(arg) == placed.end()) {
+                        placed.insert(arg);
+                        if (idx < key.size()) whenRemoved[idx].push_back(arg);
+                    }
+                }
+            }
+
+            for (std::size_t i = key.size(); i-- > 0; ) {
+                std::vector<std::string>& lst = whenRemoved[i];
+
+                std::string joined;
+                for (std::size_t j = 0; j < lst.size(); ++j) {
+                    if (j > 0) joined.push_back(',');
+                    joined += lst[j];
+                }
+
+                std::string tmp;
+                tmp.reserve(5 + joined.size() + key[i].size() + implication.size());
+                tmp += "(>[";
+                tmp += joined;
+                tmp += "]";
+                tmp += key[i];
+                tmp += implication;
+                tmp += ")";
+                implication.swap(tmp);
+            }
+
+            return implication;
+        }
+
+        // Like reconstructImplication, but binds ALL non-u_ variables in >[...].
+        // Used exclusively during disintegration, where every non-anchor variable
+        // in the implication elements must be universally quantified.
+        inline std::string reconstructImplicationFullBind(const std::vector<std::string>& key,
+            const std::string& value) {
+            std::string implication = value;
+
+            std::vector<std::string> chain = key;
+            chain.push_back(value);
+
+            std::vector<std::vector<std::string> > argsChain;
+            argsChain.reserve(chain.size());
+            for (std::size_t i = 0; i < chain.size(); ++i) {
+                argsChain.push_back(ce::getArgs(chain[i]));
+            }
+
+            std::set<std::string> removedArgs;
+
+            for (std::size_t i = 0; i < argsChain.size(); ++i) {
+                const std::vector<std::string>& args = argsChain[i];
+                for (std::size_t j = 0; j < args.size(); ++j) {
+                    const std::string& arg = args[j];
+                    if (arg.size() >= 2 && arg[0] == 'u' && arg[1] == '_') continue;
+                    removedArgs.insert(arg);
                 }
             }
 
@@ -2843,7 +2907,13 @@ namespace gl {
                     signature.pop_back(); // remove last comma   
                     signature += "])";
 
-                    compiledExpressions[newCoreExpressionName] = LogicalEntity(category, splitNK, signature, numUnchArgs);
+                    {
+                        std::string preservedDS;
+                        auto itPrev = compiledExpressions.find(newCoreExpressionName);
+                        if (itPrev != compiledExpressions.end())
+                            preservedDS = itPrev->second.definedSet;
+                        compiledExpressions[newCoreExpressionName] = LogicalEntity(category, splitNK, signature, numUnchArgs, preservedDS);
+                    }
 
                     std::string args = createArgList(pr2.second);
 
@@ -2863,7 +2933,13 @@ namespace gl {
                     signature.pop_back(); // remove last comma   
                     signature += "])";
 
-                    compiledExpressions[coreExpressionName] = LogicalEntity(category, splitNK, signature, numUnchArgs);
+                    {
+                        std::string preservedDS;
+                        auto itPrev = compiledExpressions.find(coreExpressionName);
+                        if (itPrev != compiledExpressions.end())
+                            preservedDS = itPrev->second.definedSet;
+                        compiledExpressions[coreExpressionName] = LogicalEntity(category, splitNK, signature, numUnchArgs, preservedDS);
+                    }
                     result = defaultSignature;
                 }
 
@@ -2949,6 +3025,18 @@ namespace gl {
 
             bool isSimple = ce::expressionIsSimple(expression);
 
+            // Early exit: if expression is simple and already compiled, do not re-compile.
+            // This prevents runtime calls (e.g. from reformulateTheorem) from
+            // re-expanding already-compiled definitions and creating duplicate
+            // implications with new names.
+            if (isSimple)
+            {
+                std::string coreExpression = ce::extractExpressionUniversal(expression);
+                if (compiledExpressions.find(coreExpression) != compiledExpressions.end())
+                {
+                    return expression;
+                }
+            }
 
             if (isSimple)
             {
@@ -3471,6 +3559,7 @@ namespace gl {
             }
         }
 
+//#pragma optimize("", off)
 
         void compileCoreExpressionMap()
         {
@@ -3783,7 +3872,7 @@ namespace gl {
                     std::vector<std::string> chain = modifiedChain;
                     std::string head = chain.back();
                     chain.pop_back();
-                    result = this->reconstructImplication(chain, head);
+                    result = this->reconstructImplicationFullBind(chain, head);
                 }
             }
             else {
@@ -3830,7 +3919,7 @@ namespace gl {
 
         std::string buildIntegrationInstruction(const std::vector<std::string>& elements, const std::string& signature) {
             // 1. Build the implication directly (inputs already have "u_" prefixes)
-            std::string implication = this->reconstructImplication(elements, signature);
+            std::string implication = this->reconstructImplicationFullBind(elements, signature);
 
             // 2. Parse the AST to find all variables in the reconstructed implication
             std::set<std::string> tokens;
@@ -4025,9 +4114,9 @@ namespace gl {
                     {
                         std::pair<std::string, std::vector<ExpressionWithValidity>> originImplicationExpansion;
                         originImplicationExpansion.first = "expansion for integration";
-                        originImplicationExpansion.second.push_back(ExpressionWithValidity(cleanSignature, validityName));
+                        originImplicationExpansion.second.push_back(ExpressionWithValidity(cleanSignature + "_integration_goal", validityName));
 
-                        ExpressionWithValidity ev(expandedImplication, validityName);
+                        ExpressionWithValidity ev(expandedImplication + "_integration_goal", validityName);
 
                         // The addOrigin helper replaces the if() check, handling both 
                         // the max origin limits and preventing duplicate paths.
@@ -4042,7 +4131,7 @@ namespace gl {
                         if (parameters.trackHistory)
                         {
                             originPremiseElement.first = "premise element";
-                            originPremiseElement.second.push_back(ExpressionWithValidity(expandedImplication, validityName));
+                            originPremiseElement.second.push_back(ExpressionWithValidity(expandedImplication + "_integration_goal", validityName));
                             
                             ExpressionWithValidity ev(elem, cleanSignature);
 
@@ -4114,9 +4203,9 @@ namespace gl {
                         
                         std::pair<std::string, std::vector<ExpressionWithValidity>> originExpansion;
                         originExpansion.first = "expansion for integration";
-                        originExpansion.second.push_back(ExpressionWithValidity(cleanSignature, validityName));
+                        originExpansion.second.push_back(ExpressionWithValidity(cleanSignature + "_integration_goal", validityName));
 
-                        ExpressionWithValidity ev(expandedSignature, validityName);
+                        ExpressionWithValidity ev(expandedSignature + "_integration_goal", validityName);
 
                         addOrigin(mb.exprOriginMap, ev, originExpansion, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
                         addOrigin(mb.mailOut.exprOriginMap, ev, originExpansion, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
@@ -4124,7 +4213,7 @@ namespace gl {
                         integrationInstruction = buildIntegrationInstruction(le.elements, le.signature);
                         std::pair<std::string, std::vector<ExpressionWithValidity>> originInstruction;
                         originInstruction.first = "reformulation for integration";
-                        originInstruction.second.push_back(ExpressionWithValidity(expandedSignature, validityName));
+                        originInstruction.second.push_back(ExpressionWithValidity(expandedSignature + "_integration_goal", validityName));
 
                         ExpressionWithValidity iiv(integrationInstruction, validityName);
 

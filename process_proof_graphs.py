@@ -73,6 +73,81 @@ def get_anchor_mapping_from_expr(expr_str: str, config: configuration_reader) ->
     return repl_map
 
 
+def _find_matching_paren(expr: str, start: int) -> int:
+    """Return the index of the ')' matching '(' at position *start*."""
+    depth = 0
+    for i in range(start, len(expr)):
+        if expr[i] == '(':
+            depth += 1
+        elif expr[i] == ')':
+            depth -= 1
+            if depth == 0:
+                return i
+    return -1
+
+
+def disintegrate_implication_full(expr: str) -> tuple[list[str], str]:
+    """Peel implication layers and return (premises, head)."""
+    premises: list[str] = []
+
+    while expr.startswith('(>['):
+        try:
+            bracket_close = expr.index(']', 3)
+        except ValueError:
+            break
+
+        premise_start = bracket_close + 1
+        if premise_start >= len(expr) or expr[premise_start] != '(':
+            break
+
+        premise_end = _find_matching_paren(expr, premise_start)
+        if premise_end < 0:
+            break
+
+        body_start = premise_end + 1
+        if body_start >= len(expr) or expr[body_start] != '(':
+            break
+
+        body_end = _find_matching_paren(expr, body_start)
+        if body_end < 0:
+            break
+
+        premises.append(expr[premise_start:premise_end + 1])
+        expr = expr[body_start:body_end + 1]
+
+    return premises, expr
+
+
+def is_theorem_anchor_implication(expr: str) -> bool:
+    """True only for theorem implications whose first premise is an Anchor expression."""
+    if not expr or not expr.startswith("(>["):
+        return False
+
+    premises, _ = disintegrate_implication_full(expr)
+    if not premises:
+        return False
+
+    return premises[0].startswith("(Anchor")
+
+
+def strip_anchor_vars_from_outer_implication(expr: str) -> str:
+    """For anchored theorem implications, clear the outer >[...] binder list."""
+    if not is_theorem_anchor_implication(expr):
+        return expr
+
+    try:
+        bracket_close = expr.index(']', 3)
+    except ValueError:
+        return expr
+
+    return '(>[]' + expr[bracket_close + 1:]
+
+
+def normalize_anchor_implications(raw_theorems, raw_stacks):
+    """No-op: anchor implications are kept with their original >[...] binder lists."""
+    return raw_theorems, raw_stacks
+
+
 def _build_fname_list(theorems):
     """
     Given a list of theorem entries [expr, method, var, ...],
@@ -206,7 +281,7 @@ def create_processed_proof_graph(config: configuration_reader):
     # Load all raw stacks into RAM
     raw_stacks = {}
     for file in raw_dir.glob("*.txt"):
-        if file.name in ("global_theorem_list.txt", "compiled_expressions.txt"):
+        if file.name in ("global_theorem_list.txt",):
             continue
         stack = []
         with open(file, "r", encoding="utf-8") as f:
@@ -219,6 +294,11 @@ def create_processed_proof_graph(config: configuration_reader):
     # STEP 0: Prune proof graph — remove unused non-essential theorems
     # -------------------------------------------------------------------------
     raw_theorems, raw_stacks = _prune_proof_graph(raw_theorems, raw_stacks)
+
+    # -------------------------------------------------------------------------
+    # STEP 1: Normalize anchored theorem implications before local renaming
+    # -------------------------------------------------------------------------
+    raw_theorems, raw_stacks = normalize_anchor_implications(raw_theorems, raw_stacks)
 
     # Rebuild derived indices from (possibly filtered) raw_theorems
     raw_thm_to_idx = {thm[0]: i for i, thm in enumerate(raw_theorems)}
@@ -263,10 +343,11 @@ def create_processed_proof_graph(config: configuration_reader):
 
                 orig_cell = raw_stack[r_idx][c_idx]
                 is_impl = orig_cell.startswith("(>[")
-                has_anchor = "(Anchor" in orig_cell
+                is_theorem_impl = is_theorem_anchor_implication(orig_cell)
 
-                # Strictly ignore anchored implications here
-                if is_impl and not has_anchor:
+                # Rename implication-local variables for every non-theorem implication.
+                # Theorem implications are handled later via the global theorem list.
+                if is_impl and not is_theorem_impl:
                     args = get_all_args(cell)
                     has_u = any(a.startswith("u_") for a in args)
 
@@ -292,8 +373,16 @@ def create_processed_proof_graph(config: configuration_reader):
         if raw_thm_expr:
             repl_map.update(get_anchor_mapping_from_expr(raw_thm_expr, config))
 
-        # Priority 2: Iterate over remaining args
+        # Priority 2: Seed v-numbering from the theorem expression itself
+        #             (left-to-right scan — same order used for the global theorem list)
         var_counter = 1
+        if raw_thm_expr:
+            for a in get_all_args(raw_thm_expr):
+                if a not in repl_map:
+                    repl_map[a] = f"v{var_counter}"
+                    var_counter += 1
+
+        # Priority 3: Iterate over remaining args in chapter lines
         for r_idx, row in enumerate(stack):
             for c_idx, cell in enumerate(row):
                 if c_idx == 2 or cell == "main":
@@ -301,10 +390,11 @@ def create_processed_proof_graph(config: configuration_reader):
 
                 orig_cell = raw_stack[r_idx][c_idx]
                 is_impl = orig_cell.startswith("(>[")
-                has_anchor = "(Anchor" in orig_cell
+                is_theorem_impl = is_theorem_anchor_implication(orig_cell)
 
-                # IGNORE anchored implications entirely
-                if is_impl and has_anchor:
+                # Ignore theorem implications here. They are replaced wholesale later
+                # so they stay aligned with the globally renamed theorem list.
+                if is_impl and is_theorem_impl:
                     continue
 
                 # ALL other expressions (including Iteration 1's modified unanchored implications) are processed!
@@ -330,6 +420,12 @@ def create_processed_proof_graph(config: configuration_reader):
 
         renamed_theorems[i][0] = replace_keys_in_string(raw_thm_expr, thm_repl_map)
 
+        # Also rename the induction variable (field 2) for induction theorems
+        method = thm_row[1].lower() if len(thm_row) > 1 else ""
+        if method == "induction" and len(thm_row) > 2:
+            raw_ind_var = thm_row[2]
+            renamed_theorems[i][2] = thm_repl_map.get(raw_ind_var, raw_ind_var)
+
     # -------------------------------------------------------------------------
     # ITERATION 3: Apply the replacement maps
     # -------------------------------------------------------------------------
@@ -344,10 +440,10 @@ def create_processed_proof_graph(config: configuration_reader):
 
                 orig_cell = raw_stack[r_idx][c_idx]
                 is_impl = orig_cell.startswith("(>[")
-                has_anchor = "(Anchor" in orig_cell
+                is_theorem_impl = is_theorem_anchor_implication(orig_cell)
 
-                # DO NOT apply map to anchored implications
-                if is_impl and has_anchor:
+                # Do not apply the local chapter map to theorem implications.
+                if is_impl and is_theorem_impl:
                     continue
 
                 # Apply map to the current cell (Iter 1 mods are safely mapped here)
@@ -365,10 +461,10 @@ def create_processed_proof_graph(config: configuration_reader):
 
                 orig_cell = raw_stack[r_idx][c_idx]
                 is_impl = orig_cell.startswith("(>[")
-                has_anchor = "(Anchor" in orig_cell
+                is_theorem_impl = is_theorem_anchor_implication(orig_cell)
 
-                # Strictly replace the anchored implications with their global renamed version
-                if is_impl and has_anchor:
+                # Replace theorem implications with their global renamed version.
+                if is_impl and is_theorem_impl:
                     if orig_cell in raw_thm_to_idx:
                         global_idx = raw_thm_to_idx[orig_cell]
                         ram_stacks[fname][r_idx][c_idx] = renamed_theorems[global_idx][0]
@@ -384,9 +480,5 @@ def create_processed_proof_graph(config: configuration_reader):
     with open(proc_dir / "global_theorem_list.txt", "w", encoding="utf-8") as f:
         for thm in renamed_theorems:
             f.write("\t".join(thm) + "\n")
-
-    comp_expr = raw_dir / "compiled_expressions.txt"
-    if comp_expr.exists():
-        shutil.copy(comp_expr, proc_dir / "compiled_expressions.txt")
 
     print(f"Success: Processed proof graphs have been written to {proc_dir}")

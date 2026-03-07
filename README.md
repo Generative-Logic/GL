@@ -16,7 +16,8 @@ For more details and to request a quote, please visit our commercial licensing p
 
 **Contributing**
 
-Please note that all contributions to this project require a signed Contributor License Agreement (CLA). For more information, please see our `CONTRIBUTING.md` file.
+All contributions require a signed Contributor License Agreement (CLA).
+See `legal/CONTRIBUTOR_LICENSE_AGREEMENT.md` for details.
 
 
 # Run Mode & How to Run
@@ -29,7 +30,7 @@ End-to-end runtime (reference): ~6 minutes on a Dell G16 7630 (overall).
 
 ## Prerequisites
 
-Python 3.9+ (standard library only — no external Python packages required)
+Python 3.9+ with the `regex` package (`pip install regex`) — required for recursive pattern matching in HTML proof graph rendering
 
 For Windows users: the bundled native executable GL_Quick_VS/GL_Quick/gl_quick.exe
 
@@ -104,6 +105,4 @@ regex — © Matthew Barnett — Apache-2.0 and CNRI-Python.
 
 **nlohmann/json** — © Niels Lohmann — Licensed under MIT.
 https://github.com/nlohmann/json
-
-mimalloc — General-purpose memory allocator by Microsoft, used as a drop-in replacement for the default allocator.
 

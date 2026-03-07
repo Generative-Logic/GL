@@ -1,6 +1,5 @@
-(sequence[N,+,i0,v1,v2])	main	implication	(>[v3](interval[N,+,i0,v1,v3])(>[](fXY[v2,v3,N])(sequence[N,+,i0,v1,v2])))	main	(fXY[v2,v4,N])	main	(interval[N,+,i0,v1,v4])	main
-(>[v3](interval[N,+,i0,v1,v3])(>[](fXY[v2,v3,N])(sequence[N,+,i0,v1,v2])))	main	reformulation for integration	!(>[v3](interval[N,+,i0,v1,v3])!(fXY[v2,v3,N]))	main
-!(>[v3](interval[N,+,i0,v1,v3])!(fXY[v2,v3,N]))	main	expansion for integration	(sequence[N,+,i0,v1,v2])	main
-(sequence[N,+,i0,v1,v2])	main	implication	(>[v3](interval[N,+,i0,v1,v3])(>[](fXY[v2,v3,N])(sequence[N,+,i0,v1,v2])))	main	(fXY[v2,v4,N])	main	(interval[N,+,i0,v1,v4])	main
-(fXY[v2,v4,N])	main	task formulation
-(interval[N,+,i0,v1,v4])	main	task formulation
+(sequence[N,+,i0,v3,v1])	main	implication	(>[v4](interval[N,+,i0,v3,v4])(>[](fXY[v1,v4,N])(sequence[N,+,i0,v3,v1])))	main	(fXY[v1,v2,N])	main	(interval[N,+,i0,v3,v2])	main
+(>[v4](interval[N,+,i0,v3,v4])(>[](fXY[v1,v4,N])(sequence[N,+,i0,v3,v1])))	main	reformulation for integration	!(>[v4](interval[N,+,i0,v3,v4])!(fXY[v1,v4,N]))_integration_goal	main
+!(>[v4](interval[N,+,i0,v3,v4])!(fXY[v1,v4,N]))_integration_goal	main	expansion for integration	(sequence[N,+,i0,v3,v1])_integration_goal	main
+(fXY[v1,v2,N])	main	task formulation
+(interval[N,+,i0,v3,v2])	main	task formulation

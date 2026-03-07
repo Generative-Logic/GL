@@ -1,5 +1,5 @@
-(in3[v1,v2,i1,+])	main	implication	(>[+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(in3[v2,v1,v3,+])))	main	(AnchorPeano[N,i0,s,+,*,v3])	main	(in3[v2,v1,i1,+])	main
+(in3[v2,v1,i1,+])	main	implication	(>[+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(in3[v2,v1,v3,+])))	main	(AnchorPeano[N,i0,s,+,*,v3])	main	(in3[v1,v2,i1,+])	main
 (>[+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(in3[v2,v1,v3,+])))	main	theorem
 (AnchorPeano[N,i0,s,+,*,v3])	main	anchor handling	(AnchorPeano[N,i0,s,+,*,i1])	main
 (AnchorPeano[N,i0,s,+,*,i1])	main	task formulation
-(in3[v2,v1,i1,+])	main	task formulation
+(in3[v1,v2,i1,+])	main	task formulation

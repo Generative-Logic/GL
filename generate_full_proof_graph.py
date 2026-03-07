@@ -844,10 +844,37 @@ def _row_validity_values(row: list[str]) -> list[str]:
     return vals
 
 
+
+
+
 def _row_contains_rhs_expr(row: list[str], expr: str) -> bool:
     target = _norm_expr(expr)
     for i in range(3, len(row), 2):
         if _norm_expr(row[i]) == target:
+            return True
+    return False
+
+
+def _strip_integration_goal(expr: str) -> str:
+    s = (expr or "").strip()
+    # Strip any accidental quotation marks so the suffix can be correctly removed
+    if s.startswith('"') and s.endswith('"'):
+        s = s[1:-1]
+    suffix = "_integration_goal"
+    return s[:-len(suffix)] if s.endswith(suffix) else s
+
+def _structural_match(expr1: str, expr2: str) -> bool:
+    """Check if two expressions match structurally, ignoring exact 'v' variable numbers."""
+    def norm_vars(s: str) -> str:
+        return re.sub(r'v\d+', 'vX', s)
+    return norm_vars(expr1) == norm_vars(expr2)
+
+def _row_contains_rhs_expr_integration_aware(row: list[str], expr: str) -> bool:
+    target = _norm_expr(_strip_integration_goal(expr))
+    for i in range(3, len(row), 2):
+        cell_expr = _norm_expr(_strip_integration_goal(row[i]))
+        # Check for exact match or structural match (v12 vs v17)
+        if cell_expr == target or _structural_match(cell_expr, target):
             return True
     return False
 
@@ -891,7 +918,7 @@ def _partition_stack_subproofs(stack: list[list[str]]):
         for row_idx, row in enumerate(stack):
             if not row or len(row) < 4:
                 continue
-            if row[2] == "expansion for integration" and _row_contains_rhs_expr(row, sp["implication_expr"]):
+            if row[2] == "expansion for integration" and _row_contains_rhs_expr_integration_aware(row, sp["implication_expr"]):
                 sp["seed_expansion_idx"] = row_idx
                 break
 
@@ -906,10 +933,13 @@ def _partition_stack_subproofs(stack: list[list[str]]):
             if not row:
                 continue
 
-            belongs = False
-
+            # Keep the declaration row (the implication / validity-name line)
+            # on the main stack. The subproof card already uses it as header/meta.
+            # Only the actual local proof steps belong to the subproof body.
             if len(row) > 2 and row[2] == "validity name" and _norm_expr(row[0]) == impl_norm:
-                belongs = True
+                continue
+
+            belongs = False
 
             if not belongs:
                 for v in _row_validity_values(row):
@@ -1157,7 +1187,7 @@ def makes_file_path_map(theorem_list, base_dir=None):
 
 
 # ---------------------------------------------------------------------------
-# GL Binary Map — parse compiled_expressions.txt for popup definitions
+# GL Binary Map — read per-tag JSON from files/GL_binaries/
 # ---------------------------------------------------------------------------
 
 def _gl_split_elements(elements_raw):
@@ -1214,105 +1244,90 @@ def _gl_make_conjunction(elements):
     return '(&' + elements[0] + _gl_make_conjunction(elements[1:]) + ')'
 
 
-def build_gl_binary_map(compiled_expr_path):
-    """Parse compiled_expressions.txt and build gl_binary_map for popup display."""
+def build_gl_binary_map(gl_binaries_dir):
+    """Read per-tag JSON files from GL_binaries/ and build gl_binary_map for popup display."""
     gl_binary_map = {}
-    if not os.path.exists(compiled_expr_path):
+    gl_binaries_path = Path(gl_binaries_dir)
+    if not gl_binaries_path.exists():
         return gl_binary_map
 
-    with open(compiled_expr_path, 'r', encoding='utf-8') as f:
-        text = f.read()
+    for json_file in sorted(gl_binaries_path.glob("GL_binary_*.json")):
+        with open(json_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
 
-    for block in text.split('--------------------------------------------------'):
-        block = block.strip()
-        if not block:
-            continue
+        for core, entry in data.items():
+            category = entry.get('category', '')
+            signature = entry.get('signature', '')
+            elements_list = entry.get('elements', [])
 
-        entry = {}
-        for line in block.split('\n'):
-            line = line.strip()
-            if line.startswith('Core: '):
-                entry['core'] = line[6:]
-            elif line.startswith('Category: '):
-                entry['category'] = line[10:]
-            elif line.startswith('Signature: '):
-                entry['signature'] = line[11:]
-            elif line.startswith('Elements: '):
-                entry['elements_raw'] = line[10:].strip()
+            if category == 'atomic' or not elements_list:
+                continue
 
-        if entry.get('category') == 'atomic' or not entry.get('elements_raw'):
-            continue
+            # Parse signature args -> u_ to x mapping
+            sig_args = []
+            m = re.search(r'\[([^\]]*)\]', signature)
+            if m:
+                sig_args = [a.strip() for a in m.group(1).split(',')]
+            u_to_x = {}
+            xi = 1
+            for arg in sig_args:
+                if arg.startswith('u_') and arg not in u_to_x:
+                    u_to_x[arg] = f'x{xi}'
+                    xi += 1
 
-        core = entry['core']
-        category = entry['category']
-        signature = entry['signature']
+            # Elements are already a list from JSON
+            elements = elements_list
 
-        # Parse signature args → u_ to x mapping
-        sig_args = []
-        m = re.search(r'\[([^\]]*)\]', signature)
-        if m:
-            sig_args = [a.strip() for a in m.group(1).split(',')]
-        u_to_x = {}
-        xi = 1
-        for arg in sig_args:
-            if arg.startswith('u_') and arg not in u_to_x:
-                u_to_x[arg] = f'x{xi}'
-                xi += 1
+            # Find bound vars (non-u_ tokens) across all elements -> y mapping
+            bound_to_y = {}
+            yi = 1
+            for elem in elements:
+                for tok in _gl_get_bracket_tokens(elem):
+                    if tok not in u_to_x and tok not in bound_to_y:
+                        bound_to_y[tok] = f'y{yi}'
+                        yi += 1
 
-        # Parse elements
-        elements = _gl_split_elements(entry['elements_raw'])
+            # Combined variable mapping
+            var_map = {**u_to_x, **bound_to_y}
 
-        # Find bound vars (non-u_ tokens) across all elements → y mapping
-        bound_to_y = {}
-        yi = 1
-        for elem in elements:
-            for tok in _gl_get_bracket_tokens(elem):
-                if tok not in u_to_x and tok not in bound_to_y:
-                    bound_to_y[tok] = f'y{yi}'
-                    yi += 1
+            # Rename signature and elements
+            renamed_sig = _gl_rename_vars(signature, var_map)
+            renamed_elems = [_gl_rename_vars(e, var_map) for e in elements]
 
-        # Combined variable mapping
-        var_map = {**u_to_x, **bound_to_y}
-
-        # Rename signature and elements
-        renamed_sig = _gl_rename_vars(signature, var_map)
-        renamed_elems = [_gl_rename_vars(e, var_map) for e in elements]
-
-        # Collect bound var names (yN) for quantifiers
-        if category == 'existence':
-            # Only bound vars from elements[0]
-            qvars = []
-            for tok in _gl_get_bracket_tokens(elements[0]):
-                if tok in bound_to_y and bound_to_y[tok] not in qvars:
-                    qvars.append(bound_to_y[tok])
-        else:
-            qvars = list(bound_to_y.values())
-
-        bound_str = ','.join(qvars)
-
-        # Reconstruct MPL based on category
-        if category == 'and':
-            mpl = _gl_make_conjunction(renamed_elems)
-        elif category == 'existence':
-            first = renamed_elems[0]
-            second = renamed_elems[1] if len(renamed_elems) > 1 else ''
-            if second.startswith('!'):
-                neg_second = second[1:]
+            # Collect bound var names (yN) for quantifiers
+            if category == 'existence':
+                qvars = []
+                for tok in _gl_get_bracket_tokens(elements[0]):
+                    if tok in bound_to_y and bound_to_y[tok] not in qvars:
+                        qvars.append(bound_to_y[tok])
             else:
-                neg_second = '!' + second
-            mpl = '!(>[' + bound_str + ']' + first + neg_second + ')'
-        elif category == 'implication':
-            premises = renamed_elems[:-1]
-            conclusion = renamed_elems[-1]
-            premises_conj = _gl_make_conjunction(premises)
-            mpl = '(>[' + bound_str + ']' + premises_conj + conclusion + ')'
-        else:
-            mpl = _gl_make_conjunction(renamed_elems)
+                qvars = list(bound_to_y.values())
 
-        gl_binary_map[core] = {
-            'signature': renamed_sig,
-            'mpl': mpl
-        }
+            bound_str = ','.join(qvars)
+
+            # Reconstruct MPL based on category
+            if category == 'and':
+                mpl = _gl_make_conjunction(renamed_elems)
+            elif category == 'existence':
+                first = renamed_elems[0]
+                second = renamed_elems[1] if len(renamed_elems) > 1 else ''
+                if second.startswith('!'):
+                    neg_second = second[1:]
+                else:
+                    neg_second = '!' + second
+                mpl = '!(>[' + bound_str + ']' + first + neg_second + ')'
+            elif category == 'implication':
+                premises = renamed_elems[:-1]
+                conclusion = renamed_elems[-1]
+                premises_conj = _gl_make_conjunction(premises)
+                mpl = '(>[' + bound_str + ']' + premises_conj + conclusion + ')'
+            else:
+                mpl = _gl_make_conjunction(renamed_elems)
+
+            gl_binary_map[core] = {
+                'signature': renamed_sig,
+                'mpl': mpl
+            }
 
     return gl_binary_map
 
@@ -1335,9 +1350,9 @@ def generate_proof_graph_pages(config: configuration_reader):
     theorem_list = read_theorem_list()
     file_path_map = makes_file_path_map(theorem_list)
 
-    # Build GL binary map from compiled expressions
-    compiled_expr_path = PROJECT_ROOT / "files" / "processed_proof_graph" / "compiled_expressions.txt"
-    gl_binary_map = build_gl_binary_map(str(compiled_expr_path))
+    # Build GL binary map from per-tag JSON files
+    gl_binaries_dir = PROJECT_ROOT / "files" / "GL_binaries"
+    gl_binary_map = build_gl_binary_map(gl_binaries_dir)
     gl_binary_json = json.dumps(gl_binary_map, ensure_ascii=False)
 
     # JavaScript for left-click/right-click expansion; popup named "Expression" with deep-navy styling
@@ -1607,7 +1622,7 @@ def generate_proof_graph_pages(config: configuration_reader):
         body = [head]
         if method.lower() == "induction":
             body.extend([
-                f"  <span class=\"var-highlight\">Induction variable: v{html.escape(var)}</span>",
+                f"  <span class=\"var-highlight\">Induction variable: {html.escape(var)}</span>",
                 "  <h2 id=\"sub1\">Check for 0</h2>",
                 f"  <div class=\"step-output\">{check_zero(name, file_path_map[name][0], var, f'c{idx}s1')}</div>",
                 "  <h2 id=\"sub2\">Check induction condition</h2>",

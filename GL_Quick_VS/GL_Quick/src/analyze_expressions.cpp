@@ -242,6 +242,7 @@ ExpressionAnalyzer::ExpressionAnalyzer(std::string anchorID)
 
 
 
+    this->anchorID_ = anchorID;
     anchorInfo = initAnchor(coreExpressionMap, anchorID);
 
     permanentBodies.clear();
@@ -3581,21 +3582,21 @@ void ExpressionAnalyzer::revisitRejected2(const std::string& markedExpr,
         assert(argsIdentical && "Mismatch between marked and rejected args (other than marker)");
         if (!argsIdentical) continue;
 
-        const std::string& expandedExpr = val.expression;
+        // IMPORTANT:
+        // val.expression is the compact existence expression, not the expanded one.
+        // We must reconstruct the expanded form and record the missing
+        // compact -> expansion -> disintegration history chain.
+        const std::string& compactExpr = val.expression;
         const int iteration = val.iteration;
 
-        EncodedExpression encExpExpr(expandedExpr, validityName);
-        auto itLev = memoryBlock.statementLevelsMap.find(encExpExpr);
+        EncodedExpression encCompactExpr(compactExpr, validityName);
+        auto itLev = memoryBlock.statementLevelsMap.find(encCompactExpr);
         assert(itLev != memoryBlock.statementLevelsMap.end());
         std::set<int> levels = itLev->second;
 
-        std::pair<std::string, std::vector<ExpressionWithValidity>> localOrigin =
-            std::make_pair("disintegration", std::vector<ExpressionWithValidity>());
-        localOrigin.second.push_back(ExpressionWithValidity(expandedExpr, validityName));
-
-        std::string replExpr = prefixArgumentsWithU(expandedExpr);
+        std::string replExpr = prefixArgumentsWithU(compactExpr);
         Instruction instructions;
-        prepareIntegrationCore(replExpr, instructions, memoryBlock, expandedExpr);
+        prepareIntegrationCore(replExpr, instructions, memoryBlock, compactExpr);
 
         auto itInstr = std::find_if(instructions.data.begin(), instructions.data.end(),
             [&](const LogicalEntity& le) { return le.signature == replExpr; });
@@ -3612,6 +3613,33 @@ void ExpressionAnalyzer::revisitRejected2(const std::string& markedExpr,
         std::string boundVar = removedArgs[0];
         std::map<std::string, std::string> replacementMap;
         replacementMap[boundVar] = rejectedVariable;
+
+        LogicalEntity modifiedEnt = ent;
+        for (std::string& elem : modifiedEnt.elements) {
+            elem = ce::replaceKeysInString(elem, replacementMap);
+        }
+
+        const std::string expandedExpr = expandSignature(modifiedEnt);
+
+        if (parameters.trackHistory) {
+            std::pair<std::string, std::vector<ExpressionWithValidity>> originExpansion;
+            originExpansion.first = "expansion";
+            originExpansion.second.push_back(ExpressionWithValidity(compactExpr, validityName));
+
+            ExpressionWithValidity expandVal(expandedExpr, validityName);
+            addOrigin(memoryBlock.exprOriginMap,
+                expandVal,
+                originExpansion,
+                (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
+            addOrigin(memoryBlock.mailOut.exprOriginMap,
+                expandVal,
+                originExpansion,
+                (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
+        }
+
+        std::pair<std::string, std::vector<ExpressionWithValidity>> localOrigin =
+            std::make_pair("disintegration", std::vector<ExpressionWithValidity>());
+        localOrigin.second.push_back(ExpressionWithValidity(expandedExpr, validityName));
 
         for (const std::string& elem : ent.elements) {
             std::string s = ce::replaceKeysInString(elem, replacementMap);
@@ -4323,28 +4351,35 @@ void gl::ExpressionAnalyzer::findEnds(const std::vector<std::string>& path, cons
     mapFile.close();
 }
 
-void ExpressionAnalyzer::exportCompiledExpressions(const std::filesystem::path& outDir) {
+void ExpressionAnalyzer::exportCompiledExpressionsJSON(const std::filesystem::path& outDir) {
     namespace fs = std::filesystem;
-    // Open in append mode so Peano and Gauss runs both add to the file
-    std::ofstream f((outDir / "compiled_expressions.txt").string().c_str(), std::ios::out | std::ios::app);
+    fs::create_directories(outDir);
 
-    if (f.is_open()) {
-        for (const auto& kv : this->compiledExpressions) {
-            const std::string& coreName = kv.first;
-            const auto& compExpr = kv.second; // Value type (e.g., LogicalEntity)
+    fs::path outPath = outDir / ("GL_binary_" + anchorID_ + ".json");
+    nlohmann::json root = nlohmann::json::object();
 
-            // Output format: CoreName <TAB> Category <TAB> Signature <TAB> Elements (space separated)
-            f << "Core: " << coreName << "\n";
-            f << "Category: " << compExpr.category << "\n";
-            f << "Signature: " << compExpr.signature << "\n";
+    for (const auto& kv : this->compiledExpressions) {
+        const std::string& coreName = kv.first;
+        const auto& compExpr = kv.second;
 
-            f << "Elements: ";
-            for (size_t i = 0; i < compExpr.elements.size(); ++i) {
-                f << compExpr.elements[i];
-                if (i < compExpr.elements.size() - 1) f << " ";
-            }
-            f << "\n--------------------------------------------------\n";
+        nlohmann::json entry;
+        entry["category"] = compExpr.category;
+        entry["signature"] = compExpr.signature;
+        entry["arity"] = compExpr.arity;
+        entry["definedSet"] = compExpr.definedSet;
+
+        nlohmann::json elems = nlohmann::json::array();
+        for (const auto& e : compExpr.elements) {
+            elems.push_back(e);
         }
+        entry["elements"] = elems;
+
+        root[coreName] = entry;
+    }
+
+    std::ofstream f(outPath.string().c_str());
+    if (f.is_open()) {
+        f << root.dump(2);
         f.close();
     }
 }
@@ -4365,7 +4400,8 @@ void ExpressionAnalyzer::generateRawProofGraph(
     // MODIFIED: Removed fs::remove_all to preserve previous runs
     fs::create_directories(outDir, ec);
 
-    this->exportCompiledExpressions(outDir);
+    fs::path glBinDir = outDir.parent_path() / "GL_binaries";
+    this->exportCompiledExpressionsJSON(glBinDir);
 
     // MODIFIED: Scan for start index based on existing files
     int idx = 0;
@@ -5706,9 +5742,7 @@ std::string ExpressionAnalyzer::expandSignature(const LogicalEntity& le)
             std::string head = chain.back();
             chain.pop_back();
 
-            // Use reconstructImplication. Since sigArgs are 'u_', they are naturally 
-            // treated as free variables (unchangeable) by the reconstruction logic.
-            result = this->reconstructImplication(chain, head);
+            result = this->reconstructImplicationFullBind(chain, head);
         }
     }
 
@@ -5867,7 +5901,7 @@ void ExpressionAnalyzer::disintegrateExprCore2(const std::string& expr,
         std::string value = ent.elements.back();
 
         // Add implication specifically to THIS statement's entry (first set)
-        collected[currentStatement].first.insert(reconstructImplication(key, value));
+        collected[currentStatement].first.insert(reconstructImplicationFullBind(key, value));
 
         // Use Lambda (Children not tracked for implication in original code)
         trackExpansionHistory(ent, false);
