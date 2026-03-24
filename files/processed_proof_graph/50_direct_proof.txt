@@ -1,12 +1,5 @@
-(interval[N,+,i0,v2,v3])	main	implication	(>[](implication20[v3,N,+,i0])(>[](implication21[v3,N,+,v2])(>[](implication22[N,+,i0,v2,v3])(>[](in[i0,N])(>[](in[v2,N])(interval[N,+,i0,v2,v3]))))))	main	(implication20[v3,N,+,i0])	main	(implication21[v3,N,+,v2])	main	(implication22[N,+,i0,v2,v3])	main	(in[v2,N])	main	(in[i0,N])	main
-(>[](implication20[v3,N,+,i0])(>[](implication21[v3,N,+,v2])(>[](implication22[N,+,i0,v2,v3])(>[](in[i0,N])(>[](in[v2,N])(interval[N,+,i0,v2,v3]))))))	main	reformulation for integration	(&(&(&(&(implication20[v3,N,+,i0])(implication21[v3,N,+,v2]))(implication22[N,+,i0,v2,v3]))(in[i0,N]))(in[v2,N]))_integration_goal	main
-(&(&(&(&(implication20[v3,N,+,i0])(implication21[v3,N,+,v2]))(implication22[N,+,i0,v2,v3]))(in[i0,N]))(in[v2,N]))_integration_goal	main	expansion for integration	(interval[N,+,i0,v2,v3])_integration_goal	main
-(implication20[v3,N,+,i0])	main	disintegration	(&(&(&(&(implication20[v3,N,+,i0])(implication21[v3,N,+,v2]))(implication22[N,+,i0,v2,v3]))(in[i0,N]))(in[v2,N]))	main
-(&(&(&(&(implication20[v3,N,+,i0])(implication21[v3,N,+,v2]))(implication22[N,+,i0,v2,v3]))(in[i0,N]))(in[v2,N]))	main	expansion	(interval[N,+,i0,v2,v3])	main
-(interval[N,+,i0,v2,v3])	main	implication	(>[](implication20[v3,N,+,i0])(>[](implication21[v3,N,+,v2])(>[](implication22[N,+,i0,v2,v3])(>[](in[i0,N])(>[](in[v2,N])(interval[N,+,i0,v2,v3]))))))	main	(implication20[v3,N,+,i0])	main	(implication21[v3,N,+,v2])	main	(implication22[N,+,i0,v2,v3])	main	(in[v2,N])	main	(in[i0,N])	main
-(implication21[v3,N,+,v2])	main	disintegration	(&(&(&(&(implication20[v3,N,+,i0])(implication21[v3,N,+,v2]))(implication22[N,+,i0,v2,v3]))(in[i0,N]))(in[v2,N]))	main
-(implication22[N,+,i0,v2,v3])	main	disintegration	(&(&(&(&(implication20[v3,N,+,i0])(implication21[v3,N,+,v2]))(implication22[N,+,i0,v2,v3]))(in[i0,N]))(in[v2,N]))	main
-(in[v2,N])	main	disintegration	(&(&(&(&(implication20[v3,N,+,i0])(implication21[v3,N,+,v2]))(implication22[N,+,i0,v2,v3]))(in[i0,N]))(in[v2,N]))	main
-(in[i0,N])	main	disintegration	(&(&(&(&(implication20[v1,N,+,i0])(implication21[v1,N,+,v4]))(implication22[N,+,i0,v4,v1]))(in[i0,N]))(in[v4,N]))	main
-(&(&(&(&(implication20[v1,N,+,i0])(implication21[v1,N,+,v4]))(implication22[N,+,i0,v4,v1]))(in[i0,N]))(in[v4,N]))	main	expansion	(interval[N,+,i0,v4,v1])	main
-(interval[N,+,i0,v4,v1])	main	task formulation
+(in3[v2,v1,i0,+])	main	implication	(>[+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(in3[v2,v1,v3,+])))	main	(AnchorPeano[N,0_copy,s,+,*,i1])	main	(in3[v1,v2,i0,+])	main
+(>[+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(in3[v2,v1,v3,+])))	main	theorem
+(AnchorPeano[N,0_copy,s,+,*,i1])	main	anchor handling	(AnchorPeano[N,i0,s,+,*,i1])	main
+(AnchorPeano[N,i0,s,+,*,i1])	main	task formulation
+(in3[v1,v2,i0,+])	main	task formulation

@@ -1,0 +1,13 @@
+(&
+    (limitSet[N,+,ni,n,I])
+    (&
+        (in2[n,sn,s])
+        (&
+            (in2[sn,ssn,s])
+            (&
+                (in[ssn,ni])
+                !(in[sn,ni])
+            )
+        )
+    )
+)

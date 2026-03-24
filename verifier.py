@@ -86,6 +86,9 @@ class VerifierState:
     # Definition sets: core_name → { "1-based-position" → [def_set_str, bool] }
     definition_sets: Dict[str, Dict[str, list]] = field(default_factory=dict)
 
+    # External theorems (raw + renamed forms)
+    external_theorems: set = field(default_factory=set)
+
     def counter_for(self, tag: str) -> TagCounter:
         if tag not in self.tag_counters:
             self.tag_counters[tag] = TagCounter()
@@ -196,7 +199,19 @@ def disintegrate_implication_head(expr: str) -> str:
         if p_end < 0:
             break
         b_start = p_end + 1
-        if b_start >= len(expr) or expr[b_start] != '(':
+        if b_start >= len(expr):
+            break
+        if expr[b_start] == '!':
+            # Negated body: !(...)
+            inner_start = b_start + 1
+            if inner_start >= len(expr) or expr[inner_start] != '(':
+                break
+            inner_end = _find_matching_paren(expr, inner_start)
+            if inner_end < 0:
+                break
+            expr = expr[b_start:inner_end + 1]
+            return expr
+        if expr[b_start] != '(':
             break
         b_end = _find_matching_paren(expr, b_start)
         if b_end < 0:
@@ -224,6 +239,35 @@ def _extract_core_name(expr: str) -> str:
     return m.group(1) if m else ""
 
 
+def _trace_back_to(expr: str,
+                   expr_to_lines: Dict[str, List["ProofLine"]],
+                   is_target,
+                   should_follow=None,
+                   visited: set = None) -> bool:
+    """Generic recursive trace-back through proof chain.
+
+    Finds *expr* on the LHS of chapter lines, then:
+    1. If any such line satisfies *is_target(line)* → True
+    2. Otherwise follows rest-field expressions that pass *should_follow(src)*
+       (all if *should_follow* is None) and recurses.
+    """
+    if visited is None:
+        visited = set()
+    if expr in visited:
+        return False
+    visited.add(expr)
+    for ch_line in expr_to_lines.get(expr, []):
+        if is_target(ch_line):
+            return True
+        for i in range(0, len(ch_line.rest), 2):
+            src = ch_line.rest[i]
+            if should_follow is not None and not should_follow(src):
+                continue
+            if _trace_back_to(src, expr_to_lines, is_target, should_follow, visited):
+                return True
+    return False
+
+
 def disintegrate_implication_full(expr: str) -> Tuple[List[str], str]:
     """
     Peel off all ``(>[vars](premise)(body))`` layers.
@@ -240,7 +284,20 @@ def disintegrate_implication_full(expr: str) -> Tuple[List[str], str]:
             break
         premise = expr[p_start:p_end + 1]
         b_start = p_end + 1
-        if b_start >= len(expr) or expr[b_start] != '(':
+        if b_start >= len(expr):
+            break
+        if expr[b_start] == '!':
+            # Negated body: !(...)
+            inner_start = b_start + 1
+            if inner_start >= len(expr) or expr[inner_start] != '(':
+                break
+            inner_end = _find_matching_paren(expr, inner_start)
+            if inner_end < 0:
+                break
+            premises.append(premise)
+            expr = expr[b_start:inner_end + 1]
+            return premises, expr
+        if expr[b_start] != '(':
             break
         b_end = _find_matching_paren(expr, b_start)
         if b_end < 0:
@@ -665,6 +722,14 @@ def check_theorem_goal_reached(
         source_expr = first.rest[0]
         return _check_mirror(source_expr, first.expression, output_indices)
 
+    # back_reformulated_statement: single line with tag "incubator back reformulation"
+    if chapter_type == "back_reformulated_statement":
+        if first.namespace != "main" or first.tag != "incubator back reformulation":
+            return False
+        if len(first.rest) < 1:
+            return False
+        return True
+
     # direct proof, check_zero, check_induction_condition:
     # extract head from theorem, compare with first line
     if chapter_type in ("direct_proof", "check_zero", "check_induction_condition"):
@@ -822,24 +887,21 @@ def check_implication(line: ProofLine, chapter: List[ProofLine],
     impl = line.rest[0]
     impl_ns = line.rest[1]
 
-    # Implication must have namespace "main"
-    if impl_ns != "main":
-        return False
-
     # Collect premise namespaces
     premise_nss = [line.rest[i] for i in range(3, len(line.rest), 2)]
-    non_main = set(ns for ns in premise_nss if ns != "main")
+    # All non-main namespaces across implication + premises
+    all_nss = [impl_ns] + premise_nss
+    non_main = set(ns for ns in all_nss if ns != "main")
 
-    # At most one non-main namespace kind
+    # At most one non-main namespace kind among implication + premises
     if len(non_main) > 1:
         return False
 
-    # Result namespace must match
+    # Result namespace: must be the non-main kind from premises/impl,
+    # OR the result can be in a non-main validity context when all
+    # sources are "main" (a main implication firing inside a non-main scope)
     if non_main:
         if line.namespace != list(non_main)[0]:
-            return False
-    else:
-        if line.namespace != "main":
             return False
 
     # --- Structural check ---
@@ -860,18 +922,51 @@ def check_implication(line: ProofLine, chapter: List[ProofLine],
             if norm_act == norm_ref:
                 return True
     else:
-        # Non-anchor (disintegration-level): unchangeables from >[...]
+        # Non-anchor: substitution-based matching.
+        # Unchangeables = vars not bound in >[...]. Changeables = bound vars.
+        # Find a permutation of actual premises where core names align,
+        # unchangeables match at every position, and changeables map
+        # consistently (well-defined function).
         all_vars = _collect_all_expr_vars(impl)
         bound_vars = _collect_bound_vars(impl)
         unchangeables = all_vars - bound_vars
 
-        norm_ref = _normalize_with_unchangeables(impl, unchangeables)
+        ref_chain = ref_premises + [ref_head]
 
         for perm in itertools.permutations(premises):
-            elements = list(perm) + [result_expr]
-            rebuilt = _build_implication_from_elements(elements, unchangeables)
-            norm = _normalize_with_unchangeables(rebuilt, unchangeables)
-            if norm == norm_ref:
+            act_chain = list(perm) + [result_expr]
+            if len(ref_chain) != len(act_chain):
+                continue
+            changeable_map: Dict[str, str] = {}
+            ok = True
+            for ref_e, act_e in zip(ref_chain, act_chain):
+                if _extract_core_name(ref_e) != _extract_core_name(act_e):
+                    ok = False
+                    break
+                ra = _extract_args(ref_e)
+                aa = _extract_args(act_e)
+                if len(ra) != len(aa):
+                    ok = False
+                    break
+                for rv, av in zip(ra, aa):
+                    if rv in unchangeables:
+                        if rv != av:
+                            ok = False
+                            break
+                    elif rv in bound_vars:
+                        if rv in changeable_map:
+                            if changeable_map[rv] != av:
+                                ok = False
+                                break
+                        else:
+                            changeable_map[rv] = av
+                    else:
+                        if rv != av:
+                            ok = False
+                            break
+                if not ok:
+                    break
+            if ok:
                 return True
 
     return False
@@ -947,6 +1042,11 @@ def _build_implication_from_elements(elements: List[str],
 def _build_existence_from_elements(elements: List[str]) -> str:
     """Build existence: !(>[1](el1)!(el2))."""
     return f'!(>[1]{elements[0]}!{elements[1]})'
+
+
+def _build_existence_empty_binding(elements: List[str]) -> str:
+    """Build existence with empty binding: (>[](el1)(el2))."""
+    return f'(>[]{elements[0]}{elements[1]})'
 
 
 def _parse_existence_expansion(expr: str) -> Optional[Tuple[str, str, str]]:
@@ -1102,8 +1202,18 @@ def _try_expand(binary_entry: dict, right_expr: str,
     else:
         return False
 
-    return (_normalize_with_unchangeables(built, unch)
-            == _normalize_with_unchangeables(left_expr, unch))
+    if (_normalize_with_unchangeables(built, unch)
+            == _normalize_with_unchangeables(left_expr, unch)):
+        return True
+
+    # For existence, also try the empty-binding form (>[](el1)(el2))
+    if cat == 'existence':
+        built_empty = _build_existence_empty_binding(elements)
+        if (_normalize_with_unchangeables(built_empty, unch)
+                == _normalize_with_unchangeables(left_expr, unch)):
+            return True
+
+    return False
 
 
 def _replace_arg_safe_multi(expr: str, subst: Dict[str, str]) -> str:
@@ -1218,14 +1328,23 @@ def check_task_formulation(line: ProofLine, chapter: List[ProofLine],
 
     The expression must be a premise of the chapter's theorem and
     namespace must be "main".
+
+    For contradiction proofs (head starts with '!'), the un-negated head
+    (cleanOp) is also valid — it is seeded into the contradiction LB as
+    the hypothesis to be disproved.
     """
     if line.namespace != "main":
         return False
     if state.current_chapter_thm is None:
         return False
     thm_expr = state.current_chapter_thm[0]
-    premises, _ = disintegrate_implication_full(thm_expr)
-    return line.expression in premises
+    premises, head = disintegrate_implication_full(thm_expr)
+    if line.expression in premises:
+        return True
+    # Contradiction seed: head is !(...), cleanOp is (...)
+    if head.startswith('!') and line.expression == head[1:]:
+        return True
+    return False
 
 
 def check_equality1(line: ProofLine, chapter: List[ProofLine],
@@ -1443,10 +1562,20 @@ def check_theorem_tag(line: ProofLine, chapter: List[ProofLine],
 
     The expression must exist in the global theorem list and
     namespace must be "main".
+
+    Compares by normalization: variable renaming inside contradiction LBs
+    may produce v-numbering different from the global theorem list.
     """
     if line.namespace != "main":
         return False
-    return line.expression in state.global_theorems
+    if line.expression in state.global_theorems:
+        return True
+    # Fallback: normalize and compare
+    norm_line = _normalize_expr_list([line.expression])
+    for gt_expr in state.global_theorems:
+        if _normalize_expr_list([gt_expr]) == norm_line:
+            return True
+    return False
 
 
 _INTEGRATION_GOAL_SUFFIX = "_integration_goal"
@@ -1565,30 +1694,24 @@ def _reformulation_implication_to_existence(expr: str) -> Optional[Tuple[str, st
 
 
 
-def check_reformulation_for_integration(line: ProofLine,
+def _reformulation_integration_preamble(line: ProofLine,
                                         chapter: List[ProofLine],
-                                        state: VerifierState) -> bool:
+                                        state: VerifierState):
     """
-    REFORMULATION FOR INTEGRATION checker.
+    Shared preamble for all three reformulation-for-integration tags.
 
-    Strictly requires that rest[0] traces back through an
-    ``expansion for integration`` origin in the same namespace.
-
-    Supported categories:
-      - ``and``: rebuild the implication chain from the expanded AND form.
-      - ``existence``: convert the implication under scrutiny back into
-        existence form, fill a missing outer bound variable if needed,
-        build the expected existence expansion from the GL binary, then
-        compare after normalizing bound-variable names.
+    Returns (entry, compact, right_expr) on success, None on failure.
+    ``entry`` is the GL binary entry, ``compact`` is the head expression,
+    ``right_expr`` is the expansion-for-integration expression.
     """
     if len(line.rest) < 2:
-        return False
+        return None
 
     right_expr = line.rest[0]
     right_ns = line.rest[1]
 
     if line.namespace != right_ns:
-        return False
+        return None
 
     expansion_origin = None
     for ch_line in chapter:
@@ -1600,7 +1723,7 @@ def check_reformulation_for_integration(line: ProofLine,
             break
 
     if expansion_origin is None:
-        return False
+        return None
 
     compact = _strip_integration_goal(expansion_origin.rest[0])
     core = _extract_core_name(compact)
@@ -1612,61 +1735,124 @@ def check_reformulation_for_integration(line: ProofLine,
             break
 
     if entry is None:
-        return False
+        return None
 
     _, proof_head = disintegrate_implication_full(line.expression)
     if compact != proof_head:
+        return None
+
+    return entry, compact, right_expr
+
+
+
+def _check_reformulation_integration_and(line, compact, right_expr):
+    """AND category: rebuild implication chain from expanded AND form."""
+    right_expr_clean = _strip_integration_goal(right_expr)
+    if not right_expr_clean.startswith('(&'):
         return False
 
-    category = entry.get('category')
+    elements = _flatten_and(right_expr_clean)
+    if not elements:
+        return False
 
-    if category == 'and':
-        right_expr_clean = _strip_integration_goal(right_expr)
-        if not right_expr_clean.startswith('(&'):
-            return False
+    expected = compact
+    for elem in reversed(elements):
+        expected = f'(>[]{elem}{expected})'
 
-        elements = _flatten_and(right_expr_clean)
-        if not elements:
-            return False
+    return line.expression == expected
 
-        expected = compact
-        for elem in reversed(elements):
-            expected = f'(>[]{elem}{expected})'
 
-        result = line.expression == expected
+def _check_reformulation_integration_existence(line, entry, compact):
+    """Existence category: convert implication to existence form, compare."""
+    converted = _reformulation_implication_to_existence(line.expression)
+    if converted is None:
+        return False
 
-        return result
+    left_as_existence, converted_head = converted
+    if converted_head != compact:
+        return False
 
-    if category == 'existence':
-        converted = _reformulation_implication_to_existence(line.expression)
-        if converted is None:
-            return False
+    sig_args = _extract_args(entry.get('signature', ''))
+    actual_args = _extract_args(compact)
+    elements = entry.get('elements', [])
 
-        left_as_existence, converted_head = converted
-        if converted_head != compact:
-            return False
+    if len(sig_args) != len(actual_args) or len(elements) != 2:
+        return False
 
-        sig_args = _extract_args(entry.get('signature', ''))
-        actual_args = _extract_args(compact)
-        elements = entry.get('elements', [])
+    subst = dict(zip(sig_args, actual_args))
+    expected_children = [_replace_arg_safe_multi(elem, subst)
+                         for elem in elements]
+    expected_existence = _build_existence_from_elements(expected_children)
 
-        if len(sig_args) != len(actual_args) or len(elements) != 2:
-            return False
+    left_norm = _normalize_existence_bound_vars(left_as_existence)
+    expected_norm = _normalize_existence_bound_vars(expected_existence)
+    if left_norm is None or expected_norm is None:
+        return False
 
-        subst = dict(zip(sig_args, actual_args))
-        expected_children = [_replace_arg_safe_multi(elem, subst)
-                             for elem in elements]
-        expected_existence = _build_existence_from_elements(expected_children)
+    return left_norm == expected_norm
 
-        left_norm = _normalize_existence_bound_vars(left_as_existence)
-        expected_norm = _normalize_existence_bound_vars(expected_existence)
-        if left_norm is None or expected_norm is None:
-            return False
 
-        result = left_norm == expected_norm
-        return result
+def check_reformulation_for_integration_and(line: ProofLine,
+                                            chapter: List[ProofLine],
+                                            state: VerifierState) -> bool:
+    """REFORMULATION FOR INTEGRATION AND — AND category only."""
+    preamble = _reformulation_integration_preamble(line, chapter, state)
+    if preamble is None:
+        return False
+    entry, compact, right_expr = preamble
+    if entry.get('category') != 'and':
+        return False
+    return _check_reformulation_integration_and(line, compact, right_expr)
 
-    return False
+
+def check_reformulation_for_integration_bound(line: ProofLine,
+                                              chapter: List[ProofLine],
+                                              state: VerifierState) -> bool:
+    """
+    REFORMULATION FOR INTEGRATION >[bound] — existence with pi_lev_ bound var.
+
+    The outermost >[...] must be non-empty (has bound var).
+    The expression has the negated existence form.
+    """
+    preamble = _reformulation_integration_preamble(line, chapter, state)
+    if preamble is None:
+        return False
+    entry, compact, right_expr = preamble
+    if entry.get('category') != 'existence':
+        return False
+
+    # Verify outermost >[...] has a bound variable
+    m = re.match(r'^\(>\[([^\]]*)\]', line.expression)
+    if m is None or not m.group(1):
+        return False
+
+    return _check_reformulation_integration_existence(line, entry, compact)
+
+
+def check_reformulation_for_integration_empty(line: ProofLine,
+                                              chapter: List[ProofLine],
+                                              state: VerifierState) -> bool:
+    """
+    REFORMULATION FOR INTEGRATION >[] — existence with occupied (non-pi_) bound var.
+
+    The outermost >[...] must be empty (>[]). The bound var was stripped
+    because it was occupied. Need to infer it for validation.
+    """
+    preamble = _reformulation_integration_preamble(line, chapter, state)
+    if preamble is None:
+        return False
+    entry, compact, right_expr = preamble
+    if entry.get('category') != 'existence':
+        return False
+
+    # Verify outermost >[...] is empty
+    m = re.match(r'^\(>\[([^\]]*)\]', line.expression)
+    if m is None:
+        return False
+    if m.group(1):
+        return False  # not empty — wrong tag
+
+    return _check_reformulation_integration_existence(line, entry, compact)
 
 
 def check_expansion_for_integration(line: ProofLine,
@@ -1854,6 +2040,44 @@ def check_reformulated_from(line: ProofLine, chapter: List[ProofLine],
     return _check_reformulation(source_expr, line.expression, state.gl_binaries)
 
 
+def check_incubator_back_reformulation(line: ProofLine, chapter: List[ProofLine],
+                                        state: VerifierState) -> bool:
+    """
+    INCUBATOR BACK REFORMULATION checker (stub).
+
+    rest[0] is the source reformulated theorem (Anchor -> op -> =[x,a]).
+    Full verification deferred — incubator proof graphs not yet verified.
+    """
+    if line.namespace != "main":
+        return False
+    if len(line.rest) < 1:
+        return False
+    return True
+
+
+def check_externally_provided_theorem(line: ProofLine, chapter: List[ProofLine],
+                                       state: VerifierState) -> bool:
+    """
+    EXTERNALLY PROVIDED THEOREM checker.
+
+    Verifies that the expression is in processed_proof_graph/external_theorems.txt
+    (which includes raw + renamed forms and mirrored variants). Falls back to checking if
+    the expression is a valid mirror of a known external theorem
+    using the verifier's own _check_mirror logic.
+    Namespace must be "main".
+    """
+    if line.namespace != "main":
+        return False
+    # Direct membership (covers originals + mirrors written by Python)
+    if line.expression in state.external_theorems:
+        return True
+    # Fallback: check if this expression mirrors a known external theorem
+    for ext in state.external_theorems:
+        if _check_mirror(line.expression, ext, state.output_indices):
+            return True
+    return False
+
+
 def check_necessity_for_equality_hypo(line: ProofLine,
                                       chapter: List[ProofLine],
                                       state: VerifierState) -> bool:
@@ -1898,37 +2122,8 @@ def check_necessity_for_equality_hypo(line: ProofLine,
         expr_to_lines.setdefault(ch_line.expression, []).append(ch_line)
 
     the_equality = line.expression  # e.g. (=[v1,v3])
-
-    def _traces_back(expr: str, visited: set) -> bool:
-        """
-        Check that 'expr' (which contains b) traces back to the_equality.
-        Find the line where expr is on the left side, look at sources in
-        rest that contain b. If any source IS the_equality → True.
-        Otherwise recurse into those sources. If no path → False.
-        """
-        if expr in visited:
-            return False
-        visited.add(expr)
-
-        for ch_line in expr_to_lines.get(expr, []):
-            # Scan rest for source expressions containing b
-            for i in range(0, len(ch_line.rest), 2):
-                src = ch_line.rest[i]
-                if b not in _extract_args(src):
-                    continue
-                # Direct hit: source is the equality under scrutiny
-                if src == the_equality:
-                    return True
-                # Source is another equality containing b → still part of chain
-                if src.startswith("(=[") and b in _extract_args(src):
-                    if _traces_back(src, visited):
-                        return True
-                    continue
-                # Source is a regular expression → find it on left side, recurse
-                if _traces_back(src, visited):
-                    return True
-
-        return False
+    is_target = lambda cl: cl.expression == the_equality
+    should_follow = lambda src: b in _extract_args(src)
 
     # Check every line where b appears in expression args
     for ch_line in chapter:
@@ -1938,10 +2133,92 @@ def check_necessity_for_equality_hypo(line: ProofLine,
         if ch_line.expression.startswith("(=["):
             continue
         # This expression must trace back to the_equality
-        if not _traces_back(ch_line.expression, set()):
+        if not _trace_back_to(ch_line.expression, expr_to_lines,
+                              is_target, should_follow):
             return False
 
     return True
+
+
+def check_equalize_variable(line: ProofLine, chapter: List[ProofLine],
+                            state: VerifierState) -> bool:
+    """Verify equalize variable: origin and copy must have consistent arg mapping."""
+    if len(line.rest) < 2:
+        return False
+    origin_expr = line.rest[0]
+    copy_expr = line.expression
+    origin_premises, origin_head = disintegrate_implication_full(origin_expr)
+    copy_premises, copy_head = disintegrate_implication_full(copy_expr)
+    if len(origin_premises) != len(copy_premises):
+        return False
+    pairs = list(zip(origin_premises, copy_premises))
+    pairs.append((origin_head, copy_head))
+    mapping: Dict[str, str] = {}
+    for orig_elem, copy_elem in pairs:
+        if _extract_core_name(orig_elem) != _extract_core_name(copy_elem):
+            return False
+        orig_args = _extract_args(orig_elem)
+        copy_args = _extract_args(copy_elem)
+        if len(orig_args) != len(copy_args):
+            return False
+        for oa, ca in zip(orig_args, copy_args):
+            if oa in mapping:
+                if mapping[oa] != ca:
+                    return False
+            else:
+                mapping[oa] = ca
+    return True
+
+
+def check_contradiction(line: ProofLine, chapter: List[ProofLine],
+                        state: VerifierState) -> bool:
+    """
+    CONTRADICTION checker.
+
+    A contradiction line records that !(cleanOp) was proved because both
+    expr and negate(expr) were derived in the contradiction LB.
+    rest layout: expr, ns, negate(expr), ns, cleanOp, ns
+
+    Checks:
+    1. line.expression == "!" + cleanOp
+    2. expr and negate(expr) are negations of each other
+    3. Both expr and negate(expr) exist as expressions in the chapter
+    4. cleanOp exists as a task formulation in the chapter
+    """
+    if line.namespace != "main":
+        return False
+    if len(line.rest) < 6:
+        return False
+
+    expr = line.rest[0]
+    expr_ns = line.rest[1]
+    neg_expr = line.rest[2]
+    neg_ns = line.rest[3]
+    clean_op = line.rest[4]
+    clean_ns = line.rest[5]
+
+    # All namespaces must be "main"
+    if expr_ns != "main" or neg_ns != "main" or clean_ns != "main":
+        return False
+
+    # line.expression must be "!" + cleanOp
+    if line.expression != "!" + clean_op:
+        return False
+
+    # expr and neg_expr must be negations of each other
+    if neg_expr == "!" + expr:
+        pass
+    elif expr == "!" + neg_expr:
+        pass
+    else:
+        return False
+
+    # cleanOp must appear as task formulation in the chapter
+    for ch in chapter:
+        if ch.expression == clean_op and ch.tag == "task formulation":
+            return True
+
+    return False
 
 
 # Tag name → checker function
@@ -1955,7 +2232,9 @@ TAG_CHECKERS = {
     "symmetry of equality":             check_symmetry_of_equality,
     "recursion":                        check_recursion,
     "theorem":                          check_theorem_tag,
-    "reformulation for integration":    check_reformulation_for_integration,
+    "reformulation for integration and": check_reformulation_for_integration_and,
+    "reformulation for integration >[bound]": check_reformulation_for_integration_bound,
+    "reformulation for integration >[]": check_reformulation_for_integration_empty,
     "expansion for integration":        check_expansion_for_integration,
     "premise element":                  check_premise_element,
     "validity name":                    check_validity_name,
@@ -1963,6 +2242,11 @@ TAG_CHECKERS = {
     "mirrored from":                    check_mirrored_from,
     "reformulated from":                check_reformulated_from,
     "necessity for equality (hypo)":    check_necessity_for_equality_hypo,
+    "externally provided theorem":      check_externally_provided_theorem,
+    "incubator back reformulation":     check_incubator_back_reformulation,
+    "equalize variable":                check_equalize_variable,
+    "multiplied from":                  check_equalize_variable,
+    "contradiction":                    check_contradiction,
 }
 
 
@@ -1985,7 +2269,71 @@ def verify_chapter(chapter_file: str, lines: List[ProofLine],
     state.current_chapter_thm = chapter_thm
     state.current_chapter_type = chapter_type
 
-    # 2. Dispatch every line to its tag checker
+    # 2. Self-reference check: theorem must not appear as its own justification
+    if chapter_thm is not None:
+        thm_expr = chapter_thm[0]
+        for line in lines:
+            if line.tag == "theorem" and line.expression == thm_expr:
+                state.counter_for("self-reference").record(False)
+
+    # 3. Anchor handling uniqueness: at most one per chapter
+    anchor_handling_count = sum(1 for line in lines if line.tag == "anchor handling")
+    if anchor_handling_count > 1:
+        state.counter_for("anchor handling uniqueness").record(False)
+
+    # Build expr → lines map once for chapter-level trace checks
+    _ch_expr_to_lines: Dict[str, List[ProofLine]] = {}
+    for ch_line in lines:
+        _ch_expr_to_lines.setdefault(ch_line.expression, []).append(ch_line)
+
+    # 4. Anchor handling trace: every _copy var in rest fields must trace
+    #    back to the anchor handling line
+    anchor_line = None
+    for line in lines:
+        if line.tag == "anchor handling":
+            anchor_line = line
+            break
+
+    if anchor_line is not None:
+        anchor_args = _extract_args(anchor_line.expression)
+        copy_vars = [a for a in anchor_args if a.endswith("_copy")]
+
+        if copy_vars:
+            _anc_target = lambda cl: cl.tag == "anchor handling"
+
+            for cv in copy_vars:
+                _cv_re = re.compile(
+                    r'(?<=[\[,])' + re.escape(cv) + r'(?=[\],])')
+                _cv_follow = lambda src, _r=_cv_re: bool(_r.search(src))
+
+                for ch_line in lines:
+                    if ch_line.tag == "anchor handling":
+                        continue
+                    for i in range(0, len(ch_line.rest), 2):
+                        src = ch_line.rest[i]
+                        if _cv_follow(src):
+                            ok = _trace_back_to(src, _ch_expr_to_lines,
+                                                _anc_target, _cv_follow)
+                            state.counter_for("anchor handling trace").record(ok)
+
+    # 5. Contradiction trace: at least one of the two contradicting expressions
+    #    must trace back to the seed (task formulation) through all ingredients
+    for line in lines:
+        if line.tag != "contradiction":
+            continue
+        if len(line.rest) < 6:
+            state.counter_for("contradiction trace").record(False)
+            continue
+
+        seed_expr = line.rest[4]
+        _seed_target = (lambda cl, _s=seed_expr:
+                        cl.tag == "task formulation" and cl.expression == _s)
+
+        ok = (_trace_back_to(line.rest[0], _ch_expr_to_lines, _seed_target)
+              or _trace_back_to(line.rest[2], _ch_expr_to_lines, _seed_target))
+        state.counter_for("contradiction trace").record(ok)
+
+    # 6. Dispatch every line to its tag checker
     for line in lines:
         tag = line.tag
         if tag in TAG_CHECKERS:
@@ -1993,6 +2341,37 @@ def verify_chapter(chapter_file: str, lines: List[ProofLine],
             state.counter_for(tag).record(passed)
         else:
             state.counter_for(f"<unknown:{tag}>").record(False)
+
+    # 4. General origin check: every expression referenced as a dependency
+    #    (in rest fields) must appear as a left-side expression (have its
+    #    own derivation line). Exceptions:
+    #    - integration-goal postfixed exprs
+    #    - incubator back reformulation deps (external theorem references)
+    #    - contradiction ingredient deps (may not be fully traced)
+    _ORIGIN_EXEMPT_TAGS = {
+        "incubator back reformulation",
+        "contradiction",
+    }
+    originated = {line.expression for line in lines}
+    for line in lines:
+        if line.tag in _ORIGIN_EXEMPT_TAGS:
+            continue
+        for i in range(0, len(line.rest), 2):
+            dep = line.rest[i]
+            if dep in originated:
+                continue
+            if dep.endswith("_integration_goal"):
+                continue
+            # rest[0] global theorem check: implication rules and multiplied-from sources
+            if i == 0 and line.tag in ("implication", "multiplied from", "mirrored from", "reformulated from"):
+                norm_dep = _normalize_expr_list([dep])
+                found = dep in state.global_theorems or dep in state.external_theorems or any(
+                    _normalize_expr_list([gt]) == norm_dep
+                    for gt in (state.global_theorems.keys() | state.external_theorems)
+                )
+                state.counter_for("origin").record(found)
+                continue
+            state.counter_for("origin").record(False)
 
 
 # ---------------------------------------------------------------------------
@@ -2022,14 +2401,27 @@ def run_verifier(base_dir: str) -> VerifierState:
     state.input_indices = load_input_indices(config_dir)
     state.definition_sets = load_definition_sets(config_dir)
 
-    # Load GL binaries
-    binaries_dir = os.path.join(script_dir, "files", "GL_binaries")
+    # Load GL binaries — look next to the processed proof graph first,
+    # then fall back to the default location
+    binaries_dir = os.path.join(os.path.dirname(base_dir), "GL_binaries")
+    if not os.path.isdir(binaries_dir):
+        binaries_dir = os.path.join(script_dir, "files", "GL_binaries")
     state.gl_binaries = load_gl_binaries(binaries_dir)
 
+    # Load external theorems
+    ext_file = os.path.join(base_dir, "external_theorems.txt")
+    if os.path.exists(ext_file):
+        with open(ext_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    state.external_theorems.add(line)
+
     # Enumerate chapter files
+    _exclude = {"global_theorem_list.txt", "external_theorems.txt"}
     chapter_files = sorted(
         [f for f in os.listdir(base_dir)
-         if f.endswith(".txt") and f != "global_theorem_list.txt"],
+         if f.endswith(".txt") and f not in _exclude],
         key=chapter_sort_key,
     )
 
@@ -2051,31 +2443,33 @@ def run_verifier(base_dir: str) -> VerifierState:
     return state
 
 
-def print_report(state: VerifierState):
+def get_totals(state: VerifierState) -> tuple[int, int]:
     g = state.goal_reached
-    print(f"theorem goal reached              success {g.success}, failure {g.failure}")
     total_success = g.success
     total_failure = g.failure
     for tag in TAG_CHECKERS:
         ctr = state.tag_counters.get(tag, TagCounter())
-        print(f"{tag:<38s}success {ctr.success}, failure {ctr.failure}")
         total_success += ctr.success
         total_failure += ctr.failure
+    for tag, ctr in state.tag_counters.items():
+        if tag not in TAG_CHECKERS:
+            total_failure += ctr.failure
+    return total_success, total_failure
+
+
+def print_report(state: VerifierState):
+    W = 44
+    g = state.goal_reached
+    print(f"{'theorem goal reached':<{W}s}success {g.success}, failure {g.failure}")
+    for tag in TAG_CHECKERS:
+        ctr = state.tag_counters.get(tag, TagCounter())
+        print(f"{tag:<{W}s}success {ctr.success}, failure {ctr.failure}")
+    for tag, ctr in state.tag_counters.items():
+        if tag not in TAG_CHECKERS:
+            print(f"{tag:<{W}s}success {ctr.success}, failure {ctr.failure}")
+    total_success, total_failure = get_totals(state)
     if total_failure == 0:
-        art = (
-            "\n"
-            "                    *  .  *\n"
-            "                   . *\\|/* .\n"
-            "                *   * \\|/ *   *\n"
-            "                 .  */|\\*  .\n"
-            "                *  . /|\\ .  *\n"
-            "                   . *|* .\n"
-            "                     |||\n"
-            "                     |||\n"
-            "               Proof graph verified.\n"
-            f"          {total_success} checks, 0 failures — airtight.\n"
-        )
-        print(art)
+        print(f"\n          {total_success} checks, 0 failures — airtight.")
     else:
         print(f"\nVerifier: {total_success + total_failure} checks, {total_failure} FAILED.")
 

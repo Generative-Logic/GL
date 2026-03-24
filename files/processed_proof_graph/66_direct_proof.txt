@@ -1,0 +1,13 @@
+(fXY[v3,v2,N])	main	implication	(>[](implication0[v3,v2])(>[](implication1[v3,N])(>[](implication2[v2,N,v3])(>[](implication3[v2,v3])(fXY[v3,v2,N])))))	main	(implication0[v3,v2])	main	(implication1[v3,N])	main	(implication2[v2,N,v3])	main	(implication3[v2,v3])	main
+(>[](implication0[v3,v2])(>[](implication1[v3,N])(>[](implication2[v2,N,v3])(>[](implication3[v2,v3])(fXY[v3,v2,N])))))	main	reformulation for integration and	(&(&(&(implication0[v3,v2])(implication1[v3,N]))(implication2[v2,N,v3]))(implication3[v2,v3]))_integration_goal	main
+(&(&(&(implication0[v3,v2])(implication1[v3,N]))(implication2[v2,N,v3]))(implication3[v2,v3]))_integration_goal	main	expansion for integration	(fXY[v3,v2,N])_integration_goal	main
+(implication0[v3,v2])	main	disintegration	(&(&(&(implication0[v3,v2])(implication1[v3,N]))(implication2[v2,N,v3]))(implication3[v2,v3]))	main
+(&(&(&(implication0[v3,v2])(implication1[v3,N]))(implication2[v2,N,v3]))(implication3[v2,v3]))	main	expansion	(fXY[v3,v2,N])	main
+(fXY[v3,v2,N])	main	implication	(>[](implication0[v3,v2])(>[](implication1[v3,N])(>[](implication2[v2,N,v3])(>[](implication3[v2,v3])(fXY[v3,v2,N])))))	main	(implication0[v3,v2])	main	(implication1[v3,N])	main	(implication2[v2,N,v3])	main	(implication3[v2,v3])	main
+(implication1[v3,N])	main	disintegration	(&(&(&(implication0[v3,v4])(implication1[v3,N]))(implication2[v4,N,v3]))(implication3[v4,v3]))	main
+(&(&(&(implication0[v3,v4])(implication1[v3,N]))(implication2[v4,N,v3]))(implication3[v4,v3]))	main	expansion	(fXY[v3,v4,N])	main
+(fXY[v3,v4,N])	main	disintegration	!(>[v4](interval[N,+,i0,v1,v4])!(fXY[v3,v4,N]))	main
+!(>[v4](interval[N,+,i0,v1,v4])!(fXY[v3,v4,N]))	main	expansion	(sequence[N,+,i0,v1,v3])	main
+(sequence[N,+,i0,v1,v3])	main	task formulation
+(implication2[v2,N,v3])	main	disintegration	(&(&(&(implication0[v3,v2])(implication1[v3,N]))(implication2[v2,N,v3]))(implication3[v2,v3]))	main
+(implication3[v2,v3])	main	disintegration	(&(&(&(implication0[v3,v2])(implication1[v3,N]))(implication2[v2,N,v3]))(implication3[v2,v3]))	main

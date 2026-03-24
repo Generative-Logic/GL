@@ -1,0 +1,5 @@
+(in3[2,6,7,4])	main	implication	(>[3,4,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in2[7,8,3])(in3[7,6,8,4])))	main	(AnchorPeano[1,x2,3,4,5,6])	main	(in2[2,7,3])	main
+(>[3,4,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in2[7,8,3])(in3[7,6,8,4])))	main	theorem
+(AnchorPeano[1,x2,3,4,5,6])	main	anchor handling	(AnchorPeano[1,2,3,4,5,6])	main
+(AnchorPeano[1,2,3,4,5,6])	main	task formulation
+(in2[2,7,3])	main	task formulation

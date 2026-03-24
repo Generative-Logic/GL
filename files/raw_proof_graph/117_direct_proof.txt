@@ -1,0 +1,13 @@
+(fXY[11,10,1])	main	implication	(>[](implication0[11,10])(>[](implication1[11,1])(>[](implication2[10,1,11])(>[](implication3[10,11])(fXY[11,10,1])))))	main	(implication0[11,10])	main	(implication1[11,1])	main	(implication2[10,1,11])	main	(implication3[10,11])	main
+(>[](implication0[11,10])(>[](implication1[11,1])(>[](implication2[10,1,11])(>[](implication3[10,11])(fXY[11,10,1])))))	main	reformulation for integration and	(&(&(&(implication0[11,10])(implication1[11,1]))(implication2[10,1,11]))(implication3[10,11]))_integration_goal	main
+(&(&(&(implication0[11,10])(implication1[11,1]))(implication2[10,1,11]))(implication3[10,11]))_integration_goal	main	expansion for integration	(fXY[11,10,1])_integration_goal	main
+(implication0[11,10])	main	disintegration	(&(&(&(implication0[11,10])(implication1[11,1]))(implication2[10,1,11]))(implication3[10,11]))	main
+(&(&(&(implication0[11,10])(implication1[11,1]))(implication2[10,1,11]))(implication3[10,11]))	main	expansion	(fXY[11,10,1])	main
+(fXY[11,10,1])	main	implication	(>[](implication0[11,10])(>[](implication1[11,1])(>[](implication2[10,1,11])(>[](implication3[10,11])(fXY[11,10,1])))))	main	(implication0[11,10])	main	(implication1[11,1])	main	(implication2[10,1,11])	main	(implication3[10,11])	main
+(implication1[11,1])	main	disintegration	(&(&(&(implication0[11,int_lev_2_0])(implication1[11,1]))(implication2[int_lev_2_0,1,11]))(implication3[int_lev_2_0,11]))	main
+(&(&(&(implication0[11,int_lev_2_0])(implication1[11,1]))(implication2[int_lev_2_0,1,11]))(implication3[int_lev_2_0,11]))	main	expansion	(fXY[11,int_lev_2_0,1])	main
+(fXY[11,int_lev_2_0,1])	main	disintegration	!(>[int_lev_2_0](interval[1,4,2,9,int_lev_2_0])!(fXY[11,int_lev_2_0,1]))	main
+!(>[int_lev_2_0](interval[1,4,2,9,int_lev_2_0])!(fXY[11,int_lev_2_0,1]))	main	expansion	(sequence[1,4,2,9,11])	main
+(sequence[1,4,2,9,11])	main	task formulation
+(implication2[10,1,11])	main	disintegration	(&(&(&(implication0[11,10])(implication1[11,1]))(implication2[10,1,11]))(implication3[10,11]))	main
+(implication3[10,11])	main	disintegration	(&(&(&(implication0[11,10])(implication1[11,1]))(implication2[10,1,11]))(implication3[10,11]))	main

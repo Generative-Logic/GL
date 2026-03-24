@@ -1,0 +1,15 @@
+(=[v1,v3])	main	symmetry of equality	(=[v3,v1])	main
+(=[v3,v1])	main	implication	(>[v4](in[v4,N])(>[v5](in2[v5,v4,s])(>[v6](in2[v6,v4,s])(=[v5,v6]))))	main	(in2[v1,v2,s])	main	(in2[v3,v2,s])	main	(in[v2,N])	main
+(>[v4](in[v4,N])(>[v5](in2[v5,v4,s])(>[v6](in2[v6,v4,s])(=[v5,v6]))))	main	expansion	(implication5[N,s])	main
+(implication5[N,s])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication4[N,i0,s]))(implication5[N,s]))(fXYZ[+,N,N,N]))(implication11[N,i0,+]))(implication12[N,i0,+]))(implication13[N,s,+]))(implication14[N,s,+]))(fXYZ[*,N,N,N]))(implication15[N,i0,*]))(implication16[N,s,*,+]))(implication17[N,s,*,+]))	main
+(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication4[N,i0,s]))(implication5[N,s]))(fXYZ[+,N,N,N]))(implication11[N,i0,+]))(implication12[N,i0,+]))(implication13[N,s,+]))(implication14[N,s,+]))(fXYZ[*,N,N,N]))(implication15[N,i0,*]))(implication16[N,s,*,+]))(implication17[N,s,*,+]))	main	expansion	(NaturalNumbers[N,i0,s,+,*])	main
+(NaturalNumbers[N,i0,s,+,*])	main	disintegration	(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))	main
+(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))	main	expansion	(AnchorPeano[N,i0,s,+,*,i1])	main
+(AnchorPeano[N,i0,s,+,*,i1])	main	task formulation
+(in2[v1,v2,s])	main	task formulation
+(in2[v3,v2,s])	main	task formulation
+(in[v2,N])	main	implication	(>[v4,v5](in2[v4,v5,s])(in[v5,N]))	main	(in2[v3,v2,s])	main
+(>[v4,v5](in2[v4,v5,s])(in[v5,N]))	main	expansion	(implication1[s,N])	main
+(implication1[s,N])	main	disintegration	(&(&(&(implication0[s,N])(implication1[s,N]))(implication2[N,N,s]))(implication3[N,s]))	main
+(&(&(&(implication0[s,N])(implication1[s,N]))(implication2[N,N,s]))(implication3[N,s]))	main	expansion	(fXY[s,N,N])	main
+(fXY[s,N,N])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication4[N,i0,s]))(implication5[N,s]))(fXYZ[+,N,N,N]))(implication11[N,i0,+]))(implication12[N,i0,+]))(implication13[N,s,+]))(implication14[N,s,+]))(fXYZ[*,N,N,N]))(implication15[N,i0,*]))(implication16[N,s,*,+]))(implication17[N,s,*,+]))	main

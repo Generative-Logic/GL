@@ -109,27 +109,35 @@ def _parse_int_list(raw: Any) -> List[int]:
     return out
 
 
-def _coerce_definition_sets(raw: Any) -> Dict[str, Tuple[str, bool]]:
+def _coerce_definition_sets(raw: Any) -> Dict[str, Tuple[str, bool, bool]]:
     """
-    Accept both formats:
+    Accept formats:
       Legacy: {"1": "(1)", ...}
-      New:    {"1": ["(1)", true], ...}
-    Returns {key: (text, flag)}. Legacy entries -> (text, True).
+      Two:    {"1": ["(1)", true], ...}
+      Three:  {"1": ["(1)", true, true], ...}
+    Returns {key: (text, combinable_flag, connectable_flag)}.
+    Missing flags default to True.
+    The third flag (connectable) controls whether the anchor position is
+    available for conjecture mapping. When False, no expression can map
+    to this anchor arg during conjecture generation, but the prover still
+    sees the full anchor.
     """
-    out: Dict[str, Tuple[str, bool]] = {}
+    out: Dict[str, Tuple[str, bool, bool]] = {}
     if not isinstance(raw, dict):
         return out
     for k, v in raw.items():
         key = str(k)
         if isinstance(v, (list, tuple)):
             if len(v) == 0:
-                out[key] = ("", True)
+                out[key] = ("", True, True)
             elif len(v) == 1:
-                out[key] = (str(v[0]), True)
+                out[key] = (str(v[0]), True, True)
+            elif len(v) == 2:
+                out[key] = (str(v[0]), bool(v[1]), True)
             else:
-                out[key] = (str(v[0]), bool(v[1]))
+                out[key] = (str(v[0]), bool(v[1]), bool(v[2]))
         else:
-            out[key] = (str(v), True)
+            out[key] = (str(v), True, True)
     return out
 
 
@@ -230,6 +238,7 @@ def _parse_prohibited_combinations(block: Any) -> List[Set[str]]:
 # -------- configuration objects --------
 @dataclass(frozen=True)
 class ConfigurationParameters:
+    min_number_simple_expressions: int = 2
     max_number_simple_expressions: int = 0
     max_size_mapping_def_set: int = 0
     max_number_args_expr: int = 0
@@ -240,11 +249,14 @@ class ConfigurationParameters:
     max_complexity_if_anchor_parameter_connected: Dict[str, int] = field(default_factory=dict)
     max_size_binary_list: int = 0
     simple_facts_parameters: List[int] = field(default_factory=list)
+    fact_variable_kinds: List[str] = field(default_factory=list)
+    incubator_mode: bool = False
 
     @staticmethod
     def from_json(d: Mapping[str, Any]) -> "ConfigurationParameters":
         # ignore 'debug' if present
         return ConfigurationParameters(
+            min_number_simple_expressions=int(d.get("min_number_simple_expressions", 2)),
             max_number_simple_expressions=int(d.get("max_number_simple_expressions", 0)),
             max_size_mapping_def_set=int(d.get("max_size_mapping_def_set", 0)),
             max_number_args_expr=int(d.get("max_number_args_expr", 0)),
@@ -257,6 +269,8 @@ class ConfigurationParameters:
             ),
             max_size_binary_list=int(d.get("max_size_binary_list", 0)),
             simple_facts_parameters=_parse_int_list(d.get("simple_facts_parameters", [])),
+            fact_variable_kinds=list(d.get("fact_variable_kinds", [])),
+            incubator_mode=bool(d.get("incubator_mode", False)),
         )
 
 
@@ -266,13 +280,14 @@ class ExpressionDescription:
     Data for a core expression.
     """
     arity: int = 0
-    definition_sets: Dict[str, Tuple[str, bool]] = field(default_factory=dict)
+    definition_sets: Dict[str, Tuple[str, bool, bool]] = field(default_factory=dict)
     full_mpl: str = ""
     handle: str = ""
     short_mpl_raw: str = ""
     short_mpl_normalized: str = ""
     max_count_per_conjecture: int = 0
     max_size_expression: int = 0
+    min_size_expression: int = 1
     input_args: List[str] = field(default_factory=list)
     output_args: List[str] = field(default_factory=list)
     indices_input_args: List[int] = field(default_factory=list)   # 0-based positions
@@ -303,6 +318,9 @@ class configuration_reader(MappingABC):
         self.only_in_head_patterns: List[re.Pattern] = []
         self.prohibited_combinations: List[Set[str]] = []
         self.prohibited_heads: List[str] = []
+        self.theorems_folder: Optional[str] = None
+        self.background_theorems_folder: Optional[str] = None
+        self.anchor_name: Optional[str] = None
         self.anchor_id: str = ""
 
         # Auto-load if a valid path is supplied and exists; otherwise remain empty.
@@ -368,6 +386,11 @@ class configuration_reader(MappingABC):
         # Reuse _parse_args_list helper which handles ["a", "b"] or "a,b"
         self.prohibited_heads = _parse_args_list(obj, "prohibited_heads")
 
+        # --- optional folder overrides ---
+        self.theorems_folder = obj.pop("theorems_folder", None)
+        self.background_theorems_folder = obj.pop("background_theorems_folder", None)
+        self.anchor_name = obj.pop("anchor_name", None)
+
         # --- expressions ---
         new_map: Dict[str, ExpressionDescription] = {}
 
@@ -409,6 +432,7 @@ class configuration_reader(MappingABC):
             # --- extras ---
             max_count_per_conjecture = int(spec.get("max_count_per_conjecture", 0))
             max_size_expression = int(spec.get("max_size_expression", 0))
+            min_size_expression = int(spec.get("min_size_expression", 1))
             input_args: List[str] = _parse_args_list(spec, "input_args")
             output_args: List[str] = _parse_args_list(spec, "output_args")
 
@@ -428,6 +452,7 @@ class configuration_reader(MappingABC):
                 short_mpl_normalized=short_mpl_normalized,
                 max_count_per_conjecture=max_count_per_conjecture,
                 max_size_expression=max_size_expression,
+                min_size_expression=min_size_expression,
                 input_args=input_args,
                 output_args=output_args,
                 indices_input_args=indices_input_args,

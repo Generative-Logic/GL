@@ -1,0 +1,28 @@
+(&
+    (NaturalNumbers[N,i0,s,+,*])
+    (&
+        (in2[i0,i1,s])
+        (&
+            (in2[i1,i2,s])
+            (&
+                (identity[N,id])
+                (&
+                    (in2[i2,i3,s])
+                    (&
+                        (in2[i3,i4,s])
+                        (&
+                            (in2[i4,i5,s])
+                            (&
+                                (in2[i5,i6,s])
+                                (&
+                                    (in2[i6,i7,s])
+                                    (in2[i7,i8,s])
+                                )
+                            )
+                        )
+                    )
+                )
+            )
+        )
+    )
+)

@@ -1,0 +1,1 @@
+(>[N,i0,s,+,*,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](fold[N,s,+,id,i0,v1,v2])(>[v3](in2[v1,v3,s])(>[v4](in3[i2,v2,v4,*])(in3[v3,v1,v4,*])))))	main	mirrored from	(>[N,i0,s,+,*,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2,v3](in3[v1,v2,v3,*])(>[v4](fold[N,s,+,id,i0,v2,v4])(>[](in2[v2,v1,s])(in3[i2,v4,v3,*])))))	main

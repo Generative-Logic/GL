@@ -1,0 +1,9 @@
+(preorder[N,+,i3,i3])	main	implication	(>[v1](in[v1,N])(>[](in3[i3,v1,i3,+])(preorder[N,+,i3,i3])))	main	(in3[i3,i0,i3,+])	main	(in[i0,N])	main
+(>[v1](in[v1,N])(>[](in3[i3,v1,i3,+])(preorder[N,+,i3,i3])))	main	reformulation for integration >[bound]	!(>[v1](in[v1,N])!(in3[i3,v1,i3,+]))_integration_goal	main
+!(>[v1](in[v1,N])!(in3[i3,v1,i3,+]))_integration_goal	main	expansion for integration	(preorder[N,+,i3,i3])_integration_goal	main
+(in3[i3,i0,i3,+])	main	implication	(>[i0,+,i3](AnchorIncubator[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])(in3[i3,i0,i3,+]))	main	(AnchorIncubator[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])	main
+(AnchorIncubator[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])	main	task formulation
+(in[i0,N])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication4[N,i0,s]))(implication5[N,s]))(fXYZ[+,N,N,N]))(implication11[N,i0,+]))(implication12[N,i0,+]))(implication13[N,s,+]))(implication14[N,s,+]))(fXYZ[*,N,N,N]))(implication15[N,i0,*]))(implication16[N,s,*,+]))(implication17[N,s,*,+]))	main
+(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication4[N,i0,s]))(implication5[N,s]))(fXYZ[+,N,N,N]))(implication11[N,i0,+]))(implication12[N,i0,+]))(implication13[N,s,+]))(implication14[N,s,+]))(fXYZ[*,N,N,N]))(implication15[N,i0,*]))(implication16[N,s,*,+]))(implication17[N,s,*,+]))	main	expansion	(NaturalNumbers[N,i0,s,+,*])	main
+(NaturalNumbers[N,i0,s,+,*])	main	disintegration	(&(&(&(&(&(&(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))(in2[i2,i3,s]))(in2[i3,i4,s]))(in2[i4,i5,s]))(in2[i5,i6,s]))(in2[i6,i7,s]))(in2[i7,i8,s]))	main
+(&(&(&(&(&(&(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))(in2[i2,i3,s]))(in2[i3,i4,s]))(in2[i4,i5,s]))(in2[i5,i6,s]))(in2[i6,i7,s]))(in2[i7,i8,s]))	main	expansion	(AnchorIncubator[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])	main

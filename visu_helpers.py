@@ -69,10 +69,10 @@ def rewrite_expression(expression: str):
         rewritten = 'marker' + args[-2]
 
     if expression.startswith('(in2'):
-        rewritten = args[-1] + '(' + 'marker' + args[-3]  + ')'
+        rewritten = args[-1] + '(' + 'marker' + args[-3] + ')'
 
     if expression.startswith('(in3'):
-        rewritten = '(marker' + args[-4] + args[-1] + 'marker' + args[-3] + ')'
+        rewritten = '(marker' + args[-4] + ' ' + args[-1] + ' ' + 'marker' + args[-3] + ')'
 
     if expression.startswith('(fold['):
         # fold[N,s,+,f,n,m,p]  ->  sum(i=n..m) if f is id
@@ -97,22 +97,22 @@ def rewrite_expression2(expression: str):
     args = create_expressions.get_args(expression)
 
     if expression.startswith('(in['):
-        rewritten = 'marker' + args[-2] + ' in ' + args[-1]
+        rewritten = 'marker' + args[-2] + ' \u2208 ' + args[-1]
 
     if expression.startswith('(in2['):
-        rewritten = args[-1] + '(' + 'marker' + args[-3]  + ')=' + 'marker' + args[-2]
+        rewritten = args[-1] + '(' + 'marker' + args[-3] + ') = ' + 'marker' + args[-2]
 
     if expression.startswith('(in3['):
-        rewritten = 'marker' + args[-4] + args[-1] + 'marker' + args[-3] + '=' + args[2]
+        rewritten = 'marker' + args[-4] + ' ' + args[-1] + ' ' + 'marker' + args[-3] + ' = ' + args[2]
 
     if expression.startswith('(=['):
-        rewritten = 'marker' + args[-2] + '=' 'marker' + args[-1]
+        rewritten = 'marker' + args[-2] + ' = ' + 'marker' + args[-1]
 
     if expression.startswith('(fold['):
         # fold[N,s,+,f,n,m,p]  ->  sum(i=n..m)=p if f is id
         _, _, _, f_name, n_name, m_name, p_name = args
         term = '' if f_name == 'id' else f' {f_name}(i)'
-        rewritten = 'sum(i=' + 'marker' + n_name + '..' + 'marker' + m_name + ')' + term + '=' + 'marker' + p_name
+        rewritten = 'sum(i=' + 'marker' + n_name + '..' + 'marker' + m_name + ')' + term + ' = ' + 'marker' + p_name
 
     return rewritten
 
@@ -213,18 +213,22 @@ def is_relation_expression(expr: str) -> bool:
 
 
 def is_rewritable_atom(expr: str) -> bool:
+    e = expr[1:] if expr.startswith('!') else expr
     return (
-        expr.startswith('(in[')
-        or expr.startswith('(in2[')
-        or expr.startswith('(in3[')
-        or expr.startswith('(=[')
-        or expr.startswith('(fold[')
+        e.startswith('(in[')
+        or e.startswith('(in2[')
+        or e.startswith('(in3[')
+        or e.startswith('(=[')
+        or e.startswith('(fold[')
     )
 
 
 def safe_rewrite_atom(expr: str) -> str:
     try:
         if is_rewritable_atom(expr):
+            if expr.startswith('!'):
+                inner = rewrite_expression2(expr[1:]).replace('marker', '')
+                return inner.replace(' = ', ' \u2260 ').replace(' \u2208 ', ' \u2209 ')
             return rewrite_expression2(expr).replace('marker', '')
     except Exception:
         pass
@@ -303,6 +307,8 @@ def make_readable_from_chain(chain: list[str]):
             readable = make_readable_element(chain)
         elif head.startswith('!(>['):
             readable = make_readable_existence(chain)
+        elif head.startswith('!'):
+            readable = safe_rewrite_atom(head)
     except Exception:
         readable = ''
 
@@ -323,8 +329,10 @@ def make_readable_from_chain_title(chain: list[str]):
             readable = make_readable_simple_implication_title(chain)
         elif head.startswith('(fold['):
             readable = safe_rewrite_atom(head)
-        elif head.startswith('!(>['):  # Added existence hook for TOC titles!
+        elif head.startswith('!(>['):
             readable = make_readable_existence(chain)
+        elif head.startswith('!'):
+            readable = safe_rewrite_atom(head)
     except Exception:
         readable = ''
 

@@ -1,0 +1,21 @@
+!(in3[2,9,6,4])	main	contradiction	(in2[7,6,3])	main	!(in2[7,6,3])	main	(in3[2,9,6,4])	main
+(in2[7,6,3])	main	implication	(>[1](in[1,u_1])(>[2](in2[1,2,u_3])(>[3,1](in3[3,1,1,u_4])(>[5](in3[3,2,5,u_4])(in2[1,5,u_3])))))	main	(in2[7,9,3])	main	(in3[2,7,7,4])	main	(in3[2,9,6,4])	main	(in[7,1])	main
+(>[1](in[1,u_1])(>[2](in2[1,2,u_3])(>[3,1](in3[3,1,1,u_4])(>[5](in3[3,2,5,u_4])(in2[1,5,u_3])))))	main	multiplied from	(>[1](in[1,u_1])(>[2](in2[1,2,u_3])(>[3,4](in3[3,1,4,u_4])(>[5](in3[3,2,5,u_4])(in2[4,5,u_3])))))	main
+(>[1](in[1,u_1])(>[2](in2[1,2,u_3])(>[3,4](in3[3,1,4,u_4])(>[5](in3[3,2,5,u_4])(in2[4,5,u_3])))))	main	expansion	(implication13[1,3,4])	main
+(implication13[1,3,4])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(in[2,1])(fXY[3,1,1]))(implication4[1,2,3]))(implication5[1,3]))(fXYZ[4,1,1,1]))(implication11[1,2,4]))(implication12[1,2,4]))(implication13[1,3,4]))(implication14[1,3,4]))(fXYZ[5,1,1,1]))(implication15[1,2,5]))(implication16[1,3,5,4]))(implication17[1,3,5,4]))	main
+(&(&(&(&(&(&(&(&(&(&(&(&(in[2,1])(fXY[3,1,1]))(implication4[1,2,3]))(implication5[1,3]))(fXYZ[4,1,1,1]))(implication11[1,2,4]))(implication12[1,2,4]))(implication13[1,3,4]))(implication14[1,3,4]))(fXYZ[5,1,1,1]))(implication15[1,2,5]))(implication16[1,3,5,4]))(implication17[1,3,5,4]))	main	expansion	(NaturalNumbers[1,2,3,4,5])	main
+(NaturalNumbers[1,2,3,4,5])	main	disintegration	(&(&(&(&(&(&(&(&(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))(in2[6,7,3]))(identity[1,8]))(in2[7,9,3]))(in2[9,10,3]))(in2[10,11,3]))(in2[11,12,3]))(in2[12,13,3]))(in2[13,14,3]))	main
+(&(&(&(&(&(&(&(&(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))(in2[6,7,3]))(identity[1,8]))(in2[7,9,3]))(in2[9,10,3]))(in2[10,11,3]))(in2[11,12,3]))(in2[12,13,3]))(in2[13,14,3]))	main	expansion	(AnchorIncubator[1,2,3,4,5,6,7,8,9,10,11,12,13,14])	main
+(AnchorIncubator[1,2,3,4,5,6,7,8,9,10,11,12,13,14])	main	task formulation
+(in2[7,9,3])	main	disintegration	(&(&(&(&(&(&(&(&(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))(in2[6,7,3]))(identity[1,8]))(in2[7,9,3]))(in2[9,10,3]))(in2[10,11,3]))(in2[11,12,3]))(in2[12,13,3]))(in2[13,14,3]))	main
+(in3[2,7,7,4])	main	implication	(>[2,4,7](AnchorIncubator[1,2,3,4,5,6,7,8,9,10,11,12,13,14])(in3[2,7,7,4]))	main	(AnchorIncubator[1,2,3,4,5,6,7,8,9,10,11,12,13,14])	main
+(>[2,4,7](AnchorIncubator[1,2,3,4,5,6,7,8,9,10,11,12,13,14])(in3[2,7,7,4]))	main	theorem
+(in3[2,9,6,4])	main	task formulation
+(in[7,1])	main	implication	(>[1,2](in2[1,2,u_3])(in[2,u_1]))	main	(in2[6,7,3])	main
+(>[1,2](in2[1,2,u_3])(in[2,u_1]))	main	expansion	(implication1[3,1])	main
+(implication1[3,1])	main	disintegration	(&(&(&(implication0[3,1])(implication1[3,1]))(implication2[1,1,3]))(implication3[1,3]))	main
+(&(&(&(implication0[3,1])(implication1[3,1]))(implication2[1,1,3]))(implication3[1,3]))	main	expansion	(fXY[3,1,1])	main
+(fXY[3,1,1])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(in[2,1])(fXY[3,1,1]))(implication4[1,2,3]))(implication5[1,3]))(fXYZ[4,1,1,1]))(implication11[1,2,4]))(implication12[1,2,4]))(implication13[1,3,4]))(implication14[1,3,4]))(fXYZ[5,1,1,1]))(implication15[1,2,5]))(implication16[1,3,5,4]))(implication17[1,3,5,4]))	main
+(in2[6,7,3])	main	disintegration	(&(&(&(&(&(&(&(&(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))(in2[6,7,3]))(identity[1,8]))(in2[7,9,3]))(in2[9,10,3]))(in2[10,11,3]))(in2[11,12,3]))(in2[12,13,3]))(in2[13,14,3]))	main
+!(in2[7,6,3])	main	implication	(>[3,6,7](AnchorIncubator[1,2,3,4,5,6,7,8,9,10,11,12,13,14])!(in2[7,6,3]))	main	(AnchorIncubator[1,2,3,4,5,6,7,8,9,10,11,12,13,14])	main
+(>[3,6,7](AnchorIncubator[1,2,3,4,5,6,7,8,9,10,11,12,13,14])!(in2[7,6,3]))	main	theorem

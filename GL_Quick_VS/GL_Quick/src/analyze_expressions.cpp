@@ -195,6 +195,11 @@ ExpressionAnalyzer::ExpressionAnalyzer(std::string anchorID)
                 if (pp.contains("max_origin_per_expr")) parameters.max_origin_per_expr = pp["max_origin_per_expr"];
                 if (pp.contains("compressor_max_origins_per_expr")) parameters.compressor_max_origins_per_expr = pp["compressor_max_origins_per_expr"];
                 if (pp.contains("compressor_hash_bursts")) parameters.compressor_hash_bursts = pp["compressor_hash_bursts"];
+                if (pp.contains("try_contradiction")) parameters.try_contradiction = pp["try_contradiction"];
+                if (pp.contains("skip_ce_filter")) parameters.skip_ce_filter = pp["skip_ce_filter"];
+                if (pp.contains("skip_eq_classes")) parameters.skip_eq_classes = pp["skip_eq_classes"];
+                if (pp.contains("incubator_mode")) parameters.incubator_mode = pp["incubator_mode"];
+                if (pp.contains("max_partition_size")) parameters.max_partition_size = pp["max_partition_size"];
             }
         }
         catch (const std::exception& e) {
@@ -203,14 +208,19 @@ ExpressionAnalyzer::ExpressionAnalyzer(std::string anchorID)
     }
 
     // Delete the debug file at program start to ensure a fresh log
-    std::filesystem::remove("c:\\bin\\console.txt");
+    auto consoleDumpDir = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path() / ".dump";
+    std::filesystem::create_directories(consoleDumpDir);
+    std::filesystem::remove(consoleDumpDir / "console.txt");
 
+    std::cout << "[INIT] generating binary sequences..." << std::endl;
     std::map<int, std::vector<std::vector<int> > > binarySeqsMap;
     for (int num = 0; num <= parameters.sizeAllBinariesAna; ++num) {
         binarySeqsMap[num] = ce::generateBinarySequencesAsLists(num);
     }
     allBinariesAna = binarySeqsMap;
 
+    std::cout << "[INIT] generating all mappings (defSet=" << parameters.maxSizeDefSetMapping
+              << ", targetSet=" << parameters.maxSizeTargetSetMapping << ")..." << std::endl;
     allMappingsAna = generateAllMappings(
         parameters.maxSizeDefSetMapping,
         parameters.maxSizeTargetSetMapping
@@ -218,6 +228,7 @@ ExpressionAnalyzer::ExpressionAnalyzer(std::string anchorID)
 
     maxNumLeafsPerKey = 0;
 
+    std::cout << "[INIT] generating permutations (size=" << parameters.sizeAllPermutationsAna << ")..." << std::endl;
     allPermutationsAna = ce::generateAllPermutations(
         parameters.sizeAllPermutationsAna
     );
@@ -230,7 +241,9 @@ ExpressionAnalyzer::ExpressionAnalyzer(std::string anchorID)
     Dependencies dependencyTable;
     globalDependencies = dependencyTable;
 
+    std::cout << "[INIT] compiling core expression map..." << std::endl;
     coreExpressionMap = ce::modifyCoreExpressionMap(anchorID);
+    std::cout << "[INIT] core expression map done, " << coreExpressionMap.size() << " entries." << std::endl;
 
     operators.clear();
     for (const auto& kv : coreExpressionMap) {
@@ -243,7 +256,27 @@ ExpressionAnalyzer::ExpressionAnalyzer(std::string anchorID)
 
 
     this->anchorID_ = anchorID;
-    anchorInfo = initAnchor(coreExpressionMap, anchorID);
+
+    // Check for explicit anchor_name override in config JSON
+    std::string effectiveAnchorID = anchorID;
+    if (fs::exists(configPath)) {
+        try {
+            std::ifstream f2(configPath);
+            nlohmann::json j2;
+            f2 >> j2;
+            if (j2.contains("anchor_name")) {
+                std::string anchorName = j2["anchor_name"].get<std::string>();
+                // anchor_name is the full key (e.g. "AnchorIncubator"),
+                // but initAnchor prepends "Anchor", so strip it
+                if (anchorName.substr(0, 6) == "Anchor") {
+                    effectiveAnchorID = anchorName.substr(6);
+                }
+            }
+        } catch (...) {}
+    }
+    std::cout << "[INIT] initAnchor (effectiveID=" << effectiveAnchorID << ")..." << std::endl;
+    anchorInfo = initAnchor(coreExpressionMap, effectiveAnchorID);
+    std::cout << "[INIT] initAnchor done." << std::endl;
 
     permanentBodies.clear();
     permanentBodies.push_back(&body);
@@ -691,6 +724,312 @@ bool ExpressionAnalyzer::checkNoUArguments(const std::vector<std::string>& key, 
 }
 
 
+// ---------------------------------------------------------------------------
+// Incubator: implication multiplication helpers
+// ---------------------------------------------------------------------------
+
+// Replace oldArg with newArg at argument boundaries only (won't match v1 inside v10,
+// and won't match "7" inside "u_7" — underscore counts as a word character).
+static std::string replaceArgInString(const std::string& str,
+                                      const std::string& oldArg,
+                                      const std::string& newArg) {
+    auto isWordChar = [](char c) -> bool {
+        return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+    };
+    std::string result;
+    result.reserve(str.size());
+    std::size_t i = 0;
+    while (i < str.size()) {
+        bool atBoundary = (i == 0) || !isWordChar(str[i - 1]);
+        if (atBoundary && str.compare(i, oldArg.size(), oldArg) == 0) {
+            std::size_t after = i + oldArg.size();
+            bool endBoundary = (after >= str.size()) || !isWordChar(str[after]);
+            if (endBoundary) {
+                result += newArg;
+                i = after;
+                continue;
+            }
+        }
+        result += str[i];
+        ++i;
+    }
+    return result;
+}
+
+// After variable replacement, >[...] lists may contain duplicates. Deduplicate them.
+static std::string deduplicateBoundVars(const std::string& impl) {
+    std::string result;
+    result.reserve(impl.size());
+    std::size_t i = 0;
+    while (i < impl.size()) {
+        // Look for "(>["
+        if (i + 2 < impl.size() && impl[i] == '(' && impl[i + 1] == '>' && impl[i + 2] == '[') {
+            result += "(>[";
+            i += 3;
+            std::size_t closeBracket = impl.find(']', i);
+            if (closeBracket != std::string::npos) {
+                std::string varList = impl.substr(i, closeBracket - i);
+                // Parse comma-separated vars, deduplicate preserving order
+                std::vector<std::string> vars;
+                std::set<std::string> seen;
+                std::size_t pos = 0;
+                while (pos <= varList.size()) {
+                    std::size_t comma = varList.find(',', pos);
+                    std::string var;
+                    if (comma == std::string::npos) {
+                        var = varList.substr(pos);
+                        pos = varList.size() + 1;
+                    } else {
+                        var = varList.substr(pos, comma - pos);
+                        pos = comma + 1;
+                    }
+                    if (!var.empty() && seen.find(var) == seen.end()) {
+                        // Strip u_-prefixed vars: they are fixed anchor args,
+                        // must not appear as bound (wildcard) variables
+                        if (var.size() >= 2 && var[0] == 'u' && var[1] == '_') continue;
+                        seen.insert(var);
+                        vars.push_back(var);
+                    }
+                }
+                for (std::size_t j = 0; j < vars.size(); ++j) {
+                    if (j > 0) result += ',';
+                    result += vars[j];
+                }
+                i = closeBracket; // the ']' will be copied on next iteration
+            }
+        } else {
+            result += impl[i];
+            ++i;
+        }
+    }
+    return result;
+}
+
+// Generate all set partitions (Bell number) of elements.
+// Cap: if > 5 elements, return only original + all pairwise equalities.
+using Partition = std::vector<std::vector<std::string>>;
+
+static std::vector<Partition> generateSetPartitions(const std::vector<std::string>& elements, int cap = 5) {
+    std::vector<Partition> result;
+    if (elements.empty()) {
+        result.push_back(Partition());
+        return result;
+    }
+
+    // Beyond cap: pairwise + triples only.
+    if (static_cast<int>(elements.size()) > cap) {
+        // Original: all singletons
+        Partition orig;
+        for (auto& e : elements) orig.push_back({e});
+        result.push_back(orig);
+        // All pairwise equalities
+        for (std::size_t i = 0; i < elements.size(); ++i) {
+            for (std::size_t j = i + 1; j < elements.size(); ++j) {
+                Partition p;
+                for (std::size_t k = 0; k < elements.size(); ++k) {
+                    if (k == j) continue;
+                    if (k == i) {
+                        std::vector<std::string> merged = {elements[i], elements[j]};
+                        std::sort(merged.begin(), merged.end());
+                        p.push_back(merged);
+                    } else {
+                        p.push_back({elements[k]});
+                    }
+                }
+                result.push_back(p);
+            }
+        }
+        // All triple equalities
+        for (std::size_t i = 0; i < elements.size(); ++i) {
+            for (std::size_t j = i + 1; j < elements.size(); ++j) {
+                for (std::size_t l = j + 1; l < elements.size(); ++l) {
+                    Partition p;
+                    for (std::size_t k = 0; k < elements.size(); ++k) {
+                        if (k == j || k == l) continue;
+                        if (k == i) {
+                            std::vector<std::string> merged = {elements[i], elements[j], elements[l]};
+                            std::sort(merged.begin(), merged.end());
+                            p.push_back(merged);
+                        } else {
+                            p.push_back({elements[k]});
+                        }
+                    }
+                    result.push_back(p);
+                }
+            }
+        }
+        return result;
+    }
+
+    // Recursive Bell partition
+    std::string first = elements[0];
+    std::vector<std::string> rest(elements.begin() + 1, elements.end());
+    auto subPartitions = generateSetPartitions(rest, cap);
+
+    for (auto& sp : subPartitions) {
+        // Option 1: first as new singleton class
+        {
+            Partition p = sp;
+            p.push_back({first});
+            result.push_back(p);
+        }
+        // Option 2: add first to each existing class
+        for (std::size_t i = 0; i < sp.size(); ++i) {
+            Partition p = sp;
+            p[i].push_back(first);
+            std::sort(p[i].begin(), p[i].end());
+            result.push_back(p);
+        }
+    }
+    return result;
+}
+
+// Numeric-aware comparison for variable names (handles "2" < "10" correctly).
+static bool numericLess(const std::string& a, const std::string& b) {
+    bool aDigit = !a.empty() && std::all_of(a.begin(), a.end(),
+                      [](char c) { return std::isdigit(static_cast<unsigned char>(c)); });
+    bool bDigit = !b.empty() && std::all_of(b.begin(), b.end(),
+                      [](char c) { return std::isdigit(static_cast<unsigned char>(c)); });
+    if (aDigit && bDigit) return std::stoi(a) < std::stoi(b);
+    return a < b;
+}
+
+std::vector<std::string> ExpressionAnalyzer::multiplyImplication(
+    const std::string& implication)
+{
+    if (!parameters.incubator_mode && !ceFilteringActive) return {implication};
+
+    // 1. Parse implication to get chain + head
+    std::vector< std::tuple<
+        std::string,
+        std::vector<std::string>,
+        std::set<std::string>
+    > > tempChain;
+    std::string head = ce::disintegrateImplication(implication, tempChain, coreExpressionMap);
+
+    // 2. Collect all bound vars from >[...] lists
+    std::set<std::string> allBoundVars;
+    for (auto& tpl : tempChain) {
+        for (auto& arg : std::get<1>(tpl)) {
+            if (!arg.empty()) allBoundVars.insert(arg);
+        }
+    }
+    if (allBoundVars.empty()) return {implication};
+
+    // 3. Collect all expressions (premises + head) for type lookup
+    //    Skip Anchor expressions — their (1)-typed args inflate partitions needlessly.
+    std::vector<std::string> allExprs;
+    for (auto& tpl : tempChain) {
+        const std::string& expr = std::get<0>(tpl);
+        if (expr.find("(Anchor") == std::string::npos)
+            allExprs.push_back(expr);
+    }
+    if (head.find("(Anchor") == std::string::npos)
+        allExprs.push_back(head);
+
+    // 4. Collect ALL unique variables (bound + u_) appearing in expressions
+    std::set<std::string> allVars;
+    allVars.insert(allBoundVars.begin(), allBoundVars.end());
+    for (const std::string& expr : allExprs) {
+        std::vector<std::string> args = ce::getArgs(expr);
+        for (const std::string& arg : args) {
+            allVars.insert(arg);
+        }
+    }
+
+    // 5. Determine which vars are (1)-typed (both bound and u_)
+    std::vector<std::string> oneTypedVars;
+    for (const std::string& var : allVars) {
+        bool isOneTyped = false;
+        for (const std::string& expr : allExprs) {
+            std::string coreName = ce::extractExpression(expr);
+            if (coreName.empty()) continue;
+            auto cfgIt = coreExpressionMap.find(coreName);
+            if (cfgIt == coreExpressionMap.end()) continue;
+
+            std::vector<std::string> args = ce::getArgs(expr);
+            for (std::size_t i = 0; i < args.size(); ++i) {
+                if (args[i] == var) {
+                    std::string posKey = std::to_string(i + 1);
+                    auto dsIt = cfgIt->second.definitionSets.find(posKey);
+                    if (dsIt != cfgIt->second.definitionSets.end() &&
+                        dsIt->second.first == "(1)") {
+                        isOneTyped = true;
+                        break;
+                    }
+                }
+            }
+            if (isOneTyped) break;
+        }
+        if (isOneTyped) oneTypedVars.push_back(var);
+    }
+
+    std::sort(oneTypedVars.begin(), oneTypedVars.end(), numericLess);
+
+    if (oneTypedVars.size() <= 1) return {implication};
+
+    // 6. Generate set partitions (equivalence relations on oneTypedVars).
+    //    Each partition can compose multiple equalization groups simultaneously.
+    auto partitions = generateSetPartitions(oneTypedVars, parameters.max_partition_size);
+
+    // 7. For each partition, substitute and deduplicate.
+    //    u_ variables always win as representative — non-u_ replaced by u_.
+    std::set<std::string> seen;
+    std::vector<std::string> result;
+
+    for (auto& partition : partitions) {
+        // Skip partitions where any equivalence class contains two different u_ vars
+        bool hasDoubleU = false;
+        for (auto& eqClass : partition) {
+            int uCount = 0;
+            for (const std::string& v : eqClass) {
+                if (v.size() >= 2 && v[0] == 'u' && v[1] == '_') uCount++;
+            }
+            if (uCount >= 2) { hasDoubleU = true; break; }
+        }
+        if (hasDoubleU) continue;
+
+        std::string copy = implication;
+        for (auto& eqClass : partition) {
+            if (eqClass.size() <= 1) continue;
+
+            // Pick representative: prefer u_ variable, else first element
+            std::string rep = eqClass[0];
+            for (const std::string& v : eqClass) {
+                if (v.size() >= 2 && v[0] == 'u' && v[1] == '_') {
+                    rep = v;
+                    break;
+                }
+            }
+
+            // Replace all non-representative vars with representative
+            for (const std::string& v : eqClass) {
+                if (v == rep) continue;
+                copy = replaceArgInString(copy, v, rep);
+            }
+        }
+        copy = deduplicateBoundVars(copy);
+
+        // Skip copies whose head is a trivial equality (=[x,x]).
+        {
+            std::vector< std::tuple<std::string, std::vector<std::string>, std::set<std::string>> > copyChain;
+            std::string copyHead = ce::disintegrateImplication(copy, copyChain, coreExpressionMap);
+            if (ce::extractExpression(copyHead) == "=") {
+                auto eqArgs = ce::getArgs(copyHead);
+                if (eqArgs.size() == 2 && eqArgs[0] == eqArgs[1]) continue;
+            }
+        }
+
+        if (seen.find(copy) == seen.end()) {
+            seen.insert(copy);
+            result.push_back(copy);
+        }
+    }
+
+    return result;
+}
+
+
 // Turn optimizations OFF for just this section
 //#pragma optimize("", off)
 
@@ -698,6 +1037,7 @@ void ExpressionAnalyzer::addToHashMemory(const std::vector<std::string>& key,
     const std::string& value,
     const std::set<std::string>& remainingArgs,
     BodyOfProves& mb,
+    LocalMemory& targetMemory,
     const std::set<int>& levels,
     const std::string& originalImplication,
     int maxAdmissionDepth,
@@ -705,89 +1045,150 @@ void ExpressionAnalyzer::addToHashMemory(const std::vector<std::string>& key,
     bool partOfRecursion,
     int minNumOperatorsKey,
     const std::string& justification,
-    bool performAdmissionMapUpdate) {
+    bool performAdmissionMapUpdate,
+    const std::string& originalImplicationClean,
+    const std::string& validityName) {
 
-    std::vector<std::string> implication = key;
-    implication.push_back(value);
-    mb.localMemory.originals.insert(implication);
-    for (const auto& trigger : mb.localMemory.triggersForAdmissionSetIntegration)
-    {
-        makeAdmissionKeys(implication, trigger.original, mb.localMemory, trigger.validityName);
+    // --- Multiply implication into (1)-typed variable equality copies ---
+    // No-op for implications with <= 1 (1)-typed vars.
+    std::vector<std::string> copies = multiplyImplication(originalImplication);
+
+    for (std::size_t c = 0; c < copies.size(); ++c) {
+        std::vector<std::string> curKey;
+        std::string curValue;
+        std::string curOrigImpl = copies[c];
+
+        if (c == 0) {
+            curKey = key;
+            curValue = value;
+        } else {
+            // Track history for multiplied copies
+            if (parameters.trackHistory) {
+                ExpressionWithValidity copyEv(copies[c], "main");
+                std::pair<std::string, std::vector<ExpressionWithValidity>> mulOrigin;
+                mulOrigin.first = "multiplied from";
+                mulOrigin.second.push_back(ExpressionWithValidity(originalImplicationClean, "main"));
+                addOrigin(mb.exprOriginMap, copyEv, mulOrigin,
+                    (parameters.compressor_mode
+                        ? parameters.compressor_max_origins_per_expr
+                        : parameters.max_origin_per_expr));
+                addOrigin(mb.mailOut.exprOriginMap, copyEv, mulOrigin,
+                    (parameters.compressor_mode
+                        ? parameters.compressor_max_origins_per_expr
+                        : parameters.max_origin_per_expr));
+            }
+
+            // Re-parse multiplied copy to get new key/value
+            std::vector< std::tuple<
+                std::string,
+                std::vector<std::string>,
+                std::set<std::string>
+            > > tc;
+            curValue = ce::disintegrateImplication(copies[c], tc, coreExpressionMap);
+            for (std::size_t ci = 0; ci < tc.size(); ++ci)
+                curKey.push_back(std::get<0>(tc[ci]));
+        }
+
+        // --- Inner logic: add this implication to hash memory ---
+        // DEBUG TRAP: dump implication containing existence0
+        if (curOrigImpl.find("existence0") != std::string::npos) {
+            std::ofstream dump("files/raw_proof_graph/DEBUG_addToHashMemory_existence0.txt", std::ios::app);
+            dump << "=== addToHashMemory existence0 ===\n";
+            dump << "originalImplication: " << originalImplication << "\n";
+            dump << "originalImplicationClean: " << originalImplicationClean << "\n";
+            dump << "curOrigImpl (copy " << c << "): " << curOrigImpl << "\n";
+            dump << "value (head): " << curValue << "\n";
+            dump << "key (premises):";
+            for (size_t ki = 0; ki < curKey.size(); ++ki) dump << " [" << curKey[ki] << "]";
+            dump << "\n";
+            ExpressionWithValidity implEv(curOrigImpl, "main");
+            auto implIt = mb.exprOriginMap.find(implEv);
+            dump << "origin in mb.exprOriginMap: " << (implIt != mb.exprOriginMap.end() ? "YES" : "NO") << "\n";
+            ExpressionWithValidity cleanEv(originalImplicationClean, "main");
+            auto cleanIt = mb.exprOriginMap.find(cleanEv);
+            dump << "origin for clean in mb.exprOriginMap: " << (cleanIt != mb.exprOriginMap.end() ? "YES" : "NO") << "\n";
+            dump << "\n";
+        }
+
+        std::vector<std::string> implication = curKey;
+        implication.push_back(curValue);
+        targetMemory.originals.insert(implication);
+        for (const auto& trigger : targetMemory.triggersForAdmissionSetIntegration)
+        {
+            makeAdmissionKeys(implication, trigger.original, targetMemory, trigger.validityName);
+        }
+
+        this->makeNormalizedKeysForAdmission(curKey, targetMemory, curValue, minNumOperatorsKey);
+
+        if (performAdmissionMapUpdate)
+        {
+            std::vector<std::string> keyPlusValue = curKey;
+            keyPlusValue.push_back(curValue);
+            updateAdmissionMap(mb,
+                keyPlusValue,
+                remainingArgs,
+                maxAdmissionDepth,
+                maxSecondaryNumber,
+                partOfRecursion,
+                "main");
+        }
+
+        std::vector<int> allOnes(curKey.size(), 1);
+
+        const std::set<VariantItem> variants = this->createVariants(curKey, curValue);
+
+        this->makeNormalizedSubkeys(curKey, targetMemory);
+
+        for (std::set<VariantItem>::const_iterator it = variants.begin(); it != variants.end(); ++it) {
+            const VariantItem& v = *it;
+
+            LocalMemoryValue lmv;
+            lmv.value = v.valueVariant;
+            lmv.levels = levels;
+            lmv.originalImplication = curOrigImpl;
+            lmv.remainingArgs = remainingArgs;
+            lmv.justification = justification;
+            lmv.validityName = validityName;
+
+            std::map<NormalizedKey, std::set<LocalMemoryValue> >::iterator emIt =
+                targetMemory.encodedMap.find(v.normalizedIgnoredKey);
+            if (emIt != targetMemory.encodedMap.end()) {
+                emIt->second.insert(lmv);
+            }
+            else {
+                std::set<LocalMemoryValue> bucket;
+                bucket.insert(lmv);
+                targetMemory.encodedMap.insert(std::make_pair(v.normalizedIgnoredKey, bucket));
+            }
+
+            targetMemory.normalizedEncodedKeys.insert(v.normalizedNotIgnoredKey);
+
+            std::map<std::set<std::string>, std::set<NormalizedKey> >::iterator remIt =
+                targetMemory.remainingArgsNormalizedEncodedMap.find(remainingArgs);
+            if (remIt != targetMemory.remainingArgsNormalizedEncodedMap.end()) {
+                remIt->second.insert(v.normalizedNotIgnoredKey);
+            }
+            else {
+                std::set<NormalizedKey> s;
+                s.insert(v.normalizedNotIgnoredKey);
+                targetMemory.remainingArgsNormalizedEncodedMap.insert(std::make_pair(remainingArgs, s));
+            }
+        }
+
+        std::map<std::string, int> coreExpressionCounterMap;
+        for (std::size_t i = 0; i < curKey.size(); ++i) {
+            const std::string coreExpr = ce::extractExpression(curKey[i]);
+            std::map<std::string, int>::iterator itc = coreExpressionCounterMap.find(coreExpr);
+            if (itc == coreExpressionCounterMap.end()) {
+                coreExpressionCounterMap.insert(std::make_pair(coreExpr, 1));
+            }
+            else {
+                itc->second += 1;
+            }
+        }
+
+        targetMemory.maxKeyLength = std::max(static_cast<int>(curKey.size()), targetMemory.maxKeyLength);
     }
- 
-    this->makeNormalizedKeysForAdmission(key, mb.localMemory, value, minNumOperatorsKey);
-  
-
-    //bool noUArgs = checkNoUArguments(key, value);
-
-    if (performAdmissionMapUpdate)
-    {
-
-        std::vector<std::string> keyPlusValue = key;
-        keyPlusValue.push_back(value);
-        updateAdmissionMap(mb,
-            keyPlusValue,
-            remainingArgs,
-            maxAdmissionDepth,
-            maxSecondaryNumber,
-            partOfRecursion,
-            "main");
-    }
-
-    std::vector<int> allOnes(key.size(), 1);
-
-    const std::set<VariantItem> variants = this->createVariants(key, value);
-
-    this->makeNormalizedSubkeys(key, mb.localMemory);
-
-    for (std::set<VariantItem>::const_iterator it = variants.begin(); it != variants.end(); ++it) {
-        const VariantItem& v = *it;
-
-        LocalMemoryValue lmv;
-        lmv.value = v.valueVariant;
-        lmv.levels = levels;
-        lmv.originalImplication = originalImplication;
-        lmv.remainingArgs = remainingArgs;
-        lmv.justification = justification;
-
-        std::map<NormalizedKey, std::set<LocalMemoryValue> >::iterator emIt =
-            mb.localMemory.encodedMap.find(v.normalizedIgnoredKey);
-        if (emIt != mb.localMemory.encodedMap.end()) {
-            emIt->second.insert(lmv);
-        }
-        else {
-            std::set<LocalMemoryValue> bucket;
-            bucket.insert(lmv);
-            mb.localMemory.encodedMap.insert(std::make_pair(v.normalizedIgnoredKey, bucket));
-        }
-
-        mb.localMemory.normalizedEncodedKeys.insert(v.normalizedNotIgnoredKey);
-
-        std::map<std::set<std::string>, std::set<NormalizedKey> >::iterator remIt =
-            mb.localMemory.remainingArgsNormalizedEncodedMap.find(remainingArgs);
-        if (remIt != mb.localMemory.remainingArgsNormalizedEncodedMap.end()) {
-            remIt->second.insert(v.normalizedNotIgnoredKey);
-        }
-        else {
-            std::set<NormalizedKey> s;
-            s.insert(v.normalizedNotIgnoredKey);
-            mb.localMemory.remainingArgsNormalizedEncodedMap.insert(std::make_pair(remainingArgs, s));
-        }
-    }
-
-    std::map<std::string, int> coreExpressionCounterMap;
-    for (std::size_t i = 0; i < key.size(); ++i) {
-        const std::string coreExpr = ce::extractExpression(key[i]);
-        std::map<std::string, int>::iterator itc = coreExpressionCounterMap.find(coreExpr);
-        if (itc == coreExpressionCounterMap.end()) {
-            coreExpressionCounterMap.insert(std::make_pair(coreExpr, 1));
-        }
-        else {
-            itc->second += 1;
-        }
-    }
-
-    mb.localMemory.maxKeyLength = std::max(static_cast<int>(key.size()), mb.localMemory.maxKeyLength);
 }
 
 bool ExpressionAnalyzer::lessByName(const EncodedExpression& a, const EncodedExpression& b) {
@@ -897,7 +1298,7 @@ ExpressionAnalyzer::makeMandatoryEncodedStatementLists2(BodyOfProves& body,
 
                     std::sort(list2.begin(), list2.end(), &ExpressionAnalyzer::lessByName);
 
-                    std::pair<bool, NormalizedKey> pe = preEvaluateEncodedKey(list2, body, body.localMemory.normalizedEncodedSubkeys);
+                    std::pair<bool, NormalizedKey> pe = preEvaluateEncodedKey(list2, body, body.overallHashMemory.normalizedEncodedSubkeys);
                     if (pe.first) {
                         mandatory.push_back(list2);
                     }
@@ -1333,17 +1734,62 @@ BodyOfProves& ExpressionAnalyzer::performElementaryLogicalStep(BodyOfProves& bod
         return body;
     }
 
-
-    //if (body.exprKey == "(in2[rec0,9,3])" && true)
-    if (body.exprKey == "(=[10,2])" && body.parentBodyOfProves->exprKey == "(in2[10,9,3])" && false)
+    if (body.exprKey == "(in3[2,6,11,4])")
     {
-        // [DEBUG START] Output original expressions and validityNames to file
-        std::ofstream debugFile("c:\\bin\\console.txt", std::ios::app); // Open in append mode
+        int test = 0;
+        test++;
+    }
+
+    //if (body.exprKey == "(AnchorIncubator[1,2,3,4,5,6,7,8,9,10,11])" && true)
+    if (body.exprKey == "(fold[1,3,4,8,2,2,12])" && body.parentBodyOfProves->exprKey == "(AnchorIncubator[1,2,3,4,5,6,7,8,9,10,11])" && true)
+    //if (body.exprKey == "(AnchorIncubator[1,2,3,4,5,6,7,8,9,10])" && true)
+    {
+        // [DEBUG START] Dump all encoded statements + all implications
+        auto consolePath = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path() / ".dump" / "console.txt";
+        std::ofstream debugFile(consolePath, std::ios::app);
         if (debugFile.is_open()) {
-            debugFile << ">>> DEBUG: Body Key [" << body.exprKey << "] Core ID: " << coreId << std::endl;
-            for (const auto& stmt : body.encodedStatements) {
-                debugFile << "Expression: " << stmt.original
-                    << " | Validity: " << stmt.validityName << std::endl;
+            debugFile << ">>> DEBUG: Body Key [" << body.exprKey << "] Core ID: " << coreId
+                      << "  stmts=" << body.encodedStatements.size() << std::endl;
+            for (std::size_t si = 0; si < body.encodedStatements.size(); ++si) {
+                const auto& stmt = body.encodedStatements[si];
+                debugFile << si << "\t" << stmt.original << "\t" << stmt.validityName << std::endl;
+            }
+            debugFile << "--- implications (unique) ---" << std::endl;
+            std::set<std::string> seenImpl;
+            int impCount = 0;
+            for (const auto& kv : body.overallHashMemory.encodedMap) {
+                for (const auto& lmv : kv.second) {
+                    if (seenImpl.insert(lmv.originalImplication).second) {
+                        debugFile << impCount++ << "\t" << lmv.originalImplication << std::endl;
+                    }
+                }
+            }
+            debugFile << "--- localHashMemory implications (unique) ---" << std::endl;
+            seenImpl.clear();
+            impCount = 0;
+            for (const auto& kv : body.localHashMemory.encodedMap) {
+                for (const auto& lmv : kv.second) {
+                    if (seenImpl.insert(lmv.originalImplication).second) {
+                        debugFile << impCount++ << "\t" << lmv.originalImplication << std::endl;
+                    }
+                }
+            }
+            debugFile << "--- localHashMemory encoded keys ---" << std::endl;
+            int ekCount = 0;
+            for (const auto& nk : body.localHashMemory.normalizedEncodedKeys) {
+                debugFile << ekCount++ << "\t";
+                for (std::size_t di = 0; di < nk.data.size(); ++di) { if (di) debugFile << " "; debugFile << nk.data[di]; }
+                debugFile << "\tnExprs=" << nk.numberExpressions << std::endl;
+            }
+            debugFile << "--- localHashMemoryDelta implications (unique) ---" << std::endl;
+            seenImpl.clear();
+            impCount = 0;
+            for (const auto& kv : body.localHashMemoryDelta.encodedMap) {
+                for (const auto& lmv : kv.second) {
+                    if (seenImpl.insert(lmv.originalImplication).second) {
+                        debugFile << impCount++ << "\t" << lmv.originalImplication << std::endl;
+                    }
+                }
             }
             debugFile << "<<< DEBUG END" << std::endl;
             debugFile.close();
@@ -1354,9 +1800,21 @@ BodyOfProves& ExpressionAnalyzer::performElementaryLogicalStep(BodyOfProves& bod
     if (body.encodedStatements.size() > 10000 && false)
 	    std::cout << body.exprKey << " " << body.encodedStatements.size() << " " << std::endl;
 
-    
-
-
+    // [TRACE] Catch (in2[2,2,8]) arriving in mail for fold LB
+    if (body.exprKey == "(fold[1,3,4,8,2,6,12])" && true) {
+        for (const auto& st : body.mailIn.statements) {
+            if (st.first == "(in2[2,2,8])") {
+                int test = 0;
+                test++;
+                auto debugPath = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path() / ".dump" / "debug.txt";
+                std::ofstream debugFile(debugPath, std::ios::app);
+                if (debugFile.is_open()) {
+                    debugFile << ">>> TRACE: " << body.exprKey << " received (in2[2,2,8]) in mail" << std::endl;
+                    debugFile.close();
+                }
+            }
+        }
+    }
 
     // ingest implications into local memory
     for (std::set< std::tuple< std::vector<std::string>,
@@ -1371,8 +1829,8 @@ BodyOfProves& ExpressionAnalyzer::performElementaryLogicalStep(BodyOfProves& bod
         const std::set<int>& levels = std::get<3>(*it);
         const std::string& orImpl = std::get<4>(*it);
 
-        this->addToHashMemory(chain, head, remainingArgsKey, body, levels,
-            orImpl, parameters.standardMaxAdmissionDepth, parameters.standardMaxSecondaryNumber, false, parameters.minNumOperatorsKey, "implication", true);
+        this->addToHashMemory(chain, head, remainingArgsKey, body, body.overallHashMemory, levels,
+            orImpl, parameters.standardMaxAdmissionDepth, parameters.standardMaxSecondaryNumber, false, parameters.minNumOperatorsKey, "implication", true, orImpl);
     }
 
     // expr_origin_map = mail_in | current   (right wins on conflicts)
@@ -1404,18 +1862,18 @@ BodyOfProves& ExpressionAnalyzer::performElementaryLogicalStep(BodyOfProves& bod
         const std::set<int>& levels = std::get<3>(*it);
         const std::string& orImpl = std::get<4>(*it);
 
-        this->addToHashMemory(chain, head, remainingArgsKey, working, levels,
-            orImpl, parameters.standardMaxAdmissionDepth, parameters.standardMaxSecondaryNumber, false, parameters.minNumOperatorsKey, "implication", true);
+        this->addToHashMemory(chain, head, remainingArgsKey, working, working.overallHashMemory, levels,
+            orImpl, parameters.standardMaxAdmissionDepth, parameters.standardMaxSecondaryNumber, false, parameters.minNumOperatorsKey, "implication", true, orImpl);
     }
 
     std::vector< std::tuple< std::vector<EncodedExpression>, bool, NormalizedKey > > workingReqs;
 
-    if (!working.localMemory.encodedMap.empty()) {
+    if (!working.overallHashMemory.encodedMap.empty()) {
         std::vector< std::vector<EncodedExpression> > msl1 =
-            this->makeMandatoryEncodedStatementLists1(working.localMemory, body.localEncodedStatements);
+            this->makeMandatoryEncodedStatementLists1(working.overallHashMemory, body.localEncodedStatements);
 
         if (!msl1.empty()) {
-            workingReqs = this->generateEncodedRequests(body, working.localMemory, msl1, body.encodedStatements);
+            workingReqs = this->generateEncodedRequests(body, working.overallHashMemory, msl1, body.encodedStatements);
         }
     }
 
@@ -1446,11 +1904,11 @@ BodyOfProves& ExpressionAnalyzer::performElementaryLogicalStep(BodyOfProves& bod
 
     // new local delta -> requests
     std::vector< std::vector<EncodedExpression> > mNew1 =
-        this->makeMandatoryEncodedStatementLists1(body.localMemory, body.localEncodedStatementsDelta);
+        this->makeMandatoryEncodedStatementLists1(body.overallHashMemory, body.localEncodedStatementsDelta);
 
     std::vector< std::tuple< std::vector<EncodedExpression>, bool, NormalizedKey > > newLocalReqs;
     if (!mNew1.empty()) {
-        newLocalReqs = this->generateEncodedRequests(body, body.localMemory, mNew1, body.encodedStatements);
+        newLocalReqs = this->generateEncodedRequests(body, body.overallHashMemory, mNew1, body.encodedStatements);
     }
 
     // local + mail statements (pairs)
@@ -1461,19 +1919,64 @@ BodyOfProves& ExpressionAnalyzer::performElementaryLogicalStep(BodyOfProves& bod
     }
 
     std::vector< std::vector<EncodedExpression> > mLocalMail2 =
-        this->makeMandatoryEncodedStatementLists2(body, body.localMemory, body.localEncodedStatements, mailEncodedStatements);
+        this->makeMandatoryEncodedStatementLists2(body, body.overallHashMemory, body.localEncodedStatements, mailEncodedStatements);
 
     std::vector< std::tuple< std::vector<EncodedExpression>, bool, NormalizedKey > > localMailReqs;
     if (!mLocalMail2.empty()) {
-        localMailReqs = this->generateEncodedRequests(body, body.localMemory, mLocalMail2, body.encodedStatements);
+        localMailReqs = this->generateEncodedRequests(body, body.overallHashMemory, mLocalMail2, body.encodedStatements);
     }
 
-    // combine
+    // Batch 4: localHashMemory — mail mandatory singles, grown with all encoded statements
+    // Connects mail facts with disintegration-born hash rules (including single-premise rules).
+    std::vector< std::tuple< std::vector<EncodedExpression>, bool, NormalizedKey > > localHashReqs;
+    if (!body.localHashMemory.encodedMap.empty() && !mailEncodedStatements.empty()) {
+        std::vector< std::vector<EncodedExpression> > mLocalHash1 =
+            this->makeMandatoryEncodedStatementLists1(body.localHashMemory, mailEncodedStatements);
+
+        if (!mLocalHash1.empty()) {
+            localHashReqs = this->generateEncodedRequests(body, body.localHashMemory, mLocalHash1, body.encodedStatements);
+        }
+    }
+
+    // [TRACE] Check if (in2[2,2,8]) made it into batch 4 requests as a single-element request
+    if (body.exprKey == "(fold[1,3,4,8,2,6,12])" && true) {
+        for (std::size_t ri = 0; ri < localHashReqs.size(); ++ri) {
+            const auto& reqKey = std::get<0>(localHashReqs[ri]);
+            if (reqKey.size() == 1 && reqKey[0].original == "(in2[2,2,8])") {
+                int test = 0;
+                test++;
+                auto debugPath = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path() / ".dump" / "debug.txt";
+                std::ofstream debugFile(debugPath, std::ios::app);
+                if (debugFile.is_open()) {
+                    debugFile << ">>> TRACE BATCH4: (in2[2,2,8]) as single request in localHashReqs[" << ri << "]" << std::endl;
+                    debugFile.close();
+                }
+            }
+        }
+    }
+
+    // Batch 5: localHashMemoryDelta — all x all (new disintegration rules this burst)
+    // Mandatory singles from ALL encodedStatements against delta memory.
+    // After generation, delta is cleared (localHashMemory already has the same copies).
+    std::vector< std::tuple< std::vector<EncodedExpression>, bool, NormalizedKey > > deltaReqs;
+    if (!body.localHashMemoryDelta.encodedMap.empty()) {
+        std::vector< std::vector<EncodedExpression> > mDelta1 =
+            this->makeMandatoryEncodedStatementLists1(body.localHashMemoryDelta, body.encodedStatements);
+
+        if (!mDelta1.empty()) {
+            deltaReqs = this->generateEncodedRequests(body, body.localHashMemoryDelta, mDelta1, body.encodedStatements);
+        }
+    }
+
+    // combine all 5 batches
     std::vector< std::tuple< std::vector<EncodedExpression>, bool, NormalizedKey > > encodedRequests;
-    encodedRequests.reserve(workingReqs.size() + newLocalReqs.size() + localMailReqs.size());
+    encodedRequests.reserve(workingReqs.size() + newLocalReqs.size() + localMailReqs.size() + localHashReqs.size() + deltaReqs.size());
     for (std::size_t i = 0; i < workingReqs.size(); ++i)  encodedRequests.push_back(workingReqs[i]);
     for (std::size_t i = 0; i < newLocalReqs.size(); ++i) encodedRequests.push_back(newLocalReqs[i]);
     for (std::size_t i = 0; i < localMailReqs.size(); ++i) encodedRequests.push_back(localMailReqs[i]);
+    for (std::size_t i = 0; i < localHashReqs.size(); ++i) encodedRequests.push_back(localHashReqs[i]);
+    for (std::size_t i = 0; i < deltaReqs.size(); ++i) encodedRequests.push_back(deltaReqs[i]);
+
 
     // clear mail_in and local delta (like Python)
     body.mailIn.statements.clear();
@@ -1485,8 +1988,12 @@ BodyOfProves& ExpressionAnalyzer::performElementaryLogicalStep(BodyOfProves& bod
         body.localEncodedStatementsDelta.clear();
     }
 
+    // Clear localHashMemoryDelta after request generation round.
+    // localHashMemory already has the same copies.
+    body.localHashMemoryDelta = LocalMemory();
 
-    // evaluate requests
+
+    // evaluate all requests against overallHashMemory
     for (std::size_t r = 0; r < encodedRequests.size(); ++r) {
         if (!body.isActive)
         {
@@ -1512,7 +2019,6 @@ BodyOfProves& ExpressionAnalyzer::performElementaryLogicalStep(BodyOfProves& bod
 
         this->checkLocalEncodedMemory(reqKey, body, itr + 1, std::get<2>(encodedRequests[r]), coreId);
     }
-
 
 
     // Send to per-core mailboxes for children of 'body'
@@ -1615,6 +2121,85 @@ BodyOfProves* ExpressionAnalyzer::accessBodyOfProves(const std::vector<std::stri
     return memoryBlock;
 }
 
+bool ExpressionAnalyzer::tryBackReformulateOperatorHead(
+    const std::string& theorem,
+    std::string& backReformulated)
+{
+    if (!parameters.incubator_mode) return false;
+
+    std::vector<std::tuple<std::string, std::vector<std::string>, std::set<std::string>>> tempChain;
+    std::string head = ce::disintegrateImplication(theorem, tempChain, coreExpressionMap);
+
+    // Must have exactly 2 chain elements (anchor + operator)
+    if (tempChain.size() != 2) return false;
+
+    // First chain element must be an Anchor
+    {
+        std::string firstName = ce::extractExpression(std::get<0>(tempChain[0]));
+        if (firstName.find("Anchor") == std::string::npos) return false;
+    }
+
+    // Head must be equality or negated equality
+    bool negated = false;
+    std::string eqExpr = head;
+    if (!head.empty() && head[0] == '!') {
+        negated = true;
+        eqExpr = head.substr(1);
+    }
+
+    std::string headExpr = ce::extractExpression(eqExpr);
+    if (headExpr != "=") return false;
+
+    std::vector<std::string> eqArgs = ce::getArgs(eqExpr);
+    if (eqArgs.size() != 2) return false;
+
+    // Last chain element must be an operator
+    const std::string& lastPremise = std::get<0>(tempChain.back());
+    std::string opName = ce::extractExpression(lastPremise);
+    auto cfgIt = coreExpressionMap.find(opName);
+    if (cfgIt == coreExpressionMap.end()) return false;
+    if (cfgIt->second.outputIndices.empty()) return false;  // not an operator
+
+    int outIdx = cfgIt->second.outputIndices[0];  // 0-based
+    std::vector<std::string> opArgs = ce::getArgs(lastPremise);
+    if (outIdx >= static_cast<int>(opArgs.size())) return false;
+
+    std::string x = opArgs[outIdx];  // the fresh variable in operator
+
+    // Verify: one of the equality args must be x
+    std::string a_out;
+    if (eqArgs[0] == x) {
+        a_out = eqArgs[1];
+    } else if (eqArgs[1] == x) {
+        a_out = eqArgs[0];
+    } else {
+        return false;  // x doesn't appear in equality — not our pattern
+    }
+
+    // Back-reformulate: replace x with a_out in the operator, drop the equality + inner >
+    opArgs[outIdx] = a_out;
+    std::string cleanHead = "(" + opName + "[";
+    for (size_t i = 0; i < opArgs.size(); ++i) {
+        if (i > 0) cleanHead += ",";
+        cleanHead += opArgs[i];
+    }
+    cleanHead += "])";
+
+    // Negate the operator head if the equality was negated
+    if (negated) {
+        cleanHead = "!" + cleanHead;
+    }
+
+    // Rebuild chain without the last element (operator was a premise, now it's the head)
+    std::vector<std::string> outerChain;
+    for (size_t i = 0; i < tempChain.size() - 1; ++i) {
+        outerChain.push_back(std::get<0>(tempChain[i]));
+    }
+
+    backReformulated = reconstructImplication(outerChain, cleanHead);
+    return true;
+}
+
 // analyze_expressions.cpp
 // Thread-safe: locks globalTheoremList only when mutating it.
 void ExpressionAnalyzer::updateGlobalDirect(const std::string& theorem, int coreId) {
@@ -1630,19 +2215,13 @@ void ExpressionAnalyzer::updateGlobalDirect(const std::string& theorem, int core
     ky.reserve(tempChain.size());
     for (std::size_t i = 0; i < tempChain.size(); ++i) ky.push_back(std::get<0>(tempChain[i]));
 
-    // 2) Emit implication into the global mail_out
-    mailOut.implications.insert(std::make_tuple(ky, value, std::set<std::string>(), std::set<int>(), theorem));
-    if (parameters.trackHistory) {
-        ExpressionWithValidity ev(theorem, "main");
-        addOrigin(mailOut.exprOriginMap, ev, std::make_pair("theorem", std::vector<ExpressionWithValidity>()), (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
-    }
+    // Save original decomposition before sections 3/4 overwrite ky/value
+    const std::vector<std::string> origKy = ky;
+    const std::string origValue = value;
 
-    // 3) Record theorem and print (guarded)
-    {
-        std::lock_guard<std::mutex> lock(this->theoremListMutex);
-        this->globalTheoremList.emplace_back(theorem, "direct", "-1", "-1");
-    }
-    std::cout << theorem << std::endl;
+    // 2) Original implication broadcast deferred until after back-reformulation check (section 5)
+    //    If back-reformulation succeeds, only the back-reformulated version is broadcast.
+    bool willBackReformulate = false;
 
     std::vector<std::pair<std::string, std::string>> outTheorems;
     if (reformulateTheorem(theorem, outTheorems)) {
@@ -1714,31 +2293,71 @@ void ExpressionAnalyzer::updateGlobalDirect(const std::string& theorem, int core
         ky.reserve(tempChain.size());
         for (std::size_t i = 0; i < tempChain.size(); ++i) ky.push_back(std::get<0>(tempChain[i]));
 
-        BodyOfProves* memoryBlockM = accessBodyOfProves(ky, this->body);
-        if (memoryBlockM != NULL) {
-            std::pair<std::string, std::vector<ExpressionWithValidity>> originM;
-            originM.first = "implication";
-            originM.second.push_back(ExpressionWithValidity(reshuffledMirrored, "main"));
-            for (const std::string& keyElement : ky) {
-                // Construct the object in-place with the key and "main"
-                originM.second.emplace_back(keyElement, "main");
-            }
-
-            std::set<int> levelsM;
-            for (int i = 0; i <= static_cast<int>(ky.size()); ++i) levelsM.insert(i);
-
-            addStatement(value, *memoryBlockM, false, levelsM, originM, "main");
-        }
-
-        // Also queue the mirrored implication
+        // Queue the mirrored implication (no addStatement — let it fire naturally via hash burst)
         mailOut.implications.insert(
             std::make_tuple(ky, value, std::set<std::string>(), std::set<int>(), reshuffledMirrored)
         );
     }
 
-    // 5) Flush mail
+    // 5) Incubator: back-reformulate operator-equality pattern
+    // Must be before sendMail so the back-reformulated implication gets flushed.
+    std::string backReformulated;
+    willBackReformulate = tryBackReformulateOperatorHead(theorem, backReformulated);
+    if (!willBackReformulate) {
+        // No back-reformulation: broadcast and record original theorem
+        mailOut.implications.insert(std::make_tuple(origKy, origValue, std::set<std::string>(), std::set<int>(), theorem));
+        if (parameters.trackHistory) {
+            ExpressionWithValidity ev(theorem, "main");
+            addOrigin(mailOut.exprOriginMap, ev, std::make_pair("theorem", std::vector<ExpressionWithValidity>()), (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
+        }
+        {
+            std::lock_guard<std::mutex> lock(this->theoremListMutex);
+            this->globalTheoremList.emplace_back(theorem, "direct", "-1", "-1");
+        }
+        std::cout << theorem << std::endl;
+    }
+    if (willBackReformulate) {
+        // Register original as "direct" so it gets a full proof chapter
+        mailOut.implications.insert(std::make_tuple(origKy, origValue, std::set<std::string>(), std::set<int>(), theorem));
+        if (parameters.trackHistory) {
+            ExpressionWithValidity ev(theorem, "main");
+            addOrigin(mailOut.exprOriginMap, ev, std::make_pair("theorem", std::vector<ExpressionWithValidity>()), (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
+        }
+        {
+            std::lock_guard<std::mutex> lock(this->theoremListMutex);
+            this->globalTheoremList.emplace_back(theorem, "direct", "-1", "-1");
+            this->globalTheoremList.emplace_back(
+                backReformulated, "incubator back reformulation", theorem, "-1");
+        }
+        std::cout << theorem << std::endl;
+        std::cout << backReformulated << std::endl;
+
+        if (parameters.trackHistory) {
+            ExpressionWithValidity ev(backReformulated, "main");
+            addOrigin(mailOut.exprOriginMap, ev,
+                std::make_pair("theorem", std::vector<ExpressionWithValidity>()),
+                (parameters.compressor_mode
+                    ? parameters.compressor_max_origins_per_expr
+                    : parameters.max_origin_per_expr));
+        }
+
+        std::vector<std::tuple<std::string, std::vector<std::string>, std::set<std::string>>> brChain;
+        std::string brHead = ce::disintegrateImplication(backReformulated, brChain, coreExpressionMap);
+
+        std::vector<std::string> brKey;
+        brKey.reserve(brChain.size());
+        for (std::size_t i = 0; i < brChain.size(); ++i)
+            brKey.push_back(std::get<0>(brChain[i]));
+
+        // Queue the back-reformulated implication (no addStatement — let it fire naturally via hash burst)
+        mailOut.implications.insert(
+            std::make_tuple(brKey, brHead, std::set<std::string>(), std::set<int>(), backReformulated)
+        );
+    }
+
+    // 6) Flush mail
     assert(coreId >= 0);
-    sendMail(this->body, mailOut, coreId, index, boxes);  // :contentReference[oaicite:4]{index=4}
+    sendMail(this->body, mailOut, coreId, index, boxes);
 }
 
 //#pragma optimize("", off)
@@ -1784,7 +2403,7 @@ void ExpressionAnalyzer::deactivateRecursively() {
             }
         }
 
-        if (allChildrenDeactivated && mainValidityCount == 0) {
+        if (allChildrenDeactivated && mainValidityCount == 0 && !node->primedForContradiction) {
             node->isActive = false;
 
         }
@@ -2035,23 +2654,7 @@ void ExpressionAnalyzer::updateGlobal(int auxyIndex, bool allLevelsInvolved, int
                 ky.reserve(tempChain.size());
                 for (std::size_t i = 0; i < tempChain.size(); ++i) ky.push_back(std::get<0>(tempChain[i]));
 
-                BodyOfProves* memoryBlockM = accessBodyOfProves(ky, this->body);
-                if (memoryBlockM != NULL) {
-                    std::pair<std::string, std::vector<ExpressionWithValidity>> originM;
-                    originM.first = "implication";
-                    originM.second.push_back(ExpressionWithValidity(reshuffledMirrored, "main"));
-                    for (const std::string& keyElement : ky) {
-                        // Construct the object in-place with the key and "main"
-                        originM.second.emplace_back(keyElement, "main");
-                    }
-
-                    std::set<int> levelsM;
-                    for (int i = 0; i <= static_cast<int>(ky.size()); ++i) levelsM.insert(i);
-
-                    addStatement(valueM, *memoryBlockM, false, levelsM, originM, "main");
-                }
-
-                // Also queue the mirrored implication in global mail_out
+                // Queue the mirrored implication (no addStatement — let it fire naturally via hash burst)
                 mailOut.implications.insert(
                     std::make_tuple(ky, valueM, std::set<std::string>(), std::set<int>(), reshuffledMirrored)
                 );
@@ -2172,6 +2775,12 @@ void ExpressionAnalyzer::handleAnchor(const std::string& expr, BodyOfProves& mem
         memoryBlock.localEncodedStatements.push_back(EncodedExpression(replacedAnchor, "main"));
         memoryBlock.localEncodedStatementsDelta.push_back(EncodedExpression(replacedAnchor, "main"));
         memoryBlock.encodedStatements.push_back(EncodedExpression(replacedAnchor, "main"));
+        //in3[2,2,2,4] finder:
+        if (replacedAnchor == "(in3[2,2,2,4])" && memoryBlock.exprKey == "(AnchorIncubator[1,2,3,4,5,6,7,8,9,10])")
+        {
+            int test = 0;
+            test++;
+        }
         memoryBlock.statementLevelsMap[encReplacedAnchor] = involvedLevels;
         memoryBlock.wholeExpressions.insert(EncodedExpression(replacedAnchor, "main"));
 
@@ -2488,6 +3097,7 @@ void ExpressionAnalyzer::addEquality(const std::string& expr,
         std::vector<std::string> args = ce::getArgs(expr);
         assert(args.size() == 2);
 
+        if (args[0] != args[1]) {
         std::string mirrored = "(=[" + args[1] + "," + args[0] + "])";
 
         EncodedExpression encodedMirrored(mirrored, validityName);
@@ -2518,6 +3128,7 @@ void ExpressionAnalyzer::addEquality(const std::string& expr,
             }
             // Origin for mirrored already handled in trackHistory block above
         }
+        } // end if args[0] != args[1]
     }
 }
 
@@ -2526,7 +3137,7 @@ void ExpressionAnalyzer::addEquality(const std::string& expr,
 void ExpressionAnalyzer::checkNecessityForEquality(const std::string& inputExprStr, BodyOfProves& mb, std::string validityName) {
     //return;
 
-    //if (parameters.ban_disintegration) return;
+    if (parameters.ban_disintegration) return;
     
     // Use special function to make all args "u_"
     std::string genericInputStr = prefixArgumentsWithU(inputExprStr);
@@ -2536,7 +3147,7 @@ void ExpressionAnalyzer::checkNecessityForEquality(const std::string& inputExprS
     std::vector<std::string> inputArgs = ce::getArgs(genericInputStr);
 
     // Iterate through all original implications stored in localMemory
-    for (const std::vector<std::string>& chain : mb.localMemory.originals) {
+    for (const std::vector<std::string>& chain : mb.overallHashMemory.originals) {
         if (chain.empty()) continue;
 
         // "Head" is the last element of the implication chain
@@ -2782,8 +3393,13 @@ void ExpressionAnalyzer::addExprToMemoryBlockKernel(const std::string& expr,
         }
         else {
             if (this->isProved(addExpression) && allLevelsInvolved && status != 0 && validityName == "main") {
-                std::vector<std::string> globalKey = this->getGlobalKey(memoryBlock);
-                std::string fullTheorem = this->reconstructImplication(globalKey, addExpression);
+                std::string fullTheorem;
+                if (memoryBlock.primedForContradiction && !memoryBlock.contradictionTheorem.empty()) {
+                    fullTheorem = memoryBlock.contradictionTheorem;
+                } else {
+                    std::vector<std::string> globalKey = this->getGlobalKey(memoryBlock);
+                    fullTheorem = this->reconstructImplication(globalKey, addExpression);
+                }
 
                 std::map<EncodedExpression, std::tuple<std::set<int>, std::set<std::string>> >::iterator itTBP2 =
                     memoryBlock.toBeProved.find(EncodedExpression(addExpression, validityName));
@@ -2997,6 +3613,13 @@ void ExpressionAnalyzer::addExprToMemoryBlock(const std::string& expr,
     int auxyIndex,
     std::string validityName,
     bool doNotDisintegrate) {
+
+    if (expr == "(in3[2,2,2,4])" && memoryBlock.exprKey == "(AnchorIncubator[1,2,3,4,5,6,7,8,9,10])")
+    {
+        int test = 0;
+        test++;
+    }
+
     if (memoryBlock.wholeExpressions.find(EncodedExpression(expr, validityName)) != memoryBlock.wholeExpressions.end() && !parameters.compressor_mode) return;
 
     if (memoryBlock.wholeExpressions.find(EncodedExpression(expr, "main")) != memoryBlock.wholeExpressions.end() && !parameters.compressor_mode) return;
@@ -3020,6 +3643,12 @@ void ExpressionAnalyzer::addExprToMemoryBlock(const std::string& expr,
 
     if (status == 4)
     {
+        //in3[2,2,2,4] finder:
+        if (encExpr.original == "(in3[2,2,2,4])" && memoryBlock.exprKey == "(AnchorIncubator[1,2,3,4,5,6,7,8,9,10])")
+        {
+            int test = 0;
+            test++;
+        }
         memoryBlock.localEncodedStatements.push_back(encExpr);
 		memoryBlock.localEncodedStatementsDelta.push_back(encExpr);
         memoryBlock.encodedStatements.push_back(encExpr);
@@ -3041,8 +3670,55 @@ void ExpressionAnalyzer::addExprToMemoryBlock(const std::string& expr,
 	std::string negation = this->negate(expr);
     if (memoryBlock.wholeExpressions.find(EncodedExpression(negation, validityName)) != memoryBlock.wholeExpressions.end())
     {
-        // Contradiction detected
-        if (memoryBlock.contradictionIndex >= 0) 
+        // Incubator contradiction: record provenance, emit theorem, deactivate
+        if (memoryBlock.primedForContradiction) {
+            // Record origin for the triggering expression before early return.
+            // Without this, buildStack cannot trace it as a contradiction dependency.
+            if (parameters.trackHistory) {
+                int maxOrig0 = parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr;
+                addOrigin(memoryBlock.exprOriginMap, exprVal, origin, maxOrig0);
+            }
+
+            std::string theorem = memoryBlock.contradictionTheorem;
+            memoryBlock.contradictionTheorem.clear();
+            memoryBlock.isActive = false;
+            if (!theorem.empty()) {
+                // Record contradiction provenance BEFORE broadcast
+                if (parameters.trackHistory) {
+                    // Extract cleanOp from exprKey: "__contradiction__(op[...])"
+                    std::string cleanOp;
+                    const std::string prefix = "__contradiction__";
+                    if (memoryBlock.exprKey.substr(0, prefix.size()) == prefix) {
+                        cleanOp = memoryBlock.exprKey.substr(prefix.size());
+                    }
+                    std::string negCleanOp = "!" + cleanOp;
+
+                    // The negated expression is proved by contradiction:
+                    // expr and negate(expr) both exist in the LB
+                    ExpressionWithValidity evResult(negCleanOp, "main");
+                    std::vector<ExpressionWithValidity> deps;
+                    deps.push_back(ExpressionWithValidity(expr, validityName));
+                    deps.push_back(ExpressionWithValidity(negation, validityName));
+                    deps.push_back(ExpressionWithValidity(cleanOp, "main"));
+                    int maxOrig = parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr;
+                    // Add to predecessor (where directStack navigates)
+                    BodyOfProves* pred = memoryBlock.parentBodyOfProves;
+                    while (pred != nullptr) {
+                        addOrigin(pred->exprOriginMap, evResult,
+                            std::make_pair("contradiction", deps), maxOrig);
+                        pred = pred->parentBodyOfProves;
+                    }
+                    addOrigin(memoryBlock.exprOriginMap, evResult,
+                        std::make_pair("contradiction", deps), maxOrig);
+                    addOrigin(memoryBlock.mailOut.exprOriginMap, evResult,
+                        std::make_pair("contradiction", deps), maxOrig);
+                }
+                updateGlobalDirect(theorem, coreId);
+            }
+            return;
+        }
+        // CE filter contradiction
+        if (memoryBlock.contradictionIndex >= 0)
         {
 			this->contradictionTable[memoryBlock.contradictionIndex].successful = true;
             memoryBlock.isActive = false;
@@ -3088,7 +3764,7 @@ void ExpressionAnalyzer::addExprToMemoryBlock(const std::string& expr,
         std::vector<std::string> args = ce::getArgs(expr);
 		std::set<std::string> remainingArgs(args.begin(), args.end());
 
-        //printNormalizedKeys(memoryBlock.localMemory.normalizedEncodedSubkeysMinusOne);
+        //printNormalizedKeys(memoryBlock.overallHashMemory.normalizedEncodedSubkeysMinusOne);
 
         prepareIntegration(expr, remainingArgs, memoryBlock, validityName);
         memoryBlock.canBeSentSet.insert(expr);
@@ -3170,14 +3846,46 @@ void ExpressionAnalyzer::addExprToMemoryBlock(const std::string& expr,
                     head,
                     remainingArgsKey,
                     memoryBlock,
+                    memoryBlock.overallHashMemory,
                     involvedLevels,
                     *itImp,
                     parameters.standardMaxAdmissionDepth,
                     parameters.standardMaxSecondaryNumber,
                     false,
-                    parameters.minNumOperatorsKey, 
+                    parameters.minNumOperatorsKey,
                     "implication",
-                    true);
+                    true,
+                    *itImp);
+
+                this->addToHashMemory(chain,
+                    head,
+                    remainingArgsKey,
+                    memoryBlock,
+                    memoryBlock.localHashMemory,
+                    involvedLevels,
+                    *itImp,
+                    parameters.standardMaxAdmissionDepth,
+                    parameters.standardMaxSecondaryNumber,
+                    false,
+                    parameters.minNumOperatorsKey,
+                    "implication",
+                    true,
+                    *itImp);
+
+                this->addToHashMemory(chain,
+                    head,
+                    remainingArgsKey,
+                    memoryBlock,
+                    memoryBlock.localHashMemoryDelta,
+                    involvedLevels,
+                    *itImp,
+                    parameters.standardMaxAdmissionDepth,
+                    parameters.standardMaxSecondaryNumber,
+                    false,
+                    parameters.minNumOperatorsKey,
+                    "implication",
+                    true,
+                    *itImp);
 
                 if (allowedForMail(*itImp, memoryBlock))
                 {
@@ -3329,6 +4037,7 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
     BodyOfProves* memoryBlock = &memory;
     for (std::size_t index = 0; index < chain.size(); ++index) {
         const std::string& element = chain[index];
+        bool isNewBody = false;
 
         std::map<std::string, BodyOfProves*>::iterator it = memoryBlock->simpleMap.find(element);
         if (it != memoryBlock->simpleMap.end() && it->second != NULL) {
@@ -3343,12 +4052,13 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
 
             this->permanentBodies.push_back(child);
 
+            memoryBlock = child;
+            isNewBody = true;
+
             std::set<int> lv; lv.insert(child->level);
-            std::pair<std::string, std::vector<ExpressionWithValidity>> origin; 
+            std::pair<std::string, std::vector<ExpressionWithValidity>> origin;
             origin.first = "task formulation";
             this->addExprToMemoryBlock(element, *child, iteration, 0, lv, origin, -1, -1, "main", false);
-
-            memoryBlock = child;
         }
 
         // 3) At the last node: proved or set up recursion/auxiliaries
@@ -3427,14 +4137,15 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
                         lv.insert(tempMb->level);
 
                         this->addToHashMemory(auxyChain, auxyHead, remainingArgsKey,
-                            *tempMb, lv,
+                            *tempMb, tempMb->overallHashMemory, lv,
                             auxyImplication,
                             parameters.inductionMaxAdmissionDepth,
                             parameters.inductionMaxSecondaryNumber,
                             true,
                             parameters.minNumOperatorsKey,
-                            "implication", 
-                            true);
+                            "implication",
+                            true,
+                            auxyImplication);
 
 
                         // add (in2[rec,...]) to temp block
@@ -3509,8 +4220,162 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
                 }
 
                 // finally mark head as "to be proved" at the original block too
-                this->addExprToMemoryBlock(head, *memoryBlock, iteration, 2, std::set<int>(), std::pair<std::string, std::vector<ExpressionWithValidity>>(), -1, -1, "main", false);
+                EncodedExpression headEnc(head, "main");
+                if (memoryBlock->wholeExpressions.find(headEnc) != memoryBlock->wholeExpressions.end()) {
+                    // Head already derived (e.g. from anchor disintegration) — register directly
+                    std::string fullTheorem = reconstructImplication(chain, head);
+                    {
+                        std::lock_guard<std::mutex> lock(this->theoremListMutex);
+                        this->globalTheoremList.emplace_back(fullTheorem, "direct", "-1", "-1");
+                    }
+                    std::cout << fullTheorem << std::endl;
+                } else {
+                    this->addExprToMemoryBlock(head, *memoryBlock, iteration, 2, std::set<int>(), std::pair<std::string, std::vector<ExpressionWithValidity>>(), -1, -1, "main", false);
+                }
             }
+
+            // --- Incubator: create contradiction LB ---
+            if (parameters.try_contradiction && !proved) {
+                // Trap: reformulated operator conjecture?
+                // head = =[x,a], one non-anchor operator premise, equality concerns output var.
+                // Create __contradiction__(op[a]) under the ANCHOR (predecessor), seeded with
+                // clean operator expression. Any contradiction in that LB -> !(op[a]).
+                bool reformulatedOperator = false;
+                if (parameters.incubator_mode) {
+                    std::string eqExpr = ce::extractExpression(head);
+                    if (eqExpr == "=" && chain.size() >= 2) {
+                        const std::string& lastPremise = chain.back();
+                        std::string opName = ce::extractExpression(lastPremise);
+                        auto cfgIt = coreExpressionMap.find(opName);
+                        if (cfgIt != coreExpressionMap.end() && !cfgIt->second.outputIndices.empty()) {
+                            int outIdx = cfgIt->second.outputIndices[0];
+                            std::vector<std::string> opArgs = ce::getArgs(lastPremise);
+                            std::vector<std::string> eqArgs = ce::getArgs(head);
+                            if (eqArgs.size() == 2 && outIdx < static_cast<int>(opArgs.size())) {
+                                std::string x = opArgs[outIdx];
+                                std::string a_out;
+                                if (eqArgs[0] == x) a_out = eqArgs[1];
+                                else if (eqArgs[1] == x) a_out = eqArgs[0];
+
+                                if (!a_out.empty()) {
+                                    // Back-reformulate: clean operator with original output var
+                                    opArgs[outIdx] = a_out;
+                                    std::string cleanOp = "(" + opName + "[";
+                                    for (size_t ci = 0; ci < opArgs.size(); ++ci) {
+                                        if (ci > 0) cleanOp += ",";
+                                        cleanOp += opArgs[ci];
+                                    }
+                                    cleanOp += "])";
+
+                                    std::vector<std::string> outerChain(chain.begin(), chain.end() - 1);
+                                    std::string negCleanOp = "!" + cleanOp;
+                                    std::string contrTheorem = reconstructImplication(outerChain, negCleanOp);
+
+                                    // Create __contradiction__(op[a]) under the predecessor (Anchor LB)
+                                    BodyOfProves* predecessor = memoryBlock->parentBodyOfProves;
+                                    const std::string contradictionKey = "__contradiction__" + cleanOp;
+                                    if (predecessor != nullptr &&
+                                        predecessor->simpleMap.find(contradictionKey) == predecessor->simpleMap.end()) {
+
+                                        BodyOfProves* contradictionLB = new BodyOfProves();
+                                        predecessor->simpleMap[contradictionKey] = contradictionLB;
+
+                                        contradictionLB->parentBodyOfProves = predecessor;
+                                        contradictionLB->level = static_cast<int>(index);
+                                        contradictionLB->exprKey = contradictionKey;
+                                        contradictionLB->primedForContradiction = true;
+                                        contradictionLB->contradictionTheorem = contrTheorem;
+
+                                        this->permanentBodies.push_back(contradictionLB);
+
+                                        // Seed with clean operator expression as fuel
+                                        std::set<int> lv; lv.insert(contradictionLB->level);
+                                        std::pair<std::string, std::vector<ExpressionWithValidity>> origin;
+                                        origin.first = "task formulation";
+                                        this->addExprToMemoryBlock(cleanOp, *contradictionLB, iteration, 0, lv, origin, -1, -1, "main", false);
+
+                                        // [TRAP] Dump toBeProved after reformulated-operator contradiction LB creation
+                                        {
+                                            auto trapPath = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path() / ".dump" / "contra_trap.txt";
+                                            std::ofstream trapFile(trapPath, std::ios::app);
+                                            if (trapFile.is_open()) {
+                                                trapFile << ">>> REFORMULATED CONTRA LB CREATED <<<" << std::endl;
+                                                trapFile << "conjecture: " << expr << std::endl;
+                                                trapFile << "head: " << head << std::endl;
+                                                trapFile << "contradictionKey: " << contradictionKey << std::endl;
+                                                trapFile << "contradictionTheorem: " << contrTheorem << std::endl;
+                                                trapFile << "contraLB toBeProved (" << contradictionLB->toBeProved.size() << "):" << std::endl;
+                                                for (const auto& kv : contradictionLB->toBeProved) {
+                                                    trapFile << "  " << kv.first.original << " | " << kv.first.validityName << std::endl;
+                                                }
+                                                trapFile << "parent(predecessor) toBeProved (" << predecessor->toBeProved.size() << "):" << std::endl;
+                                                for (const auto& kv : predecessor->toBeProved) {
+                                                    trapFile << "  " << kv.first.original << " | " << kv.first.validityName << std::endl;
+                                                }
+                                                trapFile << "chainChild(memoryBlock) toBeProved (" << memoryBlock->toBeProved.size() << "):" << std::endl;
+                                                for (const auto& kv : memoryBlock->toBeProved) {
+                                                    trapFile << "  " << kv.first.original << " | " << kv.first.validityName << std::endl;
+                                                }
+                                                trapFile << "<<<" << std::endl;
+                                            }
+                                        }
+                                    }
+                                    reformulatedOperator = true;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (!reformulatedOperator) {
+                    const std::string contradictionKey = "__contradiction__" + head;
+                    if (memoryBlock->simpleMap.find(contradictionKey) == memoryBlock->simpleMap.end()) {
+                        BodyOfProves* contradictionLB = new BodyOfProves();
+                        memoryBlock->simpleMap[contradictionKey] = contradictionLB;
+
+                        contradictionLB->parentBodyOfProves = memoryBlock;
+                        contradictionLB->level = static_cast<int>(index + 1);
+                        contradictionLB->exprKey = contradictionKey;
+                        contradictionLB->primedForContradiction = true;
+                        contradictionLB->contradictionTheorem = reconstructImplication(chain, negate(head));
+
+                        this->permanentBodies.push_back(contradictionLB);
+
+                        // Add the head expression as fuel (status 0)
+                        std::set<int> lv; lv.insert(contradictionLB->level);
+                        std::pair<std::string, std::vector<ExpressionWithValidity>> origin;
+                        origin.first = "task formulation";
+                        this->addExprToMemoryBlock(head, *contradictionLB, iteration, 0, lv, origin, -1, -1, "main", false);
+
+                        // [TRAP] Dump toBeProved after normal contradiction LB creation
+                        {
+                            auto trapPath = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path() / ".dump" / "contra_trap.txt";
+                            std::ofstream trapFile(trapPath, std::ios::app);
+                            if (trapFile.is_open()) {
+                                trapFile << ">>> NORMAL CONTRA LB CREATED <<<" << std::endl;
+                                trapFile << "conjecture: " << expr << std::endl;
+                                trapFile << "head: " << head << std::endl;
+                                trapFile << "contradictionKey: " << contradictionKey << std::endl;
+                                trapFile << "contradictionTheorem: " << contradictionLB->contradictionTheorem << std::endl;
+                                trapFile << "contraLB toBeProved (" << contradictionLB->toBeProved.size() << "):" << std::endl;
+                                for (const auto& kv : contradictionLB->toBeProved) {
+                                    trapFile << "  " << kv.first.original << " | " << kv.first.validityName << std::endl;
+                                }
+                                trapFile << "chainChild(memoryBlock) toBeProved (" << memoryBlock->toBeProved.size() << "):" << std::endl;
+                                for (const auto& kv : memoryBlock->toBeProved) {
+                                    trapFile << "  " << kv.first.original << " | " << kv.first.validityName << std::endl;
+                                }
+                                trapFile << "contraLB wholeExpressions (" << contradictionLB->wholeExpressions.size() << "):" << std::endl;
+                                for (const auto& we : contradictionLB->wholeExpressions) {
+                                    trapFile << "  " << we.original << " | " << we.validityName << std::endl;
+                                }
+                                trapFile << "<<<" << std::endl;
+                            }
+                        }
+                    }
+                }
+            }
+
         }
     }
 }
@@ -3524,10 +4389,10 @@ void ExpressionAnalyzer::revisitRejected2(const std::string& markedExpr,
     std::string validityName)
 {
     ExpressionWithValidity evKey(markedExpr, validityName);
-    auto& rm = memoryBlock.localMemory.rejectedMap;
+    auto& rm = memoryBlock.overallHashMemory.rejectedMap;
 
     // Guard: prevent re-entrant processing of the same marker
-    if (memoryBlock.localMemory.revisitInProgress.count(evKey)) {
+    if (memoryBlock.overallHashMemory.revisitInProgress.count(evKey)) {
         return;
     }
 
@@ -3536,7 +4401,7 @@ void ExpressionAnalyzer::revisitRejected2(const std::string& markedExpr,
         return;
     }
 
-    memoryBlock.localMemory.revisitInProgress.insert(evKey);
+    memoryBlock.overallHashMemory.revisitInProgress.insert(evKey);
 
     // Snapshot the rejected set — the loop below may indirectly insert
     // new entries into rm[evKey] via addExprToMemoryBlock → updateRejectedMap.
@@ -3658,7 +4523,7 @@ void ExpressionAnalyzer::revisitRejected2(const std::string& markedExpr,
         }
     }
 
-    memoryBlock.localMemory.revisitInProgress.erase(evKey);
+    memoryBlock.overallHashMemory.revisitInProgress.erase(evKey);
     cleanAdmissionMap(markedExpr, validityName, memoryBlock);
 }
 
@@ -3692,7 +4557,7 @@ void ExpressionAnalyzer::checkLocalEncodedMemory(const std::vector<EncodedExpres
     BodyOfProves& memoryBlock,
     int iteration,
     const NormalizedKey& tple,
-    unsigned coreId) 
+    unsigned coreId)
 {
     std::string expressionListValidityName;
     bool resultValidityName = getValidityName(expressionList, expressionListValidityName);
@@ -3717,8 +4582,8 @@ void ExpressionAnalyzer::checkLocalEncodedMemory(const std::vector<EncodedExpres
                 const int itNum = std::atoi(arg[2].c_str());
                 if (itNum > -1) {
                     const std::string& varName = arg[1];
-                    if (memoryBlock.localMemory.productsOfRecursion.find(varName) ==
-                        memoryBlock.localMemory.productsOfRecursion.end()) {
+                    if (memoryBlock.overallHashMemory.productsOfRecursion.find(varName) ==
+                        memoryBlock.overallHashMemory.productsOfRecursion.end()) {
 
                         algebraicCounter++;
                     }
@@ -3749,11 +4614,11 @@ void ExpressionAnalyzer::checkLocalEncodedMemory(const std::vector<EncodedExpres
     // all args from encoded expressions
     const std::set<std::string> allArgs = this->getAllEncodedArgs(expressionList);
 
-    if (!memoryBlock.localMemory.encodedMap.empty()) {
+    if (!memoryBlock.overallHashMemory.encodedMap.empty()) {
         // Fix for iterator invalidation: Collect keys first because removeFromHashMemory
         // may trigger cleanUp (erasing map entries), which would crash a direct map loop.
         std::vector<std::set<std::string>> candidates;
-        for (const auto& kv : memoryBlock.localMemory.remainingArgsNormalizedEncodedMap) {
+        for (const auto& kv : memoryBlock.overallHashMemory.remainingArgsNormalizedEncodedMap) {
             const std::set<std::string>& st = kv.first;
             bool subsetOk = true;
             for (const std::string& arg : st) {
@@ -3768,8 +4633,8 @@ void ExpressionAnalyzer::checkLocalEncodedMemory(const std::vector<EncodedExpres
         }
 
         for (const auto& st : candidates) {
-            auto itRA = memoryBlock.localMemory.remainingArgsNormalizedEncodedMap.find(st);
-            if (itRA == memoryBlock.localMemory.remainingArgsNormalizedEncodedMap.end()) {
+            auto itRA = memoryBlock.overallHashMemory.remainingArgsNormalizedEncodedMap.find(st);
+            if (itRA == memoryBlock.overallHashMemory.remainingArgsNormalizedEncodedMap.end()) {
                 continue;
             }
 
@@ -3798,8 +4663,8 @@ void ExpressionAnalyzer::checkLocalEncodedMemory(const std::vector<EncodedExpres
 
             // If normalized key is present in encodedMap, process its LocalMemoryValue set
             std::map<NormalizedKey, std::set<LocalMemoryValue> >::const_iterator itEnc =
-                memoryBlock.localMemory.encodedMap.find(normalized);
-            if (itEnc == memoryBlock.localMemory.encodedMap.end()) continue;
+                memoryBlock.overallHashMemory.encodedMap.find(normalized);
+            if (itEnc == memoryBlock.overallHashMemory.encodedMap.end()) continue;
 
             const std::set<LocalMemoryValue>& valueSet = itEnc->second;
 
@@ -3834,6 +4699,12 @@ void ExpressionAnalyzer::checkLocalEncodedMemory(const std::vector<EncodedExpres
 
                 // If NO "marker" present -> add proved statement
                 if (lmv.value.find("marker") == std::string::npos) {
+                    // Namespace collision check: block only when both are non-main and differ
+                    if (lmv.validityName != "main" && expressionListValidityName != "main"
+                        && lmv.validityName != expressionListValidityName) {
+                        continue;
+                    }
+
                     // tempLevels = combinedLevels ∪ lmv.levels
                     std::set<int> tempLevels = combinedLevels;
                     for (std::set<int>::const_iterator it = lmv.levels.begin();
@@ -3841,10 +4712,8 @@ void ExpressionAnalyzer::checkLocalEncodedMemory(const std::vector<EncodedExpres
                         tempLevels.insert(*it);
                     }
 
-
-
                     std::pair<std::string, std::vector<ExpressionWithValidity>> origin = std::make_pair("implication", std::vector<ExpressionWithValidity>());
-                    origin.second.push_back(ExpressionWithValidity(lmv.originalImplication, "main"));
+                    origin.second.push_back(ExpressionWithValidity(lmv.originalImplication, lmv.validityName));
                     for (std::size_t oi = 0; oi < originalsTail.size(); ++oi) {
                         origin.second.push_back(ExpressionWithValidity(originalsTail[oi], expressionListValidityName));
                     }
@@ -3900,7 +4769,7 @@ void ExpressionAnalyzer::checkLocalEncodedMemory(const std::vector<EncodedExpres
 
                     // Add (or create) admissionMap entry
                     std::map<ExpressionWithValidity, std::set<AdmissionMapValue> >::iterator itAdm =
-                        memoryBlock.localMemory.admissionMap.find(ExpressionWithValidity(rplExpr2, expressionListValidityName));
+                        memoryBlock.overallHashMemory.admissionMap.find(ExpressionWithValidity(rplExpr2, expressionListValidityName));
                     AdmissionMapValue admv;
                     admv.key = replacedKey;
                     admv.remainingArgs = remainingArgs;
@@ -3910,9 +4779,9 @@ void ExpressionAnalyzer::checkLocalEncodedMemory(const std::vector<EncodedExpres
 
                     
                     // Line 3885: change 'body' to 'memoryBlock'
-                    if (memoryBlock.localMemory.consumedAdmissionKeys.find(
+                    if (memoryBlock.overallHashMemory.consumedAdmissionKeys.find(
                         ExpressionWithValidity(rplExpr2, expressionListValidityName))
-                        != memoryBlock.localMemory.consumedAdmissionKeys.end())
+                        != memoryBlock.overallHashMemory.consumedAdmissionKeys.end())
                     {
                         continue;
                     }
@@ -3933,20 +4802,20 @@ void ExpressionAnalyzer::checkLocalEncodedMemory(const std::vector<EncodedExpres
                         memoryBlock.canBeSentMarkerSet.insert(rplExpr2);
                     }
 
-                    if (itAdm != memoryBlock.localMemory.admissionMap.end()) {
+                    if (itAdm != memoryBlock.overallHashMemory.admissionMap.end()) {
                         itAdm->second.insert(admv);
 
-                        
+
                     }
                     else {
                         std::set<AdmissionMapValue> newSet;
                         newSet.insert(admv);
-                        memoryBlock.localMemory.admissionMap.insert(
+                        memoryBlock.overallHashMemory.admissionMap.insert(
                             std::make_pair(ExpressionWithValidity(rplExpr2, expressionListValidityName), newSet));
                     }
 
                     // admissionStatusMap[rplExpr2] = false
-                    memoryBlock.localMemory.admissionStatusMap[ExpressionWithValidity(rplExpr2, expressionListValidityName)] = false;
+                    memoryBlock.overallHashMemory.admissionStatusMap[ExpressionWithValidity(rplExpr2, expressionListValidityName)] = false;
 
                     // Revisit any previously rejected items for this marker
                     this->revisitRejected2(rplExpr2, memoryBlock, expressionListValidityName);
@@ -3985,17 +4854,17 @@ void ExpressionAnalyzer::updateAdmissionMapRecursion(const std::string& expressi
     markerMap[inputOutputArg] = "marker";
     std::string markedExpr = ce::replaceKeysInString(expression, markerMap);
 
-    if (!mb.localMemory.admissionStatusMap[ExpressionWithValidity(markedExpr, validityName)])
+    if (!mb.overallHashMemory.admissionStatusMap[ExpressionWithValidity(markedExpr, validityName)])
     {
         return;
     }
 
     // 4. Lookup in Admission Map
     ExpressionWithValidity evMarked(markedExpr, validityName);
-    auto itAdm = mb.localMemory.admissionMap.find(evMarked);
+    auto itAdm = mb.overallHashMemory.admissionMap.find(evMarked);
 
     // Guard: Return if not found
-    if (itAdm == mb.localMemory.admissionMap.end()) {
+    if (itAdm == mb.overallHashMemory.admissionMap.end()) {
         return;
     }
 
@@ -4035,7 +4904,7 @@ void ExpressionAnalyzer::updateAdmissionMapRecursion(const std::string& expressi
 
             // --- Match Found ---
 
-            mb.localMemory.productsOfRecursion.insert(inputOutputArg);
+            mb.overallHashMemory.productsOfRecursion.insert(inputOutputArg);
 
             // 6. Construct New Admission Entry
             std::map<std::string, std::string> replacementMap;
@@ -4097,29 +4966,80 @@ void ExpressionAnalyzer::updateAdmissionMapRecursion(const std::string& expressi
                 newVal.key = newKey;
                 newVal.remainingArgs = newRemainingArgs;
 
-                mb.localMemory.admissionMap[ExpressionWithValidity(newMarkedExpr, validityName)].insert(newVal);
-                mb.localMemory.admissionStatusMap[ExpressionWithValidity(newMarkedExpr, validityName)] = mb.localMemory.admissionStatusMap[ExpressionWithValidity(markedExpr, validityName)];
+                mb.overallHashMemory.admissionMap[ExpressionWithValidity(newMarkedExpr, validityName)].insert(newVal);
+                mb.overallHashMemory.admissionStatusMap[ExpressionWithValidity(newMarkedExpr, validityName)] = mb.overallHashMemory.admissionStatusMap[ExpressionWithValidity(markedExpr, validityName)];
                 this->revisitRejected2(newMarkedExpr, mb, validityName);
             }
         }
     }
 }
 
+//#pragma optimize("", off)
+
+
 void ExpressionAnalyzer::buildStack(BodyOfProves& memoryBlock,
     const ExpressionWithValidity& proved,
     std::vector<std::vector<std::string>>& stack,
     std::set<ExpressionWithValidity>& covered) {
-    // Lookup origin list for `proved`
+    // Lookup origin list for `proved`: try exact ns first, then fallback to "main"
     auto it = memoryBlock.exprOriginMap.find(proved);
     if (it == memoryBlock.exprOriginMap.end() || it->second.empty()) {
-        return; // nothing to expand
+        if (proved.validityName != "main") {
+            ExpressionWithValidity mainFallback(proved.original, "main");
+            it = memoryBlock.exprOriginMap.find(mainFallback);
+        }
+        if (it == memoryBlock.exprOriginMap.end() || it->second.empty()) {
+            // _integration_goal expressions are synthetic markers — no origin expected
+            if (proved.original.find("_integration_goal") != std::string::npos) {
+                return;
+            }
+            // DEBUG TRAP: search exprOriginMap for the missing key
+            int test = 0;
+            // 1. Check if same expression exists under a different validityName
+            for (auto& kv : memoryBlock.exprOriginMap) {
+                if (kv.first.original == proved.original && kv.first.validityName != proved.validityName) {
+                    test++;
+                    std::cerr << "  FOUND same expr, different ns: " << kv.first.validityName << "\n";
+                }
+            }
+            // 2. Strip leading (>[]...) or (>[...]...) and match against all key suffixes
+            std::string suffix;
+            {
+                const std::string& s = proved.original;
+                if (s.size() > 2 && s[0] == '(' && s[1] == '>' && s[2] == '[') {
+                    std::size_t bracketEnd = s.find(']', 3);
+                    if (bracketEnd != std::string::npos) {
+                        suffix = s.substr(bracketEnd + 1);  // everything after first >[...]
+                    }
+                }
+            }
+            if (!suffix.empty()) {
+                for (auto& kv : memoryBlock.exprOriginMap) {
+                    const std::string& k = kv.first.original;
+                    // check if k ends with the same suffix (after its own >[...])
+                    if (k.size() > 2 && k[0] == '(' && k[1] == '>' && k[2] == '[') {
+                        std::size_t be = k.find(']', 3);
+                        if (be != std::string::npos) {
+                            std::string kSuffix = k.substr(be + 1);
+                            if (kSuffix == suffix) {
+                                test++;
+                                std::cerr << "  FOUND suffix match: " << k << " ns=" << kv.first.validityName << "\n";
+                            }
+                        }
+                    }
+                }
+            }
+            std::cerr << "buildStack ASSERT: no origin for " << proved.original
+                      << " ns=" << proved.validityName << " (trap hits: " << test << ")\n";
+            assert(false);
+        }
     }
 
     // Type adjustment: grab the first path from the vector to maintain exact same logic
     const std::pair<std::string, std::vector<ExpressionWithValidity>>& origin = it->second.front();
 
-    if (origin.first == "broadcast") {
-        return;  // theorem proved in previous batch, already linkable via wrap_clickable()
+    if (origin.first == "broadcast" || origin.first == "externally provided theorem") {
+        return;  // theorem proved in previous batch or externally provided, no local proof stack
     }
 
     // Push one row: [proved] + origin
@@ -4138,11 +5058,27 @@ void ExpressionAnalyzer::buildStack(BodyOfProves& memoryBlock,
 
     // Recurse for each ingredient in origin
     // CHANGED: Start from 0 to recurse on the first element as well
-    for (std::size_t i = 0; i < origin.second.size(); ++i) {
-        const ExpressionWithValidity& ingredient = origin.second[i];
-        // only visit once
-        if (covered.insert(ingredient).second) {
-            buildStack(memoryBlock, ingredient, stack, covered);
+    if (origin.first == "contradiction" && origin.second.size() >= 3) {
+        // Navigate into the contradiction LB child to trace deps
+        const std::string& cleanOp = origin.second[2].original;
+        std::string contraKey = "__contradiction__" + cleanOp;
+        auto childIt = memoryBlock.simpleMap.find(contraKey);
+        if (childIt != memoryBlock.simpleMap.end() && childIt->second != nullptr) {
+            BodyOfProves& contraLB = *childIt->second;
+            for (std::size_t i = 0; i < origin.second.size(); ++i) {
+                const ExpressionWithValidity& ingredient = origin.second[i];
+                if (covered.insert(ingredient).second) {
+                    buildStack(contraLB, ingredient, stack, covered);
+                }
+            }
+        }
+    } else {
+        for (std::size_t i = 0; i < origin.second.size(); ++i) {
+            const ExpressionWithValidity& ingredient = origin.second[i];
+            // only visit once
+            if (covered.insert(ingredient).second) {
+                buildStack(memoryBlock, ingredient, stack, covered);
+            }
         }
     }
 }
@@ -4586,6 +5522,38 @@ void ExpressionAnalyzer::generateRawProofGraph(
                 if (node == NULL) continue;
                 if (!containsEncoded(node->localEncodedStatements, head)) continue;
 
+                // DEBUG TRAP: dump origin status for all implication deps in this node
+                {
+                    std::ofstream dump("files/raw_proof_graph/DEBUG_check_induction_origin.txt", std::ios::app);
+                    dump << "=== checkInductionCondition ===\n";
+                    dump << "theorem: " << theorem << "\n";
+                    dump << "head: " << head << "\n";
+                    dump << "inductionVar: " << inductionVar << "\n";
+                    dump << "key (in2): " << key << "\n";
+                    for (const auto& stackEntry : node->exprOriginMap) {
+                        const std::string& expr = stackEntry.first.original;
+                        if (expr.find("preorder") != std::string::npos) {
+                            dump << "  FOUND preorder in exprOriginMap: " << expr
+                                 << " validity=" << stackEntry.first.validityName
+                                 << " origins=" << stackEntry.second.size() << "\n";
+                        }
+                    }
+                    ExpressionWithValidity headEv(head, "main");
+                    auto headIt = node->exprOriginMap.find(headEv);
+                    dump << "  head origin exists: " << (headIt != node->exprOriginMap.end() ? "YES" : "NO") << "\n";
+                    if (headIt != node->exprOriginMap.end() && !headIt->second.empty()) {
+                        const auto& orig = headIt->second.front();
+                        dump << "  head origin tag: " << orig.first << "\n";
+                        for (size_t di = 0; di < orig.second.size(); ++di) {
+                            dump << "    dep[" << di << "]: " << orig.second[di].original
+                                 << " validity=" << orig.second[di].validityName;
+                            auto depIt = node->exprOriginMap.find(orig.second[di]);
+                            dump << " origin_exists=" << (depIt != node->exprOriginMap.end() ? "YES" : "NO") << "\n";
+                        }
+                    }
+                    dump << "\n";
+                }
+
                 std::vector<std::vector<std::string> > stack;
                 std::set<ExpressionWithValidity> covered;
                 this->buildStack(*node, ExpressionWithValidity(head, "main"), stack, covered);
@@ -4646,6 +5614,7 @@ void ExpressionAnalyzer::generateRawProofGraph(
 
     // Note: 'idx' is already initialized to the correct start offset above
 
+    int lastDirectIdx = -1;
     for (std::size_t i = 0; i < theoremList.size(); ++i) {
         const std::string& name = std::get<0>(theoremList[i]);
         const std::string& methodOrig = std::get<1>(theoremList[i]);
@@ -4668,6 +5637,7 @@ void ExpressionAnalyzer::generateRawProofGraph(
             std::vector<std::vector<std::string> > st = directStack(name);
             writeStackIndexed(idx, "direct_proof", st);
             mapping << name << '\t' << methodOrig << '\t' << var << '\n';
+            lastDirectIdx = idx;
             ++idx;
         }
         else if (method == "debug") {
@@ -4697,6 +5667,18 @@ void ExpressionAnalyzer::generateRawProofGraph(
             st.back().push_back(var);
             st.back().push_back("main");
             writeStackIndexed(idx, "reformulated_statement", st);
+            mapping << name << '\t' << methodOrig << '\t' << var << '\n';
+            ++idx;
+        }
+        else if (method == "incubator back reformulation") {
+            std::vector<std::vector<std::string>> st;
+            st.push_back(std::vector<std::string>());
+            st.back().push_back(name);
+            st.back().push_back("main");
+            st.back().push_back("incubator back reformulation");
+            st.back().push_back(var);
+            st.back().push_back("main");
+            writeStackIndexed(idx, "back_reformulated_statement", st);
             mapping << name << '\t' << methodOrig << '\t' << var << '\n';
             ++idx;
         }
@@ -4786,14 +5768,16 @@ void ExpressionAnalyzer::addConjectureForCEFiltering(const std::string& conjectu
         head,
         std::set<std::string>{},
         *mb,
+        mb->overallHashMemory,
         lvl0,
         replacedConjecture,
         parameters.standardMaxAdmissionDepth,
         parameters.standardMaxSecondaryNumber,
         false,
         parameters.minNumOperatorsKeyCE,
-        "implication", 
-        true);
+        "implication",
+        true,
+        replacedConjecture);
 }
 
 void ExpressionAnalyzer::releaseCEBatchMemory() {
@@ -4861,7 +5845,7 @@ void ExpressionAnalyzer::releaseCEBatchMemory() {
         swap(ceBody.exprKey, empty.exprKey);
         ceBody.parentBodyOfProves = nullptr;
         swap(ceBody.level, empty.level);
-        swap(ceBody.localMemory, empty.localMemory);
+        swap(ceBody.overallHashMemory, empty.overallHashMemory);
         swap(ceBody.equivalenceClassesMap, empty.equivalenceClassesMap);
         swap(ceBody.localEncodedStatements, empty.localEncodedStatements);
         swap(ceBody.localEncodedStatementsDelta, empty.localEncodedStatementsDelta);
@@ -4916,6 +5900,8 @@ std::vector<std::string> ExpressionAnalyzer::filterConjecturesWithCE(
     const std::vector<std::string>& conjectures,
     const std::vector<std::string>& simpleFacts)
 {
+    ceFilteringActive = true;
+
     // Keep contradiction indices stable across batches
     contradictionTable.clear();
     contradictionTable.reserve(contradictionTable.size() + conjectures.size());
@@ -4931,7 +5917,7 @@ std::vector<std::string> ExpressionAnalyzer::filterConjecturesWithCE(
             std::map<std::string, BodyOfProves*>::iterator it = ceBody.simpleMap.find(std::to_string(index));
             if (it != ceBody.simpleMap.end() && it->second) {
                 // Clear local memory from previous batch
-                it->second->localMemory.clear();
+                it->second->overallHashMemory.clear();
                 it->second->contradictionIndex = -1;
                 it->second->isActive = true;
             }
@@ -4965,6 +5951,7 @@ std::vector<std::string> ExpressionAnalyzer::filterConjecturesWithCE(
     for (int i = 0; i < static_cast<int>(conjectures.size()); ++i)
         if (!contradictionTable[i].successful) filtered.push_back(conjectures[i]);
 
+    ceFilteringActive = false;
     return filtered;
 }
 
@@ -5255,7 +6242,7 @@ void ExpressionAnalyzer::cleanUpSubkeys(const std::vector<std::string>& key,
             bool neededInMinusOne = false;
             bool neededInMinusTwo = false;
 
-            for (const auto& existingKey : mb.localMemory.normalizedEncodedKeys) {
+            for (const auto& existingKey : mb.overallHashMemory.normalizedEncodedKeys) {
                 // Quick size checks
                 if (existingKey.numberExpressions < candidate.numberExpressions) continue;
                 if (existingKey.data.size() < candidate.data.size()) continue;
@@ -5283,18 +6270,18 @@ void ExpressionAnalyzer::cleanUpSubkeys(const std::vector<std::string>& key,
 
             // 2. Perform removals based on specific flags
             if (!neededAny) {
-                mb.localMemory.normalizedEncodedSubkeys.erase(candidate);
+                mb.overallHashMemory.normalizedEncodedSubkeys.erase(candidate);
             }
 
             // Only attempt to remove from MinusOne if this subkey was associated with MinusOne 
             // for the key being deleted (size == n - 1), AND it is not needed by others.
             if (subkeyEncodedList.size() == (n - 1) && !neededInMinusOne) {
-                mb.localMemory.normalizedEncodedSubkeysMinusOne.erase(candidate);
+                mb.overallHashMemory.normalizedEncodedSubkeysMinusOne.erase(candidate);
             }
 
             // Similarly for MinusTwo
             if (subkeyEncodedList.size() == (n - 2) && !neededInMinusTwo) {
-                mb.localMemory.normalizedEncodedSubkeysMinusTwo.erase(candidate);
+                mb.overallHashMemory.normalizedEncodedSubkeysMinusTwo.erase(candidate);
             }
         }
     }
@@ -5374,8 +6361,8 @@ void ExpressionAnalyzer::removeFromHashMemory(const std::vector<std::string>& ch
         const NormalizedKey& normKey = v.normalizedIgnoredKey;
         const NormalizedKey& normNotIgnoredKey = v.normalizedNotIgnoredKey;
 
-        auto itMap = mb.localMemory.encodedMap.find(normKey);
-        if (itMap != mb.localMemory.encodedMap.end()) {
+        auto itMap = mb.overallHashMemory.encodedMap.find(normKey);
+        if (itMap != mb.overallHashMemory.encodedMap.end()) {
             std::set<LocalMemoryValue>& bucket = itMap->second;
 
             // Remove the specific implication
@@ -5390,20 +6377,20 @@ void ExpressionAnalyzer::removeFromHashMemory(const std::vector<std::string>& ch
 
             // If the bucket is empty, clean up the main keys
             if (bucket.empty()) {
-                mb.localMemory.encodedMap.erase(itMap);
+                mb.overallHashMemory.encodedMap.erase(itMap);
                 keyRemoved = true;
 
                 // Remove from normalizedEncodedKeys
-                mb.localMemory.normalizedEncodedKeys.erase(normNotIgnoredKey);
+                mb.overallHashMemory.normalizedEncodedKeys.erase(normNotIgnoredKey);
 
                 // Remove from remainingArgsNormalizedEncodedMap
-                for (auto itRem = mb.localMemory.remainingArgsNormalizedEncodedMap.begin();
-                    itRem != mb.localMemory.remainingArgsNormalizedEncodedMap.end(); ) {
+                for (auto itRem = mb.overallHashMemory.remainingArgsNormalizedEncodedMap.begin();
+                    itRem != mb.overallHashMemory.remainingArgsNormalizedEncodedMap.end(); ) {
                     std::set<NormalizedKey>& keySet = itRem->second;
                     keySet.erase(normNotIgnoredKey);
 
                     if (keySet.empty()) {
-                        itRem = mb.localMemory.remainingArgsNormalizedEncodedMap.erase(itRem);
+                        itRem = mb.overallHashMemory.remainingArgsNormalizedEncodedMap.erase(itRem);
                     }
                     else {
                         ++itRem;
@@ -5414,7 +6401,7 @@ void ExpressionAnalyzer::removeFromHashMemory(const std::vector<std::string>& ch
     }
 
     std::map<NormalizedKey, std::set<NormalizedKey>> dependencyMap;
-    for (const auto& remainingKey : mb.localMemory.normalizedEncodedKeys) {
+    for (const auto& remainingKey : mb.overallHashMemory.normalizedEncodedKeys) {
         // We must split the key back into expressions to regenerate subkeys
         // (Assuming you added splitNormalizedKey to the class or helper space)
         std::vector<std::string> reconstructedChain = splitNormalizedKey(remainingKey.data);
@@ -6176,7 +7163,7 @@ ExpressionAnalyzer::disintegrateExpr2(const std::string& expr,
         }
     }
 
-    if (!parameters.compressor_mode) {
+    if (!parameters.compressor_mode && !parameters.incubator_mode) {
         // Pass B: New Variable Admission
         for (const auto& [var, expressions] : newVarMap)
         {
@@ -6208,8 +7195,8 @@ ExpressionAnalyzer::disintegrateExpr2(const std::string& expr,
                         isVarAdmitted = true;
                         break;
                     }
-                    else if (memoryBlock.localMemory.admissionSetIntegration.find(ExpressionWithValidity(markedExpr, validityName)) !=
-                        memoryBlock.localMemory.admissionSetIntegration.end()) {
+                    else if (memoryBlock.overallHashMemory.admissionSetIntegration.find(ExpressionWithValidity(markedExpr, validityName)) !=
+                        memoryBlock.overallHashMemory.admissionSetIntegration.end()) {
                         cleanAdmissionMap(markedExpr, validityName, memoryBlock);
                         isVarAdmitted = true;
                         break;
@@ -6310,7 +7297,7 @@ ExpressionAnalyzer::disintegrateExpr2(const std::string& expr,
 
             // Variable was truly rejected (dependencies never resolved)
             for (const auto& fail : failures) {
-                updateRejectedMap(fail.removedU, fail.markedExpr, topLevelExprClean, memoryBlock.localMemory, iteration, validityName);
+                updateRejectedMap(fail.removedU, fail.markedExpr, topLevelExprClean, memoryBlock.overallHashMemory, iteration, validityName);
             }
         }
     }
@@ -6350,15 +7337,35 @@ void ExpressionAnalyzer::prove(int numberIterations,
     PerCoreMailboxes& boxes) {
 
     for (int it = 0; it < numberIterations; ++it) {
-        std::cout << "Hash burst: " << it << std::endl;
+        // Debug: count total expressions across all active bodies
+        std::size_t totalExprs = 0;
+        std::size_t activeBodies = 0;
+        for (std::size_t bi = 0; bi < bodies.size(); ++bi) {
+            if (bodies[bi] && bodies[bi]->isActive) {
+                totalExprs += bodies[bi]->encodedStatements.size();
+                ++activeBodies;
+            }
+        }
+        std::cout << "Hash burst: " << it
+                  << "  active_bodies=" << activeBodies
+                  << "  total_exprs=" << totalExprs << std::endl;
 
-        std::ofstream debugFile("c:\\bin\\console.txt", std::ios::app); // Open in append mode
-        if (debugFile.is_open()) {
-            debugFile << "Hash burst: " << it << std::endl;
-            debugFile.close();
+        {
+            auto consolePath = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path() / ".dump" / "console.txt";
+            std::ofstream debugFile(consolePath, std::ios::app);
+            if (debugFile.is_open()) {
+                debugFile << "Hash burst: " << it
+                          << "  active_bodies=" << activeBodies
+                          << "  total_exprs=" << totalExprs << std::endl;
+                debugFile.close();
+            }
         }
 
-       proveKernel(bodies, index, boxes);                     // runs, then smashMail(boxes)
+        auto burstStart = std::chrono::high_resolution_clock::now();
+        proveKernel(bodies, index, boxes);                     // runs, then smashMail(boxes)
+        auto burstEnd = std::chrono::high_resolution_clock::now();
+        double burstSec = std::chrono::duration<double>(burstEnd - burstStart).count();
+        std::cout << "  dt=" << burstSec << "s" << std::endl;
     }
 }
 
@@ -6391,9 +7398,9 @@ std::vector<std::vector<std::string>> ExpressionAnalyzer::readSimpleFacts() cons
 
     std::vector<std::pair<int, std::filesystem::path>> hits;   // (n, path)
 
-    // 3) Filename pattern: simple_factes_<actual_name>_<n>.txt  (note the 'simple_factes' prefix)
-    //    We match case-insensitively for the <actual_name> part and parse the trailing integer.
-    const std::regex rx(R"(^(?:simple_facts)_([A-Za-z]+)_(\d+)\.txt$)",
+    // 3) Filename pattern: simple_facts_<actual_name>.txt  or  simple_facts_<actual_name>_<n>.txt
+    //    We match case-insensitively for the <actual_name> part and parse the optional trailing integer.
+    const std::regex rx(R"(^(?:simple_facts)_([A-Za-z]+?)(?:_(\d+))?\.txt$)",
         std::regex::ECMAScript | std::regex::icase);
 
     if (std::filesystem::exists(simpleFactsDir) && std::filesystem::is_directory(simpleFactsDir)) {
@@ -6404,18 +7411,13 @@ std::vector<std::vector<std::string>> ExpressionAnalyzer::readSimpleFacts() cons
             std::smatch m;
             if (!std::regex_match(fname, m, rx)) continue;
 
-            // m[1] -> actual_name candidate, m[2] -> n
+            // m[1] -> actual_name candidate, m[2] -> n (optional)
             std::string candidateName = m[1].str();
             for (auto& c : candidateName) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
             if (candidateName != actualName) continue;
 
-            try {
-                int n = std::stoi(m[2].str());
-                hits.emplace_back(n, dirent.path());
-            }
-            catch (...) {
-                // Ignore files with non-integer n
-            }
+            int n = m[2].matched ? std::stoi(m[2].str()) : 0;
+            hits.emplace_back(n, dirent.path());
         }
     }
 
@@ -6538,7 +7540,8 @@ void ExpressionAnalyzer::saveCompressedTheorems(const std::vector<std::string>& 
 
 
 
-void ExpressionAnalyzer::saveProvedTheoremsFiltered(const std::vector<std::string>& essentialTheorems) {
+void ExpressionAnalyzer::saveProvedTheoremsFiltered(const std::vector<std::string>& essentialTheorems,
+                                                    const std::unordered_set<std::string>& externalTheorems) {
     namespace fs = std::filesystem;
 
     const auto theoremsDir =
@@ -6580,7 +7583,24 @@ void ExpressionAnalyzer::saveProvedTheoremsFiltered(const std::vector<std::strin
         return;
     }
 
+    // Build set of mirrored-of-external theorems to also exclude
+    std::unordered_set<std::string> mirroredOfExternal;
+    if (!externalTheorems.empty()) {
+        for (const auto& tpl : globalTheoremList) {
+            const std::string& expr = std::get<0>(tpl);
+            const std::string& method = std::get<1>(tpl);
+            const std::string& ref = std::get<2>(tpl);
+            if (method == "mirrored statement" && externalTheorems.count(ref)) {
+                mirroredOfExternal.insert(expr);
+            }
+        }
+    }
+
+    int written = 0;
     for (const std::string& theorem : essentialTheorems) {
+        // Skip surviving external theorems and their mirrors — they are not GL-proved
+        if (externalTheorems.count(theorem) || mirroredOfExternal.count(theorem)) continue;
+
         auto it = compactToExpanded.find(theorem);
         if (it != compactToExpanded.end()) {
             ofs << it->second << "\n";
@@ -6590,14 +7610,18 @@ void ExpressionAnalyzer::saveProvedTheoremsFiltered(const std::vector<std::strin
             // expanded form, save as-is.
             ofs << theorem << "\n";
         }
+        ++written;
     }
 
-    std::cout << "Rewrote proved_theorems.txt with " << essentialTheorems.size()
-        << " globally essential theorems." << std::endl;
+    std::cout << "Rewrote proved_theorems.txt with " << written
+        << " globally essential theorems (excluded "
+        << (externalTheorems.size() + mirroredOfExternal.size())
+        << " external/mirrored-of-external)." << std::endl;
 }
 
 
-void ExpressionAnalyzer::broadcastTheorems(const std::vector<std::string>& provedTheorems) {
+void ExpressionAnalyzer::broadcastTheorems(const std::vector<std::string>& provedTheorems,
+                                           const std::string& originTag) {
     if (provedTheorems.empty()) return;
 
     Mail broadcastMail;
@@ -6646,7 +7670,7 @@ void ExpressionAnalyzer::broadcastTheorems(const std::vector<std::string>& prove
 
         if (parameters.trackHistory) {
             ExpressionWithValidity ev(finalTheorem, "main");
-            auto originBroadcast = std::make_pair("broadcast", std::vector<ExpressionWithValidity>());
+            auto originBroadcast = std::make_pair(originTag, std::vector<ExpressionWithValidity>());
 
             addOrigin(broadcastMail.exprOriginMap, ev, originBroadcast, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
         }
@@ -6792,7 +7816,7 @@ void ExpressionAnalyzer::prefillIntegrationMapsRecursive(BodyOfProves* mb) {
 //#pragma optimize("", off)
 
 void ExpressionAnalyzer::disintegrateExprHypothetically(const std::string& expr, BodyOfProves& memoryBlock, std::string validityName) {
-    //if (parameters.ban_disintegration) return;
+    if (parameters.ban_disintegration) return;
 
     //return;
     
@@ -6947,6 +7971,12 @@ void ExpressionAnalyzer::disintegrateExprHypothetically(const std::string& expr,
             continue; // Skip if already present
 		}
 
+        //in3[2,2,2,4] finder:
+        if (enc.original == "(in3[2,2,2,4])" && memoryBlock.exprKey == "(AnchorIncubator[1,2,3,4,5,6,7,8,9,10])")
+        {
+            int test = 0;
+            test++;
+        }
         memoryBlock.encodedStatements.push_back(enc);
         memoryBlock.localEncodedStatements.push_back(enc);
         memoryBlock.localEncodedStatementsDelta.push_back(enc);
@@ -7033,6 +8063,12 @@ void ExpressionAnalyzer::prehandleAnchor(BodyOfProves* mb) {
 
                     std::set<int> levels{ 0 };
 
+                    //in3[2,2,2,4] finder:
+                    if (enc.original == "(in3[2,2,2,4])" && mb->exprKey == "(AnchorIncubator[1,2,3,4,5,6,7,8,9,10])")
+                    {
+                        int test = 0;
+                        test++;
+                    }
                     mb->localEncodedStatements.push_back(enc);
                     mb->localEncodedStatementsDelta.push_back(enc);
                     mb->encodedStatements.push_back(enc);
@@ -7062,7 +8098,8 @@ void ExpressionAnalyzer::prehandleAnchor(BodyOfProves* mb) {
 // Turn optimizations OFF for just this section
 //#pragma optimize("", off)
 void ExpressionAnalyzer::analyzeExpressions(const std::vector<std::string>& theorems,
-    const std::vector<std::string>& provedTheorems) {
+    const std::vector<std::string>& provedTheorems,
+    const std::vector<std::string>& externalTheorems) {
 
     auto t0 = std::chrono::high_resolution_clock::now();
     std::cout << "Counter example based filtering started." << std::endl;
@@ -7070,11 +8107,14 @@ void ExpressionAnalyzer::analyzeExpressions(const std::vector<std::string>& theo
     // 1. CE Filtering
     std::vector<std::string> filteredConjectures = theorems;
 
-    if (true) {
+    if (!parameters.skip_ce_filter) {
         std::vector<std::vector<std::string>> simpleFactsLists = readSimpleFacts();
+        std::cout << "CE filter: " << filteredConjectures.size() << " conjectures, "
+                  << simpleFactsLists.size() << " fact files." << std::endl;
         for (const auto& simpleFacts : simpleFactsLists)
         {
             filteredConjectures = filterConjecturesWithCE(filteredConjectures, simpleFacts);
+            std::cout << "CE filter: " << filteredConjectures.size() << " survived." << std::endl;
         }
         saveFilteredConjectures(filteredConjectures);
     }
@@ -7085,9 +8125,8 @@ void ExpressionAnalyzer::analyzeExpressions(const std::vector<std::string>& theo
     std::cout << "Runtime counter example based filtering: " << dt.count() << " seconds\n";
 
     // 2. Register Theorems to be Proved (Conjectures)
-    std::cout << "Adding " << filteredConjectures.size() << " filtered theorems to main memory." << std::endl;
-    for (const std::string& th : filteredConjectures) {
-        this->addTheoremToMemory(th, this->body, 0, false, this->globalDependencies);
+    for (std::size_t ti = 0; ti < filteredConjectures.size(); ++ti) {
+        this->addTheoremToMemory(filteredConjectures[ti], this->body, 0, false, this->globalDependencies);
     }
 
     this->prefillIntegrationMapsRecursive(&this->body);
@@ -7125,8 +8164,15 @@ void ExpressionAnalyzer::analyzeExpressions(const std::vector<std::string>& theo
         std::cout << "Injecting " << provedTheorems.size() << " proved theorems via broadcast..." << std::endl;
         this->broadcastTheorems(provedTheorems);
 
-        // IMPORTANT: Move broadcasted messages from 'boxes' to 'mailIn' 
+        // IMPORTANT: Move broadcasted messages from 'boxes' to 'mailIn'
         // so they are visible to the threads in the next prove() call.
+        this->smashMail(boxes);
+    }
+
+    if (!externalTheorems.empty()) {
+        std::cout << "Injecting " << externalTheorems.size()
+                  << " external theorems via broadcast..." << std::endl;
+        this->broadcastTheorems(externalTheorems, "externally provided theorem");
         this->smashMail(boxes);
     }
 

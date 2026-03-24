@@ -1,0 +1,1 @@
+(>[i0,*,i2](AnchorIncubator[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])(in3[i2,i0,i0,*]))	main	incubator back reformulation	(>[i0,*,i2](AnchorIncubator[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])(>[v1](in3[i2,i0,v1,*])(=[v1,i0])))	main

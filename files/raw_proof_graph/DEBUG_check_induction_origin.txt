@@ -1,0 +1,497 @@
+=== checkInductionCondition ===
+theorem: (>[3,4,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in2[7,8,3])(in3[6,7,8,4])))
+head: (in3[6,7,8,4])
+inductionVar: 7
+key (in2): (in2[rec0,7,3])
+  head origin exists: YES
+  head origin tag: equality1
+    dep[0]: (in3[6,it_0_lev_2_34,8,4]) validity=main origin_exists=YES
+    dep[1]: (=[it_0_lev_2_34,7]) validity=main origin_exists=YES
+
+=== checkInductionCondition ===
+theorem: (>[2,4](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[2,7,8,4])(in3[7,2,8,4])))
+head: (in3[7,2,8,4])
+inductionVar: 7
+key (in2): (in2[rec0,7,3])
+  head origin exists: YES
+  head origin tag: equality1
+    dep[0]: (in3[7,2,it_0_lev_1_2,4]) validity=main origin_exists=YES
+    dep[1]: (=[it_0_lev_1_2,8]) validity=main origin_exists=YES
+
+=== checkInductionCondition ===
+theorem: (>[2,5](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[2,7,8,5])(in3[7,2,8,5])))
+head: (in3[7,2,8,5])
+inductionVar: 7
+key (in2): (in2[rec0,7,3])
+  head origin exists: YES
+  head origin tag: equality1
+    dep[0]: (in3[7,2,it_0_lev_1_4,5]) validity=main origin_exists=YES
+    dep[1]: (=[it_0_lev_1_4,8]) validity=main origin_exists=YES
+
+=== checkInductionCondition ===
+theorem: (>[4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10](in3[10,8,9,4])(=[7,10]))))
+head: (=[7,10])
+inductionVar: 8
+key (in2): (in2[rec2,8,3])
+  head origin exists: YES
+  head origin tag: implication
+    dep[0]: (>[9](in3[u_7,u_rec,9,u_4])(>[](in3[u_10,u_rec,9,u_4])(=[u_7,u_10]))) validity=main origin_exists=YES
+    dep[1]: (in3[10,rec,it_0_lev_3_56,4]) validity=main origin_exists=YES
+    dep[2]: (in3[7,rec,it_0_lev_3_56,4]) validity=main origin_exists=YES
+
+=== checkInductionCondition ===
+theorem: (>[4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11](in3[7,10,11,4])(>[12](in3[8,12,10,4])(in3[9,12,11,4])))))
+head: (in3[9,12,11,4])
+inductionVar: 12
+key (in2): (in2[rec0,12,3])
+  head origin exists: YES
+  head origin tag: implication
+    dep[0]: (>[3,4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10](in2[8,10,3])(>[11](in2[9,11,3])(in3[7,10,11,4]))))) validity=main origin_exists=YES
+    dep[1]: (AnchorPeano[1,2,3,4,5,6]) validity=main origin_exists=YES
+    dep[2]: (in2[it_1_lev_4_170,11,3]) validity=main origin_exists=YES
+    dep[3]: (in2[rec,12,3]) validity=main origin_exists=YES
+    dep[4]: (in3[9,rec,it_1_lev_4_170,4]) validity=main origin_exists=YES
+
+=== checkInductionCondition ===
+theorem: (>[3,4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10](in2[7,10,3])(>[11](in2[9,11,3])(in3[10,8,11,4])))))
+head: (in3[10,8,11,4])
+inductionVar: 8
+key (in2): (in2[rec1,8,3])
+  head origin exists: YES
+  head origin tag: implication
+    dep[0]: (>[3,4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10](in2[8,10,3])(>[11](in2[9,11,3])(in3[7,10,11,4]))))) validity=main origin_exists=YES
+    dep[1]: (AnchorPeano[1,2,3,4,5,6]) validity=main origin_exists=YES
+    dep[2]: (in2[it_1_lev_4_206,11,3]) validity=main origin_exists=YES
+    dep[3]: (in2[rec,8,3]) validity=main origin_exists=YES
+    dep[4]: (in3[10,rec,it_1_lev_4_206,4]) validity=main origin_exists=YES
+
+=== checkInductionCondition ===
+theorem: (>[3,4,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in2[7,8,3])(in3[7,6,8,4])))
+head: (in3[7,6,8,4])
+inductionVar: 7
+key (in2): (in2[rec1,7,3])
+  head origin exists: YES
+  head origin tag: equality1
+    dep[0]: (in3[it_0_lev_2_34,6,8,4]) validity=main origin_exists=YES
+    dep[1]: (=[it_0_lev_2_34,7]) validity=main origin_exists=YES
+
+=== checkInductionCondition ===
+theorem: (>[4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(in3[8,7,9,4])))
+head: (in3[8,7,9,4])
+inductionVar: 8
+key (in2): (in2[rec1,8,3])
+  head origin exists: YES
+  head origin tag: implication
+    dep[0]: (>[3,4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10](in2[7,10,3])(>[11](in2[9,11,3])(in3[10,8,11,4]))))) validity=main origin_exists=YES
+    dep[1]: (AnchorPeano[1,2,3,4,5,6]) validity=main origin_exists=YES
+    dep[2]: (in2[it_0_lev_2_60,9,3]) validity=main origin_exists=YES
+    dep[3]: (in2[rec,8,3]) validity=main origin_exists=YES
+    dep[4]: (in3[rec,7,it_0_lev_2_60,4]) validity=main origin_exists=YES
+
+=== checkInductionCondition ===
+theorem: (>[3,4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10](in2[8,10,3])(>[11](in2[11,7,3])(in3[10,11,9,4])))))
+head: (in3[10,11,9,4])
+inductionVar: 8
+key (in2): (in2[rec1,8,3])
+  head origin exists: YES
+  head origin tag: implication
+    dep[0]: (>[3,4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10](in2[7,10,3])(>[11](in2[9,11,3])(in3[10,8,11,4]))))) validity=main origin_exists=YES
+    dep[1]: (AnchorPeano[1,2,3,4,5,6]) validity=main origin_exists=YES
+    dep[2]: (in2[8,10,3]) validity=main origin_exists=YES
+    dep[3]: (in2[it_0_lev_4_10,9,3]) validity=main origin_exists=YES
+    dep[4]: (in3[8,11,it_0_lev_4_10,4]) validity=main origin_exists=YES
+
+=== checkInductionCondition ===
+theorem: (>[4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11](in3[7,10,11,4])(>[12](in3[9,10,12,4])(in3[11,8,12,4])))))
+head: (in3[11,8,12,4])
+inductionVar: 10
+key (in2): (in2[rec0,10,3])
+  head origin exists: YES
+  head origin tag: implication
+    dep[0]: (>[3,4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10](in2[7,10,3])(>[11](in2[9,11,3])(in3[10,8,11,4]))))) validity=main origin_exists=YES
+    dep[1]: (AnchorPeano[1,2,3,4,5,6]) validity=main origin_exists=YES
+    dep[2]: (in2[it_0_lev_4_104,11,3]) validity=main origin_exists=YES
+    dep[3]: (in2[it_0_lev_4_120,12,3]) validity=main origin_exists=YES
+    dep[4]: (in3[it_0_lev_4_104,8,it_0_lev_4_120,4]) validity=main origin_exists=YES
+
+=== checkInductionCondition ===
+theorem: (>[3,4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10](in2[8,10,3])(>[11](in2[9,11,3])(in3[10,7,11,4])))))
+head: (in3[10,7,11,4])
+inductionVar: 8
+key (in2): (in2[rec1,8,3])
+  head origin exists: YES
+  head origin tag: implication
+    dep[0]: (>[3,4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10](in2[7,10,3])(>[11](in2[9,11,3])(in3[10,8,11,4]))))) validity=main origin_exists=YES
+    dep[1]: (AnchorPeano[1,2,3,4,5,6]) validity=main origin_exists=YES
+    dep[2]: (in2[8,10,3]) validity=main origin_exists=YES
+    dep[3]: (in2[9,11,3]) validity=main origin_exists=YES
+    dep[4]: (in3[8,7,9,4]) validity=main origin_exists=YES
+
+=== checkInductionCondition ===
+theorem: (>[3,4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10](in2[7,10,3])(>[11](in2[9,11,3])(in3[8,10,11,4])))))
+head: (in3[8,10,11,4])
+inductionVar: 8
+key (in2): (in2[rec3,8,3])
+  head origin exists: YES
+  head origin tag: implication
+    dep[0]: (>[3,4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10](in2[7,10,3])(>[11](in2[9,11,3])(in3[10,8,11,4]))))) validity=main origin_exists=YES
+    dep[1]: (AnchorPeano[1,2,3,4,5,6]) validity=main origin_exists=YES
+    dep[2]: (in2[it_0_lev_4_60,11,3]) validity=main origin_exists=YES
+    dep[3]: (in2[rec,8,3]) validity=main origin_exists=YES
+    dep[4]: (in3[rec,10,it_0_lev_4_60,4]) validity=main origin_exists=YES
+
+=== checkInductionCondition ===
+theorem: (>[3,4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10](in2[7,10,3])(>[11](in2[11,8,3])(in3[11,10,9,4])))))
+head: (in3[11,10,9,4])
+inductionVar: 11
+key (in2): (in2[rec2,11,3])
+  head origin exists: YES
+  head origin tag: implication
+    dep[0]: (>[3,4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10](in2[7,10,3])(>[11](in2[9,11,3])(in3[10,8,11,4]))))) validity=main origin_exists=YES
+    dep[1]: (AnchorPeano[1,2,3,4,5,6]) validity=main origin_exists=YES
+    dep[2]: (in2[it_0_lev_4_30,9,3]) validity=main origin_exists=YES
+    dep[3]: (in2[rec,11,3]) validity=main origin_exists=YES
+    dep[4]: (in3[rec,10,it_0_lev_4_30,4]) validity=main origin_exists=YES
+
+=== checkInductionCondition ===
+theorem: (>[4,5](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11](in3[7,10,11,5])(>[12,13](in3[7,12,13,5])(>[](in3[8,10,12,4])(in3[9,11,13,4]))))))
+head: (in3[9,11,13,4])
+inductionVar: 10
+key (in2): (in2[rec0,10,3])
+  head origin exists: YES
+  head origin tag: implication
+    dep[0]: (>[4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,12](in3[8,12,10,4])(>[11](in3[9,12,11,4])(in3[7,10,11,4]))))) validity=main origin_exists=YES
+    dep[1]: (AnchorPeano[1,2,3,4,5,6]) validity=main origin_exists=YES
+    dep[2]: (in3[9,it_0_lev_5_122,it_1_lev_5_210,4]) validity=main origin_exists=YES
+    dep[3]: (in3[it_0_lev_5_122,7,11,4]) validity=main origin_exists=YES
+    dep[4]: (in3[it_1_lev_5_210,7,13,4]) validity=main origin_exists=YES
+
+=== checkInductionCondition ===
+theorem: (>[4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11,12](in3[10,11,12,4])(>[](in3[8,7,10,4])(in3[9,11,12,4])))))
+head: (in3[9,11,12,4])
+inductionVar: 8
+key (in2): (in2[rec2,8,3])
+  head origin exists: YES
+  head origin tag: equality1
+    dep[0]: (in3[10,11,12,4]) validity=main origin_exists=YES
+    dep[1]: (=[10,9]) validity=main origin_exists=YES
+
+=== checkInductionCondition ===
+theorem: (>[4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11](in3[8,10,11,4])(>[12](in3[12,10,7,4])(in3[11,12,9,4])))))
+head: (in3[11,12,9,4])
+inductionVar: 8
+key (in2): (in2[rec2,8,3])
+  head origin exists: YES
+  head origin tag: implication
+    dep[0]: (>[3,4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10](in2[7,10,3])(>[11](in2[9,11,3])(in3[10,8,11,4]))))) validity=main origin_exists=YES
+    dep[1]: (AnchorPeano[1,2,3,4,5,6]) validity=main origin_exists=YES
+    dep[2]: (in2[it_0_lev_4_112,9,3]) validity=main origin_exists=YES
+    dep[3]: (in2[it_0_lev_4_68,11,3]) validity=main origin_exists=YES
+    dep[4]: (in3[it_0_lev_4_68,12,it_0_lev_4_112,4]) validity=main origin_exists=YES
+
+=== checkInductionCondition ===
+theorem: (>[4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11](in3[7,10,11,4])(>[12](in3[12,8,10,4])(in3[12,9,11,4])))))
+head: (in3[12,9,11,4])
+inductionVar: 8
+key (in2): (in2[rec2,8,3])
+  head origin exists: YES
+  head origin tag: implication
+    dep[0]: (>[3,4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10](in2[8,10,3])(>[11](in2[9,11,3])(in3[7,10,11,4]))))) validity=main origin_exists=YES
+    dep[1]: (AnchorPeano[1,2,3,4,5,6]) validity=main origin_exists=YES
+    dep[2]: (in2[it_0_lev_4_112,9,3]) validity=main origin_exists=YES
+    dep[3]: (in2[it_1_lev_4_284,11,3]) validity=main origin_exists=YES
+    dep[4]: (in3[12,it_0_lev_4_112,it_1_lev_4_284,4]) validity=main origin_exists=YES
+
+=== checkInductionCondition ===
+theorem: (>[4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11,12](in3[10,11,12,4])(>[](in3[8,7,11,4])(in3[10,9,12,4])))))
+head: (in3[10,9,12,4])
+inductionVar: 8
+key (in2): (in2[rec2,8,3])
+  head origin exists: YES
+  head origin tag: implication
+    dep[0]: (>[3,4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10](in2[8,10,3])(>[11](in2[9,11,3])(in3[7,10,11,4]))))) validity=main origin_exists=YES
+    dep[1]: (AnchorPeano[1,2,3,4,5,6]) validity=main origin_exists=YES
+    dep[2]: (in2[it_0_lev_4_112,9,3]) validity=main origin_exists=YES
+    dep[3]: (in2[it_1_lev_4_130,12,3]) validity=main origin_exists=YES
+    dep[4]: (in3[10,it_0_lev_4_112,it_1_lev_4_130,4]) validity=main origin_exists=YES
+
+=== checkInductionCondition ===
+theorem: (>[4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11](in3[7,10,11,4])(>[12](in3[8,11,12,4])(in3[10,9,12,4])))))
+head: (in3[10,9,12,4])
+inductionVar: 8
+key (in2): (in2[rec2,8,3])
+  head origin exists: YES
+  head origin tag: implication
+    dep[0]: (>[3,4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10](in2[8,10,3])(>[11](in2[9,11,3])(in3[7,10,11,4]))))) validity=main origin_exists=YES
+    dep[1]: (AnchorPeano[1,2,3,4,5,6]) validity=main origin_exists=YES
+    dep[2]: (in2[it_0_lev_4_112,9,3]) validity=main origin_exists=YES
+    dep[3]: (in2[it_0_lev_4_76,12,3]) validity=main origin_exists=YES
+    dep[4]: (in3[10,it_0_lev_4_112,it_0_lev_4_76,4]) validity=main origin_exists=YES
+
+=== checkInductionCondition ===
+theorem: (>[4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10](in3[7,10,9,4])(=[8,10]))))
+head: (=[8,10])
+inductionVar: 7
+key (in2): (in2[rec1,7,3])
+  head origin exists: YES
+  head origin tag: implication
+    dep[0]: (>[9](in3[u_rec,u_8,9,u_4])(>[](in3[u_rec,u_10,9,u_4])(=[u_8,u_10]))) validity=main origin_exists=YES
+    dep[1]: (in3[rec,10,it_0_lev_3_52,4]) validity=main origin_exists=YES
+    dep[2]: (in3[rec,8,it_0_lev_3_52,4]) validity=main origin_exists=YES
+
+=== checkInductionCondition ===
+theorem: (>[3,4,5](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11](in2[10,11,3])(>[](in3[10,7,8,5])(in3[11,7,9,5])))))
+head: (in3[11,7,9,5])
+inductionVar: 7
+key (in2): (in2[rec1,7,3])
+  head origin exists: YES
+  head origin tag: implication
+    dep[0]: (>[3,4,5](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11](in2[10,11,3])(>[](in3[8,10,7,5])(in3[8,11,9,5]))))) validity=main origin_exists=YES
+    dep[1]: (AnchorPeano[1,2,3,4,5,6]) validity=main origin_exists=YES
+    dep[2]: (in2[rec,7,3]) validity=main origin_exists=YES
+    dep[3]: (in3[11,rec,it_0_lev_4_74,5]) validity=main origin_exists=YES
+    dep[4]: (in3[it_0_lev_4_74,11,9,4]) validity=main origin_exists=YES
+
+=== checkInductionCondition ===
+theorem: (>[4,5](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11](in3[7,10,11,5])(>[12](in3[8,10,12,5])(>[13](in3[9,10,13,5])(in3[11,12,13,4]))))))
+head: (in3[11,12,13,4])
+inductionVar: 10
+key (in2): (in2[rec0,10,3])
+  head origin exists: YES
+  head origin tag: implication
+    dep[0]: (>[4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,12](in3[8,12,10,4])(>[11](in3[9,12,11,4])(in3[7,10,11,4]))))) validity=main origin_exists=YES
+    dep[1]: (AnchorPeano[1,2,3,4,5,6]) validity=main origin_exists=YES
+    dep[2]: (in3[11,it_0_lev_5_130,it_1_lev_5_410,4]) validity=main origin_exists=YES
+    dep[3]: (in3[it_0_lev_5_130,8,12,4]) validity=main origin_exists=YES
+    dep[4]: (in3[it_1_lev_5_410,8,13,4]) validity=main origin_exists=YES
+
+=== checkInductionCondition ===
+theorem: (>[5](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(in3[8,7,9,5])))
+head: (in3[8,7,9,5])
+inductionVar: 8
+key (in2): (in2[rec1,8,3])
+  head origin exists: YES
+  head origin tag: implication
+    dep[0]: (>[3,4,5](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11](in2[10,11,3])(>[](in3[10,7,8,5])(in3[11,7,9,5]))))) validity=main origin_exists=YES
+    dep[1]: (AnchorPeano[1,2,3,4,5,6]) validity=main origin_exists=YES
+    dep[2]: (in2[rec,8,3]) validity=main origin_exists=YES
+    dep[3]: (in3[7,it_0_lev_2_62,9,4]) validity=main origin_exists=YES
+    dep[4]: (in3[rec,7,it_0_lev_2_62,5]) validity=main origin_exists=YES
+
+=== checkInductionCondition ===
+theorem: (>[3,4,5](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11](in2[10,11,3])(>[](in3[10,7,8,5])(in3[7,11,9,5])))))
+head: (in3[7,11,9,5])
+inductionVar: 7
+key (in2): (in2[rec3,7,3])
+  head origin exists: YES
+  head origin tag: implication
+    dep[0]: (>[3,4,5](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11](in2[10,11,3])(>[](in3[10,7,8,5])(in3[11,7,9,5]))))) validity=main origin_exists=YES
+    dep[1]: (AnchorPeano[1,2,3,4,5,6]) validity=main origin_exists=YES
+    dep[2]: (in2[rec,7,3]) validity=main origin_exists=YES
+    dep[3]: (in3[11,it_0_lev_4_70,9,4]) validity=main origin_exists=YES
+    dep[4]: (in3[rec,11,it_0_lev_4_70,5]) validity=main origin_exists=YES
+
+=== checkInductionCondition ===
+theorem: (>[3,4,5](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11](in2[10,11,3])(>[](in3[10,8,7,5])(in3[8,11,9,5])))))
+head: (in3[8,11,9,5])
+inductionVar: 8
+key (in2): (in2[rec3,8,3])
+  head origin exists: YES
+  head origin tag: implication
+    dep[0]: (>[3,4,5](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11](in2[10,11,3])(>[](in3[10,7,8,5])(in3[11,7,9,5]))))) validity=main origin_exists=YES
+    dep[1]: (AnchorPeano[1,2,3,4,5,6]) validity=main origin_exists=YES
+    dep[2]: (in2[rec,8,3]) validity=main origin_exists=YES
+    dep[3]: (in3[11,it_0_lev_4_70,9,4]) validity=main origin_exists=YES
+    dep[4]: (in3[rec,11,it_0_lev_4_70,5]) validity=main origin_exists=YES
+
+=== checkInductionCondition ===
+theorem: (>[5](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11](in3[7,10,11,5])(>[12](in3[8,12,10,5])(in3[9,12,11,5])))))
+head: (in3[9,12,11,5])
+inductionVar: 12
+key (in2): (in2[rec0,12,3])
+  head origin exists: YES
+  head origin tag: implication
+    dep[0]: (>[3,4,5](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11](in2[10,11,3])(>[](in3[8,10,7,5])(in3[8,11,9,5]))))) validity=main origin_exists=YES
+    dep[1]: (AnchorPeano[1,2,3,4,5,6]) validity=main origin_exists=YES
+    dep[2]: (in2[rec,12,3]) validity=main origin_exists=YES
+    dep[3]: (in3[9,rec,it_0_lev_4_122,5]) validity=main origin_exists=YES
+    dep[4]: (in3[it_0_lev_4_122,9,11,4]) validity=main origin_exists=YES
+
+=== checkInductionCondition ===
+theorem: (>[1,2,3,4,5,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10,11](in3[9,10,11,5])(>[12](fold[1,3,4,8,2,9,12])(>[](in2[9,10,3])(in3[7,12,11,5])))))
+head: (in3[7,12,11,5])
+inductionVar: 9
+key (in2): (in2[rec0,9,3])
+  FOUND preorder in exprOriginMap: (>[1,2](in2[1,2,u_int_lev_4_979])(preorder[u_1,u_4,1,u_rec])) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1,3,4](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11](preorder[1,4,10,11])(preorder[1,4,9,11])))) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1,3,4](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11](preorder[1,4,11,9])(preorder[1,4,11,10])))) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1,3,4](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(preorder[1,4,9,10]))) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1,4](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](preorder[1,4,9,10])(>[11](preorder[1,4,10,11])(preorder[1,4,9,11])))) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1](in[1,u_int_lev_2_0])(>[](preorder[u_1,u_4,1,u_rec])(in[1,u_int_lev_4_842]))) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1](in[1,u_int_lev_2_0])(preorder[u_1,u_4,1,u_9])) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1](in[1,u_int_lev_2_0])(preorder[u_1,u_4,u_2,1])) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1](in[1,u_int_lev_2_88])(preorder[u_1,u_4,1,u_9])) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1](in[1,u_int_lev_2_88])(preorder[u_1,u_4,u_2,1])) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1](in[1,u_int_lev_4_842])(preorder[u_1,u_4,1,u_rec])) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1](in[1,u_int_lev_4_842])(preorder[u_1,u_4,u_2,1])) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1](in[1,u_int_lev_4_980])(preorder[u_1,u_4,1,u_rec])) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1](in[1,u_int_lev_4_980])(preorder[u_1,u_4,u_2,1])) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1](preorder[u_1,u_4,1,u_rec])(>[2](in2[1,2,u_int_lev_2_1])(in2[1,2,u_int_lev_4_979]))) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1](preorder[u_1,u_4,u_2,1])(>[](preorder[u_1,u_4,1,u_9])(in[1,u_int_lev_2_0]))) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1](preorder[u_1,u_4,u_2,1])(>[](preorder[u_1,u_4,1,u_9])(in[1,u_int_lev_2_88]))) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1](preorder[u_1,u_4,u_2,1])(>[](preorder[u_1,u_4,1,u_rec])(in[1,u_int_lev_4_842]))) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1](preorder[u_1,u_4,u_2,1])(>[](preorder[u_1,u_4,1,u_rec])(in[1,u_int_lev_4_980]))) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,11,it_0_lev_1_42]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,2,10]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,2,9]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,2,it_0_lev_4_0]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,2,rec]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,2,repl_lev_2_0]) validity=(implication24[int_lev_2_88,3,int_lev_2_1,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,2,repl_lev_2_1]) validity=(implication24[int_lev_2_88,3,int_lev_2_1,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,2,repl_lev_2_3]) validity=(implication24[int_lev_2_88,3,int_lev_2_1,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,2,repl_lev_4_1]) validity=(implication24[int_lev_4_980,3,int_lev_4_979,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,2,repl_lev_4_2]) validity=(implication24[int_lev_4_980,3,int_lev_4_979,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,2,repl_lev_4_4]) validity=(implication24[int_lev_4_980,3,int_lev_4_979,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,2,repl_lev_4_6]) validity=(implication24[int_lev_4_842,3,int_lev_4_979,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,2,repl_lev_4_7]) validity=(implication24[int_lev_4_842,3,int_lev_4_979,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,2,repl_lev_4_9]) validity=(implication24[int_lev_4_842,3,int_lev_4_979,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,9,10]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,9,9]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,9,it_0_lev_4_0]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,it_0_lev_1_36,it_0_lev_1_42]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,it_0_lev_4_0,10]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,it_0_lev_4_0,9]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,it_0_lev_4_0,it_0_lev_4_0]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,rec,10]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,rec,9]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,rec,it_0_lev_4_0]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,rec,rec]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_2_0,9]) validity=(implication24[int_lev_2_88,3,int_lev_2_1,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_2_0,repl_lev_2_1]) validity=(implication24[int_lev_2_88,3,int_lev_2_1,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_2_1,9]) validity=(implication24[int_lev_2_88,3,int_lev_2_1,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_2_3,9]) validity=(implication24[int_lev_2_88,3,int_lev_2_1,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_1,10]) validity=(implication24[int_lev_4_980,3,int_lev_4_979,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_1,9]) validity=(implication24[int_lev_4_980,3,int_lev_4_979,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_1,it_0_lev_4_0]) validity=(implication24[int_lev_4_980,3,int_lev_4_979,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_1,rec]) validity=(implication24[int_lev_4_980,3,int_lev_4_979,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_1,repl_lev_4_2]) validity=(implication24[int_lev_4_980,3,int_lev_4_979,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_2,10]) validity=(implication24[int_lev_4_980,3,int_lev_4_979,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_2,9]) validity=(implication24[int_lev_4_980,3,int_lev_4_979,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_2,it_0_lev_4_0]) validity=(implication24[int_lev_4_980,3,int_lev_4_979,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_2,rec]) validity=(implication24[int_lev_4_980,3,int_lev_4_979,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_4,10]) validity=(implication24[int_lev_4_980,3,int_lev_4_979,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_4,9]) validity=(implication24[int_lev_4_980,3,int_lev_4_979,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_4,it_0_lev_4_0]) validity=(implication24[int_lev_4_980,3,int_lev_4_979,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_4,rec]) validity=(implication24[int_lev_4_980,3,int_lev_4_979,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_6,10]) validity=(implication24[int_lev_4_842,3,int_lev_4_979,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_6,9]) validity=(implication24[int_lev_4_842,3,int_lev_4_979,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_6,it_0_lev_4_0]) validity=(implication24[int_lev_4_842,3,int_lev_4_979,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_6,rec]) validity=(implication24[int_lev_4_842,3,int_lev_4_979,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_6,repl_lev_4_7]) validity=(implication24[int_lev_4_842,3,int_lev_4_979,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_7,10]) validity=(implication24[int_lev_4_842,3,int_lev_4_979,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_7,9]) validity=(implication24[int_lev_4_842,3,int_lev_4_979,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_7,it_0_lev_4_0]) validity=(implication24[int_lev_4_842,3,int_lev_4_979,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_7,rec]) validity=(implication24[int_lev_4_842,3,int_lev_4_979,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_9,10]) validity=(implication24[int_lev_4_842,3,int_lev_4_979,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_9,9]) validity=(implication24[int_lev_4_842,3,int_lev_4_979,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_9,it_0_lev_4_0]) validity=(implication24[int_lev_4_842,3,int_lev_4_979,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_9,rec]) validity=(implication24[int_lev_4_842,3,int_lev_4_979,8,4]) origins=1
+  head origin exists: YES
+  head origin tag: implication
+    dep[0]: (>[4,5](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11](in3[7,10,11,5])(>[12](in3[8,10,12,4])(>[13](in3[9,11,13,4])(in3[7,12,13,5])))))) validity=main origin_exists=YES
+    dep[1]: (AnchorPeano[1,2,3,4,5,6]) validity=main origin_exists=YES
+    dep[2]: (in3[7,9,it_1_lev_4_110,5]) validity=main origin_exists=YES
+    dep[3]: (in3[7,int_lev_4_996,it_0_lev_4_52,5]) validity=main origin_exists=YES
+    dep[4]: (in3[int_lev_4_996,9,12,4]) validity=main origin_exists=YES
+    dep[5]: (in3[it_0_lev_4_52,it_1_lev_4_110,11,4]) validity=main origin_exists=YES
+
+=== checkInductionCondition ===
+theorem: (>[1,2,3,4,5,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10,11](in3[9,10,11,5])(>[12](fold[1,3,4,8,2,10,12])(>[](in2[10,9,3])(in3[7,12,11,5])))))
+head: (in3[7,12,11,5])
+inductionVar: 10
+key (in2): (in2[rec0,10,3])
+  FOUND preorder in exprOriginMap: (>[1,2](in2[1,2,u_int_lev_4_963])(preorder[u_1,u_4,1,u_rec])) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1,3,4](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11](preorder[1,4,10,11])(preorder[1,4,9,11])))) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1,3,4](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11](preorder[1,4,11,9])(preorder[1,4,11,10])))) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1,3,4](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(preorder[1,4,9,10]))) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1,4](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](preorder[1,4,9,10])(>[11](preorder[1,4,10,11])(preorder[1,4,9,11])))) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1](in[1,u_int_lev_2_0])(>[](preorder[u_1,u_4,1,u_rec])(in[1,u_int_lev_4_810]))) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1](in[1,u_int_lev_2_0])(preorder[u_1,u_4,1,u_10])) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1](in[1,u_int_lev_2_0])(preorder[u_1,u_4,u_2,1])) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1](in[1,u_int_lev_2_88])(preorder[u_1,u_4,1,u_10])) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1](in[1,u_int_lev_2_88])(preorder[u_1,u_4,u_2,1])) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1](in[1,u_int_lev_4_810])(preorder[u_1,u_4,1,u_rec])) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1](in[1,u_int_lev_4_810])(preorder[u_1,u_4,u_2,1])) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1](in[1,u_int_lev_4_964])(preorder[u_1,u_4,1,u_rec])) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1](in[1,u_int_lev_4_964])(preorder[u_1,u_4,u_2,1])) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1](preorder[u_1,u_4,1,u_rec])(>[2](in2[1,2,u_int_lev_2_1])(in2[1,2,u_int_lev_4_963]))) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1](preorder[u_1,u_4,u_2,1])(>[](preorder[u_1,u_4,1,u_10])(in[1,u_int_lev_2_0]))) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1](preorder[u_1,u_4,u_2,1])(>[](preorder[u_1,u_4,1,u_10])(in[1,u_int_lev_2_88]))) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1](preorder[u_1,u_4,u_2,1])(>[](preorder[u_1,u_4,1,u_rec])(in[1,u_int_lev_4_810]))) validity=main origins=1
+  FOUND preorder in exprOriginMap: (>[1](preorder[u_1,u_4,u_2,1])(>[](preorder[u_1,u_4,1,u_rec])(in[1,u_int_lev_4_964]))) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,10,10]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,10,9]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,10,it_0_lev_4_0]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,11,it_0_lev_1_42]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,12,it_0_lev_2_26]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,2,10]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,2,9]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,2,it_0_lev_4_0]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,2,rec]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,2,repl_lev_2_0]) validity=(implication24[int_lev_2_88,3,int_lev_2_1,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,2,repl_lev_2_1]) validity=(implication24[int_lev_2_88,3,int_lev_2_1,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,2,repl_lev_2_3]) validity=(implication24[int_lev_2_88,3,int_lev_2_1,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,2,repl_lev_4_1]) validity=(implication24[int_lev_4_964,3,int_lev_4_963,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,2,repl_lev_4_2]) validity=(implication24[int_lev_4_964,3,int_lev_4_963,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,2,repl_lev_4_4]) validity=(implication24[int_lev_4_964,3,int_lev_4_963,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,2,repl_lev_4_6]) validity=(implication24[int_lev_4_810,3,int_lev_4_963,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,2,repl_lev_4_7]) validity=(implication24[int_lev_4_810,3,int_lev_4_963,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,2,repl_lev_4_9]) validity=(implication24[int_lev_4_810,3,int_lev_4_963,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,it_0_lev_1_36,it_0_lev_1_42]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,it_0_lev_4_0,10]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,it_0_lev_4_0,9]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,it_0_lev_4_0,it_0_lev_4_0]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,it_0_lev_4_999,it_0_lev_2_26]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,rec,10]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,rec,9]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,rec,it_0_lev_4_0]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,rec,rec]) validity=main origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_2_0,10]) validity=(implication24[int_lev_2_88,3,int_lev_2_1,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_2_0,repl_lev_2_1]) validity=(implication24[int_lev_2_88,3,int_lev_2_1,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_2_1,10]) validity=(implication24[int_lev_2_88,3,int_lev_2_1,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_2_3,10]) validity=(implication24[int_lev_2_88,3,int_lev_2_1,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_1,10]) validity=(implication24[int_lev_4_964,3,int_lev_4_963,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_1,9]) validity=(implication24[int_lev_4_964,3,int_lev_4_963,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_1,it_0_lev_4_0]) validity=(implication24[int_lev_4_964,3,int_lev_4_963,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_1,rec]) validity=(implication24[int_lev_4_964,3,int_lev_4_963,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_1,repl_lev_4_2]) validity=(implication24[int_lev_4_964,3,int_lev_4_963,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_2,10]) validity=(implication24[int_lev_4_964,3,int_lev_4_963,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_2,9]) validity=(implication24[int_lev_4_964,3,int_lev_4_963,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_2,it_0_lev_4_0]) validity=(implication24[int_lev_4_964,3,int_lev_4_963,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_2,rec]) validity=(implication24[int_lev_4_964,3,int_lev_4_963,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_4,10]) validity=(implication24[int_lev_4_964,3,int_lev_4_963,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_4,9]) validity=(implication24[int_lev_4_964,3,int_lev_4_963,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_4,it_0_lev_4_0]) validity=(implication24[int_lev_4_964,3,int_lev_4_963,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_4,rec]) validity=(implication24[int_lev_4_964,3,int_lev_4_963,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_6,10]) validity=(implication24[int_lev_4_810,3,int_lev_4_963,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_6,9]) validity=(implication24[int_lev_4_810,3,int_lev_4_963,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_6,it_0_lev_4_0]) validity=(implication24[int_lev_4_810,3,int_lev_4_963,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_6,rec]) validity=(implication24[int_lev_4_810,3,int_lev_4_963,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_6,repl_lev_4_7]) validity=(implication24[int_lev_4_810,3,int_lev_4_963,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_7,10]) validity=(implication24[int_lev_4_810,3,int_lev_4_963,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_7,9]) validity=(implication24[int_lev_4_810,3,int_lev_4_963,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_7,it_0_lev_4_0]) validity=(implication24[int_lev_4_810,3,int_lev_4_963,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_7,rec]) validity=(implication24[int_lev_4_810,3,int_lev_4_963,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_9,10]) validity=(implication24[int_lev_4_810,3,int_lev_4_963,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_9,9]) validity=(implication24[int_lev_4_810,3,int_lev_4_963,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_9,it_0_lev_4_0]) validity=(implication24[int_lev_4_810,3,int_lev_4_963,8,4]) origins=1
+  FOUND preorder in exprOriginMap: (preorder[1,4,repl_lev_4_9,rec]) validity=(implication24[int_lev_4_810,3,int_lev_4_963,8,4]) origins=1
+  head origin exists: YES
+  head origin tag: implication
+    dep[0]: (>[4,5](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11](in3[7,10,11,5])(>[12](in3[8,10,12,4])(>[13](in3[9,11,13,4])(in3[7,12,13,5])))))) validity=main origin_exists=YES
+    dep[1]: (AnchorPeano[1,2,3,4,5,6]) validity=main origin_exists=YES
+    dep[2]: (in3[7,10,it_1_lev_4_118,5]) validity=main origin_exists=YES
+    dep[3]: (in3[7,int_lev_4_980,it_0_lev_4_8,5]) validity=main origin_exists=YES
+    dep[4]: (in3[int_lev_4_980,10,12,4]) validity=main origin_exists=YES
+    dep[5]: (in3[it_0_lev_4_8,it_1_lev_4_118,11,4]) validity=main origin_exists=YES
+

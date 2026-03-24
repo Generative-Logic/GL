@@ -34,7 +34,8 @@
 #include <tuple>
 #include <cstdlib> 
 #include <algorithm>
-#include <mutex> 
+#include <mutex>
+#include <unordered_set>
 #include "parameters.hpp"
 #include <iostream>
 #include "argument_analyzer.hpp"
@@ -97,6 +98,7 @@ namespace gl {
         std::string justification;
         std::vector<std::string> key;
         std::set<std::string> remainingArgs;
+        std::string validityName;
 
         // Constructors
         LocalMemoryValue()
@@ -105,7 +107,8 @@ namespace gl {
             originalImplication(),
             justification(),
             key(),
-            remainingArgs() {
+            remainingArgs(),
+            validityName("main") {
         }
 
         LocalMemoryValue(const std::string& value_,
@@ -113,23 +116,25 @@ namespace gl {
             const std::string& originalImplication_,
             const std::string& justification_,
             const std::vector<std::string>& key_,
-            const std::set<std::string>& remainingArgs_)
+            const std::set<std::string>& remainingArgs_,
+            const std::string& validityName_ = "main")
             : value(value_),
             levels(levels_),
             originalImplication(originalImplication_),
             justification(justification_),
             key(key_),
-            remainingArgs(remainingArgs_) {
+            remainingArgs(remainingArgs_),
+            validityName(validityName_) {
         }
 
         // Ordering so it can be stored in std::set<LocalMemoryValue>
-        // Lexicographic over (value, levels, originalImplication, key, remainingArgs).
+        // Lexicographic over (value, levels, originalImplication, key, remainingArgs, validityName).
         bool operator<(const LocalMemoryValue& rhs) const {
             if (value != rhs.value) {
                 return value < rhs.value;
             }
             if (levels != rhs.levels) {
-                return levels < rhs.levels; // std::set<std::string> has lexicographic operator<
+                return levels < rhs.levels;
             }
             if (originalImplication != rhs.originalImplication) {
                 return originalImplication < rhs.originalImplication;
@@ -138,10 +143,13 @@ namespace gl {
                 return justification < rhs.justification;
             }
             if (key != rhs.key) {
-                return key < rhs.key; // std::vector<std::string> has lexicographic operator<
+                return key < rhs.key;
             }
             if (remainingArgs != rhs.remainingArgs) {
-                return remainingArgs < rhs.remainingArgs; // std::set<std::string> lexicographic
+                return remainingArgs < rhs.remainingArgs;
+            }
+            if (validityName != rhs.validityName) {
+                return validityName < rhs.validityName;
             }
             return false; // equal in ordering terms
         }
@@ -607,7 +615,9 @@ namespace gl {
         BodyOfProves* parentBodyOfProves;
         int level;
 
-        LocalMemory localMemory;
+        LocalMemory overallHashMemory;
+        LocalMemory localHashMemory;
+        LocalMemory localHashMemoryDelta;
 
         std::map<std::string, std::vector<EquivalenceClass>> equivalenceClassesMap;
         std::vector<EncodedExpression> localEncodedStatements;
@@ -633,6 +643,10 @@ namespace gl {
         std::set<ExpressionWithValidity> weakVariables;
         std::set<std::string> axedVariables;
 
+        // --- Incubator: contradiction proving ---
+        bool primedForContradiction = false;
+        std::string contradictionTheorem;
+
         BodyOfProves()
             : simpleMap(),
             startInt(0),
@@ -644,7 +658,9 @@ namespace gl {
             exprKey(),
             parentBodyOfProves(nullptr),
             level(-1),
-            localMemory(),
+            overallHashMemory(),
+            localHashMemory(),
+            localHashMemoryDelta(),
             equivalenceClassesMap(),
             localEncodedStatements(),
             localEncodedStatementsDelta(),
@@ -665,7 +681,9 @@ namespace gl {
 			canBeSentSet(),
 			canBeSentMarkerSet(),
 			weakVariables(),
-			axedVariables()
+			axedVariables(),
+			primedForContradiction(false),
+			contradictionTheorem()
         {
         }
 
@@ -779,8 +797,9 @@ namespace gl {
         std::map<int, std::vector<std::vector<int> > > allPermutationsAna;
         Dependencies globalDependencies;
 		std::vector<ContradictionItem> contradictionTable;
+		bool ceFilteringActive = false;
 
-		std::map<std::string, ce::CoreExpressionConfig> coreExpressionMap; // Load and resolve core expressions    
+		std::map<std::string, ce::CoreExpressionConfig> coreExpressionMap; // Load and resolve core expressions
         ce::AnchorInfo anchorInfo;
         std::string anchorID_;
 
@@ -830,6 +849,7 @@ namespace gl {
             const std::string& value,
             const std::set<std::string>& remainingArgs,
             BodyOfProves& mb,
+            LocalMemory& targetMemory,
             const std::set<int>& levels,
             const std::string& originalImplication,
             int maxAdmissionDepth,
@@ -837,7 +857,20 @@ namespace gl {
             bool partOfRecursion,
             int minNumOperatorsKey,
             const std::string& justification,
-            bool performAdmissionMapUpdate);
+            bool performAdmissionMapUpdate,
+            const std::string& originalImplicationClean,
+            const std::string& validityName = "main");
+
+        // Incubator: multiply an implication into copies where subsets of
+        // (1)-typed bound variables are set equal (Bell partitions).
+        std::vector<std::string> multiplyImplication(const std::string& implication);
+
+        // Incubator: back-reformulate operator-equality pattern to clean operator form.
+        // Returns true if theorem matches Anchor -> op[...,x,...] -> =[x,a] and fills
+        // backReformulated with Anchor -> op[...,a,...].
+        bool tryBackReformulateOperatorHead(
+            const std::string& theorem,
+            std::string& backReformulated);
         // ---- Ordering helpers (function pointers used by std::sort) ----
         static bool lessByName(const EncodedExpression& a, const EncodedExpression& b);
         static bool lessByOriginal(const EncodedExpression& a, const EncodedExpression& b);
@@ -1028,7 +1061,8 @@ namespace gl {
 
         void saveFilteredConjectures(const std::vector<std::string>& lines);
 
-        void broadcastTheorems(const std::vector<std::string>& provedTheorems);
+        void broadcastTheorems(const std::vector<std::string>& provedTheorems,
+                               const std::string& originTag = "broadcast");
 
         void prefillIntegrationMapsRecursive(BodyOfProves* mb);
 
@@ -1037,7 +1071,9 @@ namespace gl {
         void prehandleAnchor(BodyOfProves* mb);
 
 
-        void analyzeExpressions(const std::vector<std::string>& theorems, const std::vector<std::string>& provedTheorems);
+        void analyzeExpressions(const std::vector<std::string>& theorems,
+                                const std::vector<std::string>& provedTheorems,
+                                const std::vector<std::string>& externalTheorems = {});
 
         void updateAdmissionMapRecursion(const std::string& expression,
             BodyOfProves& mb,
@@ -1121,7 +1157,8 @@ namespace gl {
         // Saves only the essential (compressor-surviving) theorems to proved_theorems.txt.
         // This is the sole cross-batch propagation path: only essential theorems
         // are inherited by subsequent batches.
-        void saveProvedTheoremsFiltered(const std::vector<std::string>& essentialTheorems);
+        void saveProvedTheoremsFiltered(const std::vector<std::string>& essentialTheorems,
+                                       const std::unordered_set<std::string>& externalTheorems = {});
 
 
         // Helper to append origins safely up to max limit
@@ -1185,14 +1222,14 @@ namespace gl {
             // Quick reject: too many secondary variables → no need to normalize at all
             int secondaryCounter = 0;
             for (std::size_t i = 0; i < key.size(); ++i) {
-                secondaryCounter += countPatternOccurrencesEncoded(key[i], body.localMemory);
+                secondaryCounter += countPatternOccurrencesEncoded(key[i], body.overallHashMemory);
             }
             if (secondaryCounter > parameters.maxNumberSecondaryVariables) {
                 return std::make_pair(false, NormalizedKey());
             }
 
             // Quick reject by length vs. admitted max
-            if (static_cast<int>(key.size()) > body.localMemory.maxKeyLength) {
+            if (static_cast<int>(key.size()) > body.overallHashMemory.maxKeyLength) {
                 return std::make_pair(false, NormalizedKey());
             }
 
@@ -1557,6 +1594,34 @@ namespace gl {
             return implication;
         }
 
+        // Wrapper around FullBind for integration.
+        // If outermost >[...] has a pi_lev_ bound var (unoccupied): return as-is.
+        // Otherwise (occupied bound var): remove the var from >[...], making it empty >[].
+        // pi_ format: pi_lev_<digits>_<digits> (e.g. pi_lev_0_1)
+        inline std::string reconstructImplicationForIntegration(const std::vector<std::string>& key,
+            const std::string& value) {
+            std::string result = reconstructImplicationFullBind(key, value);
+
+            // Find outermost >[...] content
+            if (result.size() > 3 && result[0] == '(' && result[1] == '>' && result[2] == '[') {
+                std::size_t bracketEnd = result.find(']', 3);
+                if (bracketEnd != std::string::npos && bracketEnd > 3) {
+                    std::string bv = result.substr(3, bracketEnd - 3);
+
+                    // Check if bound var matches pi_lev_ prefix
+                    if (bv.size() >= 7 && bv[0] == 'p' && bv[1] == 'i' && bv[2] == '_'
+                        && bv[3] == 'l' && bv[4] == 'e' && bv[5] == 'v' && bv[6] == '_') {
+                        return result; // unoccupied pi_lev_ bound var — return unchanged
+                    }
+
+                    // Occupied bound var — remove from >[...] → >[]
+                    result = "(>[]" + result.substr(bracketEnd + 1);
+                }
+            }
+
+            return result;
+        }
+
         inline std::vector<std::string> renamingChain(const std::vector<std::string>& chain, const std::set<std::string>& remainingArgs) {
             // 0. Early check: If chain has NO "u_" args, return it unchanged.
             bool hasU = false;
@@ -1703,23 +1768,23 @@ namespace gl {
                         maxSecondaryNumber,
                         partOfRecursion);
 
-                    std::map<ExpressionWithValidity, std::set<AdmissionMapValue> >::iterator itAd = mb.localMemory.admissionMap.find(ExpressionWithValidity(removed, validityName));
-                    if (itAd != mb.localMemory.admissionMap.end()) {
+                    std::map<ExpressionWithValidity, std::set<AdmissionMapValue> >::iterator itAd = mb.overallHashMemory.admissionMap.find(ExpressionWithValidity(removed, validityName));
+                    if (itAd != mb.overallHashMemory.admissionMap.end()) {
                         itAd->second.insert(value);
 
-                        std::map<ExpressionWithValidity, bool>::iterator itSt = mb.localMemory.admissionStatusMap.find(ExpressionWithValidity(removed, validityName));
-                        if (itSt != mb.localMemory.admissionStatusMap.end()) {
+                        std::map<ExpressionWithValidity, bool>::iterator itSt = mb.overallHashMemory.admissionStatusMap.find(ExpressionWithValidity(removed, validityName));
+                        if (itSt != mb.overallHashMemory.admissionStatusMap.end()) {
                             itSt->second = partOfRecursion || itSt->second;
                         }
                         else {
-                            mb.localMemory.admissionStatusMap[ExpressionWithValidity(removed, validityName)] = partOfRecursion;
+                            mb.overallHashMemory.admissionStatusMap[ExpressionWithValidity(removed, validityName)] = partOfRecursion;
                         }
                     }
                     else {
                         std::set<AdmissionMapValue> s;
                         s.insert(value);
-                        mb.localMemory.admissionMap.insert(std::make_pair(ExpressionWithValidity(removed, validityName), s));
-                        mb.localMemory.admissionStatusMap[ExpressionWithValidity(removed, validityName)] = partOfRecursion;
+                        mb.overallHashMemory.admissionMap.insert(std::make_pair(ExpressionWithValidity(removed, validityName), s));
+                        mb.overallHashMemory.admissionStatusMap[ExpressionWithValidity(removed, validityName)] = partOfRecursion;
                     }
                 }
             }
@@ -2241,8 +2306,8 @@ namespace gl {
 
 
             // 4. Check if the marked expression exists in the integration map
-            auto it = mb.localMemory.admissionMapIntegration.find(ExpressionWithValidity(renamedMarkedExpr, validityName));
-            if (it == mb.localMemory.admissionMapIntegration.end()) {
+            auto it = mb.overallHashMemory.admissionMapIntegration.find(ExpressionWithValidity(renamedMarkedExpr, validityName));
+            if (it == mb.overallHashMemory.admissionMapIntegration.end()) {
                 return false;
             }
 
@@ -2406,12 +2471,12 @@ namespace gl {
                 ExpressionWithValidity evKey(markedExpr, validity);
 
                 // Mark as consumed so it isn't used again
-                mb.localMemory.consumedAdmissionKeys.insert(evKey);
+                mb.overallHashMemory.consumedAdmissionKeys.insert(evKey);
 
                 // Remove from active admission maps
-                mb.localMemory.admissionMap.erase(evKey);
-                mb.localMemory.admissionStatusMap.erase(evKey);
-                mb.localMemory.admissionMapIntegration.erase(evKey);
+                mb.overallHashMemory.admissionMap.erase(evKey);
+                mb.overallHashMemory.admissionStatusMap.erase(evKey);
+                mb.overallHashMemory.admissionMapIntegration.erase(evKey);
             }
         }
 
@@ -2435,12 +2500,12 @@ namespace gl {
             const std::string part1 = expr.substr(pos + var.size());
 
             std::map<ExpressionWithValidity, std::set<AdmissionMapValue> >::iterator mit =
-                mb.localMemory.admissionMap.find(ExpressionWithValidity(markedExpr, validityName));
-            if (mit == mb.localMemory.admissionMap.end()) {
+                mb.overallHashMemory.admissionMap.find(ExpressionWithValidity(markedExpr, validityName));
+            if (mit == mb.overallHashMemory.admissionMap.end()) {
                 return result;
             }
 
-            assert(mb.localMemory.consumedAdmissionKeys.find(ExpressionWithValidity(markedExpr, validityName)) == mb.localMemory.consumedAdmissionKeys.end());
+            assert(mb.overallHashMemory.consumedAdmissionKeys.find(ExpressionWithValidity(markedExpr, validityName)) == mb.overallHashMemory.consumedAdmissionKeys.end());
 
             // snapshot set into a vector (mirrors Python list())
             std::vector<AdmissionMapValue> tuples;
@@ -2458,16 +2523,16 @@ namespace gl {
                 const bool partOfRecursion = tuples[i].flag;
 
                 const int mn = extractMaxIterationNumber(var);
-                const int cnt = countPatternOccurrences(expr, mb.localMemory);
+                const int cnt = countPatternOccurrences(expr, mb.overallHashMemory);
 
                 if (mn <= maxAdmissionDepth && cnt <= maxSecondaryNumber) {
                     result = true;
 
                     std::map<ExpressionWithValidity, bool>::iterator sit =
-                        mb.localMemory.admissionStatusMap.find(ExpressionWithValidity(markedExpr, validityName));
-                    assert(sit != mb.localMemory.admissionStatusMap.end());
-                    if (sit != mb.localMemory.admissionStatusMap.end() && sit->second) {
-                        mb.localMemory.productsOfRecursion.insert(var);
+                        mb.overallHashMemory.admissionStatusMap.find(ExpressionWithValidity(markedExpr, validityName));
+                    assert(sit != mb.overallHashMemory.admissionStatusMap.end());
+                    if (sit != mb.overallHashMemory.admissionStatusMap.end() && sit->second) {
+                        mb.overallHashMemory.productsOfRecursion.insert(var);
                     }
 
                     for (std::size_t e = 0; e < keyVec.size(); ++e) {
@@ -3001,14 +3066,22 @@ namespace gl {
                         return a.original < b.original;
                     });
 
-                // Generate all permutations for *just this group*
+                // Generate all permutations for *just this group*.
+                // Cap: groups larger than 7 elements (7!=5040) would explode
+                // (e.g. 10 same-typed equalities → 10!=3,628,800).  For such
+                // groups only the canonical (sorted) ordering is cached.
                 std::vector<std::vector<EncodedExpression>> clusterPermutations;
-                do {
+                if (cluster.size() <= 7) {
+                    do {
+                        clusterPermutations.push_back(cluster);
+                    } while (std::next_permutation(cluster.begin(), cluster.end(),
+                        [](const EncodedExpression& a, const EncodedExpression& b) {
+                            return a.original < b.original;
+                        }));
+                } else {
+                    // Single canonical ordering — already sorted above.
                     clusterPermutations.push_back(cluster);
-                } while (std::next_permutation(cluster.begin(), cluster.end(),
-                    [](const EncodedExpression& a, const EncodedExpression& b) {
-                        return a.original < b.original;
-                    }));
+                }
 
                 // 3. Multiply (Cartesian Product) into the final results
                 extendCombinations(finalCombinations, clusterPermutations);
@@ -3693,8 +3766,8 @@ namespace gl {
                         if (!isU) {
                             // It is a bound variable. Check if we already assigned a fresh ID for it.
                             if (replacementMap.find(arg) == replacementMap.end()) {
-                                // Create fresh variable: it_0_lev_<level>_<startInt>
-                                std::string freshVar = "pi_" + std::to_string(mb.level) + "_" + std::to_string(mb.startIntPi);
+                                // Create fresh variable: pi_lev_<level>_<startInt>
+                                std::string freshVar = "pi_lev_" + std::to_string(mb.level) + "_" + std::to_string(mb.startIntPi);
 
                                 // Update mapping
                                 replacementMap[arg] = freshVar;
@@ -3799,7 +3872,7 @@ namespace gl {
             return renamedChain;
         }
 
-        std::string expandSignatureForIntegration(const std::string& category, const std::vector<std::string>& renamedChain, const std::string& cleanSignature) {
+        std::string expandSignatureForIntegration(const std::string& category, const std::vector<std::string>& renamedChain, const std::string& cleanSignature, bool* hasPiBoundVars = nullptr) {
             // 1. Extract arguments from cleanSignature and assert no 'u_' prefix
             std::vector<std::string> sigArgsVec = ce::getArgs(cleanSignature);
             std::set<std::string> sigArgs;
@@ -3855,13 +3928,34 @@ namespace gl {
                         }
                     }
 
-                    std::string varsStr;
-                    for (const auto& v : boundVars) {
-                        if (!varsStr.empty()) varsStr += ",";
-                        varsStr += v;
+                    assert(!boundVars.empty() && "Existence must have at least one bound variable after expansion for integration");
+
+                    // Check if bound vars are pi_lev_-prefixed (unoccupied) or not (occupied)
+                    // Format: pi_lev_<level>_<counter>, e.g. pi_lev_0_1
+                    bool allPi = true;
+                    for (const auto& bv : boundVars) {
+                        if (bv.size() < 7 || bv[0] != 'p' || bv[1] != 'i' || bv[2] != '_'
+                            || bv[3] != 'l' || bv[4] != 'e' || bv[5] != 'v' || bv[6] != '_') {
+                            allPi = false;
+                            break;
+                        }
+                    }
+                    if (hasPiBoundVars) {
+                        *hasPiBoundVars = allPi;
                     }
 
-                    result = "!(>[" + varsStr + "]" + body + negatedHead + ")";
+                    if (allPi) {
+                        // Unoccupied bound vars: preserve binding — !(>[bound](body)(head))
+                        std::string varsStr;
+                        for (const auto& v : boundVars) {
+                            if (!varsStr.empty()) varsStr += ",";
+                            varsStr += v;
+                        }
+                        result = "!(>[" + varsStr + "]" + body + negatedHead + ")";
+                    } else {
+                        // Occupied bound vars: empty binding — (>[](body)(head))
+                        result = "(>[]" + body + head + ")";
+                    }
                 }
             }
             else if (category == "implication") {
@@ -3917,18 +4011,15 @@ namespace gl {
             return ce::replaceKeysInString(result, renameMap);
         }
 
-        std::string buildIntegrationInstruction(const std::vector<std::string>& elements, const std::string& signature) {
-            // 1. Build the implication directly (inputs already have "u_" prefixes)
-            std::string implication = this->reconstructImplicationFullBind(elements, signature);
-
-            // 2. Parse the AST to find all variables in the reconstructed implication
+        // Strip u_ prefix from ALL variables in a compound expression using AST parsing.
+        // Unlike removeUPrefixFromArguments (which only sees the first [...]),
+        // this walks the full parse tree to find all tokens at every nesting level.
+        static std::string stripUPrefixAST(const std::string& expr) {
             std::set<std::string> tokens;
-            ce::TreeNode1* root = ce::parseExpr(implication);
+            ce::TreeNode1* root = ce::parseExpr(expr);
 
             std::vector<ce::TreeNode1*> stack;
-            if (root) {
-                stack.push_back(root);
-            }
+            if (root) stack.push_back(root);
 
             while (!stack.empty()) {
                 ce::TreeNode1* curr = stack.back();
@@ -3936,9 +4027,7 @@ namespace gl {
 
                 std::vector<std::string> args = ce::getArgs(curr->value);
                 for (const std::string& a : args) {
-                    if (!a.empty()) {
-                        tokens.insert(a);
-                    }
+                    if (!a.empty()) tokens.insert(a);
                 }
 
                 if (curr->left) stack.push_back(curr->left);
@@ -3947,7 +4036,6 @@ namespace gl {
 
             ce::deleteTree(root);
 
-            // 3. Build the rename map to strip the "u_" prefixes
             std::map<std::string, std::string> renameMap;
             for (const std::string& t : tokens) {
                 if (t.size() >= 2 && t[0] == 'u' && t[1] == '_') {
@@ -3955,8 +4043,29 @@ namespace gl {
                 }
             }
 
-            // 4. Apply the renaming to return the clean final implication
-            return ce::replaceKeysInString(implication, renameMap);
+            return ce::replaceKeysInString(expr, renameMap);
+        }
+
+        std::pair<std::string, std::string> buildIntegrationInstruction(const std::vector<std::string>& elements, const std::string& signature) {
+            // 1. Build the implication: only pi_-prefixed vars get bound (unoccupied existence bound vars)
+            std::string implication = this->reconstructImplicationForIntegration(elements, signature);
+
+            // 2. History version: strip u_, and strip non-pi_lev_ bound vars from outermost >[...]
+            //    pi_lev_ stays in >[...], occupied (non-pi_lev_) vars get stripped to >[]
+            std::string history = stripUPrefixAST(implication);
+            if (history.size() > 3 && history[0] == '(' && history[1] == '>' && history[2] == '[') {
+                std::size_t bracketEnd = history.find(']', 3);
+                if (bracketEnd != std::string::npos && bracketEnd > 3) {
+                    std::string bv = history.substr(3, bracketEnd - 3);
+                    bool isPiLev = (bv.size() >= 7 && bv[0] == 'p' && bv[1] == 'i' && bv[2] == '_'
+                        && bv[3] == 'l' && bv[4] == 'e' && bv[5] == 'v' && bv[6] == '_');
+                    if (!isPiLev) {
+                        history = "(>[]" + history.substr(bracketEnd + 1);
+                    }
+                }
+            }
+            // 3. Return pair: .first = history (pi_lev_ kept, others stripped), .second = u_-preserved (for hash matching)
+            return std::make_pair(history, implication);
         }
 
 //#pragma optimize("", off)
@@ -4177,30 +4286,32 @@ namespace gl {
                         for (const auto& elem : le.elements) {
                             std::string markedElem = makeMarkedExprLambda(elem);
 
-                            for (const auto& implication : mb.localMemory.originals)
+                            for (const auto& implication : mb.overallHashMemory.originals)
                             {
-                                makeAdmissionKeys(implication, markedElem, mb.localMemory, validityName);
+                                makeAdmissionKeys(implication, markedElem, mb.overallHashMemory, validityName);
                             }
                         }
                     }
 
 
                     
-                    std::string integrationInstruction;
+                    std::string integrationInstructionForHistory;
+                    std::string integrationInstructionForHash;
                     if (parameters.trackHistory)
                     {
                         std::string expandedSignature;
-                        
+                        bool hasPiBoundVars = false;
+
                         if (le.category == "existence")
                         {
-                            expandedSignature = expandSignatureForIntegration("existence", le.elements, cleanSignature);
+                            expandedSignature = expandSignatureForIntegration("existence", le.elements, cleanSignature, &hasPiBoundVars);
                         }
                         if (le.category == "and")
                         {
                             expandedSignature = expandSignatureForIntegration("and", le.elements, cleanSignature);
                         }
-                        
-                        
+
+
                         std::pair<std::string, std::vector<ExpressionWithValidity>> originExpansion;
                         originExpansion.first = "expansion for integration";
                         originExpansion.second.push_back(ExpressionWithValidity(cleanSignature + "_integration_goal", validityName));
@@ -4210,29 +4321,77 @@ namespace gl {
                         addOrigin(mb.exprOriginMap, ev, originExpansion, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
                         addOrigin(mb.mailOut.exprOriginMap, ev, originExpansion, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
 
-                        integrationInstruction = buildIntegrationInstruction(le.elements, le.signature);
+                        auto integrationInstructionPair = buildIntegrationInstruction(le.elements, le.signature);
+                        integrationInstructionForHistory = integrationInstructionPair.first;
+                        integrationInstructionForHash = integrationInstructionPair.second;
+
                         std::pair<std::string, std::vector<ExpressionWithValidity>> originInstruction;
-                        originInstruction.first = "reformulation for integration";
+                        if (le.category == "and") {
+                            originInstruction.first = "reformulation for integration and";
+                        } else if (le.category == "existence" && hasPiBoundVars) {
+                            originInstruction.first = "reformulation for integration >[bound]";
+                        } else if (le.category == "existence" && !hasPiBoundVars) {
+                            originInstruction.first = "reformulation for integration >[]";
+                        }
                         originInstruction.second.push_back(ExpressionWithValidity(expandedSignature + "_integration_goal", validityName));
 
-                        ExpressionWithValidity iiv(integrationInstruction, validityName);
+                        ExpressionWithValidity iiv(integrationInstructionForHistory, validityName);
 
                         addOrigin(mb.exprOriginMap, iiv, originInstruction, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
                         addOrigin(mb.mailOut.exprOriginMap, iiv, originInstruction, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
+                        // Also record for u_-preserved version (what addToHashMemory/buildStack sees)
+                        ExpressionWithValidity iivHash(integrationInstructionForHash, validityName);
+                        addOrigin(mb.exprOriginMap, iivHash, originInstruction, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
+                        addOrigin(mb.mailOut.exprOriginMap, iivHash, originInstruction, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
                     }
 
                     this->addToHashMemory(le.elements,
                         le.signature,
                         unchangeableArguments,
                         mb,
+                        mb.overallHashMemory,
                         std::set<int>(),
-                        integrationInstruction, // origin has to be passed down for each assembled LE in html/txt file
+                        integrationInstructionForHistory,
                         0,
                         0,
                         false,
                         0,
                         "integration",
-                        false);
+                        false,
+                        integrationInstructionForHistory,
+                        validityName);
+
+                    this->addToHashMemory(le.elements,
+                        le.signature,
+                        unchangeableArguments,
+                        mb,
+                        mb.localHashMemory,
+                        std::set<int>(),
+                        integrationInstructionForHistory,
+                        0,
+                        0,
+                        false,
+                        0,
+                        "integration",
+                        false,
+                        integrationInstructionForHistory,
+                        validityName);
+
+                    this->addToHashMemory(le.elements,
+                        le.signature,
+                        unchangeableArguments,
+                        mb,
+                        mb.localHashMemoryDelta,
+                        std::set<int>(),
+                        integrationInstructionForHistory,
+                        0,
+                        0,
+                        false,
+                        0,
+                        "integration",
+                        false,
+                        integrationInstructionForHistory,
+                        validityName);
                 }
 
                 // Case C: Marker Logic (Admission)
@@ -4282,7 +4441,7 @@ namespace gl {
                             }
                         }
 
-                        mb.localMemory.admissionMapIntegration[ExpressionWithValidity(keyString, validityName)][instructionCopy];
+                        mb.overallHashMemory.admissionMapIntegration[ExpressionWithValidity(keyString, validityName)][instructionCopy];
                     }
 
                 }
@@ -4321,7 +4480,7 @@ namespace gl {
                                     elem = ce::replaceKeysInString(elem, markerMap);
                                 }
                             }
-                            mb.localMemory.admissionMapIntegration[keyString].insert(instructionCopy);
+                            mb.overallHashMemory.admissionMapIntegration[keyString].insert(instructionCopy);
                         }
                     }
                 }
@@ -4336,6 +4495,7 @@ namespace gl {
             BodyOfProves& mb,
             std::string validityName)
         {
+
             std::vector<std::string> argsCheck = ce::getArgs(expression);
             bool hasMarker = false;
             for (const std::string& arg : argsCheck) {
@@ -4405,7 +4565,9 @@ namespace gl {
                     ++it;
                 }
             }
-            assert(tempArgs.size() <= 1);
+            if (!parameters.incubator_mode) {
+                assert(tempArgs.size() <= 1);
+            }
 
 
             Instruction instructions;
@@ -4432,9 +4594,9 @@ namespace gl {
                 }
                 else {
                     // Changeable Mapping
-                    std::string freshVar = "pi_lev_" + std::to_string(mb.level) + "_" + std::to_string(mb.startInt);
+                    std::string freshVar = "pi_lev_" + std::to_string(mb.level) + "_" + std::to_string(mb.startIntPi);
                     changeableMap[arg] = freshVar;
-                    mb.startInt++;
+                    mb.startIntPi++;
                 }
             }
 
@@ -4513,8 +4675,8 @@ namespace gl {
                 std::string replacedCopy = ce::replaceKeysInString(expression, markerReplacementMap);
                 replacedCopy = addMissingU(replacedCopy);
 
-                auto it = mb.localMemory.admissionMapIntegration.find(ExpressionWithValidity(replacedCopy, validityName));
-                if (it != mb.localMemory.admissionMapIntegration.end()) {
+                auto it = mb.overallHashMemory.admissionMapIntegration.find(ExpressionWithValidity(replacedCopy, validityName));
+                if (it != mb.overallHashMemory.admissionMapIntegration.end()) {
 
                     std::map<std::string, std::string> changeableMap;
                     std::string uVar = "u_" + argName;
@@ -4538,7 +4700,7 @@ namespace gl {
 
                         // 3. Run Logic
                         Instruction instructionsCopy = instruction;
-                        auto it = mb.localMemory.admissionMapIntegration.find(ExpressionWithValidity(replacedCopy, validityName));
+                        auto it = mb.overallHashMemory.admissionMapIntegration.find(ExpressionWithValidity(replacedCopy, validityName));
                         cleanInstruction(instructionsCopy, replacedCopy);
                         prepareIntegrationCore2(instructionsCopy, changeableMap, mb, validityName, "");
                     }
@@ -4864,7 +5026,7 @@ namespace gl {
                 if (mn != -1 && mn > parameters.maxIterationNumberVariable) {
                     continue;
                 }
-                if (this->countPatternOccurrences(applied, memoryBlock.localMemory) >
+                if (this->countPatternOccurrences(applied, memoryBlock.overallHashMemory) >
                     parameters.maxNumberSecondaryVariables) {
                     continue;
                 }
@@ -4884,6 +5046,13 @@ namespace gl {
                     }
 
                     // Commit to memory block
+
+                    if (appliedEnc.original == "(in3[2,2,2,4])" and memoryBlock.exprKey == "(AnchorIncubator[1,2,3,4,5,6,7,8,9,10])")
+                    {
+                        int test = 0;
+                        test++;
+                    }
+
                     memoryBlock.statementLevelsMap[appliedEnc] = lvls;
                     memoryBlock.encodedStatements.push_back(appliedEnc);
                     memoryBlock.localEncodedStatements.push_back(appliedEnc);
@@ -5363,12 +5532,12 @@ namespace gl {
                 return newStatements;
             }
 
-            if (countPatternOccurrences(expr, memoryBlock.localMemory) >
+            if (countPatternOccurrences(expr, memoryBlock.overallHashMemory) >
                 parameters.maxNumberSecondaryVariables) {
                 return newStatements;
             }
 
-            if (!isEquality(expr)) {
+            if (!isEquality(expr) || parameters.skip_eq_classes) {
                 // not in memory already?
                 if (memoryBlock.statementLevelsMap.find(encodedExpr) == memoryBlock.statementLevelsMap.end()) {
 
@@ -5381,10 +5550,16 @@ namespace gl {
                     }
 
                     if (!anyFilteredOut) {
+                        //in3[2,2,2,4] finder:
+                        if (expr == "(in3[2,2,2,4])" && memoryBlock.exprKey == "(AnchorIncubator[1,2,3,4,5,6,7,8,9,10])")
+                        {
+                            int test = 0;
+                            test++;
+                        }
                         memoryBlock.statementLevelsMap[encodedExpr] = levels;
 
                         if (parameters.trackHistory) {
-                            // addOrigin handles existence checks, vector push_back, 
+                            // addOrigin handles existence checks, vector push_back,
                             // and respects the compressor_max_origins_per_expr limit.
                             addOrigin(memoryBlock.exprOriginMap, exprWithValidity, origin, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
                             addOrigin(memoryBlock.mailOut.exprOriginMap, exprWithValidity, origin, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
@@ -5415,13 +5590,15 @@ namespace gl {
                 }
 
                 // Apply each equivalence class to generate more statements from expr
-                for (std::size_t i = 0; i < memoryBlock.equivalenceClassesMap[validityName].size(); ++i) {
-                    this->applyEquivalenceClass(memoryBlock.equivalenceClassesMap[validityName][i],
-                        encodedExpr,
-                        memoryBlock,
-                        levels,
-                        newStatements,
-                        validityName);
+                if (!parameters.skip_eq_classes) {
+                    for (std::size_t i = 0; i < memoryBlock.equivalenceClassesMap[validityName].size(); ++i) {
+                        this->applyEquivalenceClass(memoryBlock.equivalenceClassesMap[validityName][i],
+                            encodedExpr,
+                            memoryBlock,
+                            levels,
+                            newStatements,
+                            validityName);
+                    }
                 }
             }
             else {
@@ -5431,48 +5608,50 @@ namespace gl {
 				newStatements.push_back(expr); // also add the equality itself
             }
 
-            // Iteratively apply equivalence classes to any newly generated statements
-            std::size_t oldSize = memoryBlock.encodedStatements.size();
-            while (true) {
-                for (std::size_t c = 0; c < memoryBlock.equivalenceClassesMap[validityName].size(); ++c) {
-                    const EquivalenceClass& eqc = memoryBlock.equivalenceClassesMap[validityName][c];
+            if (!parameters.skip_eq_classes) {
+                // Iteratively apply equivalence classes to any newly generated statements
+                std::size_t oldSize = memoryBlock.encodedStatements.size();
+                while (true) {
+                    for (std::size_t c = 0; c < memoryBlock.equivalenceClassesMap[validityName].size(); ++c) {
+                        const EquivalenceClass& eqc = memoryBlock.equivalenceClassesMap[validityName][c];
 
-                    int startIndex = 0;
-                    std::map<std::set<std::string>, int>::const_iterator itIdx =
-                        memoryBlock.eqClassSttmntIndexMapMap[validityName].find(eqc.variables);
-                    if (itIdx != memoryBlock.eqClassSttmntIndexMapMap[validityName] .end()) {
-                        startIndex = itIdx->second;
-                    }
-
-                    for (int idx = startIndex; idx < static_cast<int>(memoryBlock.encodedStatements.size()); ++idx) {
-                        if (memoryBlock.encodedStatements[static_cast<std::size_t>(idx)].validityName != validityName)
-                        {
-                            continue;
+                        int startIndex = 0;
+                        std::map<std::set<std::string>, int>::const_iterator itIdx =
+                            memoryBlock.eqClassSttmntIndexMapMap[validityName].find(eqc.variables);
+                        if (itIdx != memoryBlock.eqClassSttmntIndexMapMap[validityName] .end()) {
+                            startIndex = itIdx->second;
                         }
 
-                        const std::string& s = memoryBlock.encodedStatements[static_cast<std::size_t>(idx)].original;
+                        for (int idx = startIndex; idx < static_cast<int>(memoryBlock.encodedStatements.size()); ++idx) {
+                            if (memoryBlock.encodedStatements[static_cast<std::size_t>(idx)].validityName != validityName)
+                            {
+                                continue;
+                            }
 
-                        std::map<EncodedExpression, std::set<int> >::const_iterator lvIt =
-                            memoryBlock.statementLevelsMap.find(memoryBlock.encodedStatements[static_cast<std::size_t>(idx)]);
-                        const std::set<int> emptyLevels;
-                        const std::set<int>& lvls = (lvIt != memoryBlock.statementLevelsMap.end())
-                            ? lvIt->second : emptyLevels;
+                            const std::string& s = memoryBlock.encodedStatements[static_cast<std::size_t>(idx)].original;
 
-                        this->applyEquivalenceClass(eqc, memoryBlock.encodedStatements[static_cast<std::size_t>(idx)], memoryBlock, lvls, newStatements, validityName);
+                            std::map<EncodedExpression, std::set<int> >::const_iterator lvIt =
+                                memoryBlock.statementLevelsMap.find(memoryBlock.encodedStatements[static_cast<std::size_t>(idx)]);
+                            const std::set<int> emptyLevels;
+                            const std::set<int>& lvls = (lvIt != memoryBlock.statementLevelsMap.end())
+                                ? lvIt->second : emptyLevels;
+
+                            this->applyEquivalenceClass(eqc, memoryBlock.encodedStatements[static_cast<std::size_t>(idx)], memoryBlock, lvls, newStatements, validityName);
+                        }
+
+                        memoryBlock.eqClassSttmntIndexMapMap[validityName][eqc.variables] =
+                            static_cast<int>(memoryBlock.encodedStatements.size());
                     }
 
-                    memoryBlock.eqClassSttmntIndexMapMap[validityName][eqc.variables] =
-                        static_cast<int>(memoryBlock.encodedStatements.size());
+                    if (oldSize == memoryBlock.encodedStatements.size()) {
+                        break;
+                    }
+                    oldSize = memoryBlock.encodedStatements.size();
                 }
 
-                if (oldSize == memoryBlock.encodedStatements.size()) {
-                    break;
+                if (isEquality(expr)) {
+                    newStatements = this->cleanUpExpressions(memoryBlock, newStatements, validityName);
                 }
-                oldSize = memoryBlock.encodedStatements.size();
-            }
-
-            if (isEquality(expr)) {
-                newStatements = this->cleanUpExpressions(memoryBlock, newStatements, validityName);
             }
 
             return newStatements;

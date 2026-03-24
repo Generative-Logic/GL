@@ -334,6 +334,7 @@
 	"max_size_expression": 6
   },
   "parameters": {
+   "min_number_simple_expressions": 2,
    "max_number_simple_expressions": 4,
    "max_size_mapping_def_set": 7,
    "max_number_args_expr": 1,
@@ -363,12 +364,12 @@
      "P(1)": 10
    },
    "max_size_binary_list": 8,
-   "simple_facts_parameters": [4]
+   "simple_facts_parameters": [6]
   }
   ,
   "prover_parameters": {
     "sizeAllBinariesAna": 10,
-    "maxIterationNumberProof": 40,
+    "maxIterationNumberProof": 34,
     "numberIterationsConjectureFiltering": 1,
     "maxSizeDefSetMapping": 5,
     "maxSizeTargetSetMapping": 12,
@@ -387,6 +388,7 @@
     "maxLenHypoKey": 2,
     "debug": false,
     "max_origin_per_expr": 1,
-    "compressor_max_origins_per_expr": 30
+    "compressor_max_origins_per_expr": 30,
+    "max_partition_size": 1
   }
 }

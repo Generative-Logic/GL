@@ -100,11 +100,11 @@ namespace gl {
                 for (auto& t : tempChain) chain.push_back(std::get<0>(t));
 
                 analyzer.addToHashMemory(
-                    chain, head, std::set<std::string>(), *lb, { 0 }, rule,
+                    chain, head, std::set<std::string>(), *lb, lb->overallHashMemory, { 0 }, rule,
                     analyzer.parameters.standardMaxAdmissionDepth,
                     analyzer.parameters.standardMaxSecondaryNumber,
                     false, analyzer.parameters.minNumOperatorsKey,
-                    "implication", false);
+                    "implication", false, rule);
 
                 lb->wholeExpressions.insert(EncodedExpression(rule, "main"));
             }

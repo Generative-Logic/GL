@@ -34,9 +34,7 @@ import run_modes
 
 def main():
 
-
     start_time = time.time()
-
 
     run_modes.full_run()
 

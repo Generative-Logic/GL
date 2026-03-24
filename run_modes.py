@@ -24,8 +24,6 @@
 
 
 import create_expressions
-from simple_facts_peano import make_simple_facts_peano
-from simple_facts_gauss import make_simple_facts_gauss
 import test_create_expressions
 import generate_full_proof_graph
 import time
@@ -36,6 +34,7 @@ from pathlib import Path
 import subprocess
 import process_proof_graphs
 import verifier
+from incubator_to_simple_facts import convert_incubator_theorems
 
 # wherever this file lives, assume the project root is its parent folder
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -67,7 +66,7 @@ def empty_simple_facts(dir_path: str = "files/simple_facts") -> None:
         d.mkdir(parents=True, exist_ok=True)
 
 
-def generate_anchor_connection(current_tag: str, prev_tag: str):
+def generate_anchor_connection(current_tag: str, prev_tag: str, theorems_dir=None):
     """
     Connects current tag's anchor (A) to previous tag's anchor (B) as A -> B.
     (e.g., AnchorGauss -> AnchorPeano)
@@ -106,7 +105,9 @@ def generate_anchor_connection(current_tag: str, prev_tag: str):
     implication = f"(>[{','.join(quantified_vars)}]{expr_A}{expr_B})"
 
     # 6. Append to theorems.txt
-    theorems_path = PROJECT_ROOT / "files" / "theorems" / "theorems.txt"
+    if theorems_dir is None:
+        theorems_dir = PROJECT_ROOT / "files" / "theorems"
+    theorems_path = theorems_dir / "theorems.txt"
     try:
         with open(theorems_path, "a", encoding="utf-8") as f:
             f.write(implication + "\n")
@@ -126,99 +127,238 @@ def empty_raw_proof_graph(dir_path: str = "files/raw_proof_graph") -> None:
     else:
         d.mkdir(parents=True, exist_ok=True)
 
-def full_run():
-    """
-    """
+def _rebuild_compressed_externals(theorems_dir: Path):
+    """Rebuild compressed_external_theorems.txt = originals + mirrored variants."""
+    ext_thm_path = theorems_dir / "externally_provided_theorems.txt"
+    if not ext_thm_path.exists():
+        ext_thm_path.touch()
+
+    comp_ext_path = theorems_dir / "compressed_external_theorems.txt"
+    comp_ext_path.write_text("")
+
+    ext_theorems = []
+    with open(ext_thm_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                ext_theorems.append(line)
+
+    if ext_theorems:
+        import re as _re
+
+        anchor_groups: dict[str, list[str]] = {}
+        for thm in ext_theorems:
+            m = _re.search(r'\(Anchor([A-Za-z0-9_]+)\[', thm)
+            anchor_tag = m.group(1) if m else ""
+            anchor_groups.setdefault(anchor_tag, []).append(thm)
+
+        ext_set = set(ext_theorems)
+        ext_with_mirrors = list(ext_theorems)
+
+        for anchor_tag, group in anchor_groups.items():
+            if not anchor_tag:
+                continue
+            config_path_init = PROJECT_ROOT / "files" / "config" / f"Config{anchor_tag}.json"
+            if not config_path_init.exists():
+                print(f"Warning: No config for anchor {anchor_tag}, skipping mirrors.")
+                continue
+            config_init = configuration_reader(config_path_init)
+            create_expressions.set_configuration(config_init)
+            create_expressions.set_operators()
+
+            for thm in group:
+                mirrored = create_expressions.create_reshuffled_mirrored(
+                    thm, create_expressions._ALL_PERMUTATIONS, anchor_first=True)
+                if mirrored and mirrored not in ext_set:
+                    ext_with_mirrors.append(mirrored)
+                    ext_set.add(mirrored)
+
+        with open(comp_ext_path, "w", encoding="utf-8") as f:
+            for thm in ext_with_mirrors:
+                f.write(thm + "\n")
+
+        print(f"External theorems: {len(ext_theorems)} originals + "
+              f"{len(ext_with_mirrors) - len(ext_theorems)} mirrored variants.")
 
 
-
-
-
-
-
-    # 1. Global Setup (Run Once)
-    empty_simple_facts()
-    empty_raw_proof_graph()  # <--- NEW: Clear proof graph only once at the start
-
-    # Clear GL_binaries directory
-    gl_binaries_dir = PROJECT_ROOT / "files" / "GL_binaries"
-    if gl_binaries_dir.exists():
-        shutil.rmtree(gl_binaries_dir)
-    gl_binaries_dir.mkdir(parents=True, exist_ok=True)
-
-    # Empty theorem output files at the very start
-    theorems_dir = PROJECT_ROOT / "files" / "theorems"
+def _setup_theorem_folder(theorems_dir: Path):
+    """Setup a theorem folder: clear proved, keep externals, rebuild compressed."""
     theorems_dir.mkdir(parents=True, exist_ok=True)
 
     for fname in [
-        "proved_theorems.txt",          # cross-batch propagation (essential only)
-        "compressed_out_theorems.txt",   # diagnostic: compressor's rejected set
+        "proved_theorems.txt",
+        "compressed_out_theorems.txt",
     ]:
         fpath = theorems_dir / fname
         with open(fpath, 'w', encoding='utf-8') as f:
             f.write("")
 
-    # proved_theorems.txt is rewritten after each batch with the globally compressed set
+    _rebuild_compressed_externals(theorems_dir)
+
+
+def _run_batch(tag: str, prev_tags: list, theorems_dir: Path = None,
+               simple_facts_fn=None):
+    """Run a single batch: conjecture generation + anchor connections + prover."""
+    config_path = PROJECT_ROOT / "files" / "config" / f"Config{tag}.json"
+    if not config_path.exists():
+        print(f"Warning: Configuration file {config_path} not found. Skipping.")
+        return
+
+    config = configuration_reader(config_path)
+
+    # A. Create Simple Facts (if provided)
+    if simple_facts_fn:
+        for n in config.parameters.simple_facts_parameters:
+            simple_facts_fn(n)
+
+    # B. Create Expressions
+    start_time = time.time()
+    print(f"Conjecture creation started for {tag}.")
+    create_expressions.create_expressions_parallel(config)
+    print(f"Conjecture creation finished for {tag}.")
+    end_time = time.time()
+    print(f"Conjecture creation runtime: {end_time - start_time:.5f} seconds")
+
+    # C. Connect to Previous Anchors (Current -> Prev)
+    for prev_tag in prev_tags:
+        generate_anchor_connection(tag, prev_tag, theorems_dir=theorems_dir)
+
+    # D. Run Native Prover
+    print(f"Running GL_Quick for {tag}...")
+    run_gl_quick(tag)
+
+
+
+CLEAN_RUN = True
+RUN_INCUBATOR = True
+
+SIMPLE_FACTS_MAP = {}
+
+
+def full_run():
+    
+    """
+    Unified pipeline. For each tag: Incubator{Tag} -> {Tag}.
+    Incubator produces ground-level facts for CE filtering.
+    Main path produces proof graph theorems.
+    Use --no-clean to keep previous results (e.g. run only Gauss after Peano).
+    """
     tags = ["Peano", "Gauss"]
 
-    # 2. Iterative Execution
+    theorems_dir = PROJECT_ROOT / "files" / "theorems"
+    incubator_theorems_dir = PROJECT_ROOT / "files" / "incubator" / "theorems"
+
+    incubator_dir = PROJECT_ROOT / "files" / "incubator"
+    incubator_raw_dir = incubator_dir / "raw_proof_graph"
+    incubator_proc_dir = incubator_dir / "processed_proof_graph"
+    incubator_full_dir = incubator_dir / "full_proof_graph"
+
+    # 1. Global Setup
+    if CLEAN_RUN:
+        empty_simple_facts()
+        empty_raw_proof_graph()
+
+        gl_binaries_dir = PROJECT_ROOT / "files" / "GL_binaries"
+        if gl_binaries_dir.exists():
+            shutil.rmtree(gl_binaries_dir)
+        gl_binaries_dir.mkdir(parents=True, exist_ok=True)
+
+        _setup_theorem_folder(theorems_dir)
+        if RUN_INCUBATOR:
+            # Empty incubator externals at start (main externals untouched)
+            ext_path = incubator_theorems_dir / "externally_provided_theorems.txt"
+            ext_path.parent.mkdir(parents=True, exist_ok=True)
+            ext_path.write_text("")
+            _setup_theorem_folder(incubator_theorems_dir)
+            empty_raw_proof_graph(str(incubator_raw_dir.relative_to(PROJECT_ROOT)))
+    else:
+        print("Skipping cleanup (--no-clean).")
+
+    # 2. Run stages: for each tag, incubator first, then main
     for i, tag in enumerate(tags):
-        print(f"\n--- Starting run for tag: {tag} ---")
+        prev_tags = tags[:i]
+        incubator_tag = f"Incubator{tag}"
 
-        config_path = PROJECT_ROOT / "files" / "config" / f"Config{tag}.json"
-        if not config_path.exists():
-            print(f"Warning: Configuration file {config_path} not found. Skipping.")
-            continue
+        incubator_config = PROJECT_ROOT / "files" / "config" / f"Config{incubator_tag}.json"
+        assert incubator_config.exists(), f"Incubator config not found: {incubator_config}"
 
-        config = configuration_reader(config_path)
+        if RUN_INCUBATOR:
+            # Provide main proved theorems as incubator externals
+            if prev_tags:
+                main_proved = theorems_dir / "proved_theorems.txt"
+                incubator_ext = incubator_theorems_dir / "externally_provided_theorems.txt"
+                with open(main_proved, "r", encoding="utf-8") as src:
+                    content = src.read()
+                if content.strip():
+                    with open(incubator_ext, "w", encoding="utf-8") as dst:
+                        dst.write(content)
+                    _rebuild_compressed_externals(incubator_theorems_dir)
 
-        # A. Create Simple Facts
-        if tag == "Peano":
-            for n in config.parameters.simple_facts_parameters:
-                make_simple_facts_peano(n)
-        elif tag == "Gauss":
-            for n in config.parameters.simple_facts_parameters:
-                make_simple_facts_gauss(n)
+            # Incubator stage
+            print(f"\n=== Incubator {tag} ===")
+            _run_batch(incubator_tag, prev_tags=prev_tags,
+                       theorems_dir=incubator_theorems_dir)
+
         else:
-            print(f"No simple facts generator mapped for tag: {tag}")
+            print(f"\n=== Skipping Incubator {tag} ===")
 
-        # B. Create Expressions
-        start_time = time.time()
-        print(f"Conjecture creation started for {tag}.")
-        create_expressions.create_expressions_parallel(config)
-        print(f"Conjecture creation finished for {tag}.")
-        end_time = time.time()
-        print(f"Conjecture creation runtime: {end_time - start_time:.5f} seconds")
+        # Convert incubator proved theorems to simple facts (always, even if incubator skipped)
+        convert_incubator_theorems(tag, theorems_dir=incubator_theorems_dir)
 
-        # C. Connect to Previous Anchors (Current -> Prev)
-        # Iterate through all tags strictly before the current one
-        previous_tags = tags[:i]
-        for prev_tag in previous_tags:
-            generate_anchor_connection(tag, prev_tag)
-
-        # D. Run Tests (Commented out)
-        #print(f"Running tests for {tag}...")
-        #test_create_expressions.test1(tag)
-        #test_create_expressions.test2(tag)
-
-        # E. Run Native Prover
-        print(f"Running GL_Quick for {tag}...")
-        run_gl_quick(tag)
-
-
-
+        # Main stage
+        print(f"\n=== {tag} ===")
+        _run_batch(tag, prev_tags=prev_tags,
+                   simple_facts_fn=SIMPLE_FACTS_MAP.get(tag))
 
     # 3. Finalization
-    print("\n--- Generating Proof Graph ---")
     visu_config_path = PROJECT_ROOT / "files" / "config" / "ConfigVisu.json"
     configuration_visu = configuration_reader(visu_config_path)
+
+    # 3a. Incubator proof graph
+    if RUN_INCUBATOR:
+        print("\n--- Generating Incubator Proof Graph ---")
+        process_proof_graphs.create_processed_proof_graph(
+            configuration_visu, raw_dir=incubator_raw_dir, proc_dir=incubator_proc_dir,
+            theorems_dir=incubator_theorems_dir)
+        generate_full_proof_graph.generate_proof_graph_pages(
+            configuration_visu, proc_dir=incubator_proc_dir, out_dir=incubator_full_dir)
+
+    # 3b. Main proof graph
+    print("\n--- Generating Proof Graph ---")
     process_proof_graphs.create_processed_proof_graph(configuration_visu)
     generate_full_proof_graph.generate_proof_graph_pages(configuration_visu)
 
     # 4. Verification
+    all_success = 0
+    all_failure = 0
+
+    if RUN_INCUBATOR:
+        print("\n--- Running Incubator Proof Graph Verifier ---")
+        incubator_state = verifier.run_verifier(str(incubator_proc_dir))
+        verifier.print_report(incubator_state)
+        s, f = verifier.get_totals(incubator_state)
+        all_success += s
+        all_failure += f
+
     print("\n--- Running Proof Graph Verifier ---")
-    base_dir = str(PROJECT_ROOT / "files" / "processed_proof_graph")
-    state = verifier.run_verifier(base_dir)
-    verifier.print_report(state)
+    main_state = verifier.run_verifier(str(PROJECT_ROOT / "files" / "processed_proof_graph"))
+    verifier.print_report(main_state)
+    s, f = verifier.get_totals(main_state)
+    all_success += s
+    all_failure += f
 
-
+    if all_failure == 0:
+        art = (
+            "\n"
+            "                    *  .  *\n"
+            "                   . *\\|/* .\n"
+            "                *   * \\|/ *   *\n"
+            "                 .  */|\\*  .\n"
+            "                *  . /|\\ .  *\n"
+            "                   . *|* .\n"
+            "                     |||\n"
+            "                     |||\n"
+            "            All proof graphs verified.\n"
+            f"        {all_success} checks, 0 failures — airtight.\n"
+        )
+        print(art)

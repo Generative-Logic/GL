@@ -14,10 +14,11 @@
     "definition_sets": { "1": ["(1)", true], "2": ["(1)", true] },
     "full_mpl": "(=[1,2])",
 	"short_mpl": "(=[1,2])",
-	"max_count_per_conjecture": 0,
+	"max_count_per_conjecture": 1,
 	"input_args": ["1", "2"],
 	"output_args": [],
-	"max_size_expression": 5
+	"max_size_expression": 3,
+	"min_size_expression": 3
   },
   "in2": {
     "arity": 3,
@@ -103,12 +104,13 @@
   "prohibited_combinations": [],
   "prohibited_heads": [],
   "parameters": {
+   "min_number_simple_expressions": 2,
    "max_number_simple_expressions": 5,
    "max_size_mapping_def_set": 7,
-   "max_number_args_expr": 1,
+   "max_number_args_expr": 2,
    "operator_threshold": 5,
    "max_values_for_def_sets": {
-     "(1)": 1,
+     "(1)": 2,
      "P(x(1)(1))": 0,
      "P(x(1)(x(1)(1)))": 0,
      "P(1)": 0
@@ -132,7 +134,7 @@
      "P(1)": 10
    },
    "max_size_binary_list": 8,
-   "simple_facts_parameters": [5, 6]
+   "simple_facts_parameters": []
   },
   "prover_parameters": {
     "sizeAllBinariesAna": 10,
@@ -155,6 +157,7 @@
     "maxLenHypoKey": 2,
     "debug": false,
     "max_origin_per_expr": 1,
-    "compressor_max_origins_per_expr": 30
+    "compressor_max_origins_per_expr": 30,
+    "max_partition_size": 1
   }
 }

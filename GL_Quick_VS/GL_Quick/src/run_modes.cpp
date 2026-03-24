@@ -31,6 +31,7 @@
 #include <algorithm>
 #include <iostream>
 #include "compressor.hpp"
+#include <json.hpp>
 
 namespace run_modes {
 
@@ -40,13 +41,16 @@ namespace run_modes {
         .parent_path()
         .parent_path();
 
-    inline const std::filesystem::path RAW_PROOF_DIR =
+    inline std::filesystem::path RAW_PROOF_DIR =
         PROJECT_ROOT / "files" / "raw_proof_graph";
 
-    inline const std::filesystem::path THEOREMS_FOLDER = PROJECT_ROOT / "files" / "theorems";
-    inline const std::filesystem::path THEOREMS_FILE = THEOREMS_FOLDER / "theorems.txt";
-    // Define the path for the proved theorems file
-    inline const std::filesystem::path PROVED_THEOREMS_FILE = THEOREMS_FOLDER / "proved_theorems.txt";
+    // Mutable: may be overridden by config (e.g. incubator mode)
+    inline std::filesystem::path THEOREMS_FOLDER = PROJECT_ROOT / "files" / "theorems";
+    inline std::filesystem::path THEOREMS_FILE = THEOREMS_FOLDER / "theorems.txt";
+    inline std::filesystem::path PROVED_THEOREMS_FILE = THEOREMS_FOLDER / "proved_theorems.txt";
+    inline std::filesystem::path COMPRESSED_EXTERNAL_THEOREMS_FILE =
+        THEOREMS_FOLDER / "compressed_external_theorems.txt";
+    inline std::filesystem::path BACKGROUND_PROVED_THEOREMS_FILE = PROVED_THEOREMS_FILE;
 
     static inline std::string trim_copy(const std::string& s) {
         const auto b = s.find_first_not_of(" \t\r\n");
@@ -79,14 +83,62 @@ namespace run_modes {
             std::cout << "\n[fullRun] Processing Tag/Anchor: " << anchor_id << "\n";
         }
 
+        // --- Read config JSON for path overrides ---
+        bool skipCompression = false;
+        bool skipProofGraph = false;
+        {
+            auto configPath = PROJECT_ROOT / "files" / "config" / ("Config" + anchor_id + ".json");
+            if (fs::exists(configPath)) {
+                try {
+                    std::ifstream f(configPath);
+                    nlohmann::json j;
+                    f >> j;
+                    if (j.contains("theorems_folder")) {
+                        std::string folder = j["theorems_folder"];
+                        THEOREMS_FOLDER = PROJECT_ROOT / folder;
+                        THEOREMS_FILE = THEOREMS_FOLDER / "theorems.txt";
+                        PROVED_THEOREMS_FILE = THEOREMS_FOLDER / "proved_theorems.txt";
+                        COMPRESSED_EXTERNAL_THEOREMS_FILE = THEOREMS_FOLDER / "compressed_external_theorems.txt";
+                    }
+                    if (j.contains("raw_proof_graph_folder")) {
+                        std::string folder = j["raw_proof_graph_folder"];
+                        RAW_PROOF_DIR = PROJECT_ROOT / folder;
+                    }
+                    if (j.contains("background_theorems_folder")) {
+                        std::string bgFolder = j["background_theorems_folder"];
+                        BACKGROUND_PROVED_THEOREMS_FILE = PROJECT_ROOT / bgFolder / "proved_theorems.txt";
+                    } else {
+                        BACKGROUND_PROVED_THEOREMS_FILE = PROVED_THEOREMS_FILE;
+                    }
+                    if (j.contains("prover_parameters")) {
+                        auto& pp = j["prover_parameters"];
+                        if (pp.contains("ban_disintegration") && pp["ban_disintegration"].get<bool>()) {
+                            skipCompression = true;
+                        }
+                    }
+                } catch (...) {}
+            }
+        }
+
         // ====== PHASE 1: FULL PROVE ======
         gl::ExpressionAnalyzer expressionAnalyzer(anchor_id);
 
         std::cout << "Loading proved theorems..." << std::endl;
         std::unordered_set<std::string> proved_set = loadLinesFromFile(PROVED_THEOREMS_FILE);
+        // Also load background theorems if different
+        if (BACKGROUND_PROVED_THEOREMS_FILE != PROVED_THEOREMS_FILE) {
+            auto bg_set = loadLinesFromFile(BACKGROUND_PROVED_THEOREMS_FILE);
+            proved_set.insert(bg_set.begin(), bg_set.end());
+        }
         std::vector<std::string> proved_lst(proved_set.begin(), proved_set.end());
         std::sort(proved_lst.begin(), proved_lst.end());
         std::cout << "Loaded " << proved_lst.size() << " proved theorems." << std::endl;
+
+        std::cout << "Loading external theorems (incl. mirrors)..." << std::endl;
+        std::unordered_set<std::string> external_set = loadLinesFromFile(COMPRESSED_EXTERNAL_THEOREMS_FILE);
+        std::vector<std::string> external_lst(external_set.begin(), external_set.end());
+        std::sort(external_lst.begin(), external_lst.end());
+        std::cout << "Loaded " << external_lst.size() << " external theorems." << std::endl;
 
         if (!fs::exists(THEOREMS_FILE)) {
             std::cerr << "[full_run] Missing theorems file: " << THEOREMS_FILE << "\n";
@@ -97,37 +149,95 @@ namespace run_modes {
         std::vector<std::string> tmp_lst(theorem_set.begin(), theorem_set.end());
         std::sort(tmp_lst.begin(), tmp_lst.end());
 
-        expressionAnalyzer.analyzeExpressions(tmp_lst, proved_lst);
+        expressionAnalyzer.analyzeExpressions(tmp_lst, proved_lst, external_lst);
 
-        // ====== PHASE 2: COMPRESS ======
-        std::cout << "\nInitiating Post-Proof Compression Phase..." << std::endl;
+        if (skipCompression) {
+            // ====== INCUBATOR MODE: Save directly, no compression, no proof graph ======
+            std::cout << "\nSkipping compression (incubator mode)." << std::endl;
 
-        // Start from previously proved theorems (already loaded into proved_lst)
-        std::unordered_set<std::string> seenTheorems(proved_lst.begin(), proved_lst.end());
-        std::vector<std::string> theoremsToCompress(proved_lst.begin(), proved_lst.end());
-
-        // Add newly proved theorems not already present
-        for (const auto& tpl : expressionAnalyzer.globalTheoremList) {
-            const std::string& thm = std::get<0>(tpl);
-            if (seenTheorems.insert(thm).second) {
-                theoremsToCompress.push_back(thm);
+            // Save proved theorems directly
+            {
+                std::ofstream ofs(PROVED_THEOREMS_FILE, std::ios::app);
+                for (const auto& tpl : expressionAnalyzer.globalTheoremList) {
+                    ofs << std::get<0>(tpl) << "\n";
+                }
             }
-        }
+            std::cout << "Saved " << expressionAnalyzer.globalTheoremList.size()
+                      << " theorems to " << PROVED_THEOREMS_FILE << std::endl;
 
-        gl::Compressor compressor(expressionAnalyzer, theoremsToCompress);
-        std::vector<std::string> survivingTheorems = compressor.run();
-
-        // ====== PHASE 3: SAVE + GRAPH ======
-        // Save only essential theorems for cross-batch propagation
-        expressionAnalyzer.saveProvedTheoremsFiltered(survivingTheorems);
-
-        // Generate proof graph from the full globalTheoremList (unfiltered)
-        if (expressionAnalyzer.parameters.debug) {
-            std::vector<std::string> expr_lst{ "(AnchorPeano[1,2,3,4,5,6])", "(in3[6,7,8,4])", "(in2[rec0,7,3])" };
-            expressionAnalyzer.findEnds(expr_lst, RAW_PROOF_DIR);
-        }
-        else {
+            // Generate proof graph in incubator mode too
             expressionAnalyzer.generateRawProofGraph(expressionAnalyzer.globalTheoremList, RAW_PROOF_DIR);
+        } else {
+            // ====== PHASE 2: COMPRESS ======
+            std::cout << "\nInitiating Post-Proof Compression Phase..." << std::endl;
+
+            // Start from previously proved theorems (already loaded into proved_lst)
+            std::unordered_set<std::string> seenTheorems(proved_lst.begin(), proved_lst.end());
+            std::vector<std::string> theoremsToCompress(proved_lst.begin(), proved_lst.end());
+
+            // Add newly proved theorems not already present
+            for (const auto& tpl : expressionAnalyzer.globalTheoremList) {
+                const std::string& thm = std::get<0>(tpl);
+                if (seenTheorems.insert(thm).second) {
+                    theoremsToCompress.push_back(thm);
+                }
+            }
+
+            // Add external theorems (incl. mirrors) to compression pool
+            for (const auto& ext : external_lst) {
+                if (seenTheorems.insert(ext).second) {
+                    theoremsToCompress.push_back(ext);
+                }
+            }
+
+            gl::Compressor compressor(expressionAnalyzer, theoremsToCompress);
+            std::vector<std::string> survivingTheorems = compressor.run();
+
+            // Determine which external theorems (incl. mirrors) survived compression
+            std::unordered_set<std::string> survivingSet(survivingTheorems.begin(), survivingTheorems.end());
+            std::vector<std::string> survivingExternals;
+            std::vector<std::string> eliminatedExternals;
+            for (const auto& ext : external_lst) {
+                if (survivingSet.count(ext)) {
+                    survivingExternals.push_back(ext);
+                } else {
+                    eliminatedExternals.push_back(ext);
+                }
+            }
+
+            // Rewrite compressed_external_theorems.txt with survivors only
+            {
+                std::ofstream ofs(COMPRESSED_EXTERNAL_THEOREMS_FILE, std::ios::trunc);
+                for (const auto& ext : survivingExternals) {
+                    ofs << ext << "\n";
+                }
+            }
+
+            // Append eliminated externals to compressed_out_theorems.txt
+            if (!eliminatedExternals.empty()) {
+                const auto compOutPath = THEOREMS_FOLDER / "compressed_out_theorems.txt";
+                std::ofstream ofs(compOutPath, std::ios::app);
+                for (const auto& ext : eliminatedExternals) {
+                    ofs << ext << "\n";
+                }
+            }
+
+            // ====== PHASE 3: SAVE + GRAPH ======
+            // Save only essential theorems for cross-batch propagation
+            // Exclude surviving external theorems (they are not GL-proved)
+            std::unordered_set<std::string> survivingExternalSet(survivingExternals.begin(), survivingExternals.end());
+            expressionAnalyzer.saveProvedTheoremsFiltered(survivingTheorems, survivingExternalSet);
+
+            // Generate proof graph from the full globalTheoremList (unfiltered)
+            if (!skipProofGraph) {
+                if (expressionAnalyzer.parameters.debug) {
+                    std::vector<std::string> expr_lst{ "(AnchorPeano[1,2,3,4,5,6])", "(in3[6,7,8,4])", "(in2[rec0,7,3])" };
+                    expressionAnalyzer.findEnds(expr_lst, RAW_PROOF_DIR);
+                }
+                else {
+                    expressionAnalyzer.generateRawProofGraph(expressionAnalyzer.globalTheoremList, RAW_PROOF_DIR);
+                }
+            }
         }
     }
 

@@ -1,0 +1,414 @@
+{
+  "anchor_name": "AnchorIncubator",
+  "in": {
+    "arity": 2,
+    "definition_sets": { "1": ["(1)", true], "2": ["P(1)", true] },
+    "full_mpl": "(in[1,2])",
+    "short_mpl": "(in[1,2])",
+    "max_count_per_conjecture": 0,
+    "input_args": ["1"],
+    "output_args": [],
+    "max_size_expression": 3
+  },
+  "=": {
+    "arity": 2,
+    "definition_sets": { "1": ["(1)", true], "2": ["(1)", true] },
+    "full_mpl": "(=[1,2])",
+    "short_mpl": "(=[1,2])",
+    "max_count_per_conjecture": 0,
+    "input_args": ["1", "2"],
+    "output_args": [],
+    "max_size_expression": 4
+  },
+  "in2": {
+    "arity": 3,
+    "definition_sets": { "1": ["(1)", true], "2": ["(1)", true], "3": ["P(x(1)(1))", false] },
+    "full_mpl": "(in2[1,2,3])",
+    "short_mpl": "(in2[1,2,3])",
+    "max_count_per_conjecture": 2,
+    "input_args": ["1"],
+    "output_args": ["2"],
+    "max_size_expression": 4
+  },
+  "in3": {
+    "arity": 4,
+    "definition_sets": {
+      "1": ["(1)", true], "2": ["(1)", true], "3": ["(1)", true], "4": ["P(x(1)(x(1)(1)))", false]
+    },
+    "full_mpl": "(in3[1,2,3,4])",
+    "short_mpl": "(in3[1,2,3,4])",
+    "max_count_per_conjecture": 0,
+    "input_args": ["1", "2"],
+    "output_args": ["3"],
+    "max_size_expression": 5
+  },
+  "fXY": {
+    "arity": 3,
+    "definition_sets": {
+      "1": ["P(x(1)(1))", true], "2": ["P(1)", true], "3": ["P(1)", false]
+    },
+    "full_mpl": "fXY.txt",
+    "short_mpl": "(fXY[f,X,Y])",
+    "max_count_per_conjecture": 0,
+    "input_args": [],
+    "output_args": [],
+    "max_size_expression": 4
+  },
+  "infiniteSequence": {
+    "arity": 2,
+    "definition_sets": {
+      "1": ["P(x(1)(1))", false], "2": ["P(1)", false]
+    },
+    "full_mpl": "infiniteSequence.txt",
+    "short_mpl": "(infiniteSequence[f,N])",
+    "max_count_per_conjecture": 0,
+    "input_args": [],
+    "output_args": [],
+    "max_size_expression": 1
+  },
+  "fXYZ": {
+    "arity": 4,
+    "definition_sets": {
+      "1": ["P(x(1)(x(1)(1)))", false], "2": ["P(1)", false], "3": ["P(1)", false], "4": ["P(1)", false]
+    },
+    "full_mpl": "fXYZ.txt",
+    "short_mpl": "(fXYZ[f,X,Y,Z])",
+    "max_count_per_conjecture": 0,
+    "input_args": [],
+    "output_args": [],
+    "max_size_expression": 5
+  },
+  "NaturalNumbers": {
+    "arity": 5,
+    "definition_sets": {
+      "1": ["P(1)", true],
+      "2": ["(1)", true],
+      "3": ["P(x(1)(1))", true],
+      "4": ["P(x(1)(x(1)(1)))", true],
+      "5": ["P(x(1)(x(1)(1)))", true]
+    },
+    "full_mpl": "NaturalNumbers.txt",
+    "short_mpl": "(NaturalNumbers[N,i0,s,+,*])",
+    "max_count_per_conjecture": 0,
+    "input_args": [],
+    "output_args": [],
+    "max_size_expression": 5
+  },
+  "residual": {
+    "arity": 4,
+    "definition_sets": {
+      "1": ["(1)", true], "2": ["(1)", true], "3": ["(1)", true], "4": ["P(x(1)(x(1)(1)))", false]
+    },
+    "full_mpl": "residual.txt",
+    "short_mpl": "(residual[n,m,p,+])",
+    "max_count_per_conjecture": 0,
+    "input_args": ["n", "m"],
+    "output_args": ["p"],
+    "max_size_expression": 5
+  },
+  "interval": {
+    "arity": 5,
+    "definition_sets": {
+      "1": ["P(1)", false], "2": ["P(x(1)(x(1)(1)))", false], "3": ["(1)", false], "4": ["(1)", true], "5": ["P(1)", true]
+    },
+    "full_mpl": "interval.txt",
+    "short_mpl": "(interval[N,+,n,m,M])",
+    "max_count_per_conjecture": 0,
+    "input_args": [],
+    "output_args": [],
+    "max_size_expression": 5
+  },
+  "split": {
+    "arity": 6,
+    "definition_sets": {
+      "1": ["P(1)", false], "2": ["P(x(1)(x(1)(1)))", false], "3": ["(1)", false],
+      "4": ["(1)", true], "5": ["P(x(1)(1))", true], "6": ["P(x(1)(1))", true]
+    },
+    "full_mpl": "split.txt",
+    "short_mpl": "(split[N,+,n,m,f,g])",
+    "max_count_per_conjecture": 0,
+    "input_args": ["m"],
+    "output_args": [],
+    "max_size_expression": 5
+  },
+  "limitSequence": {
+    "arity": 5,
+    "definition_sets": {
+      "1": ["P(1)", false], "2": ["P(x(1)(x(1)(1)))", false], "3": ["(1)", true],
+      "4": ["P(x(1)(1))", true], "5": ["P(x(1)(1))", true]
+    },
+    "full_mpl": "limitSequence.txt",
+    "short_mpl": "(limitSequence[N,+,n,f,g])",
+    "max_count_per_conjecture": 0,
+    "input_args": ["n"],
+    "output_args": [],
+    "max_size_expression": 5
+  },
+  "fold": {
+    "arity": 7,
+    "definition_sets": {
+      "1": ["P(1)", false], "2": ["P(x(1)(1))", false], "3": ["P(x(1)(x(1)(1)))", false],
+      "4": ["P(x(1)(1))", false], "5": ["(1)", false], "6": ["(1)", true], "7": ["(1)", true]
+    },
+    "full_mpl": "fold.txt",
+    "short_mpl": "(fold[N,s,+,f,n,m,p])",
+    "max_count_per_conjecture": 1,
+    "input_args": ["m"],
+    "output_args": ["p"],
+    "max_size_expression": 2
+  },
+  "preorder": {
+    "arity": 4,
+    "definition_sets": {
+      "1": ["P(1)", false], "2": ["P(x(1)(x(1)(1)))", false], "3": ["(1)", true], "4": ["(1)", true]
+    },
+    "full_mpl": "preorder.txt",
+    "short_mpl": "(preorder[N,+,n,m])",
+    "max_count_per_conjecture": 1,
+    "input_args": ["n", "m"],
+    "output_args": [],
+    "max_size_expression": 2
+  },
+  "identity": {
+    "arity": 2,
+    "definition_sets": {
+      "1": ["P(1)", false], "2": ["P(x(1)(1))", false]
+    },
+    "full_mpl": "identity.txt",
+    "short_mpl": "(identity[X,id])",
+    "max_count_per_conjecture": 0,
+    "input_args": [],
+    "output_args": [],
+    "max_size_expression": 2
+  },
+  "sequence": {
+    "arity": 5,
+    "definition_sets": {
+      "1": ["P(1)", false], "2": ["P(x(1)(x(1)(1)))", false], "3": ["(1)", false], "4": ["(1)", true], "5": ["P(x(1)(1))", true]
+    },
+    "full_mpl": "sequence.txt",
+    "short_mpl": "(sequence[N,+,n,m,seq])",
+    "max_count_per_conjecture": 0,
+    "input_args": ["m"],
+    "output_args": [],
+    "max_size_expression": 4
+  },
+  "limitSet": {
+    "arity": 5,
+    "definition_sets": {
+      "1": ["P(1)", false],
+      "2": ["P(x(1)(x(1)(1)))", false],
+      "3": ["P(1)", true],
+      "4": ["(1)", true],
+      "5": ["P(1)", true]
+    },
+    "full_mpl": "limitSet.txt",
+    "short_mpl": "(limitSet[N,+,M,n,L])",
+    "max_count_per_conjecture": 0,
+    "input_args": [],
+    "output_args": [],
+    "max_size_expression": 5
+  },
+  "AnchorPeano": {
+    "arity": 6,
+    "definition_sets": {
+      "1": ["P(1)", true],
+      "2": ["(1)", true],
+      "3": ["P(x(1)(1))", true],
+      "4": ["P(x(1)(x(1)(1)))", true],
+      "5": ["P(x(1)(x(1)(1)))", true],
+      "6": ["(1)", true]
+    },
+    "full_mpl": "AnchorPeano.txt",
+    "short_mpl": "(AnchorPeano[N,i0,s,+,*,i1])",
+    "max_count_per_conjecture": 0,
+    "input_args": [],
+    "output_args": [],
+    "max_size_expression": 5
+  },
+  "AnchorGauss": {
+    "arity": 8,
+    "definition_sets": {
+      "1": ["P(1)", true],
+      "2": ["(1)", true],
+      "3": ["P(x(1)(1))", true],
+      "4": ["P(x(1)(x(1)(1)))", true],
+      "5": ["P(x(1)(x(1)(1)))", true],
+      "6": ["(1)", true],
+      "7": ["(1)", true],
+      "8": ["P(x(1)(1))", true]
+    },
+    "full_mpl": "AnchorGauss.txt",
+    "short_mpl": "(AnchorGauss[N,i0,s,+,*,i1,i2,id])",
+    "max_count_per_conjecture": 0,
+    "input_args": [],
+    "output_args": [],
+    "max_size_expression": 6
+  },
+  "AnchorIncubator": {
+    "arity": 14,
+    "definition_sets": {
+      "1": ["P(1)", true],
+      "2": ["(1)", true],
+      "3": ["P(x(1)(1))", true],
+      "4": ["P(x(1)(x(1)(1)))", true],
+      "5": ["P(x(1)(x(1)(1)))", true],
+      "6": ["(1)", true],
+      "7": ["(1)", true],
+      "8": ["P(x(1)(1))", true],
+      "9": ["(1)", true],
+      "10": ["(1)", true],
+      "11": ["(1)", true],
+      "12": ["(1)", true],
+      "13": ["(1)", true],
+      "14": ["(1)", true]
+    },
+    "full_mpl": "AnchorIncubator.txt",
+    "short_mpl": "(AnchorIncubator[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])",
+    "max_count_per_conjecture": 0,
+    "input_args": [],
+    "output_args": [],
+    "max_size_expression": 6
+  },
+  "nonSequence": {
+    "arity": 9,
+    "definition_sets": {
+      "1": ["P(1)", false],
+      "2": ["P(x(1)(1))", false],
+      "3": ["P(x(1)(x(1)(1)))", false],
+      "4": ["P(x(1)(1))", true],
+      "5": ["(1)", true],
+      "6": ["P(x(1)(1))", true],
+      "7": ["(1)", false],
+      "8": ["(1)", false],
+      "9": ["(1)", true]
+    },
+    "full_mpl": "nonSequence.txt",
+    "short_mpl": "(nonSequence[N,s,+,ns,n,seq,z0,z1,sn])",
+    "max_count_per_conjecture": 0,
+    "input_args": [],
+    "output_args": [],
+    "max_size_expression": 5
+  },
+  "nonInterval": {
+    "arity": 8,
+    "definition_sets": {
+      "1": ["P(1)", false],
+      "2": ["P(x(1)(1))", false],
+      "3": ["P(x(1)(x(1)(1)))", false],
+      "4": ["P(1)", true],
+      "5": ["(1)", true],
+      "6": ["P(1)", true],
+      "7": ["(1)", true],
+      "8": ["(1)", true]
+    },
+    "full_mpl": "nonInterval.txt",
+    "short_mpl": "(nonInterval[N,s,+,ni,n,I,sn,ssn])",
+    "max_count_per_conjecture": 0,
+    "input_args": [],
+    "output_args": [],
+    "max_size_expression": 5
+  },
+  "constSeq": {
+    "arity": 7,
+    "definition_sets": {
+      "1": ["P(1)", false],
+      "2": ["P(x(1)(x(1)(1)))", false],
+      "3": ["P(x(1)(1))", true],
+      "4": ["(1)", false],
+      "5": ["(1)", true],
+      "6": ["P(1)", true],
+      "7": ["(1)", true]
+    },
+    "full_mpl": "constSeq.txt",
+    "short_mpl": "(constSeq[N,+,seq,n_start,n,I,c])",
+    "max_count_per_conjecture": 0,
+    "input_args": [],
+    "output_args": [],
+    "max_size_expression": 5
+  },
+  "patterns_to_exclude": [
+    "\\(fold\\[\\d+,8,\\d+,\\d+,\\d+,\\d+,\\d+\\]\\)",
+    "\\(fold\\[\\d+,\\d+,5,\\d+,\\d+,\\d+,\\d+\\]\\)",
+    "\\(fold\\[\\d+,\\d+,\\d+,\\d+,(?!2,)\\d+,\\d+,\\d+\\]\\)",
+    "\\(fold\\[\\d+,\\d+,\\d+,(?!8,)\\d+,\\d+,\\d+,\\d+\\]\\)",
+    "\\(preorder\\[\\d+,5,\\d+,\\d+\\]\\)",
+    "\\(in2\\[\\d+,\\d+,3\\]\\)"
+  ],
+  "only_in_head": [
+    "(=["
+  ],
+  "prohibited_combinations": [
+    ["fold", "preorder"]
+  ],
+  "prohibited_heads": ["sequence", "interval", "split", "limitSequence",
+                        "limitSet", "residual", "fXY",
+                        "fXYZ", "NaturalNumbers", "in", "in3", "nonSequence", "nonInterval", "constSeq",
+                        "infiniteSequence"],
+  "parameters": {
+    "min_number_simple_expressions": 1,
+    "max_number_simple_expressions": 1,
+    "max_size_mapping_def_set": 7,
+    "max_number_args_expr": 1,
+    "operator_threshold": 5,
+    "max_values_for_def_sets": {
+      "(1)": 1,
+      "P(x(1)(1))": 0,
+      "P(x(1)(x(1)(1)))": 0,
+      "P(1)": 1
+    },
+    "max_values_for_uncomb_def_sets": {
+      "(1)": 2,
+      "P(x(1)(1))": 3,
+      "P(x(1)(x(1)(1)))": 3,
+      "P(1)": 2
+    },
+    "max_values_for_def_sets_prior_connection": {
+      "(1)": 7,
+      "P(x(1)(1))": 4,
+      "P(x(1)(x(1)(1)))": 0,
+      "P(1)": 3
+    },
+    "max_complexity_if_anchor_parameter_connected": {
+      "(1)": 4,
+      "P(x(1)(1))": 10,
+      "P(x(1)(x(1)(1)))": 10,
+      "P(1)": 10
+    },
+    "max_size_binary_list": 8,
+    "simple_facts_parameters": [5],
+    "fact_variable_kinds": ["i", "j", "k"],
+    "incubator_mode": true
+  },
+  "prover_parameters": {
+    "sizeAllBinariesAna": 14,
+    "maxIterationNumberProof": 50,
+    "numberIterationsConjectureFiltering": 1,
+    "maxSizeDefSetMapping": 5,
+    "maxSizeTargetSetMapping": 16,
+    "maxNumberSecondaryVariables": 2,
+    "sizeAllPermutationsAna": 7,
+    "minNumOperatorsKey": 2,
+    "minNumOperatorsKeyCE": 4,
+    "maxIterationNumberVariable": 1,
+    "standardMaxSecondaryNumber": 1,
+    "trackHistory": true,
+    "standardMaxAdmissionDepth": 0,
+    "inductionMaxAdmissionDepth": 1,
+    "inductionMaxSecondaryNumber": 2,
+    "counterExampleBoundary": 6,
+    "minLenLongKey": 5,
+    "maxLenHypoKey": 2,
+    "debug": false,
+    "max_origin_per_expr": 1,
+    "compressor_max_origins_per_expr": 30,
+    "try_contradiction": true,
+    "ban_disintegration": true,
+    "skip_ce_filter": true,
+    "skip_eq_classes": false,
+    "incubator_mode": true,
+    "max_partition_size": 5
+  },
+  "theorems_folder": "files/incubator/theorems",
+  "raw_proof_graph_folder": "files/incubator/raw_proof_graph"
+}

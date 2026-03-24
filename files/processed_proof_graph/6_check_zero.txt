@@ -1,0 +1,8 @@
+(in3[i1,v1,v2,+])	main	equality1	(in3[i1,i0,v2,+])	main	(=[i0,v1])	main
+(in3[i1,i0,v2,+])	main	implication	(>[i0,s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in2[i0,v1,s])(in3[i1,i0,v1,+])))	main	(AnchorPeano[N,i0,s,+,*,i1])	main	(in2[i0,v2,s])	main
+(>[i0,s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in2[i0,v1,s])(in3[i1,i0,v1,+])))	main	theorem
+(AnchorPeano[N,i0,s,+,*,i1])	main	task formulation
+(in2[i0,v2,s])	main	equality1	(in2[v1,v2,s])	main	(=[v1,i0])	main
+(in2[v1,v2,s])	main	task formulation
+(=[v1,i0])	main	recursion
+(=[i0,v1])	main	symmetry of equality	(=[v1,i0])	main

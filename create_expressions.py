@@ -87,7 +87,12 @@ def get_configuration_data():
     return _CONFIGURATION.data
 
 def get_anchor_name(config: configuration_reader):
-    # 1. Priority: Try to find the specific anchor matching the config ID
+    # 1. Explicit anchor_name field in config JSON (for configs where tag != anchor name)
+    anchor_name = getattr(config, "anchor_name", None)
+    if anchor_name and anchor_name in config.data:
+        return anchor_name
+
+    # 2. Try to find the specific anchor matching the config ID
     # (e.g. "AnchorGauss" if loaded from "ConfigGauss.json")
     if getattr(config, "anchor_id", None):
         candidate = "Anchor" + config.anchor_id
@@ -2020,12 +2025,18 @@ def count_arguments_filter(conjecture: str) -> bool:
     Disintegrates a conjecture and checks if any constituting expression
     contains duplicate arguments.
 
+    In incubator mode, duplicates among (1)-typed argument positions are
+    allowed (needed for ground-level facts like in3[i0,i1,i1,+]).
+    Duplicates among non-(1)-typed positions are always rejected.
+
     Args:
         conjecture (str): The MPL conjecture string.
 
     Returns:
-        bool: False if any expression has the same argument more than once, True otherwise.
+        bool: False if any expression has forbidden duplicate arguments, True otherwise.
     """
+    incubator = _CONFIGURATION.parameters.incubator_mode
+
     # 1. Disintegrate the conjecture
     chain = []
     # disintegrate_implication populates 'chain' with antecedents and returns the conclusion (head)
@@ -2040,11 +2051,139 @@ def count_arguments_filter(conjecture: str) -> bool:
     for expr in all_expressions:
         args = get_args(expr)
 
-        # If the count of arguments differs from the count of unique arguments, duplicates exist
-        if len(args) != len(set(args)):
-            return False
+        if not incubator:
+            if len(args) != len(set(args)):
+                return False
+        else:
+            name = extract_expression(expr)
+            # Equality with duplicate args is a tautology (=[x,x]) — always reject
+            if name == "=":
+                if len(args) != len(set(args)):
+                    return False
+            elif name in _CONFIGURATION.data and _CONFIGURATION.data[name].definition_sets:
+                ds = _CONFIGURATION.data[name].definition_sets
+                non_element = [args[i] for i in range(len(args))
+                               if ds.get(str(i + 1), ["", False])[0] != "(1)"]
+                if len(non_element) != len(set(non_element)):
+                    return False
+            else:
+                if len(args) != len(set(args)):
+                    return False
 
     return True
+
+def make_all_connection_maps(args_map1: Dict[str, Any],
+                             args_map2: Dict[str, Any],
+                             with_anchor: bool,
+                             mappings_map: Dict[int, Dict[Tuple[int, int], List[Dict[int, int]]]]) -> List[Dict[str, Any]]:
+    def union_of_dicts(dicts, sn):
+        """
+        Merge a sequence of dictionaries into one.
+        In case of key conflicts, later dictionaries overwrite earlier ones.
+        """
+        result = {}
+        for d in dicts:
+            result.update(d)
+
+        for arg in args_map1:
+            shifted_arg = str(int(arg) + sn)
+            if shifted_arg not in result:
+                result[shifted_arg] = shifted_arg
+
+        for arg in args_map2:
+            if arg not in result:
+                result[arg] = arg
+
+        return result
+
+    def create_union_maps(list_of_lists, sn):
+        """
+        Given a list of lists of dictionaries, produce all merged maps.
+        """
+        results = []
+        for selection in product(*list_of_lists):
+            merged = union_of_dicts(selection, sn)
+            results.append(merged)
+        return results
+
+    mappings_list = []
+    src_map: Dict[str, set] = {}
+    dst_map: Dict[str, set] = {}
+
+    mapping_size = len(args_map1) + len(args_map2)
+
+    # Deterministically compute shift number by extracting digits from keys
+    shift_num = max(
+        int(re.search(r"\d+", arg).group())
+        for arg in args_map2.keys()
+        if re.search(r"\d+", arg)
+    )  # CHANGED: use regex to handle non-integer literal keys
+    shift_num = max({int(arg) for arg in args_map2.keys()})
+
+    # Build source and destination groupings
+    for arg, val in args_map1.items():
+        if not with_anchor:
+            if val[1]:
+                src_map.setdefault(val[0], set()).add(arg)
+        else:
+            src_map.setdefault(val[0], set()).add(arg)
+    for arg, val in args_map2.items():
+        if not with_anchor:
+            if val[1]:
+                dst_map.setdefault(val[0], set()).add(arg)
+        else:
+            connectable = val[2] if len(val) > 2 else True
+            if connectable:
+                dst_map.setdefault(val[0], set()).add(arg)
+
+    # Process destination-only sets (sorted lexicographically for determinism)
+    for def_set in sorted(dst_map):  # CHANGED: removed key=int to avoid ValueError
+        if def_set not in src_map:
+            args = sorted(dst_map[def_set])  # CHANGED: lexicographic sort
+            mappings_list.append([
+                {element: element for element in args}
+            ])
+
+    # Process overlapping and source-only sets
+    for def_set in sorted(src_map):  # CHANGED: removed key=int
+        if def_set in dst_map:
+            dst_args = sorted(dst_map[def_set])  # CHANGED: lexicographic sort
+            src_args = sorted(src_map[def_set])  # CHANGED: lexicographic sort
+            # Apply shift to source args
+            shifted_src = [
+                str(int(re.search(r"\d+", x).group()) + shift_num) if re.search(r"\d+", x) else x
+                for x in src_args
+            ]  # CHANGED: safe extraction with regex
+            args = dst_args + shifted_src
+
+
+
+            mappings = mappings_map[
+                len(dst_args) + len(src_args)
+                ][(len(dst_args), len(src_args))]
+
+            block = []
+            for mapping in mappings:
+                temp_map = {
+                    args[i]: args[mapping[i + 1] - 1]
+                    for i in range(len(args))
+                }
+                block.append(temp_map)
+            mappings_list.append(block)
+        else:
+            src_args = sorted(src_map[def_set])  # CHANGED: lexicographic sort
+            shifted_src = [
+                str(int(re.search(r"\d+", x).group()) + shift_num) if re.search(r"\d+", x) else x
+                for x in src_args
+            ]
+            mappings_list.append([
+                {element: element for element in shifted_src}
+            ])
+
+    # Combine all blocks into full connection maps
+    all_connection_maps = create_union_maps(mappings_list, shift_num)
+    return all_connection_maps
+
 
 def single_thread_calculation(statement: str,
                               growing_theorem: str,
@@ -2052,116 +2191,6 @@ def single_thread_calculation(statement: str,
                               number_simple_expressions_growing_theorem: int,
                               args_statement: {},
                               args_growing_theorem: {}):
-    def make_all_connection_maps(args_map1: Dict[str, Any],
-                                 args_map2: Dict[str, Any],
-                                 with_anchor: bool,
-                                 mappings_map: Dict[int, Dict[Tuple[int, int], List[Dict[int, int]]]]) -> List[Dict[str, Any]]:
-        def union_of_dicts(dicts, sn):
-            """
-            Merge a sequence of dictionaries into one.
-            In case of key conflicts, later dictionaries overwrite earlier ones.
-            """
-            result = {}
-            for d in dicts:
-                result.update(d)
-
-            for arg in args_map1:
-                shifted_arg = str(int(arg) + sn)
-                if shifted_arg not in result:
-                    result[shifted_arg] = shifted_arg
-
-            for arg in args_map2:
-                if arg not in result:
-                    result[arg] = arg
-
-            return result
-
-        def create_union_maps(list_of_lists, sn):
-            """
-            Given a list of lists of dictionaries, produce all merged maps.
-            """
-            results = []
-            for selection in product(*list_of_lists):
-                merged = union_of_dicts(selection, sn)
-                results.append(merged)
-            return results
-
-        mappings_list = []
-        src_map: Dict[str, set] = {}
-        dst_map: Dict[str, set] = {}
-
-        mapping_size = len(args_map1) + len(args_map2)
-
-        # Deterministically compute shift number by extracting digits from keys
-        shift_num = max(
-            int(re.search(r"\d+", arg).group())
-            for arg in args_map2.keys()
-            if re.search(r"\d+", arg)
-        )  # CHANGED: use regex to handle non-integer literal keys
-        shift_num = max({int(arg) for arg in args_map2.keys()})
-
-        # Build source and destination groupings
-        for arg, val in args_map1.items():
-            if not with_anchor:
-                if val[1]:
-                    src_map.setdefault(val[0], set()).add(arg)
-            else:
-                src_map.setdefault(val[0], set()).add(arg)
-        for arg, val in args_map2.items():
-            if not with_anchor:
-                if val[1]:
-                    dst_map.setdefault(val[0], set()).add(arg)
-            else:
-                    dst_map.setdefault(val[0], set()).add(arg)
-
-        # Process destination-only sets (sorted lexicographically for determinism)
-        for def_set in sorted(dst_map):  # CHANGED: removed key=int to avoid ValueError
-            if def_set not in src_map:
-                args = sorted(dst_map[def_set])  # CHANGED: lexicographic sort
-                mappings_list.append([
-                    {element: element for element in args}
-                ])
-
-        # Process overlapping and source-only sets
-        for def_set in sorted(src_map):  # CHANGED: removed key=int
-            if def_set in dst_map:
-                dst_args = sorted(dst_map[def_set])  # CHANGED: lexicographic sort
-                src_args = sorted(src_map[def_set])  # CHANGED: lexicographic sort
-                # Apply shift to source args
-                shifted_src = [
-                    str(int(re.search(r"\d+", x).group()) + shift_num) if re.search(r"\d+", x) else x
-                    for x in src_args
-                ]  # CHANGED: safe extraction with regex
-                args = dst_args + shifted_src
-
-
-
-                mappings = mappings_map[
-                    len(dst_args) + len(src_args)
-                    ][(len(dst_args), len(src_args))]
-
-                block = []
-                for mapping in mappings:
-                    temp_map = {
-                        args[i]: args[mapping[i + 1] - 1]
-                        for i in range(len(args))
-                    }
-                    block.append(temp_map)
-                mappings_list.append(block)
-            else:
-                src_args = sorted(src_map[def_set])  # CHANGED: lexicographic sort
-                shifted_src = [
-                    str(int(re.search(r"\d+", x).group()) + shift_num) if re.search(r"\d+", x) else x
-                    for x in src_args
-                ]
-                mappings_list.append([
-                    {element: element for element in shifted_src}
-                ])
-
-        # Combine all blocks into full connection maps
-        all_connection_maps = create_union_maps(mappings_list, shift_num)
-        return all_connection_maps
-
     list_args = [key for key in args_statement.keys() if args_statement[key][0][0] != "P" and args_statement[key][1]]
     list_args.extend([arg for arg in args_growing_theorem.keys() if args_growing_theorem[arg][0][0] != "P" and args_growing_theorem[arg][1]])
     list_set_args = [key for key in args_statement.keys() if args_statement[key][0][0] == "P" and args_statement[key][1]]
@@ -2357,6 +2386,9 @@ def single_thread_calculation(statement: str,
                             if not control_equality(connected_expr2):
                                 continue
 
+                            if not check_min_size_expression(connected_expr2):
+                                continue
+
                             connected_list2.append(connected_expr2)
 
                             reshuffled_expr2, reshuffled_map2, replacement_map2 = \
@@ -2373,6 +2405,94 @@ def single_thread_calculation(statement: str,
     return connected_list, connected_list2, reshuffled_list, reshuffled_mirrored_list
 
 
+def single_expr_anchor_connection(expr, expr_def_sets, anchor, mappings_map_anchor, all_permutations, config):
+    """
+    Connect a single expression directly to the anchor (no prior combination).
+    Returns lists: (connected_exprs, reshuffled_exprs, reshuffled_mirrored_exprs)
+    """
+    connected_list2 = []
+    reshuffled_list = []
+    reshuffled_mirrored_list = []
+
+    # The expression is already "reshuffled" — it's just a single expression with its def_sets
+    reshuffled_expr = expr
+    reshuffled_map = expr_def_sets
+
+    complexity_level = count_operator_occurrences_regex(reshuffled_expr) + 1
+
+    # Skip pre-combination filters (check_def_sets, max_number_args_expr) —
+    # those limit the search space during pair combination and are not applicable
+    # when connecting a single expression directly to the anchor.
+
+    # Guard: check that combined def_set group sizes fit in mappings_map_anchor
+    expr_groups: dict[str, int] = {}
+    for arg, val in reshuffled_map.items():
+        expr_groups[val[0]] = expr_groups.get(val[0], 0) + 1
+    anchor_groups: dict[str, int] = {}
+    for arg, val in anchor.definition_sets.items():
+        anchor_groups[val[0]] = anchor_groups.get(val[0], 0) + 1
+    max_anchor_key = max(mappings_map_anchor.keys()) if mappings_map_anchor else 0
+    for ds in set(expr_groups) | set(anchor_groups):
+        if expr_groups.get(ds, 0) + anchor_groups.get(ds, 0) > max_anchor_key:
+            return connected_list2, reshuffled_list, reshuffled_mirrored_list
+
+    connection_maps2 = make_all_connection_maps(reshuffled_map,
+                                                anchor.definition_sets,
+                                                True,
+                                                mappings_map_anchor)
+
+    for connection_map2 in connection_maps2:
+
+        to_continue = False
+        for ky in connection_map2:
+            mp = anchor.definition_sets
+            if int(ky) > len(mp):
+                if connection_map2[ky] == ky:
+                    to_continue = True
+        if to_continue:
+            continue
+
+        number_removable_args = get_number_removable_args(connection_map2)
+        binary_list2 = [1 for _ in range(number_removable_args)]
+
+        success2, connected_expr2, connected_map2 = \
+            connect_expressions(anchor.short_mpl_normalized,
+                                reshuffled_expr,
+                                anchor.definition_sets,
+                                reshuffled_map,
+                                connection_map2,
+                                binary_list2,
+                                True)
+
+        if success2:
+
+            # nse=1 path: skip check_input_variables_theorem_operator_head and
+            # evaluate_operator_exprs2 — they assume nse>=2 (operator head needs
+            # a companion expression defining its output variable).
+            # Keep check_input_variables_order, pattern_in_conjecture, control_equality.
+            if (not check_input_variables_order(connected_expr2, all_permutations) or
+                    pattern_in_conjecture(config, connected_expr2)):
+                continue
+
+            if not control_equality(connected_expr2):
+                continue
+
+            connected_list2.append(connected_expr2)
+
+            reshuffled_expr2, reshuffled_map2, replacement_map2 = \
+                reshuffle(connected_expr2, all_permutations, True)
+
+            reshuffled_list.append(reshuffled_expr2)
+
+            reshuffled_mirrored = \
+                create_reshuffled_mirrored(connected_expr2, all_permutations)
+
+            reshuffled_mirrored_list.append(reshuffled_mirrored)
+
+
+    return connected_list2, reshuffled_list, reshuffled_mirrored_list
+
+
 # Literal pattern: "(=[<digits>,<digits>])"
 _PATTERN = re.compile(r"\(=\[\d+,\d+]\)")
 
@@ -2386,9 +2506,74 @@ def control_equality(conjecture: str) -> bool:
         if int(args[0]) > int(args[1]):
             result = False
 
-    result = count_arguments_filter(conjecture)
+    result = result and count_arguments_filter(conjecture)
 
     return result
+
+def reformulate_operator_head(conjecture: str, config) -> str:
+    """
+    For incubator nse=1 conjectures with an operator head, reformulate:
+      (>[bound](Anchor)(op[...,a,...]))
+    →
+      (>[bound](Anchor)(>[x](op[...,x,...])(=[x,a])))
+
+    where a is the output arg and x is a fresh variable.
+    Returns the reformulated conjecture, or the original if head is not an operator.
+    """
+    chain = []
+    head = disintegrate_implication(conjecture, chain)
+
+    # Skip negated heads entirely — reformulation is only for positive conjectures
+    if head.startswith("!"):
+        return conjecture
+
+    head_expr = extract_expression(head)
+    if head_expr not in config.data:
+        return conjecture
+
+    desc = config.data[head_expr]
+    if not desc.indices_output_args:
+        return conjecture  # not an operator — no reformulation
+
+    # Only handle single output arg (all current operators have exactly 1)
+    assert len(desc.indices_output_args) == 1, \
+        f"reformulate_operator_head: {head_expr} has {len(desc.indices_output_args)} output args, expected 1"
+
+    out_idx = desc.indices_output_args[0]  # 0-based index into args
+    head_args = get_args(head)
+    a_out = head_args[out_idx]
+
+    # Assert output arg position has definition_set "(1)"
+    pos_key = str(out_idx + 1)  # definition_sets use 1-based keys
+    ds = desc.definition_sets.get(pos_key)
+    assert ds is not None and ds[0] == "(1)", \
+        f"reformulate_operator_head: {head_expr} output arg at position {pos_key} " \
+        f"has def_set {ds}, expected ('(1)', ...)"
+
+    # Choose fresh variable: max numeric arg in entire conjecture + 1
+    all_args_in_expr = re.findall(r'\d+', conjecture)
+    max_arg = max(int(a) for a in all_args_in_expr) if all_args_in_expr else 0
+    x = str(max_arg + 1)
+
+    # Build new head with x replacing a_out
+    new_head_args = list(head_args)
+    new_head_args[out_idx] = x
+    new_operator = f"({head_expr}[{','.join(new_head_args)}])"
+
+    # Build new equality: =[x, a_out]
+    new_equality = f"(=[{x},{a_out}])"
+
+    # Build inner implication: (>[x](operator)(equality))
+    inner = f"(>[{x}]{new_operator}{new_equality})"
+
+    # Replace original head with inner implication in-place.
+    # For nse=1 the head appears exactly once at the tail of the conjecture.
+    pos = conjecture.rfind(head)
+    assert pos >= 0, f"reformulate_operator_head: head {head!r} not found in {conjecture!r}"
+    result = conjecture[:pos] + inner + conjecture[pos + len(head):]
+
+    return result
+
 
 def create_map(N: int) -> Dict[int, Dict[Tuple[int, int], List[Dict[int, int]]]]:
     """
@@ -2575,6 +2760,21 @@ def check_conjecture_complexity_per_operator(conjecture: str, new_expression: st
             result = False
 
     return result
+
+
+def check_min_size_expression(conjecture: str) -> bool:
+    anchor_name = get_anchor_name(_CONFIGURATION)
+    temp_chain = []
+    head = disintegrate_implication(conjecture, temp_chain)
+    chain = [e[0] for e in temp_chain if extract_expression(e[0]) != anchor_name]
+    chain.append(head)
+    for element in chain:
+        core_expr = extract_expression(element)
+        if core_expr in _CONFIGURATION.data:
+            if _CONFIGURATION.data[core_expr].min_size_expression > len(chain):
+                return False
+    return True
+
 
 def check_input_variables_theorem_operator_head(theorem: str):
     temp_chain = []
@@ -3074,6 +3274,37 @@ def create_expressions_parallel(config: configuration_reader):
         expr_leafs_args_map[expr] = \
             (config[core_expr].definition_sets, 1)
 
+    # --- Preliminary pass: single-expression conjectures (nse=1) ---
+    if config.parameters.min_number_simple_expressions <= 1:
+        # Set globals in main process so helper functions work
+        init_pool(mappings_map, binary_seqs_map, all_permutations, mappings_map_anchor, config)
+
+        anchor_name = get_anchor_name(config)
+        anchor = config[anchor_name]
+
+        for expr in expr_list:
+            core_expr = extract_expression(expr)
+            expr_def_sets = config[core_expr].definition_sets
+
+            connected, reshuffled, reshuffled_mirrored = single_expr_anchor_connection(
+                expr, expr_def_sets, anchor, mappings_map_anchor, all_permutations, config)
+
+            for i, conn_expr in enumerate(connected):
+                if expr_good(conn_expr) and conn_expr not in result_expr_set:
+                    resh = reshuffled[i]
+                    resh_mir = reshuffled_mirrored[i]
+
+                    if resh not in control_set and (not resh_mir or resh_mir not in control_set):
+                        result_expr_set.add(conn_expr)
+                        reshuffled_expr_set.add(resh)
+                        if resh_mir:
+                            reshuffled_mirrored_expr_set.add(resh_mir)
+                        control_set.add(resh)
+                        if resh_mir:
+                            control_set.add(resh_mir)
+
+        print(f"Preliminary pass (nse=1): {len(result_expr_set)} conjectures")
+
     cpu_count = multiprocessing.cpu_count()
     #cpu_count = 1
     with (multiprocessing.Pool(
@@ -3089,7 +3320,7 @@ def create_expressions_parallel(config: configuration_reader):
 
 
         start_time = time.time()
-        created = 1
+        created = 1 if config.parameters.max_number_simple_expressions >= 2 else 0
         counter = 0
         counter2 = 0
 
@@ -3209,12 +3440,24 @@ def create_expressions_parallel(config: configuration_reader):
     sorted_list.sort()
     reshuffled_sorted_list.sort()
 
-    theorems_folder = PROJECT_ROOT / 'files/theorems'
+    # --- Incubator: reformulate operator-headed conjectures ---
+    # Applied AFTER reshuffle/mirror (those test the conjecture generator,
+    # so they operate on original forms). Only sorted_list is reformulated.
+    if getattr(config.parameters, 'incubator_mode', False):
+        sorted_list = [reformulate_operator_head(expr, config) for expr in sorted_list]
+        sorted_list.sort()
 
-    # MODIFIED LOGIC: Clean everything EXCEPT proved_theorems.txt
+    if config.theorems_folder:
+        theorems_folder = PROJECT_ROOT / config.theorems_folder
+    else:
+        theorems_folder = PROJECT_ROOT / 'files/theorems'
+
+    # MODIFIED LOGIC: Clean everything EXCEPT preserved files
+    _preserve = {"proved_theorems.txt", "externally_provided_theorems.txt",
+                 "compressed_external_theorems.txt"}
     if os.path.isdir(theorems_folder):
         for item in os.listdir(theorems_folder):
-            if item == "proved_theorems.txt":
+            if item in _preserve:
                 continue
 
             item_path = os.path.join(theorems_folder, item)

@@ -172,6 +172,9 @@ def _build_fname_list(theorems):
         elif method == "reformulated statement":
             fnames = [f"{idx}_reformulated_statement.txt"]
             idx += 1
+        elif method == "incubator back reformulation":
+            fnames = [f"{idx}_back_reformulated_statement.txt"]
+            idx += 1
         else:
             safe = re.sub(r"[^A-Za-z0-9._\-+]+", "_", method)[:64] or "unknown"
             fnames = [f"{idx}_unknown_{safe}.txt"]
@@ -180,14 +183,16 @@ def _build_fname_list(theorems):
     return result
 
 
-def _prune_proof_graph(raw_theorems, raw_stacks):
+def _prune_proof_graph(raw_theorems, raw_stacks, theorems_dir=None):
     """
     Remove theorems that did NOT survive pruning AND are not needed
     by any surviving theorem's proof chain.
 
     Returns (filtered_theorems, filtered_stacks) with re-indexed filenames.
     """
-    proved_file = PROJECT_ROOT / "files" / "theorems" / "proved_theorems.txt"
+    if theorems_dir is None:
+        theorems_dir = PROJECT_ROOT / "files" / "theorems"
+    proved_file = theorems_dir / "proved_theorems.txt"
     essential = set()
     if proved_file.exists():
         with open(proved_file, "r", encoding="utf-8") as f:
@@ -232,6 +237,8 @@ def _prune_proof_graph(raw_theorems, raw_stacks):
     # ---- BFS from essential theorems ----
     needed = set()
     queue = list(essential & all_thm_exprs)
+    if not queue:
+        return raw_theorems, raw_stacks
     visited = set(queue)
     while queue:
         thm = queue.pop(0)
@@ -240,6 +247,28 @@ def _prune_proof_graph(raw_theorems, raw_stacks):
             if dep not in visited:
                 visited.add(dep)
                 queue.append(dep)
+
+    # ---- Remove external theorems and their mirrored variants ----
+    ext_file = theorems_dir / "compressed_external_theorems.txt"
+    external_theorems = set()
+    if ext_file.exists():
+        with open(ext_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    external_theorems.add(line)
+
+    if external_theorems:
+        mirrored_of_external = set()
+        for parts in raw_theorems:
+            expr = parts[0]
+            method = parts[1].lower() if len(parts) > 1 else ""
+            ref = parts[2] if len(parts) > 2 else ""
+            if method == "mirrored statement" and ref in external_theorems:
+                mirrored_of_external.add(expr)
+
+        to_remove = (external_theorems | mirrored_of_external) & all_thm_exprs
+        needed -= to_remove
 
     # ---- Filter theorems and re-index stack files ----
     filtered_theorems = [t for t in raw_theorems if t[0] in needed]
@@ -258,11 +287,17 @@ def _prune_proof_graph(raw_theorems, raw_stacks):
     return filtered_theorems, filtered_stacks
 
 
-def create_processed_proof_graph(config: configuration_reader):
+def create_processed_proof_graph(config: configuration_reader,
+                                 raw_dir=None, proc_dir=None,
+                                 theorems_dir=None):
     create_expressions.set_configuration(config)
 
-    raw_dir = PROJECT_ROOT / "files" / "raw_proof_graph"
-    proc_dir = PROJECT_ROOT / "files" / "processed_proof_graph"
+    if raw_dir is None:
+        raw_dir = PROJECT_ROOT / "files" / "raw_proof_graph"
+    if proc_dir is None:
+        proc_dir = PROJECT_ROOT / "files" / "processed_proof_graph"
+    if theorems_dir is None:
+        theorems_dir = PROJECT_ROOT / "files" / "theorems"
 
     if proc_dir.exists():
         shutil.rmtree(proc_dir)
@@ -293,7 +328,8 @@ def create_processed_proof_graph(config: configuration_reader):
     # -------------------------------------------------------------------------
     # STEP 0: Prune proof graph — remove unused non-essential theorems
     # -------------------------------------------------------------------------
-    raw_theorems, raw_stacks = _prune_proof_graph(raw_theorems, raw_stacks)
+    theorems_dir = raw_dir.parent / "theorems"
+    raw_theorems, raw_stacks = _prune_proof_graph(raw_theorems, raw_stacks, theorems_dir)
 
     # -------------------------------------------------------------------------
     # STEP 1: Normalize anchored theorem implications before local renaming
@@ -323,6 +359,9 @@ def create_processed_proof_graph(config: configuration_reader):
             file_idx += 1
         elif method == "reformulated statement":
             fname_to_raw_thm[f"{file_idx}_reformulated_statement.txt"] = thm_expr
+            file_idx += 1
+        elif method == "incubator back reformulation":
+            fname_to_raw_thm[f"{file_idx}_back_reformulated_statement.txt"] = thm_expr
             file_idx += 1
         else:
             safe = re.sub(r"[^A-Za-z0-9._\-+]+", "_", method)[:64] or "unknown"
@@ -381,6 +420,24 @@ def create_processed_proof_graph(config: configuration_reader):
                 if a not in repl_map:
                     repl_map[a] = f"v{var_counter}"
                     var_counter += 1
+
+        # Priority 2.5: Anchor handling — assign N_copy names to x-prefixed vars
+        for row in raw_stack:
+            if len(row) >= 3 and row[2] == "anchor handling":
+                target_expr = row[0]
+                anc_match = re.match(r'\(Anchor([A-Za-z0-9_]+)\[', target_expr)
+                if anc_match:
+                    anchor_name = "Anchor" + anc_match.group(1)
+                    if anchor_name in config:
+                        short_mpl_raw = config[anchor_name].short_mpl_raw
+                        # Raw findall preserves positional ordering (no dedup)
+                        target_args = re.findall(r'(?<=[\[,])([^,\[\]]+)(?=[\],])', target_expr)
+                        config_args = re.findall(r'(?<=[\[,])([^,\[\]]+)(?=[\],])', short_mpl_raw)
+                        for t_arg, c_arg in zip(target_args, config_args):
+                            if t_arg.startswith("x") and t_arg not in repl_map:
+                                m = re.match(r'^i(\d+)$', c_arg)
+                                if m:
+                                    repl_map[t_arg] = f"{m.group(1)}_copy"
 
         # Priority 3: Iterate over remaining args in chapter lines
         for r_idx, row in enumerate(stack):
@@ -468,6 +525,60 @@ def create_processed_proof_graph(config: configuration_reader):
                     if orig_cell in raw_thm_to_idx:
                         global_idx = raw_thm_to_idx[orig_cell]
                         ram_stacks[fname][r_idx][c_idx] = renamed_theorems[global_idx][0]
+                    else:
+                        # Fallback: rename with chapter's own map (e.g. back-reformulated source)
+                        repl_map = stack_repl_maps.get(fname, {})
+                        if repl_map:
+                            ram_stacks[fname][r_idx][c_idx] = replace_keys_in_string(cell, repl_map)
+
+    # -------------------------------------------------------------------------
+    # Fix tags for external theorems
+    # -------------------------------------------------------------------------
+    ext_file = theorems_dir / "compressed_external_theorems.txt"
+    external_set = set()
+    if ext_file.exists():
+        with open(ext_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    external_set.add(line)
+
+    # Collect renamed versions of external theorems
+    renamed_external = set()
+    for i, thm_row in enumerate(renamed_theorems):
+        raw_expr = raw_theorems[i][0] if i < len(raw_theorems) else ""
+        if raw_expr in external_set:
+            renamed_external.add(thm_row[0])
+
+    # Also collect renamed forms of external theorems from chapter content
+    # (after iteration 4, these may have been renamed via fallback chapter maps)
+    for fname, stack in ram_stacks.items():
+        raw_stack = raw_stacks[fname]
+        for r_idx, row in enumerate(stack):
+            for c_idx, cell in enumerate(row):
+                if c_idx == 2 or cell == "main":
+                    continue
+                orig_cell = raw_stack[r_idx][c_idx]
+                if orig_cell in external_set and cell != orig_cell:
+                    renamed_external.add(cell)
+
+    all_external = external_set | renamed_external
+
+    if all_external:
+        # Fix tags: any line referencing an external theorem as "theorem" or "broadcast"
+        for fname, stack in ram_stacks.items():
+            for r_idx, row in enumerate(stack):
+                if len(row) >= 3:
+                    expr = row[0]
+                    tag = row[2]
+                    if expr in all_external and tag in ("theorem", "broadcast"):
+                        ram_stacks[fname][r_idx][2] = "externally provided theorem"
+
+    # Write renamed external theorems for verifier consumption
+    processed_ext_path = proc_dir / "external_theorems.txt"
+    with open(processed_ext_path, "w", encoding="utf-8") as f:
+        for expr in all_external:
+            f.write(expr + "\n")
 
     # -------------------------------------------------------------------------
     # Final Save

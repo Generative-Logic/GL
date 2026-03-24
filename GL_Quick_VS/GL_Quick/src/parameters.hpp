@@ -55,6 +55,15 @@ namespace gl {
         int max_origin_per_expr = 1;                 // cap used during normal prover runs
         int compressor_max_origins_per_expr = 30;    // cap used during compressor Phase 1 hash bursts
         int compressor_hash_bursts = 15;
+
+        // --- Incubator Parameters ---
+        bool try_contradiction = false;
+        bool skip_ce_filter = false;
+        bool skip_eq_classes = false;
+        bool incubator_mode = false;
+
+        // --- multiplyImplication ---
+        int max_partition_size = 5;
     };
 
 }

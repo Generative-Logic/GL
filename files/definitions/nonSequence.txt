@@ -1,0 +1,10 @@
+(&
+    (limitSequence[N,+,n,ns,seq])
+    (&
+        (in2[n,sn,s])
+        (&
+            (in2[sn,z0,ns])
+            (in2[sn,z1,ns])
+        )
+    )
+)

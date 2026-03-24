@@ -1,0 +1,735 @@
+{
+  "=": {
+    "arity": 2,
+    "category": "atomic",
+    "definedSet": "",
+    "elements": [
+      ""
+    ],
+    "signature": "(=[u_1,u_2])"
+  },
+  "AnchorGauss": {
+    "arity": 8,
+    "category": "and",
+    "definedSet": "",
+    "elements": [
+      "(NaturalNumbers[u_1,u_2,u_3,u_4,u_5])",
+      "(in2[u_2,u_6,u_3])",
+      "(in2[u_6,u_7,u_3])",
+      "(identity[u_1,u_8])"
+    ],
+    "signature": "(AnchorGauss[u_1,u_2,u_3,u_4,u_5,u_6,u_7,u_8])"
+  },
+  "AnchorIncubator": {
+    "arity": 14,
+    "category": "and",
+    "definedSet": "",
+    "elements": [
+      "(NaturalNumbers[u_1,u_2,u_3,u_4,u_5])",
+      "(in2[u_2,u_6,u_3])",
+      "(in2[u_6,u_7,u_3])",
+      "(identity[u_1,u_8])",
+      "(in2[u_7,u_9,u_3])",
+      "(in2[u_9,u_10,u_3])",
+      "(in2[u_10,u_11,u_3])",
+      "(in2[u_11,u_12,u_3])",
+      "(in2[u_12,u_13,u_3])",
+      "(in2[u_13,u_14,u_3])"
+    ],
+    "signature": "(AnchorIncubator[u_1,u_2,u_3,u_4,u_5,u_6,u_7,u_8,u_9,u_10,u_11,u_12,u_13,u_14])"
+  },
+  "AnchorPeano": {
+    "arity": 6,
+    "category": "and",
+    "definedSet": "",
+    "elements": [
+      "(NaturalNumbers[u_1,u_2,u_3,u_4,u_5])",
+      "(in2[u_2,u_6,u_3])"
+    ],
+    "signature": "(AnchorPeano[u_1,u_2,u_3,u_4,u_5,u_6])"
+  },
+  "NaturalNumbers": {
+    "arity": 5,
+    "category": "and",
+    "definedSet": "",
+    "elements": [
+      "(in[u_2,u_1])",
+      "(fXY[u_3,u_1,u_1])",
+      "(implication4[u_1,u_2,u_3])",
+      "(implication5[u_1,u_3])",
+      "(fXYZ[u_4,u_1,u_1,u_1])",
+      "(implication11[u_1,u_2,u_4])",
+      "(implication12[u_1,u_2,u_4])",
+      "(implication13[u_1,u_3,u_4])",
+      "(implication14[u_1,u_3,u_4])",
+      "(fXYZ[u_5,u_1,u_1,u_1])",
+      "(implication15[u_1,u_2,u_5])",
+      "(implication16[u_1,u_3,u_5,u_4])",
+      "(implication17[u_1,u_3,u_5,u_4])"
+    ],
+    "signature": "(NaturalNumbers[u_1,u_2,u_3,u_4,u_5])"
+  },
+  "and0": {
+    "arity": 8,
+    "category": "and",
+    "definedSet": "",
+    "elements": [
+      "(implication24[u_1,u_2,u_3])",
+      "(in2[u_4,u_5,u_3])",
+      "(implication25[u_6,u_7,u_3,u_2,u_8])"
+    ],
+    "signature": "(and0[u_1,u_2,u_3,u_4,u_5,u_6,u_7,u_8])"
+  },
+  "and1": {
+    "arity": 7,
+    "category": "and",
+    "definedSet": "",
+    "elements": [
+      "(implication34[u_1,u_2,u_3,u_4,u_5])",
+      "(implication35[u_1,u_2,u_3,u_4,u_5])",
+      "(implication36[u_1,u_2,u_3,u_4,u_5,u_6,u_7])"
+    ],
+    "signature": "(and1[u_1,u_2,u_3,u_4,u_5,u_6,u_7])"
+  },
+  "constSeq": {
+    "arity": 7,
+    "category": "and",
+    "definedSet": "",
+    "elements": [
+      "(interval[u_1,u_2,u_4,u_5,u_6])",
+      "(fXY[u_3,u_6,u_1])",
+      "(sequence[u_1,u_2,u_4,u_5,u_3])",
+      "(implication23[u_6,u_7,u_3])"
+    ],
+    "signature": "(constSeq[u_1,u_2,u_3,u_4,u_5,u_6,u_7])"
+  },
+  "existence0": {
+    "arity": 3,
+    "category": "existence",
+    "definedSet": "",
+    "elements": [
+      "(in[1,u_1])",
+      "(in2[u_2,1,u_3])"
+    ],
+    "signature": "(existence0[u_1,u_2,u_3])"
+  },
+  "existence1": {
+    "arity": 4,
+    "category": "existence",
+    "definedSet": "",
+    "elements": [
+      "(in[1,u_1])",
+      "(in3[u_2,u_3,1,u_4])"
+    ],
+    "signature": "(existence1[u_1,u_2,u_3,u_4])"
+  },
+  "existence2": {
+    "arity": 8,
+    "category": "existence",
+    "definedSet": "",
+    "elements": [
+      "(fXY[1,u_1,u_2])",
+      "(and0[u_3,u_4,1,u_5,u_6,u_1,u_7,u_8])"
+    ],
+    "signature": "(existence2[u_1,u_2,u_3,u_4,u_5,u_6,u_7,u_8])"
+  },
+  "fXY": {
+    "arity": 3,
+    "category": "and",
+    "definedSet": "",
+    "elements": [
+      "(implication0[u_1,u_2])",
+      "(implication1[u_1,u_3])",
+      "(implication2[u_2,u_3,u_1])",
+      "(implication3[u_2,u_1])"
+    ],
+    "signature": "(fXY[u_1,u_2,u_3])"
+  },
+  "fXYZ": {
+    "arity": 4,
+    "category": "and",
+    "definedSet": "",
+    "elements": [
+      "(implication6[u_1,u_2])",
+      "(implication7[u_1,u_3])",
+      "(implication8[u_1,u_4])",
+      "(implication9[u_2,u_3,u_4,u_1])",
+      "(implication10[u_2,u_3,u_1])"
+    ],
+    "signature": "(fXYZ[u_1,u_2,u_3,u_4])"
+  },
+  "fold": {
+    "arity": 7,
+    "category": "existence",
+    "definedSet": "",
+    "elements": [
+      "(interval[u_1,u_3,u_5,u_6,1])",
+      "(existence2[1,u_1,u_5,u_4,u_6,u_7,u_2,u_3])"
+    ],
+    "signature": "(fold[u_1,u_2,u_3,u_4,u_5,u_6,u_7])"
+  },
+  "identity": {
+    "arity": 2,
+    "category": "and",
+    "definedSet": "u_2",
+    "elements": [
+      "(implication0[u_2,u_1])",
+      "(implication18[u_2])",
+      "(implication19[u_1,u_2])"
+    ],
+    "signature": "(identity[u_1,u_2])"
+  },
+  "implication0": {
+    "arity": 2,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(in2[1,2,u_1])",
+      "(in[1,u_2])"
+    ],
+    "signature": "(implication0[u_1,u_2])"
+  },
+  "implication1": {
+    "arity": 2,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(in2[1,2,u_1])",
+      "(in[2,u_2])"
+    ],
+    "signature": "(implication1[u_1,u_2])"
+  },
+  "implication10": {
+    "arity": 3,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(in[1,u_1])",
+      "(in[2,u_2])",
+      "(in3[1,2,3,u_3])",
+      "(in3[1,2,4,u_3])",
+      "(=[3,4])"
+    ],
+    "signature": "(implication10[u_1,u_2,u_3])"
+  },
+  "implication11": {
+    "arity": 3,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(in[1,u_1])",
+      "(in3[1,u_2,2,u_3])",
+      "(=[1,2])"
+    ],
+    "signature": "(implication11[u_1,u_2,u_3])"
+  },
+  "implication12": {
+    "arity": 3,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(=[1,2])",
+      "(in[1,u_1])",
+      "(in[2,u_1])",
+      "(in3[1,u_2,2,u_3])"
+    ],
+    "signature": "(implication12[u_1,u_2,u_3])"
+  },
+  "implication13": {
+    "arity": 3,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(in[1,u_1])",
+      "(in2[1,2,u_2])",
+      "(in3[3,1,4,u_3])",
+      "(in3[3,2,5,u_3])",
+      "(in2[4,5,u_2])"
+    ],
+    "signature": "(implication13[u_1,u_2,u_3])"
+  },
+  "implication14": {
+    "arity": 3,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(in[1,u_1])",
+      "(in2[1,2,u_2])",
+      "(in3[3,1,4,u_3])",
+      "(in2[4,5,u_2])",
+      "(in3[3,2,5,u_3])"
+    ],
+    "signature": "(implication14[u_1,u_2,u_3])"
+  },
+  "implication15": {
+    "arity": 3,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(in[1,u_1])",
+      "(in3[1,u_2,2,u_3])",
+      "(=[2,u_2])"
+    ],
+    "signature": "(implication15[u_1,u_2,u_3])"
+  },
+  "implication16": {
+    "arity": 4,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(in[1,u_1])",
+      "(in2[1,2,u_2])",
+      "(in3[3,1,4,u_3])",
+      "(in3[4,3,5,u_4])",
+      "(in3[3,2,5,u_3])"
+    ],
+    "signature": "(implication16[u_1,u_2,u_3,u_4])"
+  },
+  "implication17": {
+    "arity": 4,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(in[1,u_1])",
+      "(in2[1,2,u_2])",
+      "(in3[3,1,4,u_3])",
+      "(in3[3,2,5,u_3])",
+      "(in3[4,3,5,u_4])"
+    ],
+    "signature": "(implication17[u_1,u_2,u_3,u_4])"
+  },
+  "implication18": {
+    "arity": 1,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(in2[1,2,u_1])",
+      "(=[1,2])"
+    ],
+    "signature": "(implication18[u_1])"
+  },
+  "implication19": {
+    "arity": 2,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(in[1,u_1])",
+      "(=[1,2])",
+      "(in2[1,2,u_2])"
+    ],
+    "signature": "(implication19[u_1,u_2])"
+  },
+  "implication2": {
+    "arity": 3,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(in[1,u_1])",
+      "(existence0[u_2,1,u_3])"
+    ],
+    "signature": "(implication2[u_1,u_2,u_3])"
+  },
+  "implication20": {
+    "arity": 4,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(in[1,u_1])",
+      "(preorder[u_2,u_3,u_4,1])"
+    ],
+    "signature": "(implication20[u_1,u_2,u_3,u_4])"
+  },
+  "implication21": {
+    "arity": 4,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(in[1,u_1])",
+      "(preorder[u_2,u_3,1,u_4])"
+    ],
+    "signature": "(implication21[u_1,u_2,u_3,u_4])"
+  },
+  "implication22": {
+    "arity": 5,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(preorder[u_1,u_2,u_3,1])",
+      "(preorder[u_1,u_2,1,u_4])",
+      "(in[1,u_5])"
+    ],
+    "signature": "(implication22[u_1,u_2,u_3,u_4,u_5])"
+  },
+  "implication23": {
+    "arity": 3,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(in[1,u_1])",
+      "(in2[1,u_2,u_3])"
+    ],
+    "signature": "(implication23[u_1,u_2,u_3])"
+  },
+  "implication24": {
+    "arity": 3,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(in2[u_1,1,u_2])",
+      "(in2[u_1,1,u_3])"
+    ],
+    "signature": "(implication24[u_1,u_2,u_3])"
+  },
+  "implication25": {
+    "arity": 5,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(in[1,u_1])",
+      "(in2[1,2,u_2])",
+      "(in[2,u_1])",
+      "(in2[1,3,u_3])",
+      "(in2[2,4,u_4])",
+      "(in3[3,4,5,u_5])",
+      "(in2[2,5,u_3])"
+    ],
+    "signature": "(implication25[u_1,u_2,u_3,u_4,u_5])"
+  },
+  "implication26": {
+    "arity": 4,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(in2[1,2,u_1])",
+      "(preorder[u_2,u_3,1,u_4])"
+    ],
+    "signature": "(implication26[u_1,u_2,u_3,u_4])"
+  },
+  "implication27": {
+    "arity": 2,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(in2[1,2,u_1])",
+      "(in2[1,2,u_2])"
+    ],
+    "signature": "(implication27[u_1,u_2])"
+  },
+  "implication28": {
+    "arity": 5,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(preorder[u_1,u_2,1,u_3])",
+      "(in2[1,2,u_4])",
+      "(in2[1,2,u_5])"
+    ],
+    "signature": "(implication28[u_1,u_2,u_3,u_4,u_5])"
+  },
+  "implication29": {
+    "arity": 2,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(in[1,u_1])",
+      "(in[1,u_2])"
+    ],
+    "signature": "(implication29[u_1,u_2])"
+  },
+  "implication3": {
+    "arity": 2,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(in[1,u_1])",
+      "(in2[1,2,u_2])",
+      "(in2[1,3,u_2])",
+      "(=[2,3])"
+    ],
+    "signature": "(implication3[u_1,u_2])"
+  },
+  "implication30": {
+    "arity": 5,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(in[1,u_1])",
+      "(preorder[u_2,u_3,1,u_4])",
+      "(in[1,u_5])"
+    ],
+    "signature": "(implication30[u_1,u_2,u_3,u_4,u_5])"
+  },
+  "implication31": {
+    "arity": 5,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(in2[1,2,u_1])",
+      "(interval[u_2,u_3,u_4,u_5,3])",
+      "(in[1,3])"
+    ],
+    "signature": "(implication31[u_1,u_2,u_3,u_4,u_5])"
+  },
+  "implication32": {
+    "arity": 5,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(in2[1,2,u_1])",
+      "(interval[u_2,u_3,u_4,u_5,3])",
+      "!(=[1,u_5])"
+    ],
+    "signature": "(implication32[u_1,u_2,u_3,u_4,u_5])"
+  },
+  "implication33": {
+    "arity": 6,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(in2[1,2,u_1])",
+      "(interval[u_2,u_3,u_4,u_5,3])",
+      "(in2[1,2,u_6])"
+    ],
+    "signature": "(implication33[u_1,u_2,u_3,u_4,u_5,u_6])"
+  },
+  "implication34": {
+    "arity": 5,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(interval[u_1,u_2,u_3,u_4,1])",
+      "(in[u_5,1])"
+    ],
+    "signature": "(implication34[u_1,u_2,u_3,u_4,u_5])"
+  },
+  "implication35": {
+    "arity": 5,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(interval[u_1,u_2,u_3,u_4,1])",
+      "!(=[u_5,u_4])"
+    ],
+    "signature": "(implication35[u_1,u_2,u_3,u_4,u_5])"
+  },
+  "implication36": {
+    "arity": 7,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(interval[u_1,u_2,u_3,u_4,1])",
+      "(in2[u_5,u_6,u_7])"
+    ],
+    "signature": "(implication36[u_1,u_2,u_3,u_4,u_5,u_6,u_7])"
+  },
+  "implication37": {
+    "arity": 6,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(and1[u_1,u_2,u_3,u_4,1,2,u_5])",
+      "(in2[1,2,u_6])"
+    ],
+    "signature": "(implication37[u_1,u_2,u_3,u_4,u_5,u_6])"
+  },
+  "implication4": {
+    "arity": 3,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(in[1,u_1])",
+      "!(in2[1,u_2,u_3])"
+    ],
+    "signature": "(implication4[u_1,u_2,u_3])"
+  },
+  "implication5": {
+    "arity": 2,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(in[1,u_1])",
+      "(in2[2,1,u_2])",
+      "(in2[3,1,u_2])",
+      "(=[2,3])"
+    ],
+    "signature": "(implication5[u_1,u_2])"
+  },
+  "implication6": {
+    "arity": 2,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(in3[1,2,3,u_1])",
+      "(in[1,u_2])"
+    ],
+    "signature": "(implication6[u_1,u_2])"
+  },
+  "implication7": {
+    "arity": 2,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(in3[1,2,3,u_1])",
+      "(in[2,u_2])"
+    ],
+    "signature": "(implication7[u_1,u_2])"
+  },
+  "implication8": {
+    "arity": 2,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(in3[1,2,3,u_1])",
+      "(in[3,u_2])"
+    ],
+    "signature": "(implication8[u_1,u_2])"
+  },
+  "implication9": {
+    "arity": 4,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(in[1,u_1])",
+      "(in[2,u_2])",
+      "(existence1[u_3,1,2,u_4])"
+    ],
+    "signature": "(implication9[u_1,u_2,u_3,u_4])"
+  },
+  "in": {
+    "arity": 2,
+    "category": "atomic",
+    "definedSet": "",
+    "elements": [
+      ""
+    ],
+    "signature": "(in[u_1,u_2])"
+  },
+  "in2": {
+    "arity": 3,
+    "category": "atomic",
+    "definedSet": "",
+    "elements": [
+      ""
+    ],
+    "signature": "(in2[u_1,u_2,u_3])"
+  },
+  "in3": {
+    "arity": 4,
+    "category": "atomic",
+    "definedSet": "",
+    "elements": [
+      ""
+    ],
+    "signature": "(in3[u_1,u_2,u_3,u_4])"
+  },
+  "infiniteSequence": {
+    "arity": 0,
+    "category": "and",
+    "definedSet": "",
+    "elements": [
+      "(fXY[u_1,u_2,u_2])"
+    ],
+    "signature": "(infiniteSequence[u_1,u_2])"
+  },
+  "interval": {
+    "arity": 5,
+    "category": "and",
+    "definedSet": "",
+    "elements": [
+      "(implication20[u_5,u_1,u_2,u_3])",
+      "(implication21[u_5,u_1,u_2,u_4])",
+      "(implication22[u_1,u_2,u_3,u_4,u_5])",
+      "(in[u_3,u_1])",
+      "(in[u_4,u_1])"
+    ],
+    "signature": "(interval[u_1,u_2,u_3,u_4,u_5])"
+  },
+  "limitSequence": {
+    "arity": 5,
+    "category": "and",
+    "definedSet": "u_5",
+    "elements": [
+      "(implication26[u_5,u_1,u_2,u_3])",
+      "(implication27[u_5,u_4])",
+      "(implication28[u_1,u_2,u_3,u_4,u_5])"
+    ],
+    "signature": "(limitSequence[u_1,u_2,u_3,u_4,u_5])"
+  },
+  "limitSet": {
+    "arity": 5,
+    "category": "and",
+    "definedSet": "u_5",
+    "elements": [
+      "(implication29[u_5,u_3])",
+      "(implication21[u_5,u_1,u_2,u_4])",
+      "(implication30[u_3,u_1,u_2,u_4,u_5])"
+    ],
+    "signature": "(limitSet[u_1,u_2,u_3,u_4,u_5])"
+  },
+  "nonInterval": {
+    "arity": 8,
+    "category": "and",
+    "definedSet": "",
+    "elements": [
+      "(limitSet[u_1,u_3,u_4,u_5,u_6])",
+      "(in2[u_5,u_7,u_2])",
+      "(in2[u_7,u_8,u_2])",
+      "(in[u_8,u_4])",
+      "!(in[u_7,u_4])"
+    ],
+    "signature": "(nonInterval[u_1,u_2,u_3,u_4,u_5,u_6,u_7,u_8])"
+  },
+  "nonSequence": {
+    "arity": 9,
+    "category": "and",
+    "definedSet": "",
+    "elements": [
+      "(limitSequence[u_1,u_3,u_5,u_4,u_6])",
+      "(in2[u_5,u_9,u_2])",
+      "(in2[u_9,u_7,u_4])",
+      "(in2[u_9,u_8,u_4])"
+    ],
+    "signature": "(nonSequence[u_1,u_2,u_3,u_4,u_5,u_6,u_7,u_8,u_9])"
+  },
+  "preorder": {
+    "arity": 4,
+    "category": "existence",
+    "definedSet": "",
+    "elements": [
+      "(in[1,u_1])",
+      "(in3[u_3,1,u_4,u_2])"
+    ],
+    "signature": "(preorder[u_1,u_2,u_3,u_4])"
+  },
+  "residual": {
+    "arity": 0,
+    "category": "and",
+    "definedSet": "",
+    "elements": [
+      "(in3[u_3,u_2,u_1,u_4])"
+    ],
+    "signature": "(residual[u_1,u_2,u_3,u_4])"
+  },
+  "sequence": {
+    "arity": 5,
+    "category": "existence",
+    "definedSet": "",
+    "elements": [
+      "(interval[u_1,u_2,u_3,u_4,1])",
+      "(fXY[u_5,1,u_1])"
+    ],
+    "signature": "(sequence[u_1,u_2,u_3,u_4,u_5])"
+  },
+  "split": {
+    "arity": 6,
+    "category": "and",
+    "definedSet": "u_6",
+    "elements": [
+      "(implication31[u_6,u_1,u_2,u_3,u_4])",
+      "(implication32[u_6,u_1,u_2,u_3,u_4])",
+      "(implication33[u_6,u_1,u_2,u_3,u_4,u_5])",
+      "(implication37[u_1,u_2,u_3,u_4,u_5,u_6])"
+    ],
+    "signature": "(split[u_1,u_2,u_3,u_4,u_5,u_6])"
+  }
+}

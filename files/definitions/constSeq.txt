@@ -1,0 +1,13 @@
+(&
+    (interval[N,+,n_start,n,I])
+    (&
+        (fXY[seq,I,N])
+        (&
+            (sequence[N,+,n_start,n,seq])
+            (>[i]
+                (in[i,I])
+                (in2[i,c,seq])
+            )
+        )
+    )
+)

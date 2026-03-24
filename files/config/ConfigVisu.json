@@ -206,6 +206,31 @@
 	"output_args": [],
 	"max_size_expression": 5
   },
+  "AnchorIncubator": {
+    "arity": 14,
+    "definition_sets": {
+      "1": ["P(1)", true],
+      "2": ["(1)", true],
+      "3": ["P(x(1)(1))", true],
+      "4": ["P(x(1)(x(1)(1)))", true],
+      "5": ["P(x(1)(x(1)(1)))", true],
+      "6": ["(1)", true],
+      "7": ["(1)", true],
+      "8": ["P(x(1)(1))", true],
+      "9": ["(1)", true],
+      "10": ["(1)", true],
+      "11": ["(1)", true],
+      "12": ["(1)", true],
+      "13": ["(1)", true],
+      "14": ["(1)", true]
+    },
+    "full_mpl": "AnchorIncubator.txt",
+	"short_mpl": "(AnchorIncubator[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])",
+	"max_count_per_conjecture": 0,
+	"input_args": [],
+	"output_args": [],
+	"max_size_expression": 6
+  },
   "parameters": {
    "max_number_simple_expressions": -1,
    "max_size_mapping_def_set": -1,
