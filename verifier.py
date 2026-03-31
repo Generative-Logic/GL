@@ -2140,6 +2140,61 @@ def check_necessity_for_equality_hypo(line: ProofLine,
     return True
 
 
+def check_reaction_to_hypo(line: ProofLine,
+                            chapter: List[ProofLine],
+                            state: VerifierState) -> bool:
+    """
+    REACTION TO HYPO checker.
+
+    1. Expression must be equality (=[a,b]) where b = a + "_copy".
+    2. rest[0] must be the same equality expression, rest[1] must match namespace.
+    3. Every chapter line where 'b' appears in expression args (excluding equalities
+       containing 'b') must recursively trace back to this equality.
+    """
+    if len(line.rest) < 2:
+        return False
+    if not line.expression.startswith("(=["):
+        return False
+
+    eq_args = _extract_args(line.expression)
+    if len(eq_args) != 2:
+        return False
+
+    a, b = eq_args[0], eq_args[1]
+
+    # b must be a_copy
+    if b != a + "_copy":
+        return False
+
+    # rest[0] must be the equality itself, rest[1] must match namespace
+    if line.rest[0] != line.expression:
+        return False
+    if line.rest[1] != line.namespace:
+        return False
+
+    # Build expression → lines map for trace-back
+    expr_to_lines: Dict[str, List[ProofLine]] = {}
+    for ch_line in chapter:
+        expr_to_lines.setdefault(ch_line.expression, []).append(ch_line)
+
+    the_equality = line.expression
+    is_target = lambda cl: cl.expression == the_equality
+    should_follow = lambda src: b in _extract_args(src)
+
+    # Check every line where b appears in expression args
+    for ch_line in chapter:
+        if b not in _extract_args(ch_line.expression):
+            continue
+        # Skip equalities containing b (part of propagation chain)
+        if ch_line.expression.startswith("(=["):
+            continue
+        if not _trace_back_to(ch_line.expression, expr_to_lines,
+                              is_target, should_follow):
+            return False
+
+    return True
+
+
 def check_equalize_variable(line: ProofLine, chapter: List[ProofLine],
                             state: VerifierState) -> bool:
     """Verify equalize variable: origin and copy must have consistent arg mapping."""
@@ -2242,6 +2297,7 @@ TAG_CHECKERS = {
     "mirrored from":                    check_mirrored_from,
     "reformulated from":                check_reformulated_from,
     "necessity for equality (hypo)":    check_necessity_for_equality_hypo,
+    "reaction to hypo":                 check_reaction_to_hypo,
     "externally provided theorem":      check_externally_provided_theorem,
     "incubator back reformulation":     check_incubator_back_reformulation,
     "equalize variable":                check_equalize_variable,

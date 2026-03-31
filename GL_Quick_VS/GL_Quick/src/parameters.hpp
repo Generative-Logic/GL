@@ -66,4 +66,13 @@ namespace gl {
         int max_partition_size = 5;
     };
 
+    // Static hot path sizing constants — config-independent, compile-time.
+    struct ExecutionParameters {
+        static constexpr int16_t MAX_KEY_SLOTS   = 256;    // max int16_t values in a normalized key
+        static constexpr int16_t MAX_NAME_IDS    = 16384;  // max NameMap IDs (safety bound for int16_t encode)
+        static constexpr int32_t KEY_ARENA_CHUNK = 16384;  // int16_t per arena chunk (32KB)
+        static constexpr int16_t MAX_EXPRESSIONS = 8;      // max expressions in a single key
+        static constexpr int16_t MAX_ARITY       = 16;     // max arguments per expression
+    };
+
 }

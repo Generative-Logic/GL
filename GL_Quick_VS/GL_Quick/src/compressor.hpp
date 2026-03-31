@@ -22,7 +22,7 @@
  Contributions to this project must be made under the terms of the
  Contributor License Agreement(CLA).See the project's CONTRIBUTING.md file.*/
 #pragma once
-#include "analyze_expressions.hpp"
+#include "prover.hpp"
 #include <string>
 #include <vector>
 #include <set>

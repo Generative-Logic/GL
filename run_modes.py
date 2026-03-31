@@ -23,8 +23,7 @@
 # Contributor License Agreement (CLA). See the project's CONTRIBUTING.md file.
 
 
-import create_expressions
-import test_create_expressions
+import expression_utils
 import generate_full_proof_graph
 import time
 import shutil
@@ -77,8 +76,8 @@ def generate_anchor_connection(current_tag: str, prev_tag: str, theorems_dir=Non
     config_prev = configuration_reader(PROJECT_ROOT / "files" / "config" / f"Config{prev_tag}.json")
 
     # 2. Get Anchor Expressions (Normalized: e.g. (Anchor[1,2,3]))
-    anchor_name_current = create_expressions.get_anchor_name(config_current)
-    anchor_name_prev = create_expressions.get_anchor_name(config_prev)
+    anchor_name_current = expression_utils.get_anchor_name(config_current)
+    anchor_name_prev = expression_utils.get_anchor_name(config_prev)
 
     if not anchor_name_current or not anchor_name_prev:
         print(f"Warning: Could not find anchor names for {current_tag} or {prev_tag}.")
@@ -88,8 +87,8 @@ def generate_anchor_connection(current_tag: str, prev_tag: str, theorems_dir=Non
     expr_B = config_prev[anchor_name_prev].short_mpl_normalized  # Previous (e.g. Peano)
 
     # 3. Get Arguments
-    args_A = create_expressions.get_args(expr_A)
-    args_B = create_expressions.get_args(expr_B)
+    args_A = expression_utils.get_args(expr_A)
+    args_B = expression_utils.get_args(expr_B)
 
     # 4. Assert Subset: Args(B) <= Args(A)
     # We require the previous anchor's arguments (target) to be a subset of the current anchor's (source)
@@ -136,49 +135,11 @@ def _rebuild_compressed_externals(theorems_dir: Path):
     comp_ext_path = theorems_dir / "compressed_external_theorems.txt"
     comp_ext_path.write_text("")
 
-    ext_theorems = []
-    with open(ext_thm_path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                ext_theorems.append(line)
-
-    if ext_theorems:
-        import re as _re
-
-        anchor_groups: dict[str, list[str]] = {}
-        for thm in ext_theorems:
-            m = _re.search(r'\(Anchor([A-Za-z0-9_]+)\[', thm)
-            anchor_tag = m.group(1) if m else ""
-            anchor_groups.setdefault(anchor_tag, []).append(thm)
-
-        ext_set = set(ext_theorems)
-        ext_with_mirrors = list(ext_theorems)
-
-        for anchor_tag, group in anchor_groups.items():
-            if not anchor_tag:
-                continue
-            config_path_init = PROJECT_ROOT / "files" / "config" / f"Config{anchor_tag}.json"
-            if not config_path_init.exists():
-                print(f"Warning: No config for anchor {anchor_tag}, skipping mirrors.")
-                continue
-            config_init = configuration_reader(config_path_init)
-            create_expressions.set_configuration(config_init)
-            create_expressions.set_operators()
-
-            for thm in group:
-                mirrored = create_expressions.create_reshuffled_mirrored(
-                    thm, create_expressions._ALL_PERMUTATIONS, anchor_first=True)
-                if mirrored and mirrored not in ext_set:
-                    ext_with_mirrors.append(mirrored)
-                    ext_set.add(mirrored)
-
-        with open(comp_ext_path, "w", encoding="utf-8") as f:
-            for thm in ext_with_mirrors:
-                f.write(thm + "\n")
-
-        print(f"External theorems: {len(ext_theorems)} originals + "
-              f"{len(ext_with_mirrors) - len(ext_theorems)} mirrored variants.")
+    # Delegate to C++ --mirror-externals mode
+    rel_dir = theorems_dir.relative_to(PROJECT_ROOT)
+    exe_path = PROJECT_ROOT / 'GL_Quick_VS' / 'GL_Quick' / 'gl_quick.exe'
+    subprocess.run([str(exe_path), "--mirror-externals", str(rel_dir).replace("\\", "/")],
+                   cwd=PROJECT_ROOT, check=True)
 
 
 def _setup_theorem_folder(theorems_dir: Path):
@@ -211,10 +172,11 @@ def _run_batch(tag: str, prev_tags: list, theorems_dir: Path = None,
         for n in config.parameters.simple_facts_parameters:
             simple_facts_fn(n)
 
-    # B. Create Expressions
+    # B. Create Expressions (C++ conjecturer)
     start_time = time.time()
     print(f"Conjecture creation started for {tag}.")
-    create_expressions.create_expressions_parallel(config)
+    exe_path = PROJECT_ROOT / 'GL_Quick_VS' / 'GL_Quick' / 'gl_quick.exe'
+    subprocess.run([str(exe_path), "--conjecture", tag], cwd=PROJECT_ROOT, check=True)
     print(f"Conjecture creation finished for {tag}.")
     end_time = time.time()
     print(f"Conjecture creation runtime: {end_time - start_time:.5f} seconds")
@@ -223,14 +185,18 @@ def _run_batch(tag: str, prev_tags: list, theorems_dir: Path = None,
     for prev_tag in prev_tags:
         generate_anchor_connection(tag, prev_tag, theorems_dir=theorems_dir)
 
-    # D. Run Native Prover
+    # D. Run Native Prover (brief pause to let filesystem flush txt files)
+    time.sleep(2)
     print(f"Running GL_Quick for {tag}...")
     run_gl_quick(tag)
 
 
 
+
 CLEAN_RUN = True
 RUN_INCUBATOR = True
+
+RUN_MAIN_PATH = True
 
 SIMPLE_FACTS_MAP = {}
 
@@ -302,8 +268,21 @@ def full_run():
         else:
             print(f"\n=== Skipping Incubator {tag} ===")
 
+        # Process incubator proof graph so global_theorem_list.txt exists
+        # before convert_incubator_theorems reads it
+        if RUN_INCUBATOR:
+            visu_config_path = PROJECT_ROOT / "files" / "config" / "ConfigVisu.json"
+            configuration_visu = configuration_reader(visu_config_path)
+            process_proof_graphs.create_processed_proof_graph(
+                configuration_visu, raw_dir=incubator_raw_dir, proc_dir=incubator_proc_dir,
+                theorems_dir=incubator_theorems_dir)
+
         # Convert incubator proved theorems to simple facts (always, even if incubator skipped)
         convert_incubator_theorems(tag, theorems_dir=incubator_theorems_dir)
+
+        if not RUN_MAIN_PATH:
+            print(f"\n=== Skipping Main {tag} ===")
+            continue
 
         # Main stage
         print(f"\n=== {tag} ===")
@@ -314,19 +293,17 @@ def full_run():
     visu_config_path = PROJECT_ROOT / "files" / "config" / "ConfigVisu.json"
     configuration_visu = configuration_reader(visu_config_path)
 
-    # 3a. Incubator proof graph
+    # 3a. Incubator HTML (processed proof graph already built in the tag loop)
     if RUN_INCUBATOR:
-        print("\n--- Generating Incubator Proof Graph ---")
-        process_proof_graphs.create_processed_proof_graph(
-            configuration_visu, raw_dir=incubator_raw_dir, proc_dir=incubator_proc_dir,
-            theorems_dir=incubator_theorems_dir)
+        print("\n--- Generating Incubator Proof Graph HTML ---")
         generate_full_proof_graph.generate_proof_graph_pages(
             configuration_visu, proc_dir=incubator_proc_dir, out_dir=incubator_full_dir)
 
     # 3b. Main proof graph
-    print("\n--- Generating Proof Graph ---")
-    process_proof_graphs.create_processed_proof_graph(configuration_visu)
-    generate_full_proof_graph.generate_proof_graph_pages(configuration_visu)
+    if RUN_MAIN_PATH:
+        print("\n--- Generating Proof Graph ---")
+        process_proof_graphs.create_processed_proof_graph(configuration_visu)
+        generate_full_proof_graph.generate_proof_graph_pages(configuration_visu)
 
     # 4. Verification
     all_success = 0
@@ -340,12 +317,13 @@ def full_run():
         all_success += s
         all_failure += f
 
-    print("\n--- Running Proof Graph Verifier ---")
-    main_state = verifier.run_verifier(str(PROJECT_ROOT / "files" / "processed_proof_graph"))
-    verifier.print_report(main_state)
-    s, f = verifier.get_totals(main_state)
-    all_success += s
-    all_failure += f
+    if RUN_MAIN_PATH:
+        print("\n--- Running Proof Graph Verifier ---")
+        main_state = verifier.run_verifier(str(PROJECT_ROOT / "files" / "processed_proof_graph"))
+        verifier.print_report(main_state)
+        s, f = verifier.get_totals(main_state)
+        all_success += s
+        all_failure += f
 
     if all_failure == 0:
         art = (

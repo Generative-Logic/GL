@@ -14,13 +14,16 @@
     <ClCompile Include="src\main.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\analyze_expressions.cpp">
+    <ClCompile Include="src\compiler.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\prover.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\visualizer.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\run_modes.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="src\create_expressions_shim.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\pruner.cpp">
@@ -28,10 +31,13 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="src\analyze_expressions.hpp">
+    <ClInclude Include="src\compiler.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\create_expressions_shim.hpp">
+    <ClInclude Include="src\memory.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\prover.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\parameters.hpp">
@@ -41,9 +47,6 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\json.hpp">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="src\argument_analyzer.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\pruner.hpp">

@@ -1,1 +1,1 @@
-(>[+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(>[v4,v5](in3[v1,v4,v5,+])(>[v6](in3[v4,v3,v6,+])(in3[v2,v5,v6,+])))))	main	mirrored from	(>[+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(>[v4,v5](in3[v1,v4,v5,+])(>[v6](in3[v2,v5,v6,+])(in3[v4,v3,v6,+])))))	main
+(>[+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(>[v4,v5](in3[v2,v5,v4,+])(>[v6](in3[v3,v5,v6,+])(in3[v1,v4,v6,+])))))	main	mirrored from	(>[+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(>[v4,v5](in3[v1,v4,v5,+])(>[v6](in3[v2,v6,v4,+])(in3[v3,v6,v5,+])))))	main

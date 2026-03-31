@@ -1,5 +1,0 @@
-(sequence[1,4,2,11,9])	main	implication	(>[pi_lev_2_1](interval[1,4,2,11,pi_lev_2_1])(>[](fXY[9,pi_lev_2_1,1])(sequence[1,4,2,11,9])))	main	(fXY[9,10,1])	main	(interval[1,4,2,11,10])	main
-(>[pi_lev_2_1](interval[1,4,2,11,pi_lev_2_1])(>[](fXY[9,pi_lev_2_1,1])(sequence[1,4,2,11,9])))	main	reformulation for integration >[bound]	!(>[pi_lev_2_1](interval[1,4,2,11,pi_lev_2_1])!(fXY[9,pi_lev_2_1,1]))_integration_goal	main
-!(>[pi_lev_2_1](interval[1,4,2,11,pi_lev_2_1])!(fXY[9,pi_lev_2_1,1]))_integration_goal	main	expansion for integration	(sequence[1,4,2,11,9])_integration_goal	main
-(fXY[9,10,1])	main	task formulation
-(interval[1,4,2,11,10])	main	task formulation

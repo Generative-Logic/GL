@@ -22,7 +22,7 @@
  Contributions to this project must be made under the terms of the
  Contributor License Agreement(CLA).See the project's CONTRIBUTING.md file.*/
 #include "run_modes.hpp"
-#include "analyze_expressions.hpp"
+#include "prover.hpp"
 #include <string>
 #include <vector>
 #include <filesystem>
@@ -150,6 +150,10 @@ namespace run_modes {
         std::sort(tmp_lst.begin(), tmp_lst.end());
 
         expressionAnalyzer.analyzeExpressions(tmp_lst, proved_lst, external_lst);
+
+        // Sort globalTheoremList for deterministic downstream processing
+        std::sort(expressionAnalyzer.globalTheoremList.begin(),
+                  expressionAnalyzer.globalTheoremList.end());
 
         if (skipCompression) {
             // ====== INCUBATOR MODE: Save directly, no compression, no proof graph ======

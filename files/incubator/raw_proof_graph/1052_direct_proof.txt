@@ -1,12 +1,26 @@
-!(in2[12,2,8])	main	contradiction	!(=[12,2])	main	(=[12,2])	main	(in2[12,2,8])	main
-!(=[12,2])	main	implication	(>[2,12](AnchorIncubator[1,2,3,4,5,6,7,8,9,10,11,12,13,14])!(=[2,12]))	main	(AnchorIncubator[1,12,3,4,5,6,7,8,9,10,11,2,13,14])	main
-(AnchorIncubator[1,12,3,4,5,6,7,8,9,10,11,2,13,14])	main	equality1	(AnchorIncubator[1,2,3,4,5,6,7,8,9,10,11,12,13,14])	main	(=[12,2])	main	(=[2,12])	main
+!(fold[1,3,4,8,2,2,11])	main	contradiction	(=[2,11])	main	!(=[2,11])	main	(fold[1,3,4,8,2,2,11])	main
+(=[2,11])	main	symmetry of equality	(=[11,2])	main
+(=[11,2])	main	implication	(>[1](in[1,u_int_lev_1_0])(>[2](in2[1,2,u_int_lev_1_1])(>[1](in2[1,1,u_int_lev_1_1])(=[2,1]))))	main	(in2[2,11,int_lev_1_1])	main	(in2[2,2,int_lev_1_1])	main	(in[2,int_lev_1_0])	main
+(>[1](in[1,u_int_lev_1_0])(>[2](in2[1,2,u_int_lev_1_1])(>[1](in2[1,1,u_int_lev_1_1])(=[2,1]))))	main	multiplied from	(>[1](in[1,u_int_lev_1_0])(>[2](in2[1,2,u_int_lev_1_1])(>[3](in2[1,3,u_int_lev_1_1])(=[2,3]))))	main
+(>[1](in[1,u_int_lev_1_0])(>[2](in2[1,2,u_int_lev_1_1])(>[3](in2[1,3,u_int_lev_1_1])(=[2,3]))))	main	expansion	(implication3[int_lev_1_0,int_lev_1_1])	main
+(implication3[int_lev_1_0,int_lev_1_1])	main	disintegration	(&(&(&(implication0[int_lev_1_1,int_lev_1_0])(implication1[int_lev_1_1,1]))(implication2[int_lev_1_0,1,int_lev_1_1]))(implication3[int_lev_1_0,int_lev_1_1]))	main
+(&(&(&(implication0[int_lev_1_1,int_lev_1_0])(implication1[int_lev_1_1,1]))(implication2[int_lev_1_0,1,int_lev_1_1]))(implication3[int_lev_1_0,int_lev_1_1]))	main	expansion	(fXY[int_lev_1_1,int_lev_1_0,1])	main
+(fXY[int_lev_1_1,int_lev_1_0,1])	main	disintegration	!(>[int_lev_1_1](fXY[int_lev_1_1,int_lev_1_0,1])!(and0[2,8,int_lev_1_1,2,11,int_lev_1_0,3,4]))	main
+!(>[int_lev_1_1](fXY[int_lev_1_1,int_lev_1_0,1])!(and0[2,8,int_lev_1_1,2,11,int_lev_1_0,3,4]))	main	expansion	(existence2[int_lev_1_0,1,2,8,2,11,3,4])	main
+(existence2[int_lev_1_0,1,2,8,2,11,3,4])	main	disintegration	!(>[int_lev_1_0](interval[1,4,2,2,int_lev_1_0])!(existence2[int_lev_1_0,1,2,8,2,11,3,4]))	main
+!(>[int_lev_1_0](interval[1,4,2,2,int_lev_1_0])!(existence2[int_lev_1_0,1,2,8,2,11,3,4]))	main	expansion	(fold[1,3,4,8,2,2,11])	main
+(fold[1,3,4,8,2,2,11])	main	task formulation
+(in2[2,11,int_lev_1_1])	main	disintegration	(&(&(implication24[2,8,int_lev_1_1])(in2[2,11,int_lev_1_1]))(implication25[int_lev_1_0,3,int_lev_1_1,8,4]))	main
+(&(&(implication24[2,8,int_lev_1_1])(in2[2,11,int_lev_1_1]))(implication25[int_lev_1_0,3,int_lev_1_1,8,4]))	main	expansion	(and0[2,8,int_lev_1_1,2,11,int_lev_1_0,3,4])	main
+(and0[2,8,int_lev_1_1,2,11,int_lev_1_0,3,4])	main	disintegration	!(>[int_lev_1_1](fXY[int_lev_1_1,int_lev_1_0,1])!(and0[2,8,int_lev_1_1,2,11,int_lev_1_0,3,4]))	main
+(in2[2,2,int_lev_1_1])	main	implication	(>[](in2[u_2,u_2,u_8])(in2[u_2,u_2,u_int_lev_1_1]))	main	(in2[2,2,8])	main
+(>[](in2[u_2,u_2,u_8])(in2[u_2,u_2,u_int_lev_1_1]))	main	multiplied from	(>[1](in2[u_2,1,u_8])(in2[u_2,1,u_int_lev_1_1]))	main
+(>[1](in2[u_2,1,u_8])(in2[u_2,1,u_int_lev_1_1]))	main	expansion	(implication24[2,8,int_lev_1_1])	main
+(implication24[2,8,int_lev_1_1])	main	disintegration	(&(&(implication24[2,8,int_lev_1_1])(in2[2,11,int_lev_1_1]))(implication25[int_lev_1_0,3,int_lev_1_1,8,4]))	main
+(in2[2,2,8])	main	implication	(>[2,8](AnchorIncubator[1,2,3,4,5,6,7,8,9,10,11,12,13,14])(in2[2,2,8]))	main	(AnchorIncubator[1,2,3,4,5,6,7,8,9,10,11,12,13,14])	main
+(>[2,8](AnchorIncubator[1,2,3,4,5,6,7,8,9,10,11,12,13,14])(in2[2,2,8]))	main	theorem
 (AnchorIncubator[1,2,3,4,5,6,7,8,9,10,11,12,13,14])	main	task formulation
-(=[12,2])	main	implication	(>[1,2](in2[1,2,u_8])(=[1,2]))	main	(in2[12,2,8])	main
-(>[1,2](in2[1,2,u_8])(=[1,2]))	main	expansion	(implication18[8])	main
-(implication18[8])	main	disintegration	(&(&(implication0[8,1])(implication18[8]))(implication19[1,8]))	main
-(&(&(implication0[8,1])(implication18[8]))(implication19[1,8]))	main	expansion	(identity[1,8])	main
-(identity[1,8])	main	disintegration	(&(&(&(&(&(&(&(&(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))(in2[6,7,3]))(identity[1,8]))(in2[7,9,3]))(in2[9,10,3]))(in2[10,11,3]))(in2[11,12,3]))(in2[12,13,3]))(in2[13,14,3]))	main
-(&(&(&(&(&(&(&(&(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))(in2[6,7,3]))(identity[1,8]))(in2[7,9,3]))(in2[9,10,3]))(in2[10,11,3]))(in2[11,12,3]))(in2[12,13,3]))(in2[13,14,3]))	main	expansion	(AnchorIncubator[1,2,3,4,5,6,7,8,9,10,11,12,13,14])	main
-(in2[12,2,8])	main	task formulation
-(=[2,12])	main	symmetry of equality	(=[12,2])	main
+(in[2,int_lev_1_0])	main	implication	(>[1,2](in2[1,2,u_int_lev_1_1])(in[1,u_int_lev_1_0]))	main	(in2[2,11,int_lev_1_1])	main
+(>[1,2](in2[1,2,u_int_lev_1_1])(in[1,u_int_lev_1_0]))	main	expansion	(implication0[int_lev_1_1,int_lev_1_0])	main
+(implication0[int_lev_1_1,int_lev_1_0])	main	disintegration	(&(&(&(implication0[int_lev_1_1,int_lev_1_0])(implication1[int_lev_1_1,1]))(implication2[int_lev_1_0,1,int_lev_1_1]))(implication3[int_lev_1_0,int_lev_1_1]))	main
+!(=[2,11])	main	implication	(>[2,11](AnchorIncubator[1,2,3,4,5,6,7,8,9,10,11,12,13,14])!(=[2,11]))	main	(AnchorIncubator[1,2,3,4,5,6,7,8,9,10,11,12,13,14])	main

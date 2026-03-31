@@ -22,21 +22,17 @@
 # Contributions to this project must be made under the terms of the
 # Contributor License Agreement (CLA). See the project's CONTRIBUTING.md file.
 
-import create_expressions
+import expression_utils
+from expression_utils import disintegrate_implication
 import regex
 import re
 import copy
-
-
-
-
-from create_expressions import disintegrate_implication
 
 test_expr = '(>[5,6](NaturalNumbers[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11](in3[7,10,11,6])(>[12](in3[8,10,12,6])(>[13](in3[9,10,13,6])(in3[11,12,13,5]))))))'
 
 def get_output_arg(expr: str) -> str:
     """Helper to extract the output variable based on expression type."""
-    args = create_expressions.get_args(expr)
+    args = expression_utils.get_args(expr)
     if not args:
         return ''
     if expr.startswith('(fold['):
@@ -63,7 +59,7 @@ def rewrite_expression(expression: str):
             expression.startswith('(in3') or
             expression.startswith('(fold['))
 
-    args = create_expressions.get_args(expression)
+    args = expression_utils.get_args(expression)
 
     if expression.startswith('(in['):
         rewritten = 'marker' + args[-2]
@@ -94,7 +90,7 @@ def rewrite_expression2(expression: str):
             expression.startswith('(=[') or
             expression.startswith('(fold['))
 
-    args = create_expressions.get_args(expression)
+    args = expression_utils.get_args(expression)
 
     if expression.startswith('(in['):
         rewritten = 'marker' + args[-2] + ' \u2208 ' + args[-1]
@@ -135,7 +131,7 @@ def make_readable_simple_implication_title(chain: list[str]):
 
 
 def make_readable_equality(chain: list[str]):
-    eq_args = create_expressions.get_args(chain[-1])
+    eq_args = expression_utils.get_args(chain[-1])
     left_output = eq_args[0]
     right_output = eq_args[1]
 
@@ -252,9 +248,9 @@ def make_readable_element(chain: list[str]):
 
     assert len(chain) == 2
 
-    element_arg = create_expressions.get_args(head)[-2]
+    element_arg = expression_utils.get_args(head)[-2]
 
-    assert element_arg in create_expressions.get_args(chain[0])
+    assert element_arg in expression_utils.get_args(chain[0])
 
     readable = 'from ' + rewrite_expression2(chain[0]) +  ' follows ' + rewrite_expression2(chain[-1])
 
@@ -348,7 +344,7 @@ def make_readable_simple_implication(chain: list[str]):
 
     for element in chain:
         assert element.startswith('(in')
-        args_list.append(create_expressions.get_args(element))
+        args_list.append(expression_utils.get_args(element))
 
     head_output = args_list[-1][-2]
 
@@ -366,8 +362,8 @@ def make_readable_simple_implication(chain: list[str]):
 
     for_list = []
     head = chain[-1]
-    head_args = create_expressions.get_args(head)
-    left_head_args = create_expressions.get_args(left_head)
+    head_args = expression_utils.get_args(head)
+    left_head_args = expression_utils.get_args(left_head)
     input_args = []
 
     for arg_index in range(0, len(left_head_args) - 2):
@@ -397,21 +393,21 @@ def expand_expr(expr: str):
     expanded_expr = expr[:]
     magic_string = "@19023847@"
 
-    for core_expr in create_expressions.get_configuration_data():
+    for core_expr in expression_utils.get_configuration_data():
         index = expr.find(r"(" + core_expr + r"[")
         if index != -1:
             index += 1
-            replacing_args = create_expressions.get_args(expr[index:])
-            args_to_be_replaced = create_expressions.get_args(
-                create_expressions.get_configuration_data()[core_expr].short_mpl_raw)
+            replacing_args = expression_utils.get_args(expr[index:])
+            args_to_be_replaced = expression_utils.get_args(
+                expression_utils.get_configuration_data()[core_expr].short_mpl_raw)
 
             replacement_map = {}
             for ind in range(len(args_to_be_replaced)):
                 replacement_map[args_to_be_replaced[ind]] = replacing_args[ind] + magic_string
 
             expanded_expr = (
-                create_expressions.replace_keys_in_string(
-                    create_expressions.get_configuration_data()[core_expr].full_mpl[:], replacement_map))
+                expression_utils.replace_keys_in_string(
+                    expression_utils.get_configuration_data()[core_expr].full_mpl[:], replacement_map))
             expanded_expr = expanded_expr.replace(magic_string, "")
 
     return expanded_expr

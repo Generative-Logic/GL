@@ -1,60 +1,57 @@
 (>[i0,s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in2[i0,v1,s])(in3[i1,i0,v1,+])))	direct	-1
-(>[s,+,*](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in2[v1,v2,s])(>[v3,v4](in3[v4,v1,v3,*])(>[v5](in3[v4,v2,v5,*])(in3[v3,v4,v5,+])))))	mirrored statement	(>[3,4,5](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11](in2[10,11,3])(>[](in3[8,10,7,5])(in3[8,11,9,5])))))
-(>[s,+,*](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(>[v4,v5](in2[v4,v5,s])(>[](in3[v2,v4,v1,*])(in3[v2,v5,v3,*])))))	direct	-1
-(>[s](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in2[v1,v2,s])(>[v3](in2[v3,v2,s])(=[v1,v3]))))	direct	-1
-(>[s,+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(>[v4](in2[v2,v4,s])(>[v5](in3[v1,v4,v5,+])(in2[v3,v5,s])))))	mirrored statement	(>[3,4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10](in2[8,10,3])(>[11](in2[9,11,3])(in3[7,10,11,4])))))
-(>[s,+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(>[v4](in2[v2,v4,s])(>[v5](in2[v3,v5,s])(in3[v1,v4,v5,+])))))	direct	-1
-(>[s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in2[v1,v2,s])(in3[i1,v1,v2,+])))	induction	v1
-(>[s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in3[i1,v1,v2,+])(in2[v1,v2,s])))	mirrored statement	(>[3,4,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in2[7,8,3])(in3[6,7,8,4])))
+(>[i0,s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in2[v1,i0,s])(in3[i1,v1,i0,+])))	direct	-1
+(>[i0,s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in2[v1,i0,s])(in3[v1,i1,i0,+])))	direct	-1
+(>[i0,s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in3[i1,v1,i0,+])(in2[v1,i0,s])))	mirrored statement	(>[2,3,4,6](AnchorPeano[1,2,3,4,5,6])(>[7](in2[7,2,3])(in3[6,7,2,4])))
+(>[i0,s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in3[v1,i1,i0,+])(in2[v1,i0,s])))	mirrored statement	(>[2,3,4,6](AnchorPeano[1,2,3,4,5,6])(>[7](in2[7,2,3])(in3[7,6,2,4])))
+(>[i0,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in3[i0,i1,v1,+])(in3[i1,i0,v1,+])))	direct	-1
+(>[i0,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in3[i0,v1,i1,+])(in3[v1,i0,i1,+])))	direct	-1
+(>[i0,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in3[i1,v1,i0,+])(in3[v1,i1,i0,+])))	direct	-1
+(>[i0,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in3[v1,i0,i1,+])(in3[i0,v1,i1,+])))	mirrored statement	(>[2,4,6](AnchorPeano[1,2,3,4,5,6])(>[7](in3[2,7,6,4])(in3[7,2,6,4])))
+(>[i0,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in3[v1,i1,i0,+])(in3[i1,v1,i0,+])))	mirrored statement	(>[2,4,6](AnchorPeano[1,2,3,4,5,6])(>[7](in3[6,7,2,4])(in3[7,6,2,4])))
 (>[i0,+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in3[i0,v1,v2,+])(in3[v1,i0,v2,+])))	induction	v1
 (>[i0,+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in3[v1,i0,v2,+])(in3[i0,v1,v2,+])))	mirrored statement	(>[2,4](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[2,7,8,4])(in3[7,2,8,4])))
+(>[i0,+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in3[v1,v2,i0,+])(in3[v2,v1,i0,+])))	direct	-1
+(>[i0,+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in3[v2,v1,i0,+])(in3[v1,v2,i0,+])))	mirrored statement	(>[2,4](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[7,8,2,4])(in3[8,7,2,4])))
+(>[i0,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in3[i0,v1,i1,*])(in3[v1,i0,i1,*])))	direct	-1
+(>[i0,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in3[v1,i0,i1,*])(in3[i0,v1,i1,*])))	mirrored statement	(>[2,5,6](AnchorPeano[1,2,3,4,5,6])(>[7](in3[2,7,6,5])(in3[7,2,6,5])))
 (>[i0,*](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in3[i0,v1,v2,*])(in3[v1,i0,v2,*])))	induction	v1
 (>[i0,*](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in3[v1,i0,v2,*])(in3[i0,v1,v2,*])))	mirrored statement	(>[2,5](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[2,7,8,5])(in3[7,2,8,5])))
-(>[i0,s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in3[i1,v1,i0,+])(in2[v1,i0,s])))	mirrored statement	(>[2,3,4,6](AnchorPeano[1,2,3,4,5,6])(>[7](in2[7,2,3])(in3[6,7,2,4])))
-(>[i0,s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in2[v1,i0,s])(in3[i1,v1,i0,+])))	direct	-1
-(>[+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(>[v4](in3[v4,v2,v3,+])(=[v1,v4]))))	induction	v2
-(>[+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(>[v4,v5](in3[v1,v4,v5,+])(>[v6](in3[v2,v6,v4,+])(in3[v3,v6,v5,+])))))	induction	v6
-(>[+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(>[v4,v5](in3[v2,v5,v4,+])(>[v6](in3[v3,v5,v6,+])(in3[v1,v4,v6,+])))))	mirrored statement	(>[4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11](in3[7,10,11,4])(>[12](in3[8,12,10,4])(in3[9,12,11,4])))))
+(>[s,+,*](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in2[v1,v2,s])(>[v3,v4](in3[v4,v1,v3,*])(>[v5](in3[v4,v2,v5,*])(in3[v3,v4,v5,+])))))	mirrored statement	(>[3,4,5](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11](in2[10,11,3])(>[](in3[8,10,7,5])(in3[8,11,9,5])))))
+(>[s,+,*](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(>[v4,v5](in2[v4,v5,s])(>[](in3[v4,v1,v2,*])(in3[v5,v1,v3,*])))))	induction	v1
+(>[s,+,*](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(>[v4,v5](in2[v4,v5,s])(>[](in3[v2,v4,v1,*])(in3[v2,v5,v3,*])))))	direct	-1
+(>[s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in2[v1,v2,s])(in3[i1,v1,v2,+])))	induction	v1
+(>[s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in2[v1,v2,s])(in3[v1,i1,v2,+])))	induction	v1
+(>[s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in3[i1,v1,v2,+])(in2[v1,v2,s])))	mirrored statement	(>[3,4,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in2[7,8,3])(in3[6,7,8,4])))
+(>[s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in3[v1,i1,v2,+])(in2[v1,v2,s])))	mirrored statement	(>[3,4,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in2[7,8,3])(in3[7,6,8,4])))
 (>[s,+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(>[v4](in2[v1,v4,s])(>[v5](in2[v3,v5,s])(in3[v4,v2,v5,+])))))	induction	v2
 (>[s,+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(>[v4](in2[v1,v4,s])(>[v5](in3[v4,v2,v5,+])(in2[v3,v5,s])))))	mirrored statement	(>[3,4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10](in2[7,10,3])(>[11](in2[9,11,3])(in3[10,8,11,4])))))
-(>[s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in2[v1,v2,s])(in3[v1,i1,v2,+])))	induction	v1
-(>[s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in3[v1,i1,v2,+])(in2[v1,v2,s])))	mirrored statement	(>[3,4,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in2[7,8,3])(in3[7,6,8,4])))
-(>[i0,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in3[i0,v1,i1,+])(in3[v1,i0,i1,+])))	direct	-1
-(>[i0,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in3[v1,i0,i1,*])(in3[i0,v1,i1,*])))	mirrored statement	(>[2,5,6](AnchorPeano[1,2,3,4,5,6])(>[7](in3[2,7,6,5])(in3[7,2,6,5])))
-(>[i0,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in3[i0,v1,i1,*])(in3[v1,i0,i1,*])))	direct	-1
-(>[+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(in3[v2,v1,v3,+])))	induction	v2
-(>[+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v2,v1,v3,+])(in3[v1,v2,v3,+])))	mirrored statement	(>[4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(in3[8,7,9,4])))
-(>[i0,s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in2[v1,i0,s])(in3[v1,i1,i0,+])))	direct	-1
-(>[+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in3[v1,i1,v2,+])(in3[i1,v1,v2,+])))	mirrored statement	(>[4,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[6,7,8,4])(in3[7,6,8,4])))
-(>[+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in3[i1,v1,v2,+])(in3[v1,i1,v2,+])))	direct	-1
-(>[s,+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in2[v2,v1,s])(>[v3,v4](in2[v3,v4,s])(>[v5](in3[v1,v3,v5,+])(in3[v2,v4,v5,+])))))	mirrored statement	(>[3,4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10](in2[7,10,3])(>[11](in2[11,8,3])(in3[10,11,9,4])))))
-(>[s,+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(>[v4](in2[v1,v4,s])(>[v5](in2[v5,v2,s])(in3[v4,v5,v3,+])))))	direct	-1
+(>[s,+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(>[v4](in2[v2,v4,s])(>[v5](in2[v5,v1,s])(in3[v4,v5,v3,+])))))	induction	v2
+(>[s,+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(>[v4](in2[v2,v4,s])(>[v5](in2[v3,v5,s])(in3[v1,v4,v5,+])))))	direct	-1
+(>[s,+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(>[v4](in2[v2,v4,s])(>[v5](in3[v1,v4,v5,+])(in2[v3,v5,s])))))	mirrored statement	(>[3,4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10](in2[8,10,3])(>[11](in2[9,11,3])(in3[7,10,11,4])))))
 (>[+,*](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,*])(>[v4,v5](in3[v1,v4,v5,*])(>[v6,v7](in3[v1,v6,v7,*])(>[](in3[v2,v4,v6,+])(in3[v3,v5,v7,+]))))))	induction	v4
 (>[+,*](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,*])(>[v4,v5](in3[v1,v4,v5,*])(>[v6](in3[v2,v4,v6,+])(>[v7](in3[v3,v5,v7,+])(in3[v1,v6,v7,*]))))))	mirrored statement	(>[4,5](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11](in3[7,10,11,5])(>[12,13](in3[7,12,13,5])(>[](in3[8,10,12,4])(in3[9,11,13,4]))))))
-(>[i0,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in3[v1,i1,i0,+])(in3[i1,v1,i0,+])))	mirrored statement	(>[2,4,6](AnchorPeano[1,2,3,4,5,6])(>[7](in3[6,7,2,4])(in3[7,6,2,4])))
-(>[i0,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in3[i1,v1,i0,+])(in3[v1,i1,i0,+])))	direct	-1
-(>[+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(>[v4,v5](in3[v1,v4,v5,+])(>[v6](in3[v2,v5,v6,+])(in3[v4,v3,v6,+])))))	induction	v2
-(>[+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(>[v4,v5](in3[v1,v4,v5,+])(>[v6](in3[v4,v3,v6,+])(in3[v2,v5,v6,+])))))	mirrored statement	(>[4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11](in3[7,10,11,4])(>[12](in3[8,11,12,4])(in3[10,9,12,4])))))
-(>[i0,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in3[i1,i0,v1,+])(in3[i0,i1,v1,+])))	mirrored statement	(>[2,4,6](AnchorPeano[1,2,3,4,5,6])(>[7](in3[2,6,7,4])(in3[6,2,7,4])))
-(>[i0,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in3[i0,i1,v1,+])(in3[i1,i0,v1,+])))	direct	-1
-(>[i0,+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in3[v2,v1,i0,+])(in3[v1,v2,i0,+])))	mirrored statement	(>[2,4](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[7,8,2,4])(in3[8,7,2,4])))
-(>[i0,+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in3[v1,v2,i0,+])(in3[v2,v1,i0,+])))	direct	-1
-(>[+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in3[v2,v1,i1,+])(in3[v1,v2,i1,+])))	mirrored statement	(>[4,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[7,8,6,4])(in3[8,7,6,4])))
+(>[+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in3[i1,v1,v2,+])(in3[v1,i1,v2,+])))	direct	-1
+(>[+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in3[v1,i1,v2,+])(in3[i1,v1,v2,+])))	mirrored statement	(>[4,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[6,7,8,4])(in3[7,6,8,4])))
 (>[+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in3[v1,v2,i1,+])(in3[v2,v1,i1,+])))	direct	-1
+(>[+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in3[v2,v1,i1,+])(in3[v1,v2,i1,+])))	mirrored statement	(>[4,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[7,8,6,4])(in3[8,7,6,4])))
+(>[+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(>[v4,v5](in3[v1,v4,v5,+])(>[v6](in3[v2,v6,v4,+])(in3[v3,v6,v5,+])))))	induction	v6
+(>[+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(>[v4,v5](in3[v2,v5,v4,+])(>[v6](in3[v3,v5,v6,+])(in3[v1,v4,v6,+])))))	mirrored statement	(>[4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11](in3[7,10,11,4])(>[12](in3[8,12,10,4])(in3[9,12,11,4])))))
 (>[+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(>[v4](in3[v1,v4,v3,+])(=[v2,v4]))))	induction	v1
-(>[s,+,*](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(>[v4,v5](in2[v4,v5,s])(>[](in3[v4,v1,v2,*])(in3[v5,v1,v3,*])))))	induction	v1
+(>[+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(in3[v2,v1,v3,+])))	induction	v2
+(>[+](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v2,v1,v3,+])(in3[v1,v2,v3,+])))	mirrored statement	(>[4](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(in3[8,7,9,4])))
+(>[*](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,*])(>[v4,v5](in3[v1,v4,v5,*])(>[v6](in3[v2,v6,v4,*])(in3[v3,v6,v5,*])))))	induction	v6
+(>[*](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,*])(>[v4,v5](in3[v2,v5,v4,*])(>[v6](in3[v3,v5,v6,*])(in3[v1,v4,v6,*])))))	mirrored statement	(>[5](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11](in3[7,10,11,5])(>[12](in3[8,12,10,5])(in3[9,12,11,5])))))
 (>[*](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,*])(in3[v2,v1,v3,*])))	induction	v2
 (>[*](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v2,v1,v3,*])(in3[v1,v2,v3,*])))	mirrored statement	(>[5](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(in3[8,7,9,5])))
-(>[*](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,*])(>[v4,v5](in3[v1,v4,v5,*])(>[v6](in3[v2,v6,v4,*])(in3[v3,v6,v5,*])))))	induction	v6
 (>[N,i0,s,+,*,i1](AnchorGauss[N,i0,s,+,*,i1,i2,id])(AnchorPeano[N,i0,s,+,*,i1]))	direct	-1
-(>[N,i0,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](fXY[v1,v2,N])(>[v3](interval[N,+,i0,v3,v2])(sequence[N,+,i0,v3,v1]))))	direct	-1
-(>[N,s,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(preorder[N,+,v1,v2])))	direct	-1
-(>[N,i0,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](interval[N,+,i0,v1,v2])(in[v1,v2])))	direct	-1
-(>[N,i0,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](interval[N,+,i0,v1,v2])(>[v3](sequence[N,+,i0,v1,v3])(fXY[v3,v2,N]))))	direct	-1
-(>[N,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](preorder[N,+,v1,v2])(>[v3](preorder[N,+,v2,v3])(preorder[N,+,v1,v3]))))	direct	-1
+(>[N,i0,s,+,*,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](fold[N,s,+,id,i0,v2,v1])(>[v3](in2[v2,v3,s])(>[v4](in3[i2,v1,v4,*])(in3[v2,v3,v4,*])))))	mirrored statement	(>[1,2,3,4,5,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10,11](in3[9,10,11,5])(>[12](fold[1,3,4,8,2,9,12])(>[](in2[9,10,3])(in3[7,12,11,5])))))
+(>[N,i0,s,+,*,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2,v3](in3[v1,v2,v3,*])(>[v4](fold[N,s,+,id,i0,v1,v4])(>[](in2[v1,v2,s])(in3[i2,v4,v3,*])))))	induction	v1
 (>[N,i0,s,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[v3](interval[N,+,i0,v2,v3])(existence3[N,+,v3,v1,i0]))))	reformulated statement	(>[1,2,3,4](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10,11](limitSet[1,4,9,10,11])(>[12](in2[10,12,3])(>[](interval[1,4,2,12,9])(interval[1,4,2,10,11])))))
+(>[N,i0,s,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2,v3](limitSequence[N,+,v1,v2,v3])(>[v4](in2[v1,v4,s])(>[](sequence[N,+,i0,v4,v2])(sequence[N,+,i0,v1,v3])))))	direct	-1
 (>[N,i0,s,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2,v3](limitSet[N,+,v1,v2,v3])(>[v4](in2[v2,v4,s])(>[](interval[N,+,i0,v4,v1])(interval[N,+,i0,v2,v3])))))	direct	-1
 (>[N,i0,s,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[v3](sequence[N,+,i0,v2,v3])(existence4[N,+,v1,v3,i0]))))	reformulated statement	(>[1,2,3,4](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10,11](limitSequence[1,4,9,10,11])(>[12](in2[9,12,3])(>[](sequence[1,4,2,12,10])(sequence[1,4,2,9,11])))))
-(>[N,i0,s,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2,v3](limitSequence[N,+,v1,v2,v3])(>[v4](in2[v1,v4,s])(>[](sequence[N,+,i0,v4,v2])(sequence[N,+,i0,v1,v3])))))	direct	-1
-(>[N,i0,s,+,*,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2,v3](in3[v1,v2,v3,*])(>[v4](fold[N,s,+,id,i0,v2,v4])(>[](in2[v2,v1,s])(in3[i2,v4,v3,*])))))	induction	v2
-(>[N,i0,s,+,*,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](fold[N,s,+,id,i0,v1,v2])(>[v3](in2[v1,v3,s])(>[v4](in3[i2,v2,v4,*])(in3[v3,v1,v4,*])))))	mirrored statement	(>[1,2,3,4,5,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10,11](in3[9,10,11,5])(>[12](fold[1,3,4,8,2,10,12])(>[](in2[10,9,3])(in3[7,12,11,5])))))
+(>[N,i0,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](fXY[v1,v2,N])(>[v3](interval[N,+,i0,v3,v2])(sequence[N,+,i0,v3,v1]))))	direct	-1
+(>[N,i0,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](interval[N,+,i0,v1,v2])(>[v3](sequence[N,+,i0,v1,v3])(fXY[v3,v2,N]))))	direct	-1
+(>[N,i0,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](interval[N,+,i0,v1,v2])(in[v1,v2])))	direct	-1
+(>[N,s,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(preorder[N,+,v1,v2])))	direct	-1
+(>[N,+](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](preorder[N,+,v1,v2])(>[v3](preorder[N,+,v2,v3])(preorder[N,+,v1,v3]))))	direct	-1

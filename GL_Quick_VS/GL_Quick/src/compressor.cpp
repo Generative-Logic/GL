@@ -75,7 +75,7 @@ namespace gl {
         std::cout << "Building independent Logic Blocks for "
                   << N << " theorems..." << std::endl;
 
-        std::vector<BodyOfProves*> compressorBodies;
+        std::vector<Memory*> compressorBodies;
         compressorBodies.reserve(N);
         extracted_graphs.reserve(N);
 
@@ -84,7 +84,7 @@ namespace gl {
         for (size_t i = 0; i < N; ++i) {
             const std::string& theorem = all_theorems[i];
 
-            BodyOfProves* lb = new BodyOfProves();
+            Memory* lb = new Memory();
             lb->level    = 0;
             lb->isActive = true;
             lb->exprKey  = "CompressorNode_" + std::to_string(i);
@@ -160,7 +160,7 @@ namespace gl {
 
         size_t total_origins = 0;
         for (size_t i = 0; i < compressorBodies.size(); ++i) {
-            BodyOfProves* lb = compressorBodies[i];
+            Memory* lb = compressorBodies[i];
             CompressorNode& pNode = extracted_graphs[i];
 
             for (const auto& kv : lb->exprOriginMap) {
@@ -279,9 +279,10 @@ namespace gl {
 
         // ---- 2. Sort by usage count ascending ----
         std::vector<std::string> sorted_theorems = all_theorems;
-        std::sort(sorted_theorems.begin(), sorted_theorems.end(),
+        std::stable_sort(sorted_theorems.begin(), sorted_theorems.end(),
             [&](const std::string& a, const std::string& b) {
-                return usage_count[a] < usage_count[b];
+                int ca = usage_count[a], cb = usage_count[b];
+                return ca < cb || (ca == cb && a < b);
             });
 
         // ---- 3. Multi-pass greedy elimination ----

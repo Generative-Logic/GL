@@ -369,7 +369,7 @@
   ,
   "prover_parameters": {
     "sizeAllBinariesAna": 10,
-    "maxIterationNumberProof": 34,
+    "maxIterationNumberProof": 36,
     "numberIterationsConjectureFiltering": 1,
     "maxSizeDefSetMapping": 5,
     "maxSizeTargetSetMapping": 12,

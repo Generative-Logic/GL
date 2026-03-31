@@ -29,7 +29,8 @@ import shutil
 from pathlib import Path
 
 from configuration_reader import configuration_reader
-import create_expressions
+import expression_utils
+from expression_utils import replace_keys_in_string
 
 # Assume the project root is the folder containing this file
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -42,15 +43,6 @@ def get_all_args(expr: str) -> list[str]:
     pattern = r'(?<=[\[,])([^,\[\]]+)(?=[\],])'
     return list(dict.fromkeys(re.findall(pattern, expr)))
 
-
-def replace_keys_in_string(big_string: str, replacement_map: dict[str, str]) -> str:
-    """Replaces argument keys safely using regex lookarounds."""
-    if not replacement_map:
-        return big_string
-    escaped_keys = [re.escape(k) for k in replacement_map.keys()]
-    pattern = r'(?<=[\[,])(' + '|'.join(escaped_keys) + r')(?=[\],])'
-    regex = re.compile(pattern)
-    return regex.sub(lambda m: replacement_map.get(m.group(1), m.group(1)), big_string)
 
 
 def get_anchor_mapping_from_expr(expr_str: str, config: configuration_reader) -> dict:
@@ -290,7 +282,7 @@ def _prune_proof_graph(raw_theorems, raw_stacks, theorems_dir=None):
 def create_processed_proof_graph(config: configuration_reader,
                                  raw_dir=None, proc_dir=None,
                                  theorems_dir=None):
-    create_expressions.set_configuration(config)
+    expression_utils.set_configuration(config)
 
     if raw_dir is None:
         raw_dir = PROJECT_ROOT / "files" / "raw_proof_graph"
@@ -460,6 +452,13 @@ def create_processed_proof_graph(config: configuration_reader,
                     if a not in repl_map:
                         repl_map[a] = f"v{var_counter}"
                         var_counter += 1
+
+        # Priority 4: Derive _copy variable names from their base variable
+        for a in list(repl_map.keys()):
+            if a.endswith("_copy"):
+                base = a[:-5]
+                if base in repl_map:
+                    repl_map[a] = repl_map[base] + "_copy"
 
         stack_repl_maps[fname] = repl_map
 

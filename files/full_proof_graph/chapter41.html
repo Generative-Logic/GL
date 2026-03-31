@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>(&gt;[0,+](AnchorPeano[N,0,s,+,*,1])(&gt;[v1,v2](in3[v1,v2,0,+])(in3[v2,v1,0,+])))</title>
-  <title>(v1 + v2)=0=(v2 + v1)</title>
+  <title>(&gt;[+](AnchorPeano[N,0,s,+,*,1])(&gt;[v1,v2,v3](in3[v2,v1,v3,+])(in3[v1,v2,v3,+])))</title>
+  <title>(v2 + v1)=v3=(v1 + v2)</title>
   <link rel="icon" type="image/png" href="favicon.png">
   
     <style>
@@ -294,19 +294,16 @@
       <span>Right-click to expand</span>
     </div>
   </div>
-  <h1>Chapter 41: <span class="clickable" data-text="(&gt;[i0,+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2](in3[v1,v2,i0,+])(in3[v2,v1,i0,+])))">(&gt;[0,+](AnchorPeano[N,0,s,+,*,1])(&gt;[v1,v2](in3[v1,v2,0,+])(in3[v2,v1,0,+])))</span></h1>
+  <h1>Chapter 41: <span class="clickable" data-text="(&gt;[+](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1,v2,v3](in3[v2,v1,v3,+])(in3[v1,v2,v3,+])))">(&gt;[+](AnchorPeano[N,0,s,+,*,1])(&gt;[v1,v2,v3](in3[v2,v1,v3,+])(in3[v1,v2,v3,+])))</span></h1>
   <div style="margin-left:20px; color:#8B8FA5; font-weight:bold; font-size:3em;">
-    (v<sub>1</sub> + v<sub>2</sub>) = 0 = (v<sub>2</sub> + v<sub>1</sub>)
+    (v<sub>2</sub> + v<sub>1</sub>) = v<sub>3</sub> = (v<sub>1</sub> + v<sub>2</sub>)
   </div><br><br>
 
-  <h2>Direct Proof</h2>
+  <h2>Mirrored</h2>
   <div class='step-output'>
-<div class='proof-section main-proof-section'><div class='proof-section-title'>Main stack</div><div class='proof-line'><span class='step-badge'>(1/4)</span><span class='proof-line-content'><span id='m-entry0'><span class="clickable" data-text="(in3[v1,v2,0,+])" data-parts="in3">(in3[v1,v2,0,+])</span> <span class="validity-tag">(main)</span></span>&nbsp;&nbsp;<a href='tags.html#task-formulation' class='proof-tag' data-tag='task formulation'><b>task formulation</b></a></span></div>
-<div class='proof-line'><span class='step-badge'>(2/4)</span><span class='proof-line-content'><span id='m-entry1'><span class="clickable" data-text="(AnchorPeano[N,0,s,+,*,1])" data-parts="AnchorPeano">(AnchorPeano[N,0,s,+,*,1])</span> <span class="validity-tag">(main)</span></span>&nbsp;&nbsp;<a href='tags.html#task-formulation' class='proof-tag' data-tag='task formulation'><b>task formulation</b></a></span></div>
-<div class='proof-line'><span class='step-badge'>(3/4)</span><span class='proof-line-content'><span id='m-entry2' data-deps="m-entry1"><span class="clickable" data-text="(AnchorPeano[N,0_copy,s,+,*,1])" data-parts="AnchorPeano">(AnchorPeano[N,0_copy,s,+,*,1])</span> <span class="validity-tag">(main)</span></span>&nbsp;&nbsp;<a href='tags.html#anchor-handling' class='proof-tag' data-tag='anchor handling'><b>anchor handling</b></a>&nbsp;&nbsp;<a href='#m-entry1' style='text-decoration:none'><span class="clickable" data-text="(AnchorPeano[N,0,s,+,*,1])" data-parts="AnchorPeano">(AnchorPeano[N,0,s,+,*,1])</span></a> <span class="validity-tag">(main)</span></span></div>
-<div class='proof-line'><span class='step-badge'>(4/4)</span><span class='proof-line-content'><span id='m-entry4' data-deps="m-entry3 m-entry2 m-entry0"><span class="clickable" style="color:#EF9F27; font-weight:bold"><span class="clickable" data-text="(in3[v2,v1,0,+])" data-parts="in3">(in3[v2,v1,0,+])</span></span> <span class="validity-tag">(main)</span></span>&nbsp;&nbsp;<a href='tags.html#implication' class='proof-tag' data-tag='implication'><b>implication</b></a>&nbsp;&nbsp;<a href='#m-entry3' style='text-decoration:none'><a href="chapter25.html" class="theorem-link"><span class="clickable" data-text="(&gt;[+](AnchorPeano[N,0,s,+,*,1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(in3[v2,v1,v3,+])))" data-parts="AnchorPeano,in3">(&gt;[+](AnchorPeano[N,0,s,+,*,1])(&gt;[w1,w2,w3](in3[w1,w2,w3,+])(in3[w2,w1,w3,+])))</span></a></a> <span class="validity-tag">(main)</span>&nbsp;&nbsp;<a href='#m-entry2' style='text-decoration:none'><span class="clickable" data-text="(AnchorPeano[N,0_copy,s,+,*,1])" data-parts="AnchorPeano">(AnchorPeano[N,0_copy,s,+,*,1])</span></a> <span class="validity-tag">(main)</span>&nbsp;&nbsp;<a href='#m-entry0' style='text-decoration:none'><span class="clickable" data-text="(in3[v1,v2,0,+])" data-parts="in3">(in3[v1,v2,0,+])</span></a> <span class="validity-tag">(main)</span></span></div>
-<div class='implication readable-grey'>&ensp;RULE:&ensp;  (v<sub>1</sub> + v<sub>2</sub>) = (v<sub>2</sub> + v<sub>1</sub>) &ensp;IMPLIES:&ensp;  (v<sub>1</sub> + v<sub>2</sub>) = (v<sub>2</sub> + v<sub>1</sub>)</div></div>
+<div class='proof-section main-proof-section'><div class='proof-section-title'>Main stack</div><div class='proof-line'><span class='step-badge'>(1/1)</span><span class='proof-line-content'><span id='m-entry0'><a href="chapter41.html" class="theorem-link"><span class="clickable" style="color:#EF9F27 !important; font-weight:bold !important;" data-text="(&gt;[+](AnchorPeano[N,0,s,+,*,1])(&gt;[v1,v2,v3](in3[v2,v1,v3,+])(in3[v1,v2,v3,+])))" data-parts="AnchorPeano,in3">(&gt;[+](AnchorPeano[N,0,s,+,*,1])(&gt;[w1,w2,w3](in3[w2,w1,w3,+])(in3[w1,w2,w3,+])))</span></a> <span class="validity-tag">(main)</span></span>&nbsp;&nbsp;<a href='tags.html#mirrored-from' class='proof-tag' data-tag='mirrored from'><b>mirrored from</b></a>&nbsp;&nbsp;<a href="chapter40.html" class="theorem-link"><span class="clickable" data-text="(&gt;[+](AnchorPeano[N,0,s,+,*,1])(&gt;[v1,v2,v3](in3[v1,v2,v3,+])(in3[v2,v1,v3,+])))" data-parts="AnchorPeano,in3">(&gt;[+](AnchorPeano[N,0,s,+,*,1])(&gt;[w1,w2,w3](in3[w1,w2,w3,+])(in3[w2,w1,w3,+])))</span></a> <span class="validity-tag">(main)</span></span></div>
+<div class='mirrored readable-grey'>(v<sub>2</sub> + v<sub>1</sub>) = v<sub>3</sub> = (v<sub>1</sub> + v<sub>2</sub>) mirrored &ensp;from&ensp; (v<sub>1</sub> + v<sub>2</sub>) = v<sub>3</sub> = (v<sub>2</sub> + v<sub>1</sub>)</div></div>
   </div>
-  <div class='chapter-stats'>5 steps, 4 reasoning rules, 1 theorem cited</div>
+  <div class='chapter-stats'>1 step, 1 reasoning rule</div>
 </body>
 </html>

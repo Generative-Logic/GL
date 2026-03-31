@@ -1,0 +1,20 @@
+# ninja log v6
+38	800	7941547594903522	CMakeFiles/mimalloc.dir/src/alloc-posix.c.obj	b86916ce37a619a2
+164	809	7941547596175078	CMakeFiles/mimalloc.dir/src/segment-map.c.obj	28ac0c0b07bc79d0
+68	813	7941547595214944	CMakeFiles/mimalloc.dir/src/heap.c.obj	ae177d9c270e461d
+114	818	7941547595672914	CMakeFiles/mimalloc.dir/src/os.c.obj	189809a9aa42a3f0
+92	823	7941547595449377	CMakeFiles/mimalloc.dir/src/libc.c.obj	3a244f45b39fa42a
+139	826	7941547595927090	CMakeFiles/mimalloc.dir/src/random.c.obj	eb41567bccf426b1
+22	830	7941547594748407	CMakeFiles/mimalloc.dir/src/alloc-aligned.c.obj	52b674e67abfd05a
+58	833	7941547595110129	CMakeFiles/mimalloc.dir/src/bitmap.c.obj	821d50ba7e3519
+152	836	7941547596054391	CMakeFiles/mimalloc.dir/src/segment.c.obj	1a3fa8348dd3b82a
+187	840	7941547596404838	CMakeFiles/mimalloc.dir/src/prim/prim.c.obj	27722b19fbb9c70e
+176	843	7941547596296519	CMakeFiles/mimalloc.dir/src/stats.c.obj	8d4bba0433a3bcc2
+8	846	7941547594614503	CMakeFiles/mimalloc.dir/src/alloc.c.obj	556db4d52ff7d4e6
+82	849	7941547595349155	CMakeFiles/mimalloc.dir/src/init.c.obj	bc1d95f5da8ecc57
+126	852	7941547595793622	CMakeFiles/mimalloc.dir/src/page.c.obj	6cbea6cd92139b28
+103	855	7941547595560800	CMakeFiles/mimalloc.dir/src/options.c.obj	f4293256c4eeb696
+48	858	7941547595008876	CMakeFiles/mimalloc.dir/src/arena.c.obj	a82c682be866df10
+858	1319	7941547607063975	mimalloc-debug.dll	9e48b86dd9e3cb1f
+858	1319	7941547607063975	mimalloc-debug.dll.lib	9e48b86dd9e3cb1f
+1320	1386	7941547607733679	CMakeFiles/install.util	d95fb5ee77c38676

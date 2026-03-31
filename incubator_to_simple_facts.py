@@ -22,7 +22,7 @@ import os
 import itertools
 from pathlib import Path
 from configuration_reader import configuration_reader
-import create_expressions
+import expression_utils
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
@@ -39,16 +39,16 @@ def _get_operator_names(config):
 
 
 def _get_anchor_arg_map(config):
-    anchor_name = create_expressions.get_anchor_name(config)
+    anchor_name = expression_utils.get_anchor_name(config)
     short_mpl = config[anchor_name].short_mpl_raw
-    args = create_expressions.get_args(short_mpl)
+    args = expression_utils.get_args(short_mpl)
     return {str(i + 1): arg for i, arg in enumerate(args)}
 
 
 def _get_value_names(config):
-    anchor_name = create_expressions.get_anchor_name(config)
+    anchor_name = expression_utils.get_anchor_name(config)
     short_mpl = config[anchor_name].short_mpl_raw
-    args = create_expressions.get_args(short_mpl)
+    args = expression_utils.get_args(short_mpl)
     return {a for a in args if re.match(r'i\d+$', a)}
 
 
@@ -251,7 +251,7 @@ def convert_incubator_theorems(tag, config_path=None, theorems_dir=None,
     main_config_path = PROJECT_ROOT / "files" / "config" / f"Config{tag}.json"
     main_config = configuration_reader(main_config_path)
     operator_names = _get_operator_names(main_config)
-    main_anchor_name = create_expressions.get_anchor_name(main_config)
+    main_anchor_name = expression_utils.get_anchor_name(main_config)
     max_j = 2
     variable_kinds = config.parameters.fact_variable_kinds or None
 

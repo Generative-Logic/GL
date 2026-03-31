@@ -1,15 +1,5 @@
-(in3[v2,v5,v3,*])	main	implication	(>[v6](in[v6,N])(>[v7](in2[v6,v7,s])(>[v8,v9](in3[v8,v6,v9,*])(>[v10](in3[v9,v8,v10,+])(in3[v8,v7,v10,*])))))	main	(in2[v4,v5,s])	main	(in3[v1,v2,v3,+])	main	(in3[v2,v4,v1,*])	main	(in[v4,N])	main
-(>[v6](in[v6,N])(>[v7](in2[v6,v7,s])(>[v8,v9](in3[v8,v6,v9,*])(>[v10](in3[v9,v8,v10,+])(in3[v8,v7,v10,*])))))	main	expansion	(implication16[N,s,*,+])	main
-(implication16[N,s,*,+])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication4[N,i0,s]))(implication5[N,s]))(fXYZ[+,N,N,N]))(implication11[N,i0,+]))(implication12[N,i0,+]))(implication13[N,s,+]))(implication14[N,s,+]))(fXYZ[*,N,N,N]))(implication15[N,i0,*]))(implication16[N,s,*,+]))(implication17[N,s,*,+]))	main
-(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication4[N,i0,s]))(implication5[N,s]))(fXYZ[+,N,N,N]))(implication11[N,i0,+]))(implication12[N,i0,+]))(implication13[N,s,+]))(implication14[N,s,+]))(fXYZ[*,N,N,N]))(implication15[N,i0,*]))(implication16[N,s,*,+]))(implication17[N,s,*,+]))	main	expansion	(NaturalNumbers[N,i0,s,+,*])	main
-(NaturalNumbers[N,i0,s,+,*])	main	disintegration	(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))	main
-(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))	main	expansion	(AnchorPeano[N,i0,s,+,*,i1])	main
+(in3[v1,i1,i0,+])	main	implication	(>[s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in2[v1,v2,s])(in3[v1,i1,v2,+])))	main	(AnchorPeano[N,0_copy,s,+,*,i1])	main	(in2[v1,i0,s])	main
+(>[s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in2[v1,v2,s])(in3[v1,i1,v2,+])))	main	theorem
+(AnchorPeano[N,0_copy,s,+,*,i1])	main	anchor handling	(AnchorPeano[N,i0,s,+,*,i1])	main
 (AnchorPeano[N,i0,s,+,*,i1])	main	task formulation
-(in2[v4,v5,s])	main	task formulation
-(in3[v1,v2,v3,+])	main	task formulation
-(in3[v2,v4,v1,*])	main	task formulation
-(in[v4,N])	main	implication	(>[v6,v7,v8](in3[v6,v7,v8,*])(in[v7,N]))	main	(in3[v2,v4,v1,*])	main
-(>[v6,v7,v8](in3[v6,v7,v8,*])(in[v7,N]))	main	expansion	(implication7[*,N])	main
-(implication7[*,N])	main	disintegration	(&(&(&(&(implication6[*,N])(implication7[*,N]))(implication8[*,N]))(implication9[N,N,N,*]))(implication10[N,N,*]))	main
-(&(&(&(&(implication6[*,N])(implication7[*,N]))(implication8[*,N]))(implication9[N,N,N,*]))(implication10[N,N,*]))	main	expansion	(fXYZ[*,N,N,N])	main
-(fXYZ[*,N,N,N])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication4[N,i0,s]))(implication5[N,s]))(fXYZ[+,N,N,N]))(implication11[N,i0,+]))(implication12[N,i0,+]))(implication13[N,s,+]))(implication14[N,s,+]))(fXYZ[*,N,N,N]))(implication15[N,i0,*]))(implication16[N,s,*,+]))(implication17[N,s,*,+]))	main
+(in2[v1,i0,s])	main	task formulation

@@ -41,7 +41,8 @@ import html
 import re
 import shutil
 
-import create_expressions
+import expression_utils
+from expression_utils import disintegrate_implication, replace_keys_in_string
 from typing import Dict
 
 from configuration_reader import configuration_reader
@@ -691,64 +692,6 @@ def rename_expr(expr: str):
     return _normalize_local_expr_vars(expr)
 
 
-def disintegrate_implication(expr_for_desintegration, chain):
-    head = ""
-
-    root = create_expressions.parse_expr(expr_for_desintegration)
-
-    node = root
-    while True:
-        if node is not None:
-            if node.value[0] == ">":
-                chain.append((create_expressions.tree_to_expr(node.left), create_expressions.get_args(node.value),
-                              node.left.arguments))
-                node = node.right
-            else:
-                head = create_expressions.tree_to_expr(node)
-                break
-        else:
-            break
-
-    return head
-
-
-# Global cache to store compiled regex patterns keyed by a sorted tuple of keys.
-_regex_cache = {}
-
-
-def _get_compiled_regex(keys) -> re.Pattern:
-    # Create a key for caching: a sorted tuple of keys ensures consistency.
-    key_tuple = tuple(sorted(keys))
-    if key_tuple not in _regex_cache:
-        # Escape all keys to handle special regex characters.
-        escaped_keys = [re.escape(key) for key in key_tuple]
-        # Build the regex pattern with lookbehind and lookahead for context.
-        pattern = r'(?<=[\[,])(' + '|'.join(escaped_keys) + r')(?=[\],])'
-        _regex_cache[key_tuple] = re.compile(pattern)
-    return _regex_cache[key_tuple]
-
-
-def replace_keys_in_string(big_string: str, replacement_map: Dict[str, str]) -> str:
-    """
-    Replaces keys in big_string based on replacement_map, but only if they occur in a context where they are
-    immediately preceded by '[' or ',' and immediately followed by ']' or ','.
-
-    Args:
-        big_string (str): The original string containing keys to be replaced.
-        replacement_map (Dict[str, str]): A dictionary mapping keys to their replacement values.
-
-    Returns:
-        str: The modified string with specified keys replaced.
-    """
-    if not replacement_map:
-        return big_string  # No replacements needed
-
-    # Get the precompiled regex from the cache.
-    regex = _get_compiled_regex(replacement_map.keys())
-
-    # Use a lambda for direct substitution.
-    return regex.sub(lambda m: replacement_map.get(m.group(1), m.group(1)), big_string)
-
 
 def extract_natural_numbers_expression(expression: str) -> str:
     """
@@ -850,7 +793,7 @@ def build_anchor_symbol_replacement_map(anchor_expr: str, prefix_mode: str = 'as
     if not nn_expr:
         return replacement_map
 
-    args = create_expressions.get_args(nn_expr)
+    args = expression_utils.get_args(nn_expr)
     if len(args) < 5:
         return replacement_map
 
@@ -1705,7 +1648,7 @@ def _generate_tags_page(out_dir, common_style):
 def generate_proof_graph_pages(config: configuration_reader,
                                proc_dir=None, out_dir=None):
     global theorem_to_file, theorem_shape_to_file
-    create_expressions.set_configuration(config)
+    expression_utils.set_configuration(config)
 
     if proc_dir is None:
         proc_dir = PROJECT_ROOT / "files" / "processed_proof_graph"

@@ -18,7 +18,7 @@ Deterministic computer architecture for automated mathematical reasoning. GL sta
   - 22 direct proofs, 15 induction proofs, 21 mirrored statements, 2 reformulated statements
 - **Batch 1 (Peano):** 32 theorems (17 essential after compression) — commutativity/associativity of addition and multiplication, distributivity
 - **Batch 2 (Gauss):** 10 theorems including Gauss's summation formula (division-free variant `n(n+1) = 2·Σi`, autonomously discovered)
-- Full run (main + incubator): ~1 hour on commodity hardware (Dell G16 7630, 32 cores, 32 GB RAM)
+- Full run (main + incubator): ~10 minutes on commodity hardware (Dell G16 7630, 32 cores, 32 GB RAM)
 
 ### Incubator (Peano)
 
@@ -61,9 +61,7 @@ Interactive HTML proof graphs with:
 
 ---
 
-## New Features (unpublished)
-
-The following features have been developed after the v3 paper and are not yet covered in the publication. A paper update is planned after the upcoming runtime optimization campaign.
+## Features
 
 ### Compressor
 
@@ -73,7 +71,7 @@ Post-proof redundancy elimination. After the prover generates theorems, many are
 1. **Per-theorem proof graphs.** For each of N proved theorems, an independent Logic Block is created with all theorems loaded as inference rules. The target theorem's premises serve as fuel, its head as the proof goal. Hash bursts discover derivation paths, producing a lightweight dependency graph per theorem.
 2. **Greedy elimination.** Theorems are sorted by usage (least-used first). Each candidate is tentatively removed: if all surviving theorems remain derivable without it, the candidate is dead. If any surviving theorem loses its derivation path, the candidate is essential.
 
-The Peano batch compresses from 32 proved theorems down to 17 essential ones. Compression runs inside the C++ prover (`compressor.cpp`).
+The current pipeline compresses from 83 proved theorems down to 26 essential ones. Compression runs inside the C++ prover (`compressor.cpp`).
 
 ### Verifier
 
@@ -85,7 +83,7 @@ Independent external proof checker. Operates on the processed proof graph — th
 - **23 proof tag types checked** — from basic inference (implication, expansion, disintegration) to structural transforms (mirroring, reformulation, contradiction, anchor handling)
 - **Trace-back verification** — for anchor handling and contradiction tags, recursively traces expressions back through the proof chain to verify they reach the expected origin (anchor line or task formulation)
 
-Output: one line per tag type showing `success N, failure 0`. Both main pipeline (1753 checks) and incubator (32593 checks) must be airtight — zero failures.
+Output: one line per tag type showing `success N, failure 0`. Both main pipeline (1753 checks) and incubator (32567 checks) must be airtight — zero failures.
 
 Source: `verifier.py`
 
@@ -102,9 +100,7 @@ Heuristic mode for auto-generating ground-level arithmetic fact tables. The incu
 - Contradiction proofs: derive both an expression and its negation, proving false statements impossible (e.g., `NOT(2 + 1 = 5)`)
 - Back-reformulated theorems: operator-equality theorems converted to direct operator form for readability
 
-**Current results:** 1170 theorems — 143 positive facts, 926 contradictions, 101 back-reformulated. Missing negatives require intermediate values exceeding the model range (e.g., proving `NOT(4 + 3 = 9)` needs computing `4 + 3 = 7`, but 7 is outside the {0..5} range of earlier anchor levels). Fix: expand the anchor with more elements.
-
-Source: `run_modes.py` (full_run, RUN_INCUBATOR flag), `simple_facts_incubator.py`, `create_expressions.py` (single_expr_anchor_connection)
+**Current results:** 1170 theorems — 143 positive facts, 926 contradictions, 101 back-reformulated.
 
 ---
 
@@ -125,8 +121,8 @@ python main.py
 ```
 
 **What happens:**
-1. Python generates conjectures (parallelized)
-2. Python calls the native prover executable (`GL_Quick_VS/GL_Quick/gl_quick.exe`)
+1. C++ conjecturer generates conjectures
+2. Native prover executable runs (`GL_Quick_VS/GL_Quick/gl_quick.exe`)
 3. Python processes the proof graph (variable renaming, pruning)
 4. Python renders HTML proof graph pages
 5. External verifier checks all proof steps
@@ -168,19 +164,24 @@ If you place the binary elsewhere, update the path in `run_modes.py`.
 - `main.py` → calls `run_modes.full_run()`
 
 ### Python Pipeline
-- `create_expressions.py` — conjecture generation, CE filtering, variable renaming
+- `expression_utils.py` — shared expression utilities (parsing, tree operations, argument replacement)
 - `configuration_reader.py` — reads JSON config files
 - `run_modes.py` — orchestration: conjecture → prover → process → HTML → verifier
 - `process_proof_graphs.py` — transforms raw proof graph to processed (variable renaming, pruning)
 - `generate_full_proof_graph.py` — renders processed proof graph to navigable HTML
 - `visu_helpers.py` — HTML rendering helpers
 - `verifier.py` — external proof checker, independent of prover code
-- `simple_facts_incubator.py` — arithmetic tables for incubator CE filtering
 - `incubator_to_simple_facts.py` — converts incubator results to CE filter tables
 - `analyze_incubator.py` — incubator result analysis
 
 ### C++ Prover
-- `GL_Quick_VS/GL_Quick/src/` — native prover source
+- `GL_Quick_VS/GL_Quick/src/` — native prover source:
+  - `compiler.hpp/cpp` — expression compilation, config loading, tree operations, mirroring
+  - `memory.hpp` — data structures (Memory, HashMemory, encoded expressions)
+  - `prover.hpp/cpp` — ExpressionAnalyzer class, inference engine, proof kernel
+  - `visualizer.cpp` — proof graph stack building and export
+  - `compressor.hpp/cpp` — post-proof redundancy elimination
+  - `conjecturer.hpp/cpp` — combinatorial conjecture generation
 - `GL_Quick_VS/GL_Quick/gl_quick.exe` — prebuilt Windows x64 binary
 
 ### Data Files
