@@ -1,5 +1,5 @@
 # Generative Logic: A deterministic reasoning and knowledge generation engine.
-# Copyright (C) 2025 Generative Logic UG (haftungsbeschränkt)
+# Copyright (C) 2025-2026 Generative Logic UG (haftungsbeschränkt)
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as published by
@@ -25,6 +25,8 @@
 
 import expression_utils
 import generate_full_proof_graph
+import json
+import re
 import time
 import shutil
 import os
@@ -50,6 +52,77 @@ def run_gl_quick(anchor_id: str = ""):
 
     # Inherit parent's stdout/stderr -> prints live instead of at the end
     subprocess.run(cmd, cwd=PROJECT_ROOT, check=True)
+
+
+_SPONTANEOUS_CATEGORIES = {"implication", "existence", "or", "and"}
+
+
+def _seed_per_batch_binary(tag: str) -> None:
+    """Pre-batch: copy GL_binary_shared.json to GL_binary_<tag>.json so the C++
+    prover loads cross-batch persistent compact-operator names at startup.
+    On a clean run when the shared file does not exist yet, write an empty
+    object so the C++ loader sees a valid (but empty) JSON file. Python is
+    the sole writer of the shared file and the sole creator of the per-batch
+    file; the C++ prover only reads at startup and overwrites this same path
+    at end of run via ``exportCompiledExpressionsJSON``.
+    """
+    bin_dir = PROJECT_ROOT / "files" / "GL_binaries"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shared = bin_dir / "GL_binary_shared.json"
+    target = bin_dir / f"GL_binary_{tag}.json"
+    if shared.exists():
+        shutil.copyfile(shared, target)
+    else:
+        target.write_text("{}\n", encoding="utf-8")
+
+
+def _merge_into_shared(tag: str) -> None:
+    """Post-batch: read GL_binary_<tag>.json and add any new spontaneous
+    operator entries (categories: implication / existence / or / and) into
+    GL_binary_shared.json. Anchor entries (names beginning with ``Anchor``)
+    and atomic entries are excluded — they are batch-local and must not leak
+    across batches. The shared file grows monotonically over the run; entries
+    already present are not overwritten so a name allocated by an earlier
+    batch keeps its original definition.
+    """
+    bin_dir = PROJECT_ROOT / "files" / "GL_binaries"
+    per_batch = bin_dir / f"GL_binary_{tag}.json"
+    shared = bin_dir / "GL_binary_shared.json"
+    if not per_batch.exists():
+        return
+
+    try:
+        with open(per_batch, "r", encoding="utf-8") as f:
+            batch_entries = json.load(f) or {}
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"[merge_into_shared] failed to read {per_batch}: {e}")
+        return
+
+    shared_entries = {}
+    if shared.exists():
+        try:
+            with open(shared, "r", encoding="utf-8") as f:
+                shared_entries = json.load(f) or {}
+        except (json.JSONDecodeError, OSError):
+            shared_entries = {}
+
+    added = 0
+    for name, entry in batch_entries.items():
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("category") not in _SPONTANEOUS_CATEGORIES:
+            continue
+        if name in shared_entries:
+            continue
+        shared_entries[name] = entry
+        added += 1
+
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    with open(shared, "w", encoding="utf-8") as f:
+        json.dump(shared_entries, f, indent=2, sort_keys=True)
+        f.write("\n")
+    print(f"[merge_into_shared] {tag}: +{added} new entries "
+          f"(shared total: {len(shared_entries)})")
 
 
 def empty_simple_facts(dir_path: str = "files/simple_facts") -> None:
@@ -157,9 +230,35 @@ def _setup_theorem_folder(theorems_dir: Path):
     _rebuild_compressed_externals(theorems_dir)
 
 
+def _discover_configs_for_tag(base_tag: str) -> list:
+    """Return every <suffix> for which files/config/Config<suffix>.json
+    exists, where suffix matches `<base_tag>\\d*`. Sorted alphanumerically.
+
+    Default Python string sort puts ConfigPeano.json before ConfigPeano1.json
+    because '.' (ASCII 46) < '1' (ASCII 49). So a tag's "base" config (no
+    digit suffix) always runs first in the per-tag sequence.
+    """
+    pattern = re.compile(rf"^Config({re.escape(base_tag)}\d*)\.json$")
+    config_dir = PROJECT_ROOT / "files" / "config"
+    out = []
+    if config_dir.exists():
+        for f in os.listdir(config_dir):
+            m = pattern.match(f)
+            if m:
+                out.append(m.group(1))
+    return sorted(out)
+
+
 def _run_batch(tag: str, prev_tags: list, theorems_dir: Path = None,
-               simple_facts_fn=None):
-    """Run a single batch: conjecture generation + anchor connections + prover."""
+               simple_facts_fn=None, add_cross_anchor: bool = True):
+    """Run a single batch: conjecture generation + anchor connections + prover.
+
+    `add_cross_anchor` defaults True for the historic single-batch-per-tag
+    behaviour. The orchestrator passes False for the 2nd, 3rd, … batches
+    of the same tag — the cross-anchor implication only needs to be added
+    once per tag (it's identical across that tag's batches), and
+    re-emitting it pollutes the next batch's theorems.txt.
+    """
     config_path = PROJECT_ROOT / "files" / "config" / f"Config{tag}.json"
     if not config_path.exists():
         print(f"Warning: Configuration file {config_path} not found. Skipping.")
@@ -181,14 +280,24 @@ def _run_batch(tag: str, prev_tags: list, theorems_dir: Path = None,
     end_time = time.time()
     print(f"Conjecture creation runtime: {end_time - start_time:.5f} seconds")
 
-    # C. Connect to Previous Anchors (Current -> Prev)
-    for prev_tag in prev_tags:
-        generate_anchor_connection(tag, prev_tag, theorems_dir=theorems_dir)
+    # C. Connect to Previous Anchors (Current -> Prev) — only on first batch per tag
+    if add_cross_anchor:
+        for prev_tag in prev_tags:
+            generate_anchor_connection(tag, prev_tag, theorems_dir=theorems_dir)
 
     # D. Run Native Prover (brief pause to let filesystem flush txt files)
     time.sleep(2)
     print(f"Running GL_Quick for {tag}...")
+    # Cross-batch persistent naming: hand the shared spontaneous-operator
+    # registry to the C++ prover by copying GL_binary_shared.json into the
+    # per-batch file the prover reads on startup. The prover overwrites this
+    # same path at end of run with the inherited entries plus any new ones
+    # it allocated.
+    _seed_per_batch_binary(tag)
     run_gl_quick(tag)
+    # Fold any newly-allocated spontaneous entries from this batch back into
+    # the shared registry so the next batch starts with them.
+    _merge_into_shared(tag)
 
 
 
@@ -243,27 +352,51 @@ def full_run():
     # 2. Run stages: for each tag, incubator first, then main
     for i, tag in enumerate(tags):
         prev_tags = tags[:i]
-        incubator_tag = f"Incubator{tag}"
 
-        incubator_config = PROJECT_ROOT / "files" / "config" / f"Config{incubator_tag}.json"
-        assert incubator_config.exists(), f"Incubator config not found: {incubator_config}"
+        # Per-tag glob: discover every Config<Tag><digits>?.json (and the
+        # incubator twins). Sorted alphanumerically; the base config (no
+        # digit suffix) sorts first. This is what allows
+        # ConfigIncubatorGauss.json to run before ConfigIncubatorGauss1.json.
+        incub_suffixes = _discover_configs_for_tag(f"Incubator{tag}")
+        main_suffixes  = _discover_configs_for_tag(tag)
+
+        assert incub_suffixes, f"No ConfigIncubator{tag}*.json found in files/config/"
+        assert main_suffixes,  f"No Config{tag}*.json found in files/config/"
 
         if RUN_INCUBATOR:
-            # Provide main proved theorems as incubator externals
+            # Provide main proved theorems as incubator externals — once per
+            # tag, before the FIRST incubator batch. Subsequent incubator
+            # batches under the same tag share the same theorems folder, so
+            # they see the prior batch's proved theorems via proved_theorems.txt.
+            #
+            # Source switched 2026-05-03 from proved_theorems.txt (expanded —
+            # compiled operators like existence2 / or0 expanded to base form)
+            # to compiled_proved_theorems.txt (compact form — keeps existence2
+            # / or0 as compact heads). Reason: chapter rows cite rules in
+            # compact form; the verifier's `origin` check looks them up by
+            # alpha-canonical match against the externals registry; expanded
+            # form misses on compact-form citations. Cross-batch parsing of
+            # compact-form externals is supported because GL_binary_shared.json
+            # carries the spontaneous compact-name dictionary across batches
+            # (see _seed_per_batch_binary / _merge_into_shared above).
             if prev_tags:
-                main_proved = theorems_dir / "proved_theorems.txt"
+                main_compiled = theorems_dir / "compiled_proved_theorems.txt"
                 incubator_ext = incubator_theorems_dir / "externally_provided_theorems.txt"
-                with open(main_proved, "r", encoding="utf-8") as src:
+                with open(main_compiled, "r", encoding="utf-8") as src:
                     content = src.read()
                 if content.strip():
                     with open(incubator_ext, "w", encoding="utf-8") as dst:
                         dst.write(content)
                     _rebuild_compressed_externals(incubator_theorems_dir)
 
-            # Incubator stage
-            print(f"\n=== Incubator {tag} ===")
-            _run_batch(incubator_tag, prev_tags=prev_tags,
-                       theorems_dir=incubator_theorems_dir)
+            # Incubator stage(s) — alphanumeric order. Cross-anchor only
+            # added on the FIRST batch (j == 0); subsequent batches in the
+            # same tag inherit it via the shared theorems folder.
+            for j, incub_tag in enumerate(incub_suffixes):
+                print(f"\n=== Incubator {tag}: {incub_tag} ===")
+                _run_batch(incub_tag, prev_tags=prev_tags,
+                           theorems_dir=incubator_theorems_dir,
+                           add_cross_anchor=(j == 0))
 
         else:
             print(f"\n=== Skipping Incubator {tag} ===")
@@ -284,10 +417,13 @@ def full_run():
             print(f"\n=== Skipping Main {tag} ===")
             continue
 
-        # Main stage
-        print(f"\n=== {tag} ===")
-        _run_batch(tag, prev_tags=prev_tags,
-                   simple_facts_fn=SIMPLE_FACTS_MAP.get(tag))
+        # Main stage(s) — alphanumeric order. Cross-anchor only on the
+        # first batch (j == 0).
+        for j, main_tag in enumerate(main_suffixes):
+            print(f"\n=== {main_tag} ===")
+            _run_batch(main_tag, prev_tags=prev_tags,
+                       simple_facts_fn=SIMPLE_FACTS_MAP.get(tag),
+                       add_cross_anchor=(j == 0))
 
     # 3. Finalization
     visu_config_path = PROJECT_ROOT / "files" / "config" / "ConfigVisu.json"

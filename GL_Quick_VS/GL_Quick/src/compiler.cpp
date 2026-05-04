@@ -1,5 +1,5 @@
 /* Generative Logic : A deterministic reasoning and knowledge generation engine.
- Copyright(C) 2025 Generative Logic UG(haftungsbeschränkt)
+ Copyright(C) 2025-2026 Generative Logic UG(haftungsbeschränkt)
 
  This program is free software : you can redistribute it and /or modify
  it under the terms of the GNU Affero General Public License as published by

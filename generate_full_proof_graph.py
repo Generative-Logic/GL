@@ -1,5 +1,5 @@
 # Generative Logic: A deterministic reasoning and knowledge generation engine.
-# Copyright (C) 2025 Generative Logic UG (haftungsbeschränkt)
+# Copyright (C) 2025-2026 Generative Logic UG (haftungsbeschränkt)
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as published by
@@ -47,6 +47,51 @@ from typing import Dict
 
 from configuration_reader import configuration_reader
 from parameters import debug
+
+# =============================================================================
+# License metadata injected into every generated HTML page.
+# Kept as module-level constants so the three page templates (tags, index,
+# chapter) stay in sync. GL is dual-licensed: AGPLv3 + commercial.
+# =============================================================================
+LICENSE_SOURCE_COMMENT = """<!--
+  Generative Logic proof output
+  Copyright © 2025-2026 Generative Logic UG
+  Licensed under GNU AGPLv3: https://www.gnu.org/licenses/agpl-3.0.html
+  Use for AI model training, dataset construction, or commercial
+  redistribution requires a commercial license:
+  https://generative-logic.com/license/
+-->"""
+
+LICENSE_HEAD_META = """  <!-- License metadata -->
+  <meta name="copyright" content="© 2025-2026 Generative Logic UG">
+  <meta name="license" content="AGPL-3.0-or-later">
+  <meta name="robots" content="noindex, follow, noai, noimageai">
+  <link rel="license" href="https://www.gnu.org/licenses/agpl-3.0.html">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "CreativeWork",
+    "name": "Generative Logic Proof Graph",
+    "copyrightHolder": {
+      "@type": "Organization",
+      "name": "Generative Logic UG",
+      "url": "https://generative-logic.com/"
+    },
+    "copyrightYear": 2026,
+    "license": "https://www.gnu.org/licenses/agpl-3.0.html",
+    "isAccessibleForFree": true,
+    "usageInfo": "https://generative-logic.com/license/"
+  }
+  </script>"""
+
+LICENSE_FOOTER = """  <div style="margin-top:2em; padding-top:1em; border-top:1px solid #3A3D4A; font-size:0.8em; color:#8B8FA5;">
+    Proof graph structure, presentation, and provenance chains
+    © 2025-2026 Generative Logic UG. Licensed under
+    <a href="https://www.gnu.org/licenses/agpl-3.0.html">AGPLv3</a>.
+    Use for AI model training, dataset construction, or commercial
+    redistribution requires a
+    <a href="https://generative-logic.com/license/">commercial license</a>.
+  </div>"""
 
 import visu_helpers
 from visu_helpers import format_mirroring, expand_expr
@@ -156,11 +201,21 @@ TAG_DESCRIPTIONS = {
         "has been rewritten using an existence-node expansion from the GL binary. "
         "The dependency links to the original source theorem."
     ),
-    "necessity for equality (hypo)": (
-        "Equality hypothesis introduction",
-        "An equality is introduced as a hypothesis for collapsing duplicate "
-        "variables. When multiple variables must be identified as equal, this "
-        "tag marks the equality assumption that enables the collapse."
+    "variable copy": (
+        "Variable copy axiom",
+        "GL may introduce a free equality (=[Y, Y_copy]) at any point in any "
+        "scope, where Y_copy is a fresh name manufactured by appending the "
+        "suffix &quot;_copy&quot; to Y. Because Y_copy never occurs anywhere "
+        "else in the model, this is a conservative extension — asserting that "
+        "Y_copy equals Y cannot contradict anything. GL uses this mechanism "
+        "to split duplicated argument positions (when a rule instantiation "
+        "would force the same variable into two slots of the same expression) "
+        "so that the disintegration and hash-burst machinery can treat the "
+        "two positions independently. The equality is then reused via "
+        "equality1 rewrites to glue them back together. The verifier enforces "
+        "that every occurrence of a _copy variable elsewhere in the chapter "
+        "has a provenance chain ending at a variable copy declaration for "
+        "that exact equality."
     ),
     "externally provided theorem": (
         "External theorem (not proved by GL)",
@@ -197,6 +252,18 @@ TAG_DESCRIPTIONS = {
         "A step within a multiplied proof where specific variables are identified "
         "as equal. This is part of the partition-based equalization process "
         "that collapses variables across expressions."
+    ),
+    "or disintegration": (
+        "Case analysis branch",
+        "A disjunction (OR expression) was decomposed into individual cases. "
+        "Each disjunct is processed under its own branch validity scope. "
+        "The dependency is the expanded OR expression encoding all disjuncts."
+    ),
+    "or convergence": (
+        "Case analysis convergence",
+        "All branches of a case analysis (OR disintegration) have independently "
+        "proved the same expression. The results converge back to the parent "
+        "validity scope, completing the case analysis."
     ),
 }
 
@@ -300,10 +367,10 @@ def wrap_clickable(text):
 def _htmlify_readable(text):
     """Convert plain-text readable title to HTML with mathematical notation."""
     h = html.escape(text)
-    # (preorder[N,+,a,b]) -> a < b
+    # (preorder[N,+,a,b]) -> a ≤ b   (∃k∈N. a+k=b)
     h = re.sub(
         r'\(preorder\[([^,]+),([^,]+),([^,]+),([^\]]+)\]\)',
-        lambda m: f'{m.group(3)} &lt; {m.group(4)}',
+        lambda m: f'{m.group(3)} &le; {m.group(4)}',
         h)
     # (interval[N,+,start,end,set]) -> set = [start,end]
     h = re.sub(
@@ -365,8 +432,14 @@ def _format_validity_tag(validity: str) -> str:
     if not validity:
         return ""
     raw = validity.strip()
-    esc = html.escape(raw)
-    if raw.startswith("(") and raw.endswith(")"):
+    # Strip the `i`-prefix from anchor element names for display
+    # consistency with how regular expressions are rendered (e.g.
+    # `i0`/`i1` -> `0`/`1`). Pre-fix the namespace strings showed
+    # raw `i0`, `i1`, ... while the regular expressions rendered as
+    # `0`, `1`, .... Same `_strip_i_prefix` regex used for both.
+    display = _strip_i_prefix(raw)
+    esc = html.escape(display)
+    if display.startswith("(") and display.endswith(")"):
         return f' <span class="validity-tag">{esc}</span>'
     return f' <span class="validity-tag">({esc})</span>'
 
@@ -1099,181 +1172,265 @@ def _row_contains_rhs_expr_integration_aware(row: list[str], expr: str) -> bool:
     return False
 
 
-def _partition_stack_subproofs(stack: list[list[str]]):
+def _scope_title_info(child_ns: str, parent_ns: str,
+                      validity_name_row: list[str] | None) -> dict:
     """
-    Split one stack into main stack + subproof sections.
+    Derive title + metadata for a subproof scope.
 
-    Subproofs are declared by rows with explanation == "validity name":
-      [implication_expr, ..., "validity name", subproof_goal_expr, implication_expr]
+    If a `validity name` row in the parent scope refers to this child_ns,
+    use its row[0] (implication expression) and row[3] (goal alias) as
+    the rich metadata.
+
+    Otherwise infer from the namespace's payload pattern:
+      - `_boundary_orint_<OR>_(<disjunct>)` \u2192 OR-introduction subproof
+      - `_boundary_ordis_<OR>_(<disjunct>)` \u2192 OR-elimination branch
+      - anything else \u2192 fall back to raw payload as title.
     """
-    subproofs = []
-    seen_impl = set()
+    sep = "_boundary_"
+    info: dict = {"kind": "subproof"}
 
-    for row_idx, row in enumerate(stack):
-        if not row or len(row) < 4:
+    payload = (child_ns[len(parent_ns) + len(sep):]
+               if child_ns.startswith(parent_ns + sep)
+               else child_ns)
+    info["payload"] = payload
+
+    if validity_name_row is not None:
+        implication_expr = validity_name_row[0]
+        goal_expr = validity_name_row[3] if len(validity_name_row) > 3 else None
+        info["implication_expr"] = implication_expr
+        info["implication_norm"] = _norm_expr(implication_expr)
+        info["goal_expr"] = goal_expr
+        info["goal_norm"] = _norm_expr(goal_expr) if goal_expr else None
+        info["title_html"] = wrap_clickable(implication_expr)
+        info["kind"] = "subproof"
+        return info
+
+    m = re.match(r'^orint_(\(or\d+\[[^\]]*\]\))_\((.+)\)$', payload)
+    if m:
+        info["or_expr"] = m.group(1)
+        info["disjunct"] = m.group(2)
+        info["kind"] = "_orint_ subproof"
+        info["title_html"] = (
+            f"OR-introduction subproof \u2014 branch where "
+            f"{wrap_clickable(m.group(2))} is asserted "
+            f"(of OR {wrap_clickable(m.group(1))})"
+        )
+        return info
+
+    m = re.match(r'^ordis_(\(or\d+\[[^\]]*\]\))_\((.+)\)$', payload)
+    if m:
+        info["or_expr"] = m.group(1)
+        info["disjunct"] = m.group(2)
+        info["kind"] = "_ordis_ branch"
+        info["title_html"] = (
+            f"OR-elimination branch \u2014 case "
+            f"{wrap_clickable(m.group(2))} "
+            f"(of OR {wrap_clickable(m.group(1))})"
+        )
+        return info
+
+    info["title_html"] = html.escape(payload)
+    return info
+
+
+def _partition_stack_subproofs(stack: list[list[str]],
+                               scope_ns: str = "main"):
+    """
+    Recursively partition a stack by primary namespace.
+
+    Returns `(own_rows, subproofs)` where:
+
+    - `own_rows` \u2014 rows whose primary namespace (`row[1]`) equals
+      `scope_ns`.
+    - `subproofs` \u2014 list of dicts, one per immediate-child namespace,
+      each with:
+        - `ns`             child namespace
+        - `title_info`     derived from `_scope_title_info`
+        - `display_stack`  rows directly at this child scope
+        - `nested_subproofs`  recursive sub-sub-proofs
+        - other legacy fields preserved for backward-compat callers
+
+    Top-level scope is `"main"` by default. Recursion handles arbitrary
+    depth \u2014 sub-sub-\u2026-proofs render as collapsed cards inside their
+    parent's collapsed card (matryoshka).
+    """
+    sep = "_boundary_"
+    parent_prefix = scope_ns + sep
+    scope_norm = _norm_expr(scope_ns)
+
+    # Validity-name rows AT THIS SCOPE provide rich metadata for child
+    # subproofs (the row's row[4] is the child's namespace; row[0] is
+    # the implication expression; row[3] is the goal alias).
+    vn_lookup: dict[str, list[str]] = {}
+    for row in stack:
+        if not row or len(row) < 5:
             continue
-        if len(row) > 2 and row[2] == "validity name":
-            implication_expr = row[0]
-            subproof_goal_expr = row[3]
-            impl_norm = _norm_expr(implication_expr)
-            if impl_norm in seen_impl:
-                continue
-            seen_impl.add(impl_norm)
-            subproofs.append({
-                "implication_expr": implication_expr,
-                "implication_norm": impl_norm,
-                "goal_expr": subproof_goal_expr,
-                "goal_norm": _norm_expr(subproof_goal_expr),
-                "namespace_expr": row[4] if len(row) > 4 else implication_expr,
-                "namespace_norm": _norm_expr(row[4] if len(row) > 4 else implication_expr),
-                "validity_row_idx": row_idx,
-                "seed_expansion_idx": None,
-                "member_indices": set(),
-            })
+        if _norm_expr(row[1]) != scope_norm:
+            continue
+        if row[2] != "validity name":
+            continue
+        vn_lookup[_norm_expr(row[4])] = row
 
-    if not subproofs:
-        return [copy.deepcopy(r) for r in stack], []
+    # Group rows by immediate-child namespace; collect own_rows.
+    own_rows: list[list[str]] = []
+    child_groups: dict[str, list[list[str]]] = {}
+    child_order: list[str] = []  # preserve first-appearance order
+    for row in stack:
+        if not row or len(row) < 2:
+            continue
+        primary_ns = row[1] or ""
+        if _norm_expr(primary_ns) == scope_norm:
+            own_rows.append(copy.deepcopy(row))
+            continue
+        if not primary_ns.startswith(parent_prefix):
+            # Row is in an unrelated scope \u2014 happens when called on a
+            # sub-stack that contains rows at scopes outside the parent
+            # subtree. Skip silently.
+            continue
+        rest = primary_ns[len(parent_prefix):]
+        next_boundary = rest.find(sep)
+        child_segment = rest if next_boundary < 0 else rest[:next_boundary]
+        child_ns = parent_prefix + child_segment
+        if child_ns not in child_groups:
+            child_groups[child_ns] = []
+            child_order.append(child_ns)
+        child_groups[child_ns].append(copy.deepcopy(row))
 
-    for sp in subproofs:
-        for row_idx, row in enumerate(stack):
-            if not row or len(row) < 4:
-                continue
-            if row[2] == "expansion for integration" and _row_contains_rhs_expr_integration_aware(row, sp["implication_expr"]):
-                sp["seed_expansion_idx"] = row_idx
-                break
+    # Recurse into each child scope.
+    subproofs: list[dict] = []
+    for child_ns in child_order:
+        child_rows = child_groups[child_ns]
+        nested_own, nested_subs = _partition_stack_subproofs(child_rows, child_ns)
+        title_info = _scope_title_info(
+            child_ns, scope_ns, vn_lookup.get(_norm_expr(child_ns)))
+        sp = {
+            "ns": child_ns,
+            "namespace_expr": child_ns,
+            "namespace_norm": _norm_expr(child_ns),
+            "title_info": title_info,
+            "display_stack": nested_own,
+            "nested_subproofs": nested_subs,
+            # Backward-compat aliases used by the renderer
+            "implication_expr": title_info.get("implication_expr"),
+            "implication_norm": title_info.get("implication_norm"),
+            "goal_expr": title_info.get("goal_expr"),
+            "goal_norm": title_info.get("goal_norm"),
+        }
+        subproofs.append(sp)
 
-    assigned_to_any_subproof = set()
+    return own_rows, subproofs
 
-    for sp in subproofs:
-        impl_norm = sp["implication_norm"]
-        namespace_norm = sp["namespace_norm"]
-        goal_norm = sp["goal_norm"]
 
-        for row_idx, row in enumerate(stack):
-            if not row:
-                continue
+def _render_subproof_card(sp: dict, prefix: str, depth: int,
+                          external_anchor_map: dict | None = None) -> str:
+    """
+    Render one subproof card (collapsed by default), recursing into
+    nested sub-sub-proofs to produce the matryoshka structure.
+    `depth` is 1 for top-level subproofs of main, 2 for sub-sub, etc.
+    """
+    blocks: list[str] = []
+    anchor_id = f"{prefix}-anchor"
+    title_html = sp["title_info"]["title_html"]
+    kind_label = sp["title_info"]["kind"]
 
-            # Keep the declaration row (the implication / validity-name line)
-            # on the main stack. The subproof card already uses it as header/meta.
-            # Only the actual local proof steps belong to the subproof body.
-            if len(row) > 2 and row[2] == "validity name" and _norm_expr(row[0]) == impl_norm:
-                continue
+    blocks.append(
+        f"<div class='subproof-card collapsed subproof-depth-{depth}'>")
+    blocks.append(
+        f"<div class='subproof-title'><span class='subproof-toggle'>\u25BC</span>"
+        f"<span id='{anchor_id}'>{title_html}</span> "
+        f"<span class='subproof-label'>{kind_label}</span></div>")
+    blocks.append("<div class='subproof-body'>")
 
-            belongs = False
+    goal_expr = sp["title_info"].get("goal_expr")
+    if goal_expr:
+        blocks.append(
+            f"<div class='subproof-meta'>Goal alias: "
+            f"<span class='subproof-goal'>{html.escape(goal_expr)}</span>"
+            f"{_format_validity_tag(sp['ns'])}</div>")
+    else:
+        blocks.append(
+            f"<div class='subproof-meta'>"
+            f"{_format_validity_tag(sp['ns'])}</div>")
 
-            if not belongs:
-                for v in _row_validity_values(row):
-                    if _norm_expr(v) == namespace_norm:
-                        belongs = True
-                        break
+    if sp["display_stack"]:
+        blocks.append(
+            format_stack_entries(
+                sp["display_stack"],
+                prefix=f"{prefix}body",
+                reverse_entries=False,
+                goal_key_norm=sp["title_info"].get("goal_norm"),
+                external_anchor_map=external_anchor_map,
+            ))
+    elif not sp["nested_subproofs"]:
+        blocks.append("<div class='proof-empty'>No subproof steps detected.</div>")
 
-            if not belongs and _norm_expr(row[0]) == goal_norm:
-                belongs = True
+    # Recurse: nested sub-sub-proofs render at the END of the body,
+    # each as its own collapsed card. Depth increments per level.
+    for k, nested in enumerate(sp["nested_subproofs"], start=1):
+        nested_prefix = f"{prefix}n{k}"
+        blocks.append(
+            _render_subproof_card(nested, nested_prefix, depth + 1,
+                                  external_anchor_map=external_anchor_map))
 
-            if not belongs and sp["seed_expansion_idx"] == row_idx:
-                belongs = True
-
-            if belongs:
-                sp["member_indices"].add(row_idx)
-                assigned_to_any_subproof.add(row_idx)
-
-        ordered_indices = sorted(sp["member_indices"])
-        # Hide the declaration row from the subproof body; we show it in the subproof header/meta.
-        ordered_indices = [i for i in ordered_indices if not (len(stack[i]) > 2 and stack[i][2] == "validity name")]
-
-        if sp["seed_expansion_idx"] in ordered_indices:
-            ordered_indices.remove(sp["seed_expansion_idx"])
-
-        display_indices = []
-        if sp["seed_expansion_idx"] is not None:
-            display_indices.append(sp["seed_expansion_idx"])
-        display_indices.extend(ordered_indices)
-
-        # Put the subproof goal-alias row at the end (and highlight it there), mirroring the main-stack visual logic.
-        goal_pos = None
-        for k, row_idx in enumerate(display_indices):
-            if _norm_expr(stack[row_idx][0]) == goal_norm:
-                goal_pos = k
-                break
-        if goal_pos is not None:
-            goal_idx = display_indices.pop(goal_pos)
-            display_indices.append(goal_idx)
-
-        sp["display_stack"] = [copy.deepcopy(stack[i]) for i in display_indices]
-
-    main_stack = [copy.deepcopy(row) for i, row in enumerate(stack) if i not in assigned_to_any_subproof]
-
-    subproofs.sort(key=lambda sp: sp["validity_row_idx"])
-    return main_stack, subproofs
+    blocks.append("</div>")  # close subproof-body
+    blocks.append("</div>")  # close subproof-card
+    return "".join(blocks)
 
 
 def render_stack_with_subproofs(stack: list[list[str]], prefix: str = "") -> str:
-    main_stack, subproofs = _partition_stack_subproofs(stack)
+    """
+    Top-level renderer: main stack at the top, subproofs at the bottom
+    (collapsed by default). Each subproof's body recursively renders its
+    own sub-sub-proofs as nested collapsed cards (matryoshka).
+    """
+    main_stack, subproofs = _partition_stack_subproofs(stack, scope_ns="main")
 
-    blocks = []
+    # Build cross-reference anchor map: each subproof (any depth) gets a
+    # unique anchor ID. The map is keyed by normalised implication
+    # expression (when available) so main-stack rows that mention the
+    # implication can link to the subproof card.
+    subproof_anchor_map: dict[str, str] = {}
 
-    subproof_anchor_map = {}
-    for j, sp in enumerate(subproofs, start=1):
-        anchor_id = f"{prefix}subproof{j}" if prefix else f"subproof{j}"
-        sp["anchor_id"] = anchor_id
-        subproof_anchor_map[sp["implication_norm"]] = anchor_id
+    def _walk_assign_anchors(sps: list[dict], prefix_in: str) -> None:
+        for j, sp in enumerate(sps, start=1):
+            anchor_prefix = f"{prefix_in}sp{j}"
+            sp["_anchor_prefix"] = anchor_prefix
+            impl_norm = sp["title_info"].get("implication_norm")
+            if impl_norm:
+                subproof_anchor_map[impl_norm] = f"{anchor_prefix}-anchor"
+            _walk_assign_anchors(sp["nested_subproofs"], f"{anchor_prefix}n")
 
-    # Build main stack key map so subproofs can link back to main stack entries
+    _walk_assign_anchors(subproofs, prefix)
+
+    # Main key map for cross-references back to main rows from subproofs.
     main_prefix_str = f"{prefix}m"
     main_rev = list(main_stack)[::-1]
-    main_key_map = {}
+    main_key_map: dict[str, str] = {}
     for midx, mentry in enumerate(main_rev):
         if not mentry:
             continue
-        mnorm = re.sub(r'\s+', '', mentry[0]).lower()
-        main_key_map[mnorm] = f"{main_prefix_str}-entry{midx}"
+        main_key_map[_norm_expr(mentry[0])] = f"{main_prefix_str}-entry{midx}"
 
+    subproof_external_map = {**main_key_map, **subproof_anchor_map}
+
+    blocks: list[str] = []
     blocks.append("<div class='proof-section main-proof-section'>")
     blocks.append("<div class='proof-section-title'>Main stack</div>")
     if main_stack:
-        blocks.append(format_stack_entries(main_stack, prefix=f"{prefix}m", external_anchor_map=subproof_anchor_map))
+        blocks.append(format_stack_entries(
+            main_stack, prefix=main_prefix_str,
+            external_anchor_map=subproof_anchor_map))
     else:
         blocks.append("<div class='proof-empty'>No main-stack entries.</div>")
     blocks.append("</div>")
 
-    # Merge main key map with subproof anchors for cross-referencing inside subproofs
-    subproof_external_map = {**main_key_map, **subproof_anchor_map}
-
     if subproofs:
         blocks.append("<div class='proof-section subproofs-section'>")
         blocks.append("<div class='proof-section-title'>Subproofs</div>")
-
-        for j, sp in enumerate(subproofs, start=1):
-            title_expr_html = wrap_clickable(sp["implication_expr"])
-            goal_expr = html.escape(sp["goal_expr"])
-
-            blocks.append("<div class='subproof-card collapsed'>")
-            blocks.append(
-                f"<div class='subproof-title'><span class='subproof-toggle'>\u25BC</span>"
-                f"<span id='{sp['anchor_id']}'>{title_expr_html}</span> <span class='subproof-label'>subproof</span></div>"
-            )
-            blocks.append("<div class='subproof-body'>")
-            blocks.append(
-                f"<div class='subproof-meta'>Goal alias: <span class='subproof-goal'>{goal_expr}</span>"
-                f"{_format_validity_tag(sp['namespace_expr'])}</div>"
-            )
-
-            if sp["display_stack"]:
-                blocks.append(
-                    format_stack_entries(
-                        sp["display_stack"],
-                        prefix=f"{prefix}sp{j}",
-                        reverse_entries=False,
-                        goal_key_norm=sp["goal_norm"],
-                        external_anchor_map=subproof_external_map
-                    )
-                )
-            else:
-                blocks.append("<div class='proof-empty'>No subproof steps detected.</div>")
-
-            blocks.append("</div>")  # close subproof-body
-            blocks.append("</div>")  # close subproof-card
-
+        for sp in subproofs:
+            blocks.append(_render_subproof_card(
+                sp, prefix=sp["_anchor_prefix"], depth=1,
+                external_anchor_map=subproof_external_map))
         blocks.append("</div>")
 
     return "".join(blocks)
@@ -1324,6 +1481,12 @@ def reformulated(theorem, file_path, prefix=''):
 
 def back_reformulated(theorem, file_path, prefix=''):
     stack = read_stack(file_path, "incubator back reformulation")
+    rename_stack(stack, theorem)
+    return render_stack_with_subproofs(stack, prefix)
+
+
+def or_theorem(theorem, file_path, prefix=''):
+    stack = read_stack(file_path, "or theorem")
     rename_stack(stack, theorem)
     return render_stack_with_subproofs(stack, prefix)
 
@@ -1411,9 +1574,10 @@ def makes_file_path_map(theorem_list, base_dir=None):
         files = []
 
         if m == "induction":
-            files.append(base_dir / f"{idx}_check_zero.txt")
-            files.append(base_dir / f"{idx + 1}_check_induction_condition.txt")
-            idx += 2
+            files.append(base_dir / f"{idx}_induction_typing.txt")
+            files.append(base_dir / f"{idx + 1}_check_zero.txt")
+            files.append(base_dir / f"{idx + 2}_check_induction_condition.txt")
+            idx += 3
         elif m == "direct":
             files.append(base_dir / f"{idx}_direct_proof.txt")
             idx += 1
@@ -1428,6 +1592,9 @@ def makes_file_path_map(theorem_list, base_dir=None):
             idx += 1
         elif m == "incubator back reformulation":
             files.append(base_dir / f"{idx}_back_reformulated_statement.txt")
+            idx += 1
+        elif m == "or theorem":
+            files.append(base_dir / f"{idx}_or_theorem.txt")
             idx += 1
         else:
             safe = re.sub(r"[^A-Za-z0-9._\-+]+", "_", m)[:64] or "unknown"
@@ -1606,12 +1773,14 @@ def _generate_tags_page(out_dir, common_style):
     table_html = "\n".join(rows)
 
     tags_page = f"""<!DOCTYPE html>
+{LICENSE_SOURCE_COMMENT}
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Reasoning Rules Reference</title>
   <link rel="icon" type="image/png" href="favicon.png">
+{LICENSE_HEAD_META}
   {common_style}
   <style>
     tr:target {{ background: #3A3520; }}
@@ -1638,6 +1807,7 @@ def _generate_tags_page(out_dir, common_style):
       {table_html}
     </tbody>
   </table>
+{LICENSE_FOOTER}
 </body>
 </html>"""
 
@@ -1953,6 +2123,18 @@ def generate_proof_graph_pages(config: configuration_reader,
        border-left: 4px solid #5DCAA5;
        border-radius: 6px;
      }
+     /* Matryoshka depth — each nesting level shifts hue + indents.
+        Depth 1 = direct subproof of main; deeper = sub-sub-…-proofs. */
+     .subproof-depth-1 { border-left-color: #5DCAA5; background: #262938; }
+     .subproof-depth-2 { border-left-color: #C7B86A; background: #2C2A2E; margin-left: 0.6em; }
+     .subproof-depth-3 { border-left-color: #C77FB0; background: #322A2C; margin-left: 1.2em; }
+     .subproof-depth-4 { border-left-color: #7FA8C7; background: #2A2D32; margin-left: 1.8em; }
+     .subproof-depth-5 { border-left-color: #C77F7F; background: #312A2A; margin-left: 2.4em; }
+     .subproof-card[class*="subproof-depth-"]:not(.subproof-depth-1):not(.subproof-depth-2):not(.subproof-depth-3):not(.subproof-depth-4):not(.subproof-depth-5) {
+       border-left-color: #8B8FA5;
+       background: #2A2D38;
+       margin-left: 3em;
+     }
      .subproof-title {
        font-weight: 700;
        margin-bottom: 0.35em;
@@ -1976,12 +2158,14 @@ def generate_proof_graph_pages(config: configuration_reader,
 
     # --- Index page ---
     index_head = f"""<!DOCTYPE html>
+{LICENSE_SOURCE_COMMENT}
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Proof Graph – Index</title>
   <link rel="icon" type="image/png" href="favicon.png">
+{LICENSE_HEAD_META}
   <style>
     body {{ font-family: Arial, sans-serif; margin: 2rem; background: #181B27; color: #F0E8DC; }}
     ul {{ list-style: none; padding: 0; }}
@@ -2000,15 +2184,16 @@ def generate_proof_graph_pages(config: configuration_reader,
          style="width:100%; max-width:600px; padding:0.5em; margin-bottom:1em; background:#262938; color:#F0E8DC;
                 border:1px solid #3A3D4A; border-radius:4px; font-size:1em; outline:none;">
   <ul id="theorem-list">"""
-    index_tail = """  </ul>
+    index_tail = f"""  </ul>
   <script>
-  document.getElementById('theorem-search').addEventListener('input', function() {
+  document.getElementById('theorem-search').addEventListener('input', function() {{
     const q = this.value.toLowerCase();
-    document.querySelectorAll('#theorem-list > li').forEach(function(li) {
+    document.querySelectorAll('#theorem-list > li').forEach(function(li) {{
       li.style.display = li.textContent.toLowerCase().includes(q) ? '' : 'none';
-    });
-  });
+    }});
+  }});
   </script>
+{LICENSE_FOOTER}
 </body>
 </html>"""
 
@@ -2051,6 +2236,7 @@ def generate_proof_graph_pages(config: configuration_reader,
 
         if method.lower() == "induction":
             toc.append("      <ul>")
+            toc.append(f"        <li>{idx}.0. <a href='{filename}#sub0'>Induction variable typing</a></li>")
             toc.append(f"        <li>{idx}.1. <a href='{filename}#sub1'>Check for 0</a></li>")
             toc.append(f"        <li>{idx}.2. <a href='{filename}#sub2'>Check induction condition</a></li>")
             toc.append("      </ul>")
@@ -2075,6 +2261,7 @@ def generate_proof_graph_pages(config: configuration_reader,
         nav_links = ' '.join(link for link in (prev_link, next_link) if link)
 
         head = f"""<!DOCTYPE html>
+{LICENSE_SOURCE_COMMENT}
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -2082,6 +2269,7 @@ def generate_proof_graph_pages(config: configuration_reader,
   <title>{html.escape(_strip_i_prefix(rename_theorem(name)))}</title>
   {f'<title>{html.escape(_strip_i_prefix(visu_helpers.make_readable_title(rename_theorem(name))))}</title>' if not debug else ''}
   <link rel="icon" type="image/png" href="favicon.png">
+{LICENSE_HEAD_META}
   {common_style}
   {popup_script}
 </head>
@@ -2110,10 +2298,12 @@ def generate_proof_graph_pages(config: configuration_reader,
         if method.lower() == "induction":
             body.extend([
                 f"  <span class=\"var-highlight\">Induction variable: {html.escape(var)}</span>",
+                "  <h2 id=\"sub0\">Induction variable typing</h2>",
+                f"  <div class=\"step-output\">{check_zero(name, file_path_map[name][0], var, f'c{idx}s0')}</div>",
                 "  <h2 id=\"sub1\">Check for 0</h2>",
-                f"  <div class=\"step-output\">{check_zero(name, file_path_map[name][0], var, f'c{idx}s1')}</div>",
+                f"  <div class=\"step-output\">{check_zero(name, file_path_map[name][1], var, f'c{idx}s1')}</div>",
                 "  <h2 id=\"sub2\">Check induction condition</h2>",
-                f"  <div class=\"step-output\">{check_induction_condition(name, file_path_map[name][1], var, f'c{idx}s2')}</div>",
+                f"  <div class=\"step-output\">{check_induction_condition(name, file_path_map[name][2], var, f'c{idx}s2')}</div>",
             ])
 
         elif method.lower() == "direct":
@@ -2148,10 +2338,18 @@ def generate_proof_graph_pages(config: configuration_reader,
                 back_reformulated(name, file_path_map[name][0]),
                 "  </div>",
             ])
+        elif method.lower() == "or theorem":
+            body.extend([
+                "  <h2>OR Theorem</h2>",
+                "  <div class='step-output'>",
+                or_theorem(name, file_path_map[name][0]),
+                "  </div>",
+            ])
         # Chapter statistics footer
         stats_text = _compute_chapter_stats(*file_path_map[name])
         body.append(f"  <div class='chapter-stats'>{stats_text}</div>")
 
+        body.append(LICENSE_FOOTER)
         body.append("</body>")
         body.append("</html>")
 

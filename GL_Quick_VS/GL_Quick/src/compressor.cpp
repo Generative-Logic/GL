@@ -1,5 +1,5 @@
 /* Generative Logic : A deterministic reasoning and knowledge generation engine.
- Copyright(C) 2025 Generative Logic UG(haftungsbeschraenkt)
+ Copyright(C) 2025-2026 Generative Logic UG(haftungsbeschraenkt)
 
  This program is free software : you can redistribute it and /or modify
  it under the terms of the GNU Affero General Public License as published by
@@ -70,6 +70,9 @@ namespace gl {
         // --- Turn on compressor-specific flags ---
         analyzer.parameters.compressor_mode            = true;
         analyzer.parameters.ban_disintegration         = true;
+        // Pass B is gated by !compressor_mode at prover.cpp:7216, so
+        // setting compressor_mode=true is sufficient to disable it during
+        // Phase 1 even when the config has allow_disintegration=true.
 
         const size_t N = all_theorems.size();
         std::cout << "Building independent Logic Blocks for "

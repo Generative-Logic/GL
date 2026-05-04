@@ -94,6 +94,16 @@
     "signature": "(existence1[u_1,u_2,u_3,u_4])"
   },
   "existence2": {
+    "arity": 3,
+    "category": "existence",
+    "definedSet": "",
+    "elements": [
+      "(in[1,u_1])",
+      "(in2[1,u_2,u_3])"
+    ],
+    "signature": "(existence2[u_1,u_2,u_3])"
+  },
+  "existence3": {
     "arity": 8,
     "category": "existence",
     "definedSet": "",
@@ -101,9 +111,9 @@
       "(fXY[1,u_1,u_2])",
       "(and0[u_3,u_4,1,u_5,u_6,u_1,u_7,u_8])"
     ],
-    "signature": "(existence2[u_1,u_2,u_3,u_4,u_5,u_6,u_7,u_8])"
+    "signature": "(existence3[u_1,u_2,u_3,u_4,u_5,u_6,u_7,u_8])"
   },
-  "existence3": {
+  "existence4": {
     "arity": 5,
     "category": "existence",
     "definedSet": "",
@@ -111,9 +121,9 @@
       "(limitSet[u_1,u_2,u_3,u_4,1])",
       "(interval[u_1,u_2,u_5,u_4,1])"
     ],
-    "signature": "(existence3[u_1,u_2,u_3,u_4,u_5])"
+    "signature": "(existence4[u_1,u_2,u_3,u_4,u_5])"
   },
-  "existence4": {
+  "existence5": {
     "arity": 5,
     "category": "existence",
     "definedSet": "",
@@ -121,7 +131,7 @@
       "(limitSequence[u_1,u_2,u_3,u_4,1])",
       "(sequence[u_1,u_2,u_5,u_3,1])"
     ],
-    "signature": "(existence4[u_1,u_2,u_3,u_4,u_5])"
+    "signature": "(existence5[u_1,u_2,u_3,u_4,u_5])"
   },
   "fXY": {
     "arity": 3,
@@ -154,7 +164,7 @@
     "definedSet": "",
     "elements": [
       "(interval[u_1,u_3,u_5,u_6,1])",
-      "(existence2[1,u_1,u_5,u_4,u_6,u_7,u_2,u_3])"
+      "(existence3[1,u_1,u_5,u_4,u_6,u_7,u_2,u_3])"
     ],
     "signature": "(fold[u_1,u_2,u_3,u_4,u_5,u_6,u_7])"
   },
@@ -645,6 +655,26 @@
       "(implication29[u_3,u_1,u_2,u_4,u_5])"
     ],
     "signature": "(limitSet[u_1,u_2,u_3,u_4,u_5])"
+  },
+  "or0": {
+    "arity": 4,
+    "category": "or",
+    "definedSet": "",
+    "elements": [
+      "(existence2[u_1,u_2,u_3])",
+      "(=[u_2,u_4])"
+    ],
+    "signature": "(or0[u_1,u_2,u_3,u_4])"
+  },
+  "or1": {
+    "arity": 4,
+    "category": "or",
+    "definedSet": "",
+    "elements": [
+      "(=[u_1,u_2])",
+      "(existence2[u_3,u_1,u_4])"
+    ],
+    "signature": "(or1[u_1,u_2,u_3,u_4])"
   },
   "preorder": {
     "arity": 4,

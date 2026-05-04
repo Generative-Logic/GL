@@ -1,5 +1,5 @@
 /* Generative Logic : A deterministic reasoning and knowledge generation engine.
- Copyright(C) 2025 Generative Logic UG(haftungsbeschr�nkt)
+ Copyright(C) 2025-2026 Generative Logic UG(haftungsbeschr�nkt)
 
  This program is free software : you can redistribute it and /or modify
  it under the terms of the GNU Affero General Public License as published by
@@ -62,8 +62,20 @@ namespace gl {
         bool skip_eq_classes = false;
         bool incubator_mode = false;
 
+        // --- multiplyImplication gate (decoupled from incubator_mode) ---
+        // allow_multiplication gates multiplyImplication at prover.cpp:827.
+        // Default false = main-path behavior (multiplication off in plain
+        // prove pass; CE-filter still multiplies regardless of this flag).
+        // Pass B gating is on ban_disintegration above (negative-sense, !ban
+        // = Pass B fires); the short-lived allow_disintegration flag was
+        // collapsed into ban_disintegration on 2026-04-29 — see D-28.
+        bool allow_multiplication = false;
+
         // --- multiplyImplication ---
         int max_partition_size = 5;
+
+        // --- OR expression handling ---
+        int max_or_depth = 1;   // max nesting depth of OR scopes (1 = no nested ORs)
     };
 
     // Static hot path sizing constants — config-independent, compile-time.

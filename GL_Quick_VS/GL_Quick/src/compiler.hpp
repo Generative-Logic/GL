@@ -1,5 +1,5 @@
 /* Generative Logic : A deterministic reasoning and knowledge generation engine.
- Copyright(C) 2025 Generative Logic UG(haftungsbeschränkt)
+ Copyright(C) 2025-2026 Generative Logic UG(haftungsbeschränkt)
 
  This program is free software : you can redistribute it and /or modify
  it under the terms of the GNU Affero General Public License as published by
@@ -28,6 +28,7 @@
 #include <vector>
 #include <map>
 #include <set>
+#include <atomic>
 #include <chrono>
 #include <regex>
 #include <cassert>
@@ -464,6 +465,10 @@ inline std::string extractExpression(const std::string& s) {
         if (!s.empty() && s[0] == '(') {
             return s.substr(1, index - 1);
         }
+        else if (s.size() >= 2 && s[0] == '!' && s[1] == '(') {
+            // Negated expression: !(name[args]) -> name
+            return s.substr(2, index - 2);
+        }
         else {
             return s.substr(0, index);
         }
@@ -776,6 +781,17 @@ inline void deleteTree(TreeNode1* n) {
     delete n;
 }
 
+// Temporary profiling globals (session_24042026 int-story campaign).
+// Summed over all callers from compiler.hpp::disintegrateImplication.
+// Toggle GL_DISINT_PROFILE to 1 to re-enable the atomic bookkeeping
+// (has measurable 32-thread contention overhead — keep off in release).
+#ifndef GL_DISINT_PROFILE
+#define GL_DISINT_PROFILE 0
+#endif
+inline std::atomic<uint64_t> g_disintCalls{0};
+inline std::atomic<uint64_t> g_disintNs{0};
+inline std::atomic<uint64_t> g_disintCacheHits{0};
+
 inline std::string disintegrateImplication(
     const std::string& exprForDesintegration,
     std::vector< std::tuple<
@@ -785,36 +801,156 @@ inline std::string disintegrateImplication(
     > >& chain,
     const std::map<std::string, CoreExpressionConfig>& coreExpressionMap) {
 
-    TreeNode1* root = parseExpr(exprForDesintegration);
+#if GL_DISINT_PROFILE
+    auto _t0 = std::chrono::steady_clock::now();
+#endif
 
-    std::string head;
-
-    TreeNode1* node = root;
-    while (true) {
-        if (node != NULL) {
-            if (!node->value.empty() && node->value[0] == '>') {
-                const std::string leftExpr = treeToExpr(node->left);
-                const std::vector<std::string> args = getArgs(node->value);
-
-                std::set<std::string> leftArgs;
-                if (node->left != NULL) {
-                    leftArgs = node->left->arguments;
-                }
-
-                chain.push_back(std::make_tuple(leftExpr, args, leftArgs));
-                node = node->right;
-            }
-            else {
-                head = treeToExpr(node);
-                break;
-            }
-        }
-        else {
-            break;
-        }
+    // Thread-local last-input cache: the same `expr` is typically
+    // disintegrated ~10 times in a row by successive filters on one
+    // candidate (checkInputVariablesTheoremOperatorHead →
+    // checkInputVariablesOrder → evaluateOperatorExprs2 → triggersExistenceRef
+    // → passesMaxSizeAfterExistence → passesComplexityAfterExistence →
+    // reshuffle → createReshuffledMirrored → passesInPremiseFilter → ...).
+    // A single-slot thread_local cache matches the access pattern: each
+    // new candidate misses once, then all subsequent filter calls on the
+    // same string hit.
+    using ChainT = std::vector<std::tuple<std::string, std::vector<std::string>, std::set<std::string>>>;
+    struct DisintCache {
+        std::string key;
+        std::string head;
+        ChainT chain;
+        bool valid = false;
+    };
+    thread_local DisintCache _dc;
+    if (_dc.valid && _dc.key == exprForDesintegration) {
+        chain = _dc.chain;
+    #if GL_DISINT_PROFILE
+        auto _dt_hit = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - _t0).count();
+        g_disintCalls.fetch_add(1, std::memory_order_relaxed);
+        g_disintNs.fetch_add((uint64_t)_dt_hit, std::memory_order_relaxed);
+        g_disintCacheHits.fetch_add(1, std::memory_order_relaxed);
+    #endif
+        return _dc.head;
     }
 
-    deleteTree(root);
+    // Iterative walker (session_24042026 int-story campaign). Replaces the
+    // earlier `parseExpr -> TreeNode1 tree -> treeToExpr + node->arguments`
+    // pipeline with a direct string walk that allocates nothing but the
+    // output chain entries.
+    //
+    // Structure we're peeling: `(>[bvs1](p1)(>[bvs2](p2)...(head)))`.
+    // Each layer of peel: strip outer `(>[bvs]` prefix and the matching
+    // `)` suffix (by decrementing `end`), extract the first paren-balanced
+    // `(premise)` substring, continue with the rest. When the current
+    // range does not start with `(>[`, the range IS the head — return it.
+    //
+    // `leftArgs` (set of free variables in the premise subtree) is
+    // reconstructed by walking `[...]` arg-lists inside the premise:
+    // collect atoms (non-`>[`) minus all bvs declared in nested `>[bvs]`
+    // inside that premise. This reproduces parseExpr's recursive
+    // `node->arguments = union - this-level-bvs` for the standard MPL
+    // shapes the conjecturer emits (atoms, `!atom`, `&`, `!&`, `>`,
+    // `!>`). See G-34 for the cache-shape stability caveat.
+    std::string head;
+    {
+        const std::string& s = exprForDesintegration;
+        size_t cursor = 0;
+        size_t end = s.size();
+        while (cursor + 3 <= end
+               && s[cursor] == '(' && s[cursor + 1] == '>' && s[cursor + 2] == '[') {
+            // Parse this layer's bv list: `[id1,id2,...]`.
+            const size_t bvStart = cursor + 3;
+            const size_t bvClose = s.find(']', bvStart);
+            if (bvClose == std::string::npos || bvClose >= end) break;
+            std::vector<std::string> bvs;
+            {
+                size_t p = bvStart;
+                while (p < bvClose) {
+                    size_t c = s.find(',', p);
+                    if (c == std::string::npos || c > bvClose) c = bvClose;
+                    if (c > p) bvs.emplace_back(s.substr(p, c - p));
+                    p = c + 1;
+                }
+            }
+
+            // Locate the premise. Two shapes allowed:
+            //   (prem)      — positive form, a paren-balanced subexpression.
+            //   !(prem)     — negated form, `!` prefix + paren-balanced body.
+            // Anything else at this position means the layer-peel can't
+            // continue; the rest is the head.
+            if (bvClose + 1 >= end) break;
+            size_t premRealStart = bvClose + 1;
+            size_t balanceFrom;
+            if (s[premRealStart] == '(') {
+                balanceFrom = premRealStart;
+            } else if (s[premRealStart] == '!' && premRealStart + 1 < end && s[premRealStart + 1] == '(') {
+                balanceFrom = premRealStart + 1;
+            } else {
+                break;
+            }
+            size_t premEnd = balanceFrom;
+            int depth = 0;
+            for (; premEnd < end; ++premEnd) {
+                char ch = s[premEnd];
+                if (ch == '(') ++depth;
+                else if (ch == ')') { --depth; if (depth == 0) break; }
+            }
+            if (premEnd >= end) break;
+            // premise = s[premRealStart .. premEnd] inclusive (includes `!` prefix if present).
+            std::string leftExpr = s.substr(premRealStart, premEnd - premRealStart + 1);
+
+            // leftArgs: atoms in the premise minus bvs declared in any
+            // nested `>[...]` inside it.
+            std::set<std::string> leftArgs;
+            {
+                std::set<std::string> nestedBvs;
+                size_t pos = 0;
+                while (pos < leftExpr.size()) {
+                    size_t lb = leftExpr.find('[', pos);
+                    if (lb == std::string::npos) break;
+                    const bool isBv = (lb > 0 && leftExpr[lb - 1] == '>');
+                    size_t rb = leftExpr.find(']', lb);
+                    if (rb == std::string::npos) break;
+                    size_t p = lb + 1;
+                    while (p < rb) {
+                        size_t c = leftExpr.find(',', p);
+                        if (c == std::string::npos || c > rb) c = rb;
+                        if (c > p) {
+                            std::string tok = leftExpr.substr(p, c - p);
+                            if (isBv) nestedBvs.insert(std::move(tok));
+                            else leftArgs.insert(std::move(tok));
+                        }
+                        p = c + 1;
+                    }
+                    pos = rb + 1;
+                }
+                for (auto& b : nestedBvs) leftArgs.erase(b);
+            }
+
+            chain.emplace_back(std::move(leftExpr), std::move(bvs), std::move(leftArgs));
+
+            // Advance past the premise; the matching `)` of this wrapper
+            // sits at `end - 1`, so shrink the range by 1 to account for
+            // it (we will peel it along with this layer).
+            cursor = premEnd + 1;
+            end = end - 1;
+        }
+        head = s.substr(cursor, end - cursor);
+    }
+
+    // Populate cache for next caller on this thread.
+    _dc.key = exprForDesintegration;
+    _dc.chain = chain;
+    _dc.head = head;
+    _dc.valid = true;
+
+#if GL_DISINT_PROFILE
+    auto _dt = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - _t0).count();
+    g_disintCalls.fetch_add(1, std::memory_order_relaxed);
+    g_disintNs.fetch_add((uint64_t)_dt, std::memory_order_relaxed);
+#endif
     return head;
 }
 
@@ -1066,7 +1202,7 @@ extractKeyValue(const std::string& expr2,
 // ============================================================================
 
 /* Generative Logic : A deterministic reasoning and knowledge generation engine.
- Copyright(C) 2025 Generative Logic UG(haftungsbeschränkt)
+ Copyright(C) 2025-2026 Generative Logic UG(haftungsbeschränkt)
 
  This program is free software : you can redistribute it and /or modify
  it under the terms of the GNU Affero General Public License as published by

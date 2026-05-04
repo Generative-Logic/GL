@@ -1,10 +1,39 @@
 <!DOCTYPE html>
+<!--
+  Generative Logic proof output
+  Copyright © 2025-2026 Generative Logic UG
+  Licensed under GNU AGPLv3: https://www.gnu.org/licenses/agpl-3.0.html
+  Use for AI model training, dataset construction, or commercial
+  redistribution requires a commercial license:
+  https://generative-logic.com/license/
+-->
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Reasoning Rules Reference</title>
   <link rel="icon" type="image/png" href="favicon.png">
+  <!-- License metadata -->
+  <meta name="copyright" content="© 2025-2026 Generative Logic UG">
+  <meta name="license" content="AGPL-3.0-or-later">
+  <meta name="robots" content="noindex, follow, noai, noimageai">
+  <link rel="license" href="https://www.gnu.org/licenses/agpl-3.0.html">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "CreativeWork",
+    "name": "Generative Logic Proof Graph",
+    "copyrightHolder": {
+      "@type": "Organization",
+      "name": "Generative Logic UG",
+      "url": "https://generative-logic.com/"
+    },
+    "copyrightYear": 2026,
+    "license": "https://www.gnu.org/licenses/agpl-3.0.html",
+    "isAccessibleForFree": true,
+    "usageInfo": "https://generative-logic.com/license/"
+  }
+  </script>
   
     <style>
       body { font-family: Arial, sans-serif; margin: 2rem; background: #181B27; color: #F0E8DC; padding-bottom: 200em;}
@@ -83,6 +112,18 @@
        border-left: 4px solid #5DCAA5;
        border-radius: 6px;
      }
+     /* Matryoshka depth — each nesting level shifts hue + indents.
+        Depth 1 = direct subproof of main; deeper = sub-sub-…-proofs. */
+     .subproof-depth-1 { border-left-color: #5DCAA5; background: #262938; }
+     .subproof-depth-2 { border-left-color: #C7B86A; background: #2C2A2E; margin-left: 0.6em; }
+     .subproof-depth-3 { border-left-color: #C77FB0; background: #322A2C; margin-left: 1.2em; }
+     .subproof-depth-4 { border-left-color: #7FA8C7; background: #2A2D32; margin-left: 1.8em; }
+     .subproof-depth-5 { border-left-color: #C77F7F; background: #312A2A; margin-left: 2.4em; }
+     .subproof-card[class*="subproof-depth-"]:not(.subproof-depth-1):not(.subproof-depth-2):not(.subproof-depth-3):not(.subproof-depth-4):not(.subproof-depth-5) {
+       border-left-color: #8B8FA5;
+       background: #2A2D38;
+       margin-left: 3em;
+     }
      .subproof-title {
        font-weight: 700;
        margin-bottom: 0.35em;
@@ -141,14 +182,24 @@
 <tr id="anchor-handling"><td style="white-space:nowrap; vertical-align:top; padding:0.6em 1.2em 0.6em 0;"><b>anchor handling</b></td><td style="vertical-align:top; padding:0.6em 1.2em 0.6em 0; color:#5DCAA5;">Anchor variable substitution</td><td style="vertical-align:top; padding:0.6em 0;">An anchor variable was substituted with a concrete value from the definition set. This binds abstract anchor parameters to specific elements (e.g., replacing argument position 1 with an element of N).</td></tr>
 <tr id="mirrored-from"><td style="white-space:nowrap; vertical-align:top; padding:0.6em 1.2em 0.6em 0;"><b>mirrored from</b></td><td style="vertical-align:top; padding:0.6em 1.2em 0.6em 0; color:#5DCAA5;">Mirror of source theorem</td><td style="vertical-align:top; padding:0.6em 0;">This theorem is a mirrored variant of another theorem — the output-variable premise and the head (conclusion) are swapped. The dependency links to the original source theorem.</td></tr>
 <tr id="reformulated-from"><td style="white-space:nowrap; vertical-align:top; padding:0.6em 1.2em 0.6em 0;"><b>reformulated from</b></td><td style="vertical-align:top; padding:0.6em 1.2em 0.6em 0; color:#5DCAA5;">Reformulation of source theorem</td><td style="vertical-align:top; padding:0.6em 0;">This theorem is a reformulation of another theorem — the head (conclusion) has been rewritten using an existence-node expansion from the GL binary. The dependency links to the original source theorem.</td></tr>
-<tr id="necessity-for-equality-hypo"><td style="white-space:nowrap; vertical-align:top; padding:0.6em 1.2em 0.6em 0;"><b>necessity for equality (hypo)</b></td><td style="vertical-align:top; padding:0.6em 1.2em 0.6em 0; color:#5DCAA5;">Equality hypothesis introduction</td><td style="vertical-align:top; padding:0.6em 0;">An equality is introduced as a hypothesis for collapsing duplicate variables. When multiple variables must be identified as equal, this tag marks the equality assumption that enables the collapse.</td></tr>
+<tr id="variable-copy"><td style="white-space:nowrap; vertical-align:top; padding:0.6em 1.2em 0.6em 0;"><b>variable copy</b></td><td style="vertical-align:top; padding:0.6em 1.2em 0.6em 0; color:#5DCAA5;">Variable copy axiom</td><td style="vertical-align:top; padding:0.6em 0;">GL may introduce a free equality (=[Y, Y_copy]) at any point in any scope, where Y_copy is a fresh name manufactured by appending the suffix &quot;_copy&quot; to Y. Because Y_copy never occurs anywhere else in the model, this is a conservative extension — asserting that Y_copy equals Y cannot contradict anything. GL uses this mechanism to split duplicated argument positions (when a rule instantiation would force the same variable into two slots of the same expression) so that the disintegration and hash-burst machinery can treat the two positions independently. The equality is then reused via equality1 rewrites to glue them back together. The verifier enforces that every occurrence of a _copy variable elsewhere in the chapter has a provenance chain ending at a variable copy declaration for that exact equality.</td></tr>
 <tr id="externally-provided-theorem"><td style="white-space:nowrap; vertical-align:top; padding:0.6em 1.2em 0.6em 0;"><b>externally provided theorem</b></td><td style="vertical-align:top; padding:0.6em 1.2em 0.6em 0; color:#5DCAA5;">External theorem (not proved by GL)</td><td style="vertical-align:top; padding:0.6em 0;">A theorem injected from the externally_provided_theorems.txt file. This theorem was not proved by GL's own deduction engine but is accepted as a given fact for use in downstream proofs.</td></tr>
 <tr id="incubator-back-reformulation"><td style="white-space:nowrap; vertical-align:top; padding:0.6em 1.2em 0.6em 0;"><b>incubator back reformulation</b></td><td style="vertical-align:top; padding:0.6em 1.2em 0.6em 0; color:#5DCAA5;">Back-reformulated operator theorem</td><td style="vertical-align:top; padding:0.6em 0;">An operator-equality theorem (e.g., a+b=c) was back-reformulated from the implication form into a direct operator statement. The dependency links to the source proof.</td></tr>
 <tr id="contradiction"><td style="white-space:nowrap; vertical-align:top; padding:0.6em 1.2em 0.6em 0;"><b>contradiction</b></td><td style="vertical-align:top; padding:0.6em 1.2em 0.6em 0; color:#5DCAA5;">Proved by contradiction</td><td style="vertical-align:top; padding:0.6em 0;">Both an expression and its negation were derived within the same logic block, establishing a contradiction. The theorem is proved because the negation of the conclusion led to an inconsistency.</td></tr>
 <tr id="origin"><td style="white-space:nowrap; vertical-align:top; padding:0.6em 1.2em 0.6em 0;"><b>origin</b></td><td style="vertical-align:top; padding:0.6em 1.2em 0.6em 0; color:#5DCAA5;">Provenance tracking</td><td style="vertical-align:top; padding:0.6em 0;">Tracks the origin of an expression in a contradiction proof chain. Links an expression to its source derivation so the full dependency chain can be reconstructed.</td></tr>
 <tr id="multiplied-from"><td style="white-space:nowrap; vertical-align:top; padding:0.6em 1.2em 0.6em 0;"><b>multiplied from</b></td><td style="vertical-align:top; padding:0.6em 1.2em 0.6em 0; color:#5DCAA5;">Partition-based variable equalization</td><td style="vertical-align:top; padding:0.6em 0;">A theorem produced by the multiplyImplication algorithm. Bell partitions of bound variables generate copies where variable groups are set equal, enabling cross-expression equalization.</td></tr>
 <tr id="equalize-variable"><td style="white-space:nowrap; vertical-align:top; padding:0.6em 1.2em 0.6em 0;"><b>equalize variable</b></td><td style="vertical-align:top; padding:0.6em 1.2em 0.6em 0; color:#5DCAA5;">Variable equalization step</td><td style="vertical-align:top; padding:0.6em 0;">A step within a multiplied proof where specific variables are identified as equal. This is part of the partition-based equalization process that collapses variables across expressions.</td></tr>
+<tr id="or-disintegration"><td style="white-space:nowrap; vertical-align:top; padding:0.6em 1.2em 0.6em 0;"><b>or disintegration</b></td><td style="vertical-align:top; padding:0.6em 1.2em 0.6em 0; color:#5DCAA5;">Case analysis branch</td><td style="vertical-align:top; padding:0.6em 0;">A disjunction (OR expression) was decomposed into individual cases. Each disjunct is processed under its own branch validity scope. The dependency is the expanded OR expression encoding all disjuncts.</td></tr>
+<tr id="or-convergence"><td style="white-space:nowrap; vertical-align:top; padding:0.6em 1.2em 0.6em 0;"><b>or convergence</b></td><td style="vertical-align:top; padding:0.6em 1.2em 0.6em 0; color:#5DCAA5;">Case analysis convergence</td><td style="vertical-align:top; padding:0.6em 0;">All branches of a case analysis (OR disintegration) have independently proved the same expression. The results converge back to the parent validity scope, completing the case analysis.</td></tr>
     </tbody>
   </table>
+  <div style="margin-top:2em; padding-top:1em; border-top:1px solid #3A3D4A; font-size:0.8em; color:#8B8FA5;">
+    Proof graph structure, presentation, and provenance chains
+    © 2025-2026 Generative Logic UG. Licensed under
+    <a href="https://www.gnu.org/licenses/agpl-3.0.html">AGPLv3</a>.
+    Use for AI model training, dataset construction, or commercial
+    redistribution requires a
+    <a href="https://generative-logic.com/license/">commercial license</a>.
+  </div>
 </body>
 </html>

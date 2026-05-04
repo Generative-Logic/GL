@@ -1,5 +1,5 @@
 /* Generative Logic : A deterministic reasoning and knowledge generation engine.
- Copyright(C) 2025 Generative Logic UG(haftungsbeschr�nkt)
+ Copyright(C) 2025-2026 Generative Logic UG(haftungsbeschr�nkt)
 
  This program is free software : you can redistribute it and /or modify
  it under the terms of the GNU Affero General Public License as published by
@@ -26,6 +26,7 @@
 #include <chrono>
 #include <string>
 #include <cstring>
+#include <fstream>
 #ifdef USE_MIMALLOC
 #include <mimalloc.h>
 #endif
@@ -39,6 +40,15 @@ int main(int argc, char* argv[]) {
     std::cout << "mimalloc version: " << v << std::endl;
 #endif
     auto start = std::chrono::high_resolution_clock::now();
+
+    // Note: .debug/hashburst_trace.txt is NOT truncated here. It is
+    // truncated inside performElementaryLogicalStep on the first burst
+    // where the target-LB guard fires (prover.cpp:2384,
+    // burstCount == 1 ? std::ios::trunc : std::ios::app). That keeps the
+    // trace from being wiped by sibling gl_quick.exe invocations in the
+    // same main.py session whose batches do not match the target LB —
+    // e.g. the IncubatorGauss1 trace would otherwise be erased by the
+    // following Gauss-main batch.
 
     // --mirror-externals <theoremsDir>: rebuild compressed_external_theorems.txt
     if (argc >= 3 && std::strcmp(argv[1], "--mirror-externals") == 0) {

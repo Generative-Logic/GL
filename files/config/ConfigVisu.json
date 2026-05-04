@@ -7,7 +7,9 @@
 	"max_count_per_conjecture": 0,
 	"input_args": ["1"],
 	"output_args": [],
-	"max_size_expression": 5
+	"max_size_expression": 5,
+	"allow_to_constitute_existence": true,
+	"existence_variable_position": 1
   },
   "=": {
     "arity": 2,
@@ -17,7 +19,8 @@
 	"max_count_per_conjecture": 0,
 	"input_args": ["1", "2"],
 	"output_args": [],
-	"max_size_expression": 4
+	"max_size_expression": 4,
+	"allow_negation": true
   },
   "in2": {
     "arity": 3,
@@ -27,7 +30,9 @@
 	"max_count_per_conjecture": 0,
 	"input_args": ["1"],
 	"output_args": ["2"],
-	"max_size_expression": 4
+	"max_size_expression": 4,
+	"allow_to_constitute_existence": true,
+	"existence_variable_position": 1
   },
   "in3": {
     "arity": 4,
@@ -96,7 +101,7 @@
   "interval": {
     "arity": 5,
     "definition_sets": {
-      "1": ["P(1)", false], "2": ["P(x(1)(1))", false], "3": ["(1)", true], "4": ["(1)", true], "5": ["P(1)", true]
+      "1": ["P(1)", false], "2": ["P(x(1)(x(1)(1)))", false], "3": ["(1)", false], "4": ["(1)", true], "5": ["P(1)", true]
     },
     "full_mpl": "interval.txt",
 	"short_mpl": "(interval[N,+,n,m,M])",
@@ -104,6 +109,78 @@
 	"input_args": ["n", "m"],
 	"output_args": [],
 	"max_size_expression": 5
+  },
+  "infiniteSequence": {
+    "arity": 2,
+    "definition_sets": {
+      "1": ["P(x(1)(1))", false], "2": ["P(1)", false]
+    },
+    "full_mpl": "infiniteSequence.txt",
+	"short_mpl": "(infiniteSequence[f,N])",
+	"max_count_per_conjecture": 0,
+	"input_args": [],
+	"output_args": [],
+	"max_size_expression": 5
+  },
+  "limitSequence": {
+    "arity": 5,
+    "definition_sets": {
+      "1": ["P(1)", false], "2": ["P(x(1)(x(1)(1)))", false], "3": ["(1)", true], "4": ["P(x(1)(1))", true], "5": ["P(x(1)(1))", true]
+    },
+    "full_mpl": "limitSequence.txt",
+	"short_mpl": "(limitSequence[N,+,n,f,g])",
+	"max_count_per_conjecture": 0,
+	"input_args": ["n"],
+	"output_args": [],
+	"max_size_expression": 5
+  },
+  "limitSet": {
+    "arity": 5,
+    "definition_sets": {
+      "1": ["P(1)", false], "2": ["P(x(1)(x(1)(1)))", false], "3": ["P(1)", true], "4": ["(1)", true], "5": ["P(1)", true]
+    },
+    "full_mpl": "limitSet.txt",
+	"short_mpl": "(limitSet[N,+,M,n,L])",
+	"max_count_per_conjecture": 0,
+	"input_args": [],
+	"output_args": [],
+	"max_size_expression": 5
+  },
+  "constSeq": {
+    "arity": 7,
+    "definition_sets": {
+      "1": ["P(1)", false], "2": ["P(x(1)(x(1)(1)))", false], "3": ["P(x(1)(1))", true], "4": ["(1)", false], "5": ["(1)", true], "6": ["P(1)", true], "7": ["(1)", true]
+    },
+    "full_mpl": "constSeq.txt",
+	"short_mpl": "(constSeq[N,+,f,c,n,M,m])",
+	"max_count_per_conjecture": 0,
+	"input_args": [],
+	"output_args": [],
+	"max_size_expression": 7
+  },
+  "nonInterval": {
+    "arity": 8,
+    "definition_sets": {
+      "1": ["P(1)", false], "2": ["P(x(1)(1))", false], "3": ["P(x(1)(x(1)(1)))", false], "4": ["P(1)", true], "5": ["(1)", true], "6": ["P(1)", true], "7": ["(1)", true], "8": ["(1)", true]
+    },
+    "full_mpl": "nonInterval.txt",
+	"short_mpl": "(nonInterval[N,s,+,M,n,L,m,k])",
+	"max_count_per_conjecture": 0,
+	"input_args": [],
+	"output_args": [],
+	"max_size_expression": 8
+  },
+  "nonSequence": {
+    "arity": 9,
+    "definition_sets": {
+      "1": ["P(1)", false], "2": ["P(x(1)(1))", false], "3": ["P(x(1)(x(1)(1)))", false], "4": ["P(x(1)(1))", true], "5": ["(1)", true], "6": ["P(x(1)(1))", true], "7": ["(1)", false], "8": ["(1)", false], "9": ["(1)", true]
+    },
+    "full_mpl": "nonSequence.txt",
+	"short_mpl": "(nonSequence[N,s,+,f,n,g,m,k,c])",
+	"max_count_per_conjecture": 0,
+	"input_args": [],
+	"output_args": [],
+	"max_size_expression": 9
   },
   "split": {
     "arity": 6,
@@ -166,6 +243,32 @@
 	"input_args": [],
 	"output_args": [],
 	"max_size_expression": 4  
+  },
+  "EnumerationSet2": {
+    "arity": 3,
+    "definition_sets": {
+      "1": ["(1)", true], "2": ["(1)", true],
+      "3": ["P(1)", true]
+    },
+    "full_mpl": "EnumerationSet2.txt",
+    "short_mpl": "(EnumerationSet2[a,b,M])",
+    "max_count_per_conjecture": 0,
+    "input_args": [],
+    "output_args": [],
+    "max_size_expression": 5
+  },
+  "EnumerationSet3": {
+    "arity": 4,
+    "definition_sets": {
+      "1": ["(1)", true], "2": ["(1)", true], "3": ["(1)", true],
+      "4": ["P(1)", true]
+    },
+    "full_mpl": "EnumerationSet3.txt",
+    "short_mpl": "(EnumerationSet3[a,b,c,M])",
+    "max_count_per_conjecture": 0,
+    "input_args": [],
+    "output_args": [],
+    "max_size_expression": 5
   },
   "patterns_to_exclude": [],
 	"only_in_head": [],
@@ -253,6 +356,12 @@
      "P(x(1)(1))": -1,
      "P(x(1)(x(1)(1)))": -1,
      "P(1)": -1
+   },
+   "max_complexity_if_anchor_parameter_connected_after_existence": {
+     "(1)": [-1, -1],
+     "P(x(1)(1))": [-1, -1],
+     "P(x(1)(x(1)(1)))": [-1, -1],
+     "P(1)": [-1, -1]
    },
    "max_size_binary_list": -1
   }

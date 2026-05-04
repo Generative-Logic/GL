@@ -59,6 +59,16 @@
     ],
     "signature": "(existence1[u_1,u_2,u_3,u_4])"
   },
+  "existence2": {
+    "arity": 3,
+    "category": "existence",
+    "definedSet": "",
+    "elements": [
+      "(in[1,u_1])",
+      "(in2[1,u_2,u_3])"
+    ],
+    "signature": "(existence2[u_1,u_2,u_3])"
+  },
   "fXY": {
     "arity": 3,
     "category": "and",
@@ -314,5 +324,25 @@
       ""
     ],
     "signature": "(in3[u_1,u_2,u_3,u_4])"
+  },
+  "or0": {
+    "arity": 4,
+    "category": "or",
+    "definedSet": "",
+    "elements": [
+      "(existence2[u_1,u_2,u_3])",
+      "(=[u_2,u_4])"
+    ],
+    "signature": "(or0[u_1,u_2,u_3,u_4])"
+  },
+  "or1": {
+    "arity": 4,
+    "category": "or",
+    "definedSet": "",
+    "elements": [
+      "(=[u_1,u_2])",
+      "(existence2[u_3,u_1,u_4])"
+    ],
+    "signature": "(or1[u_1,u_2,u_3,u_4])"
   }
 }

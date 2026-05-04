@@ -1,6 +1,6 @@
 
 /* Generative Logic : A deterministic reasoning and knowledge generation engine.
- Copyright(C) 2025 Generative Logic UG(haftungsbeschraenkt)
+ Copyright(C) 2025-2026 Generative Logic UG(haftungsbeschraenkt)
 
  This program is free software : you can redistribute it and /or modify
  it under the terms of the GNU Affero General Public License as published by
@@ -140,12 +140,17 @@ struct ExpressionDescription {
     std::string short_mpl_raw;
     std::string short_mpl_normalized;
     int max_count_per_conjecture = 0;
-    int max_size_expression = 0;
+    int max_size_expression_before_existence = 0;  // applies at current checkComplexityPerOp call sites
+    int max_size_expression_after_existence = 0;   // applies after reformulateToExistenceHead, pre-emission
     int min_size_expression = 1;
     std::vector<std::string> input_args;
     std::vector<std::string> output_args;
     std::vector<int> indices_input_args;         // 0-based positions
     std::vector<int> indices_output_args;         // 0-based positions
+    bool allow_negation = false;
+    bool allow_to_constitute_existence = false;
+    int existence_variable_position = -1;         // 1-based, -1 = unset
+    std::vector<int> allowed_for_existence;      // 1-based positions eligible to be existentially wrapped when this expr is an ungrounded operator head
 };
 
 struct ConfigurationParameters {
@@ -157,11 +162,33 @@ struct ConfigurationParameters {
     std::map<std::string, int> max_values_for_def_sets;
     std::map<std::string, int> max_values_for_uncomb_def_sets;
     std::map<std::string, int> max_values_for_def_sets_prior_connection;
-    std::map<std::string, int> max_complexity_if_anchor_parameter_connected;
+    std::map<std::string, int> max_complexity_if_anchor_parameter_connected_before_existence;
+    // Per-type after-existence cap is now a 2-tuple `[complexity, arity_sum]`:
+    //   first  = complexity-level cap (count of `(>[`); legacy semantics.
+    //   second = max sum of non-anchor leaf arities; new dimension that lets
+    //            simple/small theorems escape type-pinning rejection.
+    // Reject only when BOTH caps are exceeded AND a slot of this type appears
+    // in non-anchor leaves. Set second = 100 (or any value larger than
+    // realistic arity-sums) to disable the new dimension for that type.
+    // JSON shape: `[a, b]`; legacy int values auto-promote to `[int, 100]`.
+    std::map<std::string, std::pair<int, int>> max_complexity_if_anchor_parameter_connected_after_existence;
     int max_size_binary_list = 0;
     std::vector<int> simple_facts_parameters;
     std::vector<std::string> fact_variable_kinds;
     bool incubator_mode = false;
+    // Gate for passesInPremiseFilter — the Peano-motivated (in[x,X]) shape
+    // restriction. Configs that want the unrestricted conjecture set (e.g.
+    // Gauss) set this to false. Default true keeps the HEAD behavior.
+    bool apply_in_premise_filter = true;
+    // Per-def-set cap on the number of DISTINCT anchor-slot values of that
+    // type allowed to appear as arguments in non-anchor leaves of a
+    // conjecture. Example Peano: "(1)":1 means at most 1 distinct (1)-typed
+    // anchor slot value in leaves (i0=2 OR i1=6, not both) — rejects
+    // shapes like in3[i0, i1, c, +] while keeping the cancellation family
+    // in3[a, b, i0, +]. Absent keys → no cap for that type (filter off).
+    // Empty map → filter fully off. Gauss leaves this empty to keep
+    // double-digit identities alive.
+    std::map<std::string, int> max_distinct_anchor_values_per_type;
 };
 
 struct ConfigurationData {
@@ -270,6 +297,7 @@ private:
     PermutationsMap allPermutations_;
     std::vector<std::string> operators_;        // expressions with input_args AND output_args
     std::vector<std::string> relations_;        // expressions with 2 input_args AND no output_args
+    std::vector<std::string> properties_;       // expressions with 1 input_arg AND no output_args
     // Adapter for shim functions that need CoreExpressionConfig
     std::map<std::string, ce::CoreExpressionConfig> coreExprMap_;
 
@@ -287,7 +315,8 @@ private:
         int16_t arity = 0;
         int16_t maxCountPerConj = 0;
         int16_t handleId = 0;                      // nameMap ID of handle string
-        int16_t maxSizeExpr = 0;
+        int16_t maxSizeExprBeforeEx = 0;
+        int16_t maxSizeExprAfterEx = 0;
         int16_t minSizeExpr = 1;
         int16_t indicesInputArgs[16];
         int16_t numInputArgs = 0;
@@ -391,6 +420,60 @@ private:
         const std::string& expr, const DefSetMap& exprDefSets) const;
 
     std::string reformulateOperatorHead(const std::string& conjecture) const;
+
+    // Returns true iff every leaf expression in the pre-reformulation `conj` has
+    // `max_size_expression_after_existence >= leafCount`. Intended to be called on the
+    // post-anchor-attach, pre-existence-reformulation string; a single disintegrate pass
+    // yields the flat chain + head and we check each leaf once (no descent into any nested
+    // structure). `leafCount` is the already-available leaf count (typically `nse + 1`).
+    bool passesMaxSizeAfterExistence(const std::string& conj, int leafCount) const;
+
+    // Mirror of checkComplexityLevelForDefSets but keyed by
+    // `max_complexity_if_anchor_parameter_connected_after_existence`. Operates on the
+    // pre-reformulation post-anchor-attach string; gathers every def-set type that appears
+    // on any leaf via the static per-expression definition, then rejects if any cap < the
+    // conjecture's `(>[`-count + 1.
+    bool passesComplexityAfterExistence(const std::string& conj) const;
+
+    // For each def-set type T present in `max_distinct_anchor_values_per_type`,
+    // counts how many DISTINCT anchor-slot values of type T appear as args
+    // of non-anchor leaves of `conj`. Returns false (reject) if any type's
+    // count exceeds the configured cap. Empty config map → always true
+    // (filter off). Walk descends into nested `!(>[…]…)` existence heads so
+    // the cap applies to the full body, not just the top-level chain.
+    bool passesMaxDistinctAnchorValuesPerType(const std::string& conj) const;
+
+    // Returns true iff `conj` passes the `in[…]`-containing-conjecture filter:
+    // does not contain any `(in[…])` in its non-anchor premises → unconditionally true
+    //   (the filter does not apply).
+    // contains at least one `(in[…])` in its non-anchor premises → true iff one of:
+    //   (a) exactly 1 non-anchor premise AND the head is an existence form (`!(>[…]…)`), or
+    //   (b) exactly 2 non-anchor premises AND at least one of them is a negation.
+    // Order of premises is irrelevant; the anchor never counts as a premise.
+    bool passesInPremiseFilter(const std::string& conj) const;
+
+    // For each premise of `conj` whose core expression has `allow_negation=true` in the config,
+    // emit one new conjecture where that single premise is wrapped in `!(...)`. The head of the
+    // outer implication is never negated (which implicitly excludes the `!(>[…])` existence-head
+    // form when it sits at head position). Multiple negatable premises → one new variant per
+    // premise (never co-negated). The original is NOT included in the returned list.
+    std::vector<std::string> generateNegatedPremiseVariants(const std::string& conj) const;
+
+    // Existence-head reformulation (replaces legacy generateOrConjectures path).
+    // Returns true and records `theorem` in `possibleExHead` iff the ungrounded-operator-head
+    // filter rejection hits AND the candidate qualifies for existence reformulation
+    // (head coreExpr has non-empty allowed_for_existence, chain contains (in[x,X]) for x at
+    //  an allowed position, and x occurs nowhere else in chain besides P_x and the head).
+    // Caller runs this in lieu of rejecting the candidate when it's a valid existence base.
+    bool triggersExistenceReformulation(const std::string& theorem) const;
+    // Rebuilds the candidate with the allowed arg wrapped in a negated-universal existence head.
+    // Precondition: triggersExistenceReformulation(theorem) was true at the same state.
+    std::string reformulateToExistenceHead(const std::string& theorem) const;
+
+    // ---- OR theorem conjecture generation ----
+    // Generates existence + companion pairs directly from config flags.
+    // Returns pairs of (existence_conjecture, companion_conjecture).
+    std::vector<std::pair<std::string,std::string>> generateOrConjectures() const;
 
     // ---- Int-path: encode/decode ----
     void buildNameMap();

@@ -327,6 +327,19 @@
     "output_args": [],
     "max_size_expression": 5
   },
+  "EnumerationSet3": {
+    "arity": 4,
+    "definition_sets": {
+      "1": ["(1)", true], "2": ["(1)", true], "3": ["(1)", true],
+      "4": ["P(1)", true]
+    },
+    "full_mpl": "EnumerationSet3.txt",
+    "short_mpl": "(EnumerationSet3[a,b,c,M])",
+    "max_count_per_conjecture": 0,
+    "input_args": [],
+    "output_args": [],
+    "max_size_expression": 5
+  },
   "patterns_to_exclude": [
     "\\(fold\\[\\d+,8,\\d+,\\d+,\\d+,\\d+,\\d+\\]\\)",
     "\\(fold\\[\\d+,\\d+,5,\\d+,\\d+,\\d+,\\d+\\]\\)",
@@ -375,6 +388,12 @@
       "P(x(1)(x(1)(1)))": 10,
       "P(1)": 10
     },
+    "max_complexity_if_anchor_parameter_connected_after_existence": {
+      "(1)": [10, 100],
+      "P(x(1)(1))": [10, 100],
+      "P(x(1)(x(1)(1)))": [10, 100],
+      "P(1)": [10, 100]
+    },
     "max_size_binary_list": 8,
     "simple_facts_parameters": [5],
     "fact_variable_kinds": ["i", "j", "k"],
@@ -407,7 +426,9 @@
     "skip_ce_filter": true,
     "skip_eq_classes": false,
     "incubator_mode": true,
-    "max_partition_size": 5
+    "allow_multiplication": true,
+    "max_partition_size": 5,
+    "max_or_depth": 1
   },
   "theorems_folder": "files/incubator/theorems",
   "raw_proof_graph_folder": "files/incubator/raw_proof_graph"

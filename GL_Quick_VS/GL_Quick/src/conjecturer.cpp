@@ -1,6 +1,6 @@
 
 /* Generative Logic : A deterministic reasoning and knowledge generation engine.
- Copyright(C) 2025 Generative Logic UG(haftungsbeschraenkt)
+ Copyright(C) 2025-2026 Generative Logic UG(haftungsbeschraenkt)
 
  This program is free software : you can redistribute it and /or modify
  it under the terms of the GNU Affero General Public License as published by
@@ -27,16 +27,114 @@
 #include <json.hpp>
 #include <fstream>
 #include <iostream>
+#include <iomanip>
 #include <algorithm>
 #include <numeric>
 #include <cassert>
+#include <chrono>
 #include <regex>
 #include <sstream>
 #include <iterator>
+#include <mutex>
+#include <atomic>
+#include <cstring>
+#include <cstdio>
+#include <climits>
 
 namespace conj {
 
 using json = nlohmann::json;
+
+// ============================================================================
+// PROFILING (temporary — runtime investigation, session_24042026)
+// ============================================================================
+namespace prof {
+    struct Counter {
+        std::atomic<uint64_t> calls{0};
+        std::atomic<uint64_t> ns{0};
+        void add(uint64_t dtNs) {
+            calls.fetch_add(1, std::memory_order_relaxed);
+            ns.fetch_add(dtNs, std::memory_order_relaxed);
+        }
+    };
+    // Hot-path functions
+    inline Counter g_reshuffle;
+    inline Counter g_reshufflePermInner;       // buildAndNormalize + compare, per permutation
+    inline Counter g_mirrored;
+    inline Counter g_encodeExpr;
+    inline Counter g_encodeDefSetMap;
+    inline Counter g_decodeExpr;
+    inline Counter g_connectExprInt;
+    inline Counter g_makeAllConnMapsInt;
+    inline Counter g_singleThreadCalc;
+    inline Counter g_singleExprAnchorConn;
+    inline Counter g_exprGood2Int;
+    inline Counter g_exprGood;
+    inline Counter g_disintegrate;  // compiler.hpp::disintegrateImplication
+    // Filter functions (string-based — candidates for int-ification)
+    inline Counter g_onlyInHeadGoodInt;
+    inline Counter g_prohibHeadsGoodInt;
+    inline Counter g_checkInputVarsHead;
+    inline Counter g_triggersExistenceRef;
+    inline Counter g_checkInputVarsOrder;
+    inline Counter g_patternInConjecture;
+    inline Counter g_evaluateOperatorExprs2;
+    inline Counter g_controlEquality;
+    inline Counter g_checkMinSizeExpression;
+    inline Counter g_passesMaxSizeAfterEx;
+    inline Counter g_passesComplexityAfterEx;
+    inline Counter g_passesInPremiseFilter;
+    inline Counter g_reformulateToExistence;
+    inline Counter g_generateNegatedPremise;
+    inline Counter g_checkDefSets;
+    inline Counter g_checkComplLevForDefSets;
+    inline Counter g_countOpOccurrences;
+    inline Counter g_checkDefSetsPriorInt;
+    inline Counter g_checkComplexityPerOpInt;
+    inline Counter g_getNumRemArgsInt;
+    // Phase timers
+    inline Counter g_phase_precomp;
+    inline Counter g_phase_prelim;
+    inline Counter g_phase_mainLoop;
+    inline Counter g_phase_sortAndOut;
+
+    // Scope RAII timer. Toggle GL_PROF_SCOPE_ENABLE to 0 to make all
+    // per-function counters (but not phase timers in run()) no-op —
+    // used to isolate profiler overhead from real work. The phase
+    // timers in run() continue to measure wall-time directly and are
+    // unaffected.
+    #ifndef GL_PROF_SCOPE_ENABLE
+    #define GL_PROF_SCOPE_ENABLE 0
+    #endif
+    struct Scope {
+    #if GL_PROF_SCOPE_ENABLE
+        Counter& c;
+        std::chrono::steady_clock::time_point t0;
+        Scope(Counter& cc) : c(cc), t0(std::chrono::steady_clock::now()) {}
+        ~Scope() {
+            auto dt = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - t0).count();
+            c.add((uint64_t)dt);
+        }
+    #else
+        Scope(Counter&) {}
+    #endif
+    };
+
+    inline void report(const char* name, const Counter& c, double wallSec) {
+        uint64_t calls = c.calls.load();
+        uint64_t ns = c.ns.load();
+        double sec = ns / 1e9;
+        double pct = wallSec > 0 ? 100.0 * sec / wallSec : 0.0;
+        double avgUs = calls > 0 ? (ns / 1000.0 / (double)calls) : 0.0;
+        std::cout << "  " << std::setw(28) << std::left << name
+                  << " calls=" << std::setw(12) << calls
+                  << " total=" << std::setw(9) << std::fixed << std::setprecision(3) << sec << "s"
+                  << " (" << std::setw(5) << std::fixed << std::setprecision(1) << pct << "% of wall)"
+                  << " avg=" << std::fixed << std::setprecision(3) << avgUs << "us"
+                  << "\n";
+    }
+} // namespace prof
 
 // ============================================================================
 // Helper: strip whitespace (like Python's _normalize_mpl)
@@ -623,6 +721,10 @@ ConfigurationData Conjecturer::loadConfiguration(const std::string& anchorId) {
         cp.operator_threshold = p.value("operator_threshold", 0);
         cp.max_size_binary_list = p.value("max_size_binary_list", 0);
         cp.incubator_mode = p.value("incubator_mode", false);
+        cp.apply_in_premise_filter = p.value("apply_in_premise_filter", true);
+        if (p.contains("max_distinct_anchor_values_per_type") && p["max_distinct_anchor_values_per_type"].is_object())
+            for (auto& [k, v] : p["max_distinct_anchor_values_per_type"].items())
+                cp.max_distinct_anchor_values_per_type[k] = v.get<int>();
 
         if (p.contains("max_values_for_def_sets") && p["max_values_for_def_sets"].is_object())
             for (auto& [k, v] : p["max_values_for_def_sets"].items())
@@ -633,9 +735,21 @@ ConfigurationData Conjecturer::loadConfiguration(const std::string& anchorId) {
         if (p.contains("max_values_for_def_sets_prior_connection") && p["max_values_for_def_sets_prior_connection"].is_object())
             for (auto& [k, v] : p["max_values_for_def_sets_prior_connection"].items())
                 cp.max_values_for_def_sets_prior_connection[k] = v.get<int>();
-        if (p.contains("max_complexity_if_anchor_parameter_connected") && p["max_complexity_if_anchor_parameter_connected"].is_object())
-            for (auto& [k, v] : p["max_complexity_if_anchor_parameter_connected"].items())
-                cp.max_complexity_if_anchor_parameter_connected[k] = v.get<int>();
+        if (p.contains("max_complexity_if_anchor_parameter_connected_before_existence") && p["max_complexity_if_anchor_parameter_connected_before_existence"].is_object())
+            for (auto& [k, v] : p["max_complexity_if_anchor_parameter_connected_before_existence"].items())
+                cp.max_complexity_if_anchor_parameter_connected_before_existence[k] = v.get<int>();
+        if (p.contains("max_complexity_if_anchor_parameter_connected_after_existence") && p["max_complexity_if_anchor_parameter_connected_after_existence"].is_object())
+            for (auto& [k, v] : p["max_complexity_if_anchor_parameter_connected_after_existence"].items()) {
+                // Accept legacy int (treated as [int, 100]) or [int, int] vector.
+                int comp = 0, arity = 100;
+                if (v.is_number_integer()) {
+                    comp = v.get<int>();
+                } else if (v.is_array() && v.size() >= 1) {
+                    comp = v[0].get<int>();
+                    if (v.size() >= 2) arity = v[1].get<int>();
+                }
+                cp.max_complexity_if_anchor_parameter_connected_after_existence[k] = {comp, arity};
+            }
 
         if (p.contains("simple_facts_parameters") && p["simple_facts_parameters"].is_array())
             for (auto& v : p["simple_facts_parameters"]) cp.simple_facts_parameters.push_back(v.get<int>());
@@ -752,8 +866,17 @@ ConfigurationData Conjecturer::loadConfiguration(const std::string& anchorId) {
         }
 
         desc.max_count_per_conjecture = spec.value("max_count_per_conjecture", 0);
-        desc.max_size_expression = spec.value("max_size_expression", 0);
+        desc.max_size_expression_before_existence = spec.value("max_size_expression_before_existence", 0);
+        desc.max_size_expression_after_existence  = spec.value("max_size_expression_after_existence",  0);
         desc.min_size_expression = spec.value("min_size_expression", 1);
+        desc.allow_negation = spec.value("allow_negation", false);
+        desc.allow_to_constitute_existence = spec.value("allow_to_constitute_existence", false);
+        desc.existence_variable_position = spec.value("existence_variable_position", -1);
+        if (spec.contains("allowed_for_existence") && spec["allowed_for_existence"].is_array()) {
+            for (auto& v : spec["allowed_for_existence"]) {
+                if (v.is_number_integer()) desc.allowed_for_existence.push_back(v.get<int>());
+            }
+        }
 
         // input_args, output_args
         if (spec.contains("input_args") && spec["input_args"].is_array())
@@ -826,7 +949,8 @@ void Conjecturer::buildIntExprConfigs() {
         ic.arity = (int16_t)desc.arity;
         ic.maxCountPerConj = (int16_t)desc.max_count_per_conjecture;
         ic.handleId = nameMap_.lookup(desc.handle);
-        ic.maxSizeExpr = (int16_t)desc.max_size_expression;
+        ic.maxSizeExprBeforeEx = (int16_t)desc.max_size_expression_before_existence;
+        ic.maxSizeExprAfterEx  = (int16_t)desc.max_size_expression_after_existence;
         ic.minSizeExpr = (int16_t)desc.min_size_expression;
         ic.numInputArgs = (int16_t)desc.indices_input_args.size();
         for (int i = 0; i < ic.numInputArgs && i < 16; ++i)
@@ -855,7 +979,9 @@ void Conjecturer::buildIntExprConfigs() {
         int16_t id = nameMap_.lookup(ds);
         if (id > 0) maxForDefSetsPrior_[id] = (int16_t)val;
     }
-    for (auto& [ds, val] : config_.parameters.max_complexity_if_anchor_parameter_connected) {
+    // The int-path dense lookup currently mirrors only the pre-existence caps — the
+    // after-existence check runs on the string path via passesComplexityAfterExistence.
+    for (auto& [ds, val] : config_.parameters.max_complexity_if_anchor_parameter_connected_before_existence) {
         int16_t id = nameMap_.lookup(ds);
         if (id > 0) maxComplexityAnchorConn_[id] = (int16_t)val;
     }
@@ -872,6 +998,7 @@ void Conjecturer::buildIntExprConfigs() {
 }
 
 IntConjBuf Conjecturer::encodeExpr(const std::string& expr) const {
+    prof::Scope _prof_enc(prof::g_encodeExpr);
     // Encodes a conjecture string into a flat int16_t array.
     // Conjectures are right-leaning chains: (>[bv](leaf1)(>[bv](leaf2)...(head)))
     // Encoding: sequential blocks, each = [boundCount, bv..., nameId, arity, args...]
@@ -964,6 +1091,7 @@ IntConjBuf Conjecturer::encodeExpr(const std::string& expr) const {
 }
 
 std::string Conjecturer::decodeExpr(const IntConjBuf& buf) const {
+    prof::Scope _prof_dec(prof::g_decodeExpr);
     // Read sequential blocks from the flat array, wrap right-to-left.
     // Each block: [boundCount, bv..., nameId, arity, args...]
     struct Block {
@@ -1018,6 +1146,7 @@ std::string Conjecturer::decodeExpr(const IntConjBuf& buf) const {
 }
 
 IntDefSetMap Conjecturer::encodeDefSetMap(const DefSetMap& dsm) const {
+    prof::Scope _prof_eds(prof::g_encodeDefSetMap);
     IntDefSetMap idsm;
     idsm.count = 0;
     for (auto& [arg, tpl] : dsm) {
@@ -1689,6 +1818,7 @@ void Conjecturer::sortByOccurrenceInt(const IntConjBuf& expr, const int16_t* rem
 }
 
 int Conjecturer::getNumberRemovableArgsInt(const IntConnMap& connMap) const {
+    prof::Scope _p(prof::g_getNumRemArgsInt);
     // Count unique VALUES (not keys) in non-identity mappings.
     // Matches string version: set(v for k,v in subMap if k != v).size()
     int16_t vals[MAX_CONJ_ARGS];
@@ -1712,6 +1842,7 @@ bool Conjecturer::connectExpressionsInt(
     bool connectToAnchor,
     IntConjBuf& outExpr, IntDefSetMap& outMap) const
 {
+    prof::Scope _prof_connE(prof::g_connectExprInt);
     // Find shiftNum = max argId in map1
     int16_t shiftNum = 0;
     for (int i = 0; i < map1.count; ++i)
@@ -1956,6 +2087,69 @@ bool Conjecturer::connectExpressionsInt(
         }
     }
 
+    // Normalization pass: renumber surviving args to contiguous 1..N in
+    // first-occurrence order (atom args only, bvs skipped), matching
+    // reshuffle's canonicalization rule. Merges via subMap may have left
+    // holes in the shifted range; this pass closes them so downstream
+    // consumers (theorems.txt, anchor-connect inputs) see a contiguous
+    // arg-ID space.
+    {
+        std::map<int16_t, int16_t> renumber;
+        int16_t nextId = 1;
+
+        // Pass 1: collect argIds from atom args in block order.
+        int pos = 0;
+        while (pos < outExpr.len) {
+            int16_t bc = outExpr.data[pos++];
+            pos += bc;  // skip bvs
+            pos++;      // skip nameId
+            int16_t ar = outExpr.data[pos++];
+            for (int i = 0; i < ar; ++i) {
+                int16_t arg = outExpr.data[pos++];
+                if (renumber.find(arg) == renumber.end()) {
+                    renumber[arg] = nextId++;
+                }
+            }
+        }
+        // Absorb any bv that wasn't seen in atoms (defensive; valid
+        // conjectures always use every bv in some downstream atom).
+        pos = 0;
+        while (pos < outExpr.len) {
+            int16_t bc = outExpr.data[pos++];
+            for (int i = 0; i < bc; ++i) {
+                int16_t bv = outExpr.data[pos++];
+                if (renumber.find(bv) == renumber.end()) {
+                    renumber[bv] = nextId++;
+                }
+            }
+            pos++;  // skip nameId
+            int16_t ar = outExpr.data[pos++];
+            pos += ar;
+        }
+
+        // Pass 2: rewrite bvs and args in place.
+        pos = 0;
+        while (pos < outExpr.len) {
+            int16_t bc = outExpr.data[pos++];
+            for (int i = 0; i < bc; ++i) {
+                outExpr.data[pos] = renumber[outExpr.data[pos]];
+                ++pos;
+            }
+            pos++;  // skip nameId
+            int16_t ar = outExpr.data[pos++];
+            for (int i = 0; i < ar; ++i) {
+                outExpr.data[pos] = renumber[outExpr.data[pos]];
+                ++pos;
+            }
+        }
+
+        // Rewrite outMap.argId via the same renumber.
+        for (int i = 0; i < outMap.count; ++i) {
+            auto it = renumber.find(outMap.argId[i]);
+            if (it != renumber.end()) outMap.argId[i] = it->second;
+        }
+    }
+
     return true;
 }
 
@@ -2093,6 +2287,7 @@ void Conjecturer::makeAllConnectionMapsInt(
     bool withAnchor, const MappingsMap& mappingsMap,
     std::vector<IntConnMap>& outMaps) const
 {
+    prof::Scope _prof_mkM(prof::g_makeAllConnMapsInt);
     outMaps.clear();
     // shiftNum = max argId in argsMap2
     int16_t shiftNum = 0;
@@ -2426,6 +2621,7 @@ bool Conjecturer::checkComplexityLevelInt(const IntDefSetMap& argMap, int comple
 }
 
 bool Conjecturer::checkDefSetsPriorInt(const IntDefSetMap& argsStmt, const IntDefSetMap& argsGT) const {
+    prof::Scope _p(prof::g_checkDefSetsPriorInt);
     int16_t counts[256];
     std::memset(counts, 0, sizeof(counts));
 
@@ -2441,6 +2637,7 @@ bool Conjecturer::checkDefSetsPriorInt(const IntDefSetMap& argsStmt, const IntDe
 }
 
 int Conjecturer::countOperatorOccurrencesInt(const IntConjBuf& buf) const {
+    prof::Scope _p(prof::g_countOpOccurrences);
     // Count quantifier layers: blocks whose boundCount > 0 (matches string "(>[" counting)
     int count = 0;
     int pos = 0;
@@ -2454,6 +2651,7 @@ int Conjecturer::countOperatorOccurrencesInt(const IntConjBuf& buf) const {
 }
 
 bool Conjecturer::onlyInHeadGoodInt(const IntConjBuf& buf) const {
+    prof::Scope _p(prof::g_onlyInHeadGoodInt);
     // For each only_in_head expression, check it appears only in the head (last block).
     // We precompute the nameId for each only_in_head pattern.
     // only_in_head_raw contains handle strings like "(in2[" — we need the nameId of "in2".
@@ -2485,6 +2683,7 @@ bool Conjecturer::onlyInHeadGoodInt(const IntConjBuf& buf) const {
 }
 
 bool Conjecturer::prohibitedHeadsGoodInt(const IntConjBuf& buf) const {
+    prof::Scope _p(prof::g_prohibHeadsGoodInt);
     if (config_.prohibited_heads.empty()) return true;
     // Find the last block's nameId (the head)
     int16_t headNameId = 0;
@@ -2502,6 +2701,7 @@ bool Conjecturer::prohibitedHeadsGoodInt(const IntConjBuf& buf) const {
 }
 
 bool Conjecturer::checkComplexityPerOpInt(const IntConjBuf& growingTheorem, const IntConjBuf& statement) const {
+    prof::Scope _p(prof::g_checkComplexityPerOpInt);
     // Count total expressions in growingTheorem + 1 (for statement)
     int chainLen = 0;
     int pos = 0;
@@ -2520,14 +2720,14 @@ bool Conjecturer::checkComplexityPerOpInt(const IntConjBuf& growingTheorem, cons
         chainLen++;
     }
 
-    // Check each expression's max_size_expression against chainLen
+    // Check each expression's max_size_expression_before_existence against chainLen
     pos = 0;
     while (pos < growingTheorem.len) {
         int16_t bc = growingTheorem.data[pos++]; pos += bc;
         int16_t nid = growingTheorem.data[pos++];
         int16_t ar = growingTheorem.data[pos++]; pos += ar;
         if (nid > 0 && nid < (int16_t)intExprConfigs_.size()) {
-            if (intExprConfigs_[nid].maxSizeExpr > 0 && intExprConfigs_[nid].maxSizeExpr < chainLen)
+            if (intExprConfigs_[nid].maxSizeExprBeforeEx > 0 && intExprConfigs_[nid].maxSizeExprBeforeEx < chainLen)
                 return false;
         }
     }
@@ -2537,7 +2737,7 @@ bool Conjecturer::checkComplexityPerOpInt(const IntConjBuf& growingTheorem, cons
         int16_t nid = statement.data[pos++];
         int16_t ar = statement.data[pos++]; pos += ar;
         if (nid > 0 && nid < (int16_t)intExprConfigs_.size()) {
-            if (intExprConfigs_[nid].maxSizeExpr > 0 && intExprConfigs_[nid].maxSizeExpr < chainLen)
+            if (intExprConfigs_[nid].maxSizeExprBeforeEx > 0 && intExprConfigs_[nid].maxSizeExprBeforeEx < chainLen)
                 return false;
         }
     }
@@ -2545,6 +2745,7 @@ bool Conjecturer::checkComplexityPerOpInt(const IntConjBuf& growingTheorem, cons
 }
 
 bool Conjecturer::exprGood2Int(const IntConjBuf& buf, int nse, const IntDefSetMap& connectedMap) const {
+    prof::Scope _prof_eg2(prof::g_exprGood2Int);
     if (repetitionsExistInt(buf)) return false;
     if (!numbersGoodInt(buf)) return false;
 
@@ -2609,6 +2810,7 @@ bool Conjecturer::exprGood2Int(const IntConjBuf& buf, int nse, const IntDefSetMa
 // ============================================================================
 
 bool Conjecturer::exprGood(const std::string& expr) const {
+    prof::Scope _prof_eg(prof::g_exprGood);
     if (expr.substr(0, 3) == "(>[" && expr.substr(0, 4) != "(>[]") {
         if (!repetitionsExist(expr)) return true;
     }
@@ -2629,6 +2831,7 @@ bool Conjecturer::numbersGood(const std::string& expr) const {
 }
 
 bool Conjecturer::checkDefSets(const DefSetMap& argMap) const {
+    prof::Scope _p(prof::g_checkDefSets);
     // Count combinable
     std::map<std::string, int> counterMap;
     for (auto& [arg, tpl] : argMap) {
@@ -2654,11 +2857,12 @@ bool Conjecturer::checkDefSets(const DefSetMap& argMap) const {
 }
 
 bool Conjecturer::checkComplexityLevelForDefSets(const DefSetMap& argMap, int complexityLevel) const {
+    prof::Scope _p(prof::g_checkComplLevForDefSets);
     std::set<std::string> defSets;
     for (auto& [arg, tpl] : argMap) defSets.insert(std::get<0>(tpl));
     for (auto& ds : defSets) {
-        auto it = config_.parameters.max_complexity_if_anchor_parameter_connected.find(ds);
-        if (it != config_.parameters.max_complexity_if_anchor_parameter_connected.end() && it->second < complexityLevel)
+        auto it = config_.parameters.max_complexity_if_anchor_parameter_connected_before_existence.find(ds);
+        if (it != config_.parameters.max_complexity_if_anchor_parameter_connected_before_existence.end() && it->second < complexityLevel)
             return false;
     }
     return true;
@@ -2804,6 +3008,7 @@ bool Conjecturer::countArgumentsFilter(const std::string& conjecture) const {
 }
 
 bool Conjecturer::patternInConjecture(const std::string& conjecture) const {
+    prof::Scope _p(prof::g_patternInConjecture);
     for (auto& pat : config_.patterns_to_exclude) {
         if (std::regex_search(conjecture, pat)) return true;
     }
@@ -2842,13 +3047,14 @@ bool Conjecturer::checkConjectureComplexityPerOperator(const std::string& conjec
         std::string coreExpr = ce::extractExpression(element);
         auto it = config_.data.find(coreExpr);
         if (it != config_.data.end()) {
-            if (it->second.max_size_expression < (int)chain.size()) return false;
+            if (it->second.max_size_expression_before_existence < (int)chain.size()) return false;
         }
     }
     return true;
 }
 
 bool Conjecturer::checkMinSizeExpression(const std::string& conjecture) const {
+    prof::Scope _p(prof::g_checkMinSizeExpression);
     std::string anchorName = config_.getAnchorName();
     using CE = std::tuple<std::string, std::vector<std::string>, std::set<std::string>>;
     std::vector<CE> tempChain;
@@ -2868,12 +3074,23 @@ bool Conjecturer::checkMinSizeExpression(const std::string& conjecture) const {
 }
 
 bool Conjecturer::controlEquality(const std::string& conjecture) const {
+    prof::Scope _p(prof::g_controlEquality);
     std::regex pat(R"(\(=\[\d+,\d+\]\))");
     std::smatch m;
     bool result = true;
     if (std::regex_search(conjecture, m, pat)) {
         auto args = ce::getArgs(m.str());
-        if (std::stoi(args[0]) > std::stoi(args[1])) result = false;
+        if (std::stoi(args[0]) > std::stoi(args[1])) {
+            // Reject descending `=[a, b]` (a > b as integers) so we never emit
+            // both (a, b) and (b, a) forms of the symmetric `=` relation. The
+            // ascending sibling is reached by the same pair-combination
+            // enumeration that produced the descending one, so dropping the
+            // descending form loses no genuine theorem. The cancellation
+            // theorem head `=[b, i0]` (a bound-var b, anchor i0) is also
+            // produced as `=[i0, b]` independently — verified by inspection
+            // of the conjecturer output.
+            result = false;
+        }
     }
     return result && countArgumentsFilter(conjecture);
 }
@@ -2901,6 +3118,7 @@ bool Conjecturer::checkDefSetsPriorToConnection(const DefSetMap& argsStatement, 
 // ============================================================================
 
 bool Conjecturer::evaluateOperatorExprs2(const std::string& expression, bool anchorAttached) const {
+    prof::Scope _p(prof::g_evaluateOperatorExprs2);
     using CE = std::tuple<std::string, std::vector<std::string>, std::set<std::string>>;
     std::vector<CE> tempChain;
     std::string head = ce::disintegrateImplication(expression, tempChain, coreExprMap_);
@@ -2932,6 +3150,33 @@ bool Conjecturer::evaluateOperatorExprs2(const std::string& expression, bool anc
                 lst.push_back(args[idx]);
             }
             relArgsList.push_back(lst);
+        }
+    }
+
+    // Side-bucket for property expressions (1 input, 0 outputs — e.g., `in`).
+    // Mirrors the relation bucket: no position counter, no argMap writes.
+    std::set<std::string> propArgs;
+    for (auto& elem : chain) {
+        std::string ce2 = ce::extractExpression(elem);
+        if (std::find(properties_.begin(), properties_.end(), ce2) != properties_.end()) {
+            auto args = ce::getArgs(elem);
+            int inputIdx = config_.data.at(ce2).indices_input_args[0];
+            propArgs.insert(args[inputIdx]);
+        }
+    }
+
+    // Side-bucket for anchor args — relation args that sit on the anchor expression
+    // (e.g. `=[7, 2]` where `2` is an anchor slot) are "known" the same way property
+    // args are: they exist in the chain but outside the operator-argMap machinery.
+    std::set<std::string> anchorArgs;
+    {
+        std::string anchorName = config_.getAnchorName();
+        for (auto& elem : chain) {
+            if (ce::extractExpression(elem) == anchorName) {
+                auto args = ce::getArgs(elem);
+                for (auto& a : args) anchorArgs.insert(a);
+                break;
+            }
         }
     }
 
@@ -3008,9 +3253,23 @@ bool Conjecturer::evaluateOperatorExprs2(const std::string& expression, bool anc
         for (auto& rArgs : relArgsList) {
             auto it0 = argMap.find(rArgs[0]);
             auto it1 = argMap.find(rArgs[1]);
-            assert(it0 != argMap.end() && it1 != argMap.end());
-            bool cond = ((!it0->second.second.empty() && !it1->second.second.empty() && it0->second.first.empty() && it1->second.first.empty()) ||
-                         (!it0->second.first.empty() && !it1->second.first.empty() && it0->second.second.empty() && it1->second.second.empty()));
+            bool have0 = (it0 != argMap.end()) || (propArgs.count(rArgs[0]) > 0) || (anchorArgs.count(rArgs[0]) > 0);
+            bool have1 = (it1 != argMap.end()) || (propArgs.count(rArgs[1]) > 0) || (anchorArgs.count(rArgs[1]) > 0);
+            assert(have0 && have1);
+            // Anchor args act as "known constants" — for the operator-chain dichotomy (both-outputs-only
+            // vs both-inputs-only), treat them the same as property args: input-only (they flow into
+            // the relation but don't emerge as any operator's output).
+            auto classify = [&](const std::string& arg, auto it) {
+                bool hasIn  = (it != argMap.end() && !it->second.first.empty())
+                            || (propArgs.count(arg) > 0)
+                            || (anchorArgs.count(arg) > 0);
+                bool hasOut = (it != argMap.end() && !it->second.second.empty());
+                return std::pair<bool, bool>{hasIn, hasOut};
+            };
+            auto [in0, out0] = classify(rArgs[0], it0);
+            auto [in1, out1] = classify(rArgs[1], it1);
+            bool cond = (out0 && out1 && !in0 && !in1) ||
+                        (in0  && in1  && !out0 && !out1);
             if (!cond) evalPos = false;
         }
     }
@@ -3057,6 +3316,7 @@ bool Conjecturer::evaluateOperatorExprs2(const std::string& expression, bool anc
 // ============================================================================
 
 bool Conjecturer::checkInputVariablesTheoremOperatorHead(const std::string& theorem) const {
+    prof::Scope _p(prof::g_checkInputVarsHead);
     using CE = std::tuple<std::string, std::vector<std::string>, std::set<std::string>>;
     std::vector<CE> tempChain;
     std::string head = ce::disintegrateImplication(theorem, tempChain, coreExprMap_);
@@ -3403,6 +3663,7 @@ bool Conjecturer::checkTertiaries(const std::vector<std::string>& leftChain, con
 // ============================================================================
 
 bool Conjecturer::checkInputVariablesOrder(const std::string& theorem) const {
+    prof::Scope _p(prof::g_checkInputVarsOrder);
     using CE = std::tuple<std::string, std::vector<std::string>, std::set<std::string>>;
     std::vector<CE> tempChain;
     std::string head = ce::disintegrateImplication(theorem, tempChain, coreExprMap_);
@@ -3550,6 +3811,7 @@ bool Conjecturer::exprGood2(const std::string& expr, int nse, const DefSetMap& c
 // ============================================================================
 
 int Conjecturer::countOperatorOccurrences(const std::string& s) const {
+    prof::Scope _p(prof::g_countOpOccurrences);
     int count = 0;
     size_t pos = 0;
     while ((pos = s.find("(>[", pos)) != std::string::npos) {
@@ -3571,65 +3833,388 @@ bool Conjecturer::staysOutputVariable(const std::string& fullExpr, const std::st
 
 std::tuple<std::string, DefSetMap, std::map<std::string,std::string>>
 Conjecturer::reshuffle(const std::string& expr, bool deep) const {
+    prof::Scope _prof_reshuffle(prof::g_reshuffle);
     using ChainEntry = std::tuple<std::string, std::vector<std::string>, std::set<std::string>>;
 
-    auto [minReshuffled, minArgMap, minReplacementMap] = renameVariablesInExpr(expr, deep);
-
+    // Step 1: disintegrate the outer implication chain.
     std::vector<ChainEntry> chainEntries;
     std::string head = ce::disintegrateImplication(expr, chainEntries, coreExprMap_);
-
     int chainLen = (int)chainEntries.size();
-    auto permIt = allPermutations_.find(chainLen);
-    if (permIt == allPermutations_.end()) return {minReshuffled, minArgMap, minReplacementMap};
 
-    for (auto& permutation : permIt->second) {
-        // create_last_occurrence_map
-        std::set<std::string> allRemovedArgs;
-        for (int i = 0; i < chainLen; ++i) {
-            auto& removedArgs = std::get<1>(chainEntries[permutation[i]]);
-            allRemovedArgs.insert(removedArgs.begin(), removedArgs.end());
-        }
-
-        std::map<std::string, int> lastOccurrenceMap;
-        for (int ind = 0; ind < chainLen; ++ind) {
-            auto& remainingArgs = std::get<2>(chainEntries[permutation[ind]]);
-            for (auto& arg : allRemovedArgs) {
-                if (remainingArgs.find(arg) != remainingArgs.end()) {
-                    auto it = lastOccurrenceMap.find(arg);
-                    if (it == lastOccurrenceMap.end()) {
-                        lastOccurrenceMap[arg] = ind;
-                    } else {
-                        it->second = std::min(it->second, ind);
-                    }
+    // Step 1b: existence-head handling. If head = !(>[bvs](L)(R)),
+    // disintegrate the existence wrapper: append L as a pinned chain
+    // entry at index chainLen (fixed; never permuted) with existBvs as
+    // its bv list, and set head = R. On rebuild, the pinned level wraps
+    // with `!(>[bvs](L)(R))` instead of the regular `(>[bvs](L)(R))`.
+    bool isExistHead = false;
+    int pinnedIdx = -1;
+    if (head.size() >= 5 && head[0] == '!' && head[1] == '(' && head[2] == '>' && head[3] == '[') {
+        size_t bvEnd = head.find(']', 4);
+        if (bvEnd != std::string::npos && bvEnd + 1 < head.size() && head[bvEnd + 1] == '(') {
+            std::vector<std::string> existBvs;
+            std::string bvStr = head.substr(4, bvEnd - 4);
+            if (!bvStr.empty()) {
+                size_t p = 0;
+                while (true) {
+                    size_t c = bvStr.find(',', p);
+                    if (c == std::string::npos) { existBvs.push_back(bvStr.substr(p)); break; }
+                    existBvs.push_back(bvStr.substr(p, c - p));
+                    p = c + 1;
                 }
             }
-        }
-
-        // build_removed_args_lists
-        std::vector<std::vector<std::string>> removedArgsLists(chainLen);
-        for (auto& [arg, ind] : lastOccurrenceMap) {
-            removedArgsLists[ind].push_back(arg);
-        }
-
-        // make_reshuffled_expression
-        std::string reshuffled = head;
-        for (int ind = chainLen - 1; ind >= 0; --ind) {
-            std::string substr = "[" + ce::joinWithComma(removedArgsLists[ind]) + "]";
-            reshuffled = "(>" + substr + std::get<0>(chainEntries[permutation[ind]]) + reshuffled + ")";
-        }
-
-        auto [renamed, argMap, repMap] = renameVariablesInExpr(reshuffled, deep);
-        if (renamed < minReshuffled) {
-            minReshuffled = renamed;
-            minArgMap = argMap;
-            minReplacementMap = repMap;
+            // Depth-track to find end of L (its own closing ')').
+            int depth = 0;
+            size_t lstart = bvEnd + 1;
+            size_t lend = std::string::npos;
+            for (size_t i = lstart; i < head.size(); ++i) {
+                if (head[i] == '(') ++depth;
+                else if (head[i] == ')') {
+                    --depth;
+                    if (depth == 0) { lend = i; break; }
+                }
+            }
+            if (lend != std::string::npos && lend + 2 <= head.size()) {
+                std::string lPart = head.substr(lstart, lend - lstart + 1);  // "(L)"
+                // R is from lend+1 up to head.size()-2 (the final ')' at size-1 closes '!(>...)').
+                std::string rPart = head.substr(lend + 1, head.size() - lend - 2);
+                // Collect lArgs = all atom args in L minus bvs declared inside L.
+                std::set<std::string> lArgs;
+                {
+                    std::set<std::string> innerBvs;
+                    size_t pos = 0;
+                    while (pos < lPart.size()) {
+                        size_t lb = lPart.find('[', pos);
+                        if (lb == std::string::npos) break;
+                        size_t rb = lPart.find(']', lb);
+                        if (rb == std::string::npos) break;
+                        bool isBv = (lb > 0 && lPart[lb - 1] == '>');
+                        size_t p = lb + 1;
+                        while (p < rb) {
+                            size_t c = lPart.find(',', p);
+                            if (c == std::string::npos || c > rb) c = rb;
+                            if (c > p) {
+                                std::string tok = lPart.substr(p, c - p);
+                                if (isBv) innerBvs.insert(tok);
+                                else lArgs.insert(tok);
+                            }
+                            p = c + 1;
+                        }
+                        pos = rb + 1;
+                    }
+                    for (auto& b : innerBvs) lArgs.erase(b);
+                }
+                chainEntries.emplace_back(lPart, existBvs, lArgs);
+                pinnedIdx = (int)chainEntries.size() - 1;
+                head = rPart;
+                isExistHead = true;
+            }
         }
     }
 
+    // effChainLen = chainLen + (isExistHead ? 1 : 0). Permutations iterate
+    // over chainLen only; the pinned entry (if present) is always at
+    // effChainLen - 1.
+    const int effChainLen = (int)chainEntries.size();
+
+    auto permIt = allPermutations_.find(chainLen);
+    if (permIt == allPermutations_.end()) {
+        // chainLen not represented (edge case) — fall back to legacy.
+        return renameVariablesInExpr(expr, deep);
+    }
+
+    // Step 1c: anchor-first pinning. The chain entry whose premise carries
+    // the anchor handle (e.g. AnchorPeano / AnchorGauss) must stay at
+    // permutation position 0 — it is never permuted away from the outer
+    // level. Only permutations with permutation[0] == anchorChainIdx are
+    // considered. Existence pinning (Step 1b) already fixes the last slot;
+    // together they leave (chainLen - 1)! orderings for the interior.
+    int anchorChainIdx = -1;
+    {
+        const std::string anchorName = config_.getAnchorName();
+        auto descIt = config_.data.find(anchorName);
+        if (descIt != config_.data.end()) {
+            const std::string& anchorHandle = descIt->second.handle;
+            for (int i = 0; i < chainLen; ++i) {
+                if (std::get<0>(chainEntries[i]).find(anchorHandle) != std::string::npos) {
+                    anchorChainIdx = i;
+                    break;
+                }
+            }
+        }
+    }
+
+    // Step 2: pre-compute the input's def-set map once. The winner's
+    // DefSetMap is derived by key-renaming this via the winner's rename
+    // map — permutation + rename preserve each arg's def-set value.
+    DefSetMap inputArgMap = findArgMap(expr);
+
+    // Step 3 (Path B — int-level rebuild): pre-parse each chainEntry +
+    // head into a "template" that pinpoints every `[...]`-token byte
+    // position with its dense int id + an isAtom flag. Tokens are
+    // interned once (shared across entries) so the inner-loop rename
+    // lookup is a single int-indexed array access. Per permutation:
+    //   Phase 1: walk atoms in permuted rebuilt-byte order, assign
+    //            renames 1..n in first-occurrence order (matches OLD
+    //            `collectAll`).
+    //   Phase 2: render the rebuilt string directly into a reusable
+    //            thread_local char buffer. Literal chunks copied from
+    //            each entry's backing string; atom + nested-bv slots
+    //            substituted with the renamed decimal id (or verbatim
+    //            token text if the token has no atom occurrence — OLD
+    //            `replaceKeysInString` leaves unknown keys alone).
+    //   Winner selection: memcmp on the rendered buffer (equivalent to
+    //   OLD's std::string lex-compare, byte-for-byte).
+    // External contract (returned rebuilt + renameMap) is preserved
+    // identically — byte-for-byte equivalent to OLD on every input.
+    struct ArgSlot {
+        size_t start;   // byte position of first token char
+        size_t end;     // byte position just past last token char
+        int tokenId;    // dense id into idToToken / renameArr
+        bool isAtom;    // true: contributes to rename order (collectAll visits these)
+                        // false: nested `>[bvs]` list; receives rename but does not
+                        //        drive assignment (matches OLD: collectAll skips `>[`)
+    };
+    struct EntryTemplate {
+        const std::string* src;
+        std::vector<ArgSlot> args;
+    };
+
+    std::unordered_map<std::string, int> tokenToId;
+    std::vector<std::string> idToToken;
+    auto internToken = [&](const std::string& tok) -> int {
+        auto it = tokenToId.find(tok);
+        if (it != tokenToId.end()) return it->second;
+        int id = (int)idToToken.size();
+        idToToken.push_back(tok);
+        tokenToId.emplace(tok, id);
+        return id;
+    };
+
+    auto parseEntry = [&](const std::string& s) -> EntryTemplate {
+        EntryTemplate t; t.src = &s;
+        size_t pos = 0;
+        while (pos < s.size()) {
+            size_t lb = s.find('[', pos);
+            if (lb == std::string::npos) break;
+            const bool isBvList = (lb > 0 && s[lb - 1] == '>');
+            size_t rb = s.find(']', lb);
+            if (rb == std::string::npos) break;
+            size_t p = lb + 1;
+            while (p < rb) {
+                size_t c = s.find(',', p);
+                if (c == std::string::npos || c > rb) c = rb;
+                if (c > p) {
+                    std::string tok = s.substr(p, c - p);
+                    int id = internToken(tok);
+                    t.args.push_back({p, c, id, !isBvList});
+                }
+                p = c + 1;
+            }
+            pos = rb + 1;
+        }
+        return t;
+    };
+
+    std::vector<EntryTemplate> entryTmpl;
+    entryTmpl.reserve(chainEntries.size());
+    for (auto& ce : chainEntries) entryTmpl.push_back(parseEntry(std::get<0>(ce)));
+    EntryTemplate headTmpl = parseEntry(head);
+
+    // Pre-intern every bv token (outer chain-level bvs come from
+    // std::get<1>(chainEntries[...]) and are emitted by `emitBvList`
+    // — they must have a dense id even if the bv never shows up as an
+    // atom anywhere, which is rare but possible for pathological
+    // inputs).
+    for (auto& ce : chainEntries) for (auto& b : std::get<1>(ce)) internToken(b);
+
+    const int numTokens = (int)idToToken.size();
+
+    // Thread-local scratch buffers: reshuffle is called from worker
+    // threads (singleThreadCalculationInt), so thread_local gives us
+    // per-thread reuse with zero contention.
+    thread_local std::vector<char> permBuf;
+    thread_local std::vector<char> minBuf;
+    thread_local std::vector<int>  renameArr;
+    thread_local std::vector<int>  minRenameArrSnap;
+
+    // Step 4: iterate permutations, pick lex-min. Anchor-first pinning
+    // (permutations whose [0] != anchorChainIdx are rejected) — see
+    // OLD comment preserved below for the rationale.
+    //
+    // > the chain entry carrying the anchor must stay at position 0 —
+    // > permutations not starting with anchorChainIdx are rejected.
+    // > Without this, a lex-smaller permutation starting with a negated
+    // > atom like `!(=...)` (ASCII `!` < `(A`) would displace the
+    // > anchor from the outer level. Existence pinning (Step 1b) still
+    // > fixes the last slot; together they leave (chainLen - 1)!
+    // > orderings to dedup the interior. If no anchor is present
+    // > (anchor-less edge case), all permutations are considered.
+    std::map<std::string, std::string> minRenameMap;
+    bool first = true;
+    minBuf.clear();
+    minRenameArrSnap.clear();
+    for (auto& permutation : permIt->second) {
+        if (anchorChainIdx >= 0 && !permutation.empty() && permutation[0] != anchorChainIdx) continue;
+        prof::Scope _prof_perm(prof::g_reshufflePermInner);
+
+        // Compute per-level bv redistribution (semantics identical to OLD).
+        std::set<std::string> allRemovedArgs;
+        for (int i = 0; i < chainLen; ++i) {
+            auto& rmv = std::get<1>(chainEntries[permutation[i]]);
+            allRemovedArgs.insert(rmv.begin(), rmv.end());
+        }
+        if (isExistHead) {
+            auto& rmv = std::get<1>(chainEntries[pinnedIdx]);
+            allRemovedArgs.insert(rmv.begin(), rmv.end());
+        }
+        std::map<std::string, int> firstLevelMap;
+        auto addLevel = [&](int outIdx, const std::set<std::string>& rem) {
+            for (auto& arg : allRemovedArgs) {
+                if (rem.count(arg)) {
+                    auto it = firstLevelMap.find(arg);
+                    if (it == firstLevelMap.end()) firstLevelMap[arg] = outIdx;
+                    else it->second = std::min(it->second, outIdx);
+                }
+            }
+        };
+        for (int ind = 0; ind < chainLen; ++ind) addLevel(ind, std::get<2>(chainEntries[permutation[ind]]));
+        if (isExistHead) addLevel(chainLen, std::get<2>(chainEntries[pinnedIdx]));
+        std::vector<std::vector<std::string>> removedArgsLists(effChainLen);
+        for (auto& [arg, ind] : firstLevelMap) removedArgsLists[ind].push_back(arg);
+        for (int ind = 0; ind < effChainLen; ++ind) {
+            if (removedArgsLists[ind].size() <= 1) continue;
+            std::set<std::string> argSet(removedArgsLists[ind].begin(), removedArgsLists[ind].end());
+            int chainRefIdx = (ind < chainLen) ? permutation[ind] : pinnedIdx;
+            removedArgsLists[ind] = ce::orderByPattern(std::get<0>(chainEntries[chainRefIdx]), argSet);
+        }
+        std::vector<std::vector<int>> bvIdLists(effChainLen);
+        for (int ind = 0; ind < effChainLen; ++ind) {
+            bvIdLists[ind].reserve(removedArgsLists[ind].size());
+            for (auto& s : removedArgsLists[ind]) {
+                auto it = tokenToId.find(s);
+                assert(it != tokenToId.end());  // bvs were pre-interned above
+                bvIdLists[ind].push_back(it->second);
+            }
+        }
+
+        // Phase 1: first-occurrence rename walk (atoms only).
+        renameArr.assign(numTokens, 0);
+        int nextId = 1;
+        auto assignRenames = [&](const EntryTemplate& t) {
+            for (auto& a : t.args) {
+                if (a.isAtom && renameArr[a.tokenId] == 0) renameArr[a.tokenId] = nextId++;
+            }
+        };
+        for (int i = 0; i < chainLen; ++i) assignRenames(entryTmpl[permutation[i]]);
+        if (isExistHead) assignRenames(entryTmpl[pinnedIdx]);
+        assignRenames(headTmpl);
+
+        // Phase 2: render rebuilt string to permBuf.
+        permBuf.clear();
+        auto emitRid = [&](int rid) {
+            if (rid < 10) {
+                permBuf.push_back((char)('0' + rid));
+            } else {
+                char tmp[12];
+                int n = std::snprintf(tmp, sizeof(tmp), "%d", rid);
+                permBuf.insert(permBuf.end(), tmp, tmp + n);
+            }
+        };
+        auto emitToken = [&](int tokenId) {
+            int rid = renameArr[tokenId];
+            if (rid != 0) {
+                emitRid(rid);
+            } else {
+                // Unassigned: emit original token verbatim (OLD:
+                // replaceKeysInString leaves unmatched substrings
+                // alone). In practice this only fires for nested
+                // bvs whose tokens never appear as atoms.
+                const std::string& s = idToToken[tokenId];
+                permBuf.insert(permBuf.end(), s.begin(), s.end());
+            }
+        };
+        auto emitLit = [&](const char* s, size_t n) {
+            permBuf.insert(permBuf.end(), s, s + n);
+        };
+        auto emitEntry = [&](const EntryTemplate& t) {
+            size_t cur = 0;
+            for (auto& a : t.args) {
+                emitLit(t.src->data() + cur, a.start - cur);
+                emitToken(a.tokenId);
+                cur = a.end;
+            }
+            emitLit(t.src->data() + cur, t.src->size() - cur);
+        };
+        auto emitBvList = [&](const std::vector<int>& ids) {
+            permBuf.push_back('[');
+            for (size_t k = 0; k < ids.size(); ++k) {
+                if (k) permBuf.push_back(',');
+                emitToken(ids[k]);
+            }
+            permBuf.push_back(']');
+        };
+
+        for (int i = 0; i < chainLen; ++i) {
+            emitLit("(>", 2);
+            emitBvList(bvIdLists[i]);
+            emitEntry(entryTmpl[permutation[i]]);
+        }
+        if (isExistHead) {
+            emitLit("!(>", 3);
+            emitBvList(bvIdLists[chainLen]);
+            emitEntry(entryTmpl[pinnedIdx]);
+            emitEntry(headTmpl);
+            permBuf.push_back(')');
+        } else {
+            emitEntry(headTmpl);
+        }
+        for (int i = 0; i < chainLen; ++i) permBuf.push_back(')');
+
+        // Winner selection: memcmp-based lex compare (equivalent to
+        // std::string operator< on the renamed rebuilt strings, because
+        // both strings contain only bytes and memcmp is lexicographic
+        // on byte sequences).
+        bool isNewMin;
+        if (first) {
+            isNewMin = true;
+        } else {
+            size_t lp = permBuf.size();
+            size_t lm = minBuf.size();
+            size_t common = lp < lm ? lp : lm;
+            int cmp = common ? std::memcmp(permBuf.data(), minBuf.data(), common) : 0;
+            if (cmp < 0) isNewMin = true;
+            else if (cmp > 0) isNewMin = false;
+            else isNewMin = (lp < lm);
+        }
+        if (isNewMin) {
+            minBuf = permBuf;
+            minRenameArrSnap = renameArr;
+            first = false;
+        }
+    }
+
+    // Construct std::string winner + string→string rename map for
+    // downstream compatibility (inputArgMap key-renaming + callers
+    // that read the returned rename map).
+    std::string minReshuffled(minBuf.begin(), minBuf.end());
+    for (int tid = 0; tid < numTokens; ++tid) {
+        int rid = (tid < (int)minRenameArrSnap.size()) ? minRenameArrSnap[tid] : 0;
+        if (rid != 0) minRenameMap[idToToken[tid]] = std::to_string(rid);
+    }
+
+    // Step 5: DefSetMap by key-renaming the input argMap with the winner's
+    // rename map (no re-parse needed).
+    DefSetMap minArgMap;
+    for (auto& [oldKey, val] : inputArgMap) {
+        auto it = minRenameMap.find(oldKey);
+        minArgMap[it != minRenameMap.end() ? it->second : oldKey] = val;
+    }
+    std::map<std::string, std::string> minReplacementMap;  // unused by callers
     return {minReshuffled, minArgMap, minReplacementMap};
 }
 
 std::string Conjecturer::createReshuffledMirrored(const std::string& expr, bool anchorFirst) const {
+    prof::Scope _prof_mirrored(prof::g_mirrored);
     using ChainEntry = std::tuple<std::string, std::vector<std::string>, std::set<std::string>>;
     std::vector<ChainEntry> tempChain;
     std::string head = ce::disintegrateImplication(expr, tempChain, coreExprMap_);
@@ -3707,6 +4292,7 @@ WorkerResult Conjecturer::singleThreadCalculationInt(
     int nseStatement, int nseGrowingTheorem,
     const IntDefSetMap& intArgsStatement, const IntDefSetMap& intArgsGrowingTheorem) const
 {
+    prof::Scope _prof_stc(prof::g_singleThreadCalc);
     WorkerResult result;
 
     if (!checkDefSetsPriorInt(intArgsStatement, intArgsGrowingTheorem)) return result;
@@ -3737,12 +4323,10 @@ WorkerResult Conjecturer::singleThreadCalculationInt(
             if (!onlyInHeadGoodInt(outExpr)) continue;
             if (!prohibitedHeadsGoodInt(outExpr)) continue;
 
-            // === BOUNDARY: decode to string for reshuffle ===
             std::string connectedExpr = decodeExpr(outExpr);
             auto [reshuffledExpr, reshuffledMap, repMap] = reshuffle(connectedExpr, true);
             result.connected_list.push_back({reshuffledExpr, reshuffledMap});
 
-            // String guards (must match exactly — int guards can diverge)
             int complexityLevel = countOperatorOccurrences(reshuffledExpr) + 1;
             int numCombinableArgs = 0;
             for (auto& [arg, tpl] : reshuffledMap) if (std::get<1>(tpl)) numCombinableArgs++;
@@ -3750,7 +4334,6 @@ WorkerResult Conjecturer::singleThreadCalculationInt(
             if (checkDefSets(reshuffledMap) && numCombinableArgs <= config_.parameters.max_number_args_expr
                 && checkComplexityLevelForDefSets(reshuffledMap, complexityLevel)) {
 
-                // Re-encode for int-path anchor connection
                 IntConjBuf reshuffledInt = encodeExpr(reshuffledExpr);
                 IntDefSetMap reshuffledIntMap = encodeDefSetMap(reshuffledMap);
 
@@ -3776,17 +4359,78 @@ WorkerResult Conjecturer::singleThreadCalculationInt(
                         continue;
 
                     std::string connExpr2 = decodeExpr(outExpr2);
-                    if (!checkInputVariablesTheoremOperatorHead(connExpr2) ||
-                        !checkInputVariablesOrder(connExpr2) ||
+                    bool isExHead = false;
+                    if (!checkInputVariablesTheoremOperatorHead(connExpr2)) {
+                        if (triggersExistenceReformulation(connExpr2)) {
+                            isExHead = true;
+                        } else {
+                            continue;
+                        }
+                    }
+                    if (!checkInputVariablesOrder(connExpr2) ||
                         patternInConjecture(connExpr2)) continue;
-                    if (!evaluateOperatorExprs2(connExpr2, true)) continue;
+                    // evaluateOperatorExprs2 encodes the same "operator head must be grounded by
+                    // another operator's output" invariant as checkInputVariablesTheoremOperatorHead.
+                    // For existence-eligible candidates the head is about to be rewritten as a
+                    // negated-universal, so this invariant no longer applies — skip the check.
+                    if (!isExHead && !evaluateOperatorExprs2(connExpr2, true)) continue;
                     if (!controlEquality(connExpr2)) continue;
                     if (!checkMinSizeExpression(connExpr2)) continue;
+                    if (!passesMaxDistinctAnchorValuesPerType(connExpr2)) continue;
 
-                    result.connected_list2.push_back(connExpr2);
-                    auto [reshExpr2, _m, __m] = reshuffle(connExpr2, true);
-                    result.reshuffled_list.push_back(reshExpr2);
-                    result.reshuffled_mirrored_list.push_back(createReshuffledMirrored(connExpr2));
+                    // max_size_expression_after_existence filter — called once on the
+                    // pre-reformulation string (connExpr2); negation cannot change the verdict
+                    // since it only adds `!` prefixes and doesn't move leaves. Leaf count is
+                    // the already-available anchor + nse non-anchor = nse + 1.
+                    // Skip both after-existence filters for existence-head-reformulated
+                    // conjectures: the reformulation collapses two leaves into one existence
+                    // block, so applying the raw pre-reformulation metric would double-penalize.
+                    if (!isExHead) {
+                        // leafCount = nse (non-anchor leaves); the anchor leaf is not counted
+                        // because `max_size_expression_after_existence` caps the non-anchor chain
+                        // length (same semantics as `checkComplexityPerOpInt` pre-anchor). Using
+                        // `nse + 1` here would double-count the anchor and spuriously reject any
+                        // 4-leaf conjecture containing a leaf whose cap equals 4 (e.g. `in2`).
+                        if (!passesMaxSizeAfterExistence(connExpr2, nse)) continue;
+                        if (!passesComplexityAfterExistence(connExpr2)) continue;
+                    }
+
+                    std::string finalExpr = isExHead
+                        ? reformulateToExistenceHead(connExpr2)
+                        : connExpr2;
+
+                    if (passesInPremiseFilter(finalExpr)) {
+                        auto [reshExpr2, _m, __m] = reshuffle(finalExpr, true);
+                        // For existence-head cases the reformulated `finalExpr`
+                        // retains the original permutation with arg-IDs from
+                        // the pre-reshuffle intermediate. Push the pinned/
+                        // reshuffled form to theorems.txt so the canonical
+                        // existence-wrapped structure carries a first-
+                        // occurrence numbering that reshuffle produces for
+                        // reshuffled_theorems.txt.
+                        const std::string& pushed = isExHead ? reshExpr2 : finalExpr;
+                        result.connected_list2.push_back(pushed);
+                        result.reshuffled_list.push_back(reshExpr2);
+                        result.reshuffled_mirrored_list.push_back(createReshuffledMirrored(finalExpr));
+                    }
+
+                    // Emit one negated-premise variant per premise whose core expression has
+                    // `allow_negation=true`. Head is never negated (implicitly skips the
+                    // existence-head `!(>[…])` when it sits at head position). Filter each
+                    // variant on the same in[…]-shape rule.
+                    for (auto& negVariant : generateNegatedPremiseVariants(finalExpr)) {
+                        if (!passesInPremiseFilter(negVariant)) continue;
+                        auto [reshN, _n1, _n2] = reshuffle(negVariant, true);
+                        // negVariants of existence-head conjectures inherit the
+                        // `!(>[bv](L)(R))` head from finalExpr; push the
+                        // reshuffled (pinning-canonical) form to theorems.txt
+                        // so the numbering matches the reshuffled_theorems.txt
+                        // canonical form for those cases.
+                        const std::string& pushedNeg = isExHead ? reshN : negVariant;
+                        result.connected_list2.push_back(pushedNeg);
+                        result.reshuffled_list.push_back(reshN);
+                        result.reshuffled_mirrored_list.push_back(createReshuffledMirrored(negVariant));
+                    }
                 }
             }
         }
@@ -3797,6 +4441,7 @@ WorkerResult Conjecturer::singleThreadCalculationInt(
 WorkerResult Conjecturer::singleExprAnchorConnectionInt(
     const IntConjBuf& intExpr, const IntDefSetMap& intExprDefSets) const
 {
+    prof::Scope _prof_sea(prof::g_singleExprAnchorConn);
     WorkerResult result;
 
     // Guard: check group sizes fit in mappingsMapAnchor
@@ -3860,6 +4505,7 @@ WorkerResult Conjecturer::singleExprAnchorConnectionInt(
             continue;
         }
         if (!controlEquality(connExpr2)) { continue; }
+        if (!passesMaxDistinctAnchorValuesPerType(connExpr2)) { continue; }
 
         result.connected_list2.push_back(connExpr2);
         auto [reshExpr2, reshMap2, repMap2] = reshuffle(connExpr2, true);
@@ -3938,6 +4584,7 @@ WorkerResult Conjecturer::singleThreadCalculation(
                     if (!evaluateOperatorExprs2(connExpr2, true)) continue;
                     if (!controlEquality(connExpr2)) continue;
                     if (!checkMinSizeExpression(connExpr2)) continue;
+                    if (!passesMaxDistinctAnchorValuesPerType(connExpr2)) continue;
 
                     result.connected_list2.push_back(connExpr2);
                     auto [reshExpr2, _, __] = reshuffle(connExpr2, true);
@@ -4000,6 +4647,7 @@ WorkerResult Conjecturer::singleExprAnchorConnection(
         if (!success2) continue;
         if (!checkInputVariablesOrder(connExpr2) || patternInConjecture(connExpr2)) continue;
         if (!controlEquality(connExpr2)) continue;
+        if (!passesMaxDistinctAnchorValuesPerType(connExpr2)) continue;
 
         result.connected_list2.push_back(connExpr2);
         auto [reshExpr2, reshMap2, repMap2] = reshuffle(connExpr2, true);
@@ -4050,6 +4698,563 @@ std::string Conjecturer::reformulateOperatorHead(const std::string& conjecture) 
 }
 
 // ============================================================================
+// Existence-head reformulation helpers
+// ============================================================================
+
+namespace {
+// Decompose a candidate into (premises_incl_anchor, head) and collect every outer-bound var
+// across the nested (>[...]...) levels. Purely informational; no mutation of the input string.
+struct Disassembled {
+    std::vector<std::string> premises;           // non-head expressions in chain order (anchor first after prioritizeAnchor upstream)
+    std::string head;                             // final expression
+    std::vector<std::string> outerBounds;         // union of bound vars across all > levels, first-seen order
+};
+
+Disassembled disassemble(const std::string& candidate,
+                         const std::map<std::string, ce::CoreExpressionConfig>& coreExprMap) {
+    using CE = std::tuple<std::string, std::vector<std::string>, std::set<std::string>>;
+    std::vector<CE> tempChain;
+    std::string head = ce::disintegrateImplication(candidate, tempChain, coreExprMap);
+
+    Disassembled d;
+    d.head = head;
+    std::set<std::string> seenBound;
+    for (auto& t : tempChain) {
+        d.premises.push_back(std::get<0>(t));
+        for (auto& b : std::get<1>(t)) {
+            if (seenBound.insert(b).second) d.outerBounds.push_back(b);
+        }
+    }
+    return d;
+}
+} // anonymous namespace
+
+bool Conjecturer::triggersExistenceReformulation(const std::string& theorem) const {
+    prof::Scope _p(prof::g_triggersExistenceRef);
+    Disassembled d = disassemble(theorem, coreExprMap_);
+
+    // Head must be an operator.
+    std::string headCore = ce::extractExpression(d.head);
+    if (std::find(operators_.begin(), operators_.end(), headCore) == operators_.end())
+        return false;
+
+    const ExpressionDescription& headDesc = config_.data.at(headCore);
+    if (headDesc.allowed_for_existence.empty()) return false;
+
+    assert(headDesc.indices_output_args.size() == 1);
+    auto headArgs = ce::getArgs(d.head);
+    std::string outputVar = headArgs[headDesc.indices_output_args[0]];
+
+    // Replicate the filter's rejection condition: outputVar's FIRST occurrence as output
+    // (scanning non-anchor premises + head in chain order) is at the head itself.
+    std::string anchorName = config_.getAnchorName();
+    const std::string& anchorHandle = config_.data.at(anchorName).handle;
+
+    std::vector<std::string> nonAnchorPremises;
+    for (auto& p : d.premises) {
+        if (p.find(anchorHandle) == std::string::npos) nonAnchorPremises.push_back(p);
+    }
+
+    bool feederFound = false;
+    for (auto& p : nonAnchorPremises) {
+        std::string pCore = ce::extractExpression(p);
+        auto pArgs = ce::getArgs(p);
+        for (int idx : config_.data.at(pCore).indices_output_args) {
+            if (idx < (int)pArgs.size() && pArgs[idx] == outputVar) { feederFound = true; break; }
+        }
+        if (feederFound) break;
+    }
+    if (feederFound) return false;  // grounded — original filter would accept
+
+    // Try each allowed existence position.
+    const std::string& inHandle = config_.data.at("in").handle;
+    for (int pos1b : headDesc.allowed_for_existence) {
+        if (pos1b < 1 || pos1b > (int)headArgs.size()) continue;
+        const std::string& x = headArgs[pos1b - 1];
+
+        // Find a property (in[x, X]) in the non-anchor chain.
+        int pxIndex = -1;
+        for (int i = 0; i < (int)nonAnchorPremises.size(); ++i) {
+            auto& p = nonAnchorPremises[i];
+            if (p.find(inHandle) == std::string::npos) continue;
+            auto pArgs = ce::getArgs(p);
+            if (!pArgs.empty() && pArgs[0] == x) { pxIndex = i; break; }
+        }
+        if (pxIndex < 0) continue;
+
+        // x must appear nowhere else in non-anchor premises besides P_x.
+        bool xElsewhere = false;
+        for (int i = 0; i < (int)nonAnchorPremises.size(); ++i) {
+            if (i == pxIndex) continue;
+            auto pArgs = ce::getArgs(nonAnchorPremises[i]);
+            if (std::find(pArgs.begin(), pArgs.end(), x) != pArgs.end()) { xElsewhere = true; break; }
+        }
+        if (xElsewhere) continue;
+
+        // All anchor-expression args: x must not be among them.
+        bool xInAnchor = false;
+        for (auto& p : d.premises) {
+            if (p.find(anchorHandle) == std::string::npos) continue;
+            auto aArgs = ce::getArgs(p);
+            if (std::find(aArgs.begin(), aArgs.end(), x) != aArgs.end()) { xInAnchor = true; break; }
+            break;
+        }
+        if (xInAnchor) continue;
+
+        return true;
+    }
+    return false;
+}
+
+std::string Conjecturer::reformulateToExistenceHead(const std::string& theorem) const {
+    prof::Scope _p(prof::g_reformulateToExistence);
+    using CE = std::tuple<std::string, std::vector<std::string>, std::set<std::string>>;
+    std::vector<CE> chain;
+    std::string head = ce::disintegrateImplication(theorem, chain, coreExprMap_);
+
+    std::string headCore = ce::extractExpression(head);
+    const ExpressionDescription& headDesc = config_.data.at(headCore);
+    auto headArgs = ce::getArgs(head);
+
+    std::string anchorName = config_.getAnchorName();
+    const std::string& anchorHandle = config_.data.at(anchorName).handle;
+    const std::string& inHandle = config_.data.at("in").handle;
+
+    // Re-select the same (x, P_x) the trigger would, and record which chain LEVEL
+    // carries P_x as its premise. We remove that level entirely (its premise P_x
+    // moves into the new head, and its binding of x moves into the existence
+    // wrapper inside the new head), keeping every other level's (premise, binds)
+    // pair verbatim — NO flattening.
+    std::string chosenX;
+    std::string pxStr;
+    int pxLevel = -1;
+    for (int pos1b : headDesc.allowed_for_existence) {
+        if (pos1b < 1 || pos1b > (int)headArgs.size()) continue;
+        const std::string& x = headArgs[pos1b - 1];
+
+        int cand = -1;
+        for (int i = 0; i < (int)chain.size(); ++i) {
+            const std::string& p = std::get<0>(chain[i]);
+            if (p.find(anchorHandle) != std::string::npos) continue;
+            if (p.find(inHandle) == std::string::npos) continue;
+            auto pArgs = ce::getArgs(p);
+            if (!pArgs.empty() && pArgs[0] == x) { cand = i; break; }
+        }
+        if (cand < 0) continue;
+
+        bool xElsewhere = false;
+        for (int i = 0; i < (int)chain.size(); ++i) {
+            if (i == cand) continue;
+            const std::string& p = std::get<0>(chain[i]);
+            if (p.find(anchorHandle) != std::string::npos) continue;
+            auto pArgs = ce::getArgs(p);
+            if (std::find(pArgs.begin(), pArgs.end(), x) != pArgs.end()) { xElsewhere = true; break; }
+        }
+        if (xElsewhere) continue;
+
+        bool xInAnchor = false;
+        for (auto& c : chain) {
+            const std::string& p = std::get<0>(c);
+            if (p.find(anchorHandle) == std::string::npos) continue;
+            auto aArgs = ce::getArgs(p);
+            if (std::find(aArgs.begin(), aArgs.end(), x) != aArgs.end()) { xInAnchor = true; break; }
+            break;
+        }
+        if (xInAnchor) continue;
+
+        chosenX = x;
+        pxStr = std::get<0>(chain[cand]);
+        pxLevel = cand;
+        break;
+    }
+    assert(pxLevel >= 0 && "reformulateToExistenceHead called without a valid trigger state");
+
+    // Build the new head: !(>[x](in[x,X])!(H))
+    std::string newHead = "!(>[" + chosenX + "]" + pxStr + "!" + head + ")";
+
+    // Rebuild the nested chain verbatim, SKIPPING the pxLevel entirely. Each
+    // remaining level keeps its original (premise, bound_vars). This preserves
+    // the `>[7](=[2,7])...` inner binding instead of collapsing 7 into the
+    // outermost `>[…]` list above anchor — var 7 stays bound at the level where
+    // it first appears, not lifted above premises that do not introduce it.
+    std::string inner = newHead;
+    for (int i = (int)chain.size() - 1; i >= 0; --i) {
+        if (i == pxLevel) continue;
+        const std::string& p = std::get<0>(chain[i]);
+        const std::vector<std::string>& binds = std::get<1>(chain[i]);
+        std::string bvStr;
+        for (size_t k = 0; k < binds.size(); ++k) {
+            if (k > 0) bvStr += ",";
+            bvStr += binds[k];
+        }
+        inner = "(>[" + bvStr + "]" + p + inner + ")";
+    }
+    return inner;
+}
+
+// ============================================================================
+// max_size_expression_after_existence filter
+// ============================================================================
+
+bool Conjecturer::passesMaxSizeAfterExistence(const std::string& conj, int leafCount) const {
+    prof::Scope _p(prof::g_passesMaxSizeAfterEx);
+    // Operate on the pre-reformulation string: one disintegrate pass yields the flat
+    // chain of premise leaves + head leaf. For each leaf, look up its core expression's
+    // max_size_expression_after_existence; reject if cap > 0 AND cap < leafCount.
+    using CE = std::tuple<std::string, std::vector<std::string>, std::set<std::string>>;
+    std::vector<CE> chain;
+    std::string head = ce::disintegrateImplication(conj, chain, coreExprMap_);
+
+    auto checkLeaf = [&](const std::string& leaf) -> bool {
+        std::string core = ce::extractExpression(leaf);
+        auto it = config_.data.find(core);
+        if (it == config_.data.end()) return true;
+        int cap = it->second.max_size_expression_after_existence;
+        return !(cap > 0 && cap < leafCount);
+    };
+
+    for (auto& t : chain) {
+        if (!checkLeaf(std::get<0>(t))) return false;
+    }
+    return checkLeaf(head);
+}
+
+bool Conjecturer::passesComplexityAfterExistence(const std::string& conj) const {
+    prof::Scope _p(prof::g_passesComplexityAfterEx);
+    // Semantic: "max chain length when a chain arg is connected to an anchor slot
+    // of a given def-set type". A chain arg pinned to an anchor slot of type T
+    // appears in a non-anchor leaf as the anchor slot's value (Peano `(1)` slots
+    // carry values 2 (i0) and 6 (i1)). Rejection requires three conditions to
+    // hold simultaneously for some capped type T:
+    //
+    //   1. complexityLevel > complexity_cap_T,
+    //   2. arity_sum (over non-anchor leaves) > arity_sum_cap_T,
+    //   3. some anchor slot of type T has its value present in non-anchor leaves.
+    //
+    // If EITHER cap is not exceeded, the conjecture survives via that dimension —
+    // the cancellation family escapes via the arity-sum dimension under
+    // Peano's `(1) -> [2, 8]` (arity_sum 4+2+2 = 8 NOT > 8); 3-occurrence (1)-pinned
+    // shapes (e.g. three in3 leaves giving arity_sum 12) get rejected.
+    //
+    // No hard-coded complexity bands here; every threshold lives in the config
+    // value `max_complexity_if_anchor_parameter_connected_after_existence` per
+    // type. complexityLevel counts post-anchor `(>[` occurrences (no +1 — the
+    // anchor wrap's extra level cancels baseline's pre-anchor +1).
+    int complexityLevel = countOperatorOccurrences(conj);
+    const auto& capMap = config_.parameters.max_complexity_if_anchor_parameter_connected_after_existence;
+    if (capMap.empty()) return true;
+
+    using CE = std::tuple<std::string, std::vector<std::string>, std::set<std::string>>;
+    std::vector<CE> chain;
+    std::string head = ce::disintegrateImplication(conj, chain, coreExprMap_);
+
+    std::string anchorName = config_.getAnchorName();
+    auto anchorIt = config_.data.find(anchorName);
+    if (anchorIt == config_.data.end()) return true;
+
+    // Build {defSetType -> {anchor-slot values of that type}} from the actual anchor instance.
+    std::map<std::string, std::set<std::string>> anchorSlotsByType;
+    {
+        const std::string& anchorHandle = anchorIt->second.handle;
+        std::string anchorInstance;
+        for (auto& t : chain) {
+            const std::string& p = std::get<0>(t);
+            if (p.find(anchorHandle) != std::string::npos) { anchorInstance = p; break; }
+        }
+        if (anchorInstance.empty()) anchorInstance = head;
+        auto anchorArgs = ce::getArgs(anchorInstance);
+        for (auto& [posStr, tpl] : anchorIt->second.definition_sets) {
+            int pos1b = std::stoi(posStr);
+            if (pos1b < 1 || pos1b > (int)anchorArgs.size()) continue;
+            anchorSlotsByType[std::get<0>(tpl)].insert(anchorArgs[pos1b - 1]);
+        }
+    }
+
+    // Every arg appearing on any non-anchor leaf (walking into nested `!(>[…]…)`)
+    // PLUS the running sum of arities across the same set of leaves (the new
+    // dimension of the cap; cancellation has arity-sum 8, deeper/wider
+    // explosion shapes exceed 8).
+    std::set<std::string> nonAnchorArgs;
+    int nonAnchorAritySum = 0;
+    std::function<void(const std::string&)> collect = [&](const std::string& expr) {
+        if (expr.empty()) return;
+        size_t start = 0;
+        if (expr[0] == '!') start = 1;
+        if (start >= expr.size() || expr[start] != '(') return;
+        if (start + 1 < expr.size() && expr[start + 1] == '>') {
+            std::vector<CE> innerChain;
+            std::string innerHead = ce::disintegrateImplication(expr.substr(start), innerChain, coreExprMap_);
+            for (auto& t : innerChain) {
+                const std::string& p = std::get<0>(t);
+                if (p.find(anchorIt->second.handle) != std::string::npos) continue;
+                collect(p);
+            }
+            collect(innerHead);
+            return;
+        }
+        if (expr.find(anchorIt->second.handle) != std::string::npos) return;
+        auto args = ce::getArgs(expr.substr(start));
+        nonAnchorAritySum += (int)args.size();
+        for (auto& a : args) nonAnchorArgs.insert(a);
+    };
+    for (auto& t : chain) {
+        const std::string& p = std::get<0>(t);
+        if (p.find(anchorIt->second.handle) != std::string::npos) continue;
+        collect(p);
+    }
+    collect(head);
+
+    for (auto& [ds, capPair] : capMap) {
+        // BOTH dimensions must be exceeded (with the slot present) for rejection;
+        // either cap being slack lets the conjecture escape. cancellation has
+        // complexity=3, arity_sum=8 — under (1):[2,8] the arity cap (8) is met
+        // exactly so the rule fires `>= ` allowance, conjecture escapes.
+        const int compCap  = capPair.first;
+        const int arityCap = capPair.second;
+        if (compCap  >= complexityLevel) continue;
+        if (arityCap >= nonAnchorAritySum) continue;
+        auto slotsIt = anchorSlotsByType.find(ds);
+        if (slotsIt == anchorSlotsByType.end()) continue;
+        for (auto& slotVal : slotsIt->second) {
+            if (nonAnchorArgs.count(slotVal) > 0) return false;
+        }
+    }
+    return true;
+}
+
+bool Conjecturer::passesMaxDistinctAnchorValuesPerType(const std::string& conj) const {
+    // Config-steered "at most N distinct anchor-slot values of type T
+    // appearing in non-anchor leaves" filter. Parallels the anchor-slot
+    // extraction and leaf walk of passesComplexityAfterExistence, but
+    // counts DISTINCT values per type instead of triggering on any
+    // presence.
+    const auto& capMap = config_.parameters.max_distinct_anchor_values_per_type;
+    if (capMap.empty()) return true;
+
+    using CE = std::tuple<std::string, std::vector<std::string>, std::set<std::string>>;
+    std::vector<CE> chain;
+    std::string head = ce::disintegrateImplication(conj, chain, coreExprMap_);
+
+    std::string anchorName = config_.getAnchorName();
+    auto anchorIt = config_.data.find(anchorName);
+    if (anchorIt == config_.data.end()) return true;
+
+    // Anchor-slot values grouped by def-set type, extracted from the
+    // conjecture's anchor instance (may appear as a chain premise or the head).
+    std::map<std::string, std::set<std::string>> anchorSlotsByType;
+    {
+        const std::string& anchorHandle = anchorIt->second.handle;
+        std::string anchorInstance;
+        for (auto& t : chain) {
+            const std::string& p = std::get<0>(t);
+            if (p.find(anchorHandle) != std::string::npos) { anchorInstance = p; break; }
+        }
+        if (anchorInstance.empty()) anchorInstance = head;
+        auto anchorArgs = ce::getArgs(anchorInstance);
+        for (auto& [posStr, tpl] : anchorIt->second.definition_sets) {
+            int pos1b = std::stoi(posStr);
+            if (pos1b < 1 || pos1b > (int)anchorArgs.size()) continue;
+            anchorSlotsByType[std::get<0>(tpl)].insert(anchorArgs[pos1b - 1]);
+        }
+    }
+
+    // Union of args appearing in non-anchor leaves, descending into nested
+    // existence-head structure just like passesComplexityAfterExistence does.
+    std::set<std::string> nonAnchorArgs;
+    std::function<void(const std::string&)> collect = [&](const std::string& expr) {
+        if (expr.empty()) return;
+        size_t start = 0;
+        if (expr[0] == '!') start = 1;
+        if (start >= expr.size() || expr[start] != '(') return;
+        if (start + 1 < expr.size() && expr[start + 1] == '>') {
+            std::vector<CE> innerChain;
+            std::string innerHead = ce::disintegrateImplication(expr.substr(start), innerChain, coreExprMap_);
+            for (auto& t : innerChain) {
+                const std::string& p = std::get<0>(t);
+                if (p.find(anchorIt->second.handle) != std::string::npos) continue;
+                collect(p);
+            }
+            collect(innerHead);
+            return;
+        }
+        if (expr.find(anchorIt->second.handle) != std::string::npos) return;
+        auto args = ce::getArgs(expr.substr(start));
+        for (auto& a : args) nonAnchorArgs.insert(a);
+    };
+    for (auto& t : chain) {
+        const std::string& p = std::get<0>(t);
+        if (p.find(anchorIt->second.handle) != std::string::npos) continue;
+        collect(p);
+    }
+    collect(head);
+
+    for (auto& [ds, cap] : capMap) {
+        auto slotsIt = anchorSlotsByType.find(ds);
+        if (slotsIt == anchorSlotsByType.end()) continue;
+        int distinctCount = 0;
+        for (auto& slotVal : slotsIt->second) {
+            if (nonAnchorArgs.count(slotVal) > 0) distinctCount++;
+        }
+        if (distinctCount > cap) return false;
+    }
+    return true;
+}
+
+// ============================================================================
+// in[…]-premise shape filter
+// ============================================================================
+
+bool Conjecturer::passesInPremiseFilter(const std::string& conj) const {
+    prof::Scope _p(prof::g_passesInPremiseFilter);
+    using CE = std::tuple<std::string, std::vector<std::string>, std::set<std::string>>;
+    std::vector<CE> chainTuples;
+    std::string head = ce::disintegrateImplication(conj, chainTuples, coreExprMap_);
+    std::string anchorName = config_.getAnchorName();
+
+    // Anchor-membership-axiom rejection. A non-anchor `(in[v, X])` premise
+    // (or its negation) where BOTH v AND X are anchor-slot values is the
+    // trivial Peano/Gauss membership claim — e.g. `(in[2, 1])` = "i0 ∈ N",
+    // which is one of the anchor's own axioms. Such a premise is vacuous:
+    // it adds no constraint to the conjecture, the anchor already implies it.
+    // Reject the whole conjecture. Single-anchor-arg shapes like
+    // `(in[7, 1])` (with 7 a bound var, 1 = N a free anchor slot) are NOT
+    // rejected — those are genuine typing premises.
+    {
+        std::set<std::string> allSlotVals;
+        auto anchorIt = config_.data.find(anchorName);
+        if (anchorIt != config_.data.end()) {
+            const std::string& anchorHandle = anchorIt->second.handle;
+            std::string anchorInstance;
+            for (auto& t : chainTuples) {
+                const std::string& p = std::get<0>(t);
+                if (p.find(anchorHandle) != std::string::npos) { anchorInstance = p; break; }
+            }
+            if (anchorInstance.empty()) anchorInstance = head;
+            auto anchorArgs = ce::getArgs(anchorInstance);
+            for (auto& [posStr, tpl] : anchorIt->second.definition_sets) {
+                int pos1b = std::stoi(posStr);
+                if (pos1b < 1 || pos1b > (int)anchorArgs.size()) continue;
+                allSlotVals.insert(anchorArgs[pos1b - 1]);
+            }
+        }
+        auto isAnchorMembership = [&](const std::string& leaf) -> bool {
+            if (leaf.empty()) return false;
+            std::string inner = (leaf[0] == '!') ? leaf.substr(1) : leaf;
+            if (ce::extractExpression(inner) != "in") return false;
+            auto args = ce::getArgs(inner);
+            if (args.size() < 2) return false;
+            return allSlotVals.count(args[0]) > 0 && allSlotVals.count(args[1]) > 0;
+        };
+        for (auto& t : chainTuples) {
+            if (isAnchorMembership(std::get<0>(t))) return false;
+        }
+    }
+
+    std::vector<std::string> nonAnchor;
+    bool hasIn = false;
+    for (auto& t : chainTuples) {
+        const std::string& p = std::get<0>(t);
+        std::string inner = (!p.empty() && p[0] == '!') ? p.substr(1) : p;
+        if (ce::extractExpression(inner) == anchorName) continue;
+        nonAnchor.push_back(p);
+        if (ce::extractExpression(inner) == "in") hasIn = true;
+    }
+
+    if (!hasIn) return true;  // filter only applies to in[…]-containing conjectures
+
+    int cnt = (int)nonAnchor.size();
+    if (cnt == 1) {
+        // Head must be the existence form `!(>[…]…)`.
+        return head.size() >= 4 && head.compare(0, 4, "!(>[") == 0;
+    }
+    if (cnt == 2) {
+        int numNegated = 0;
+        for (auto& p : nonAnchor) if (!p.empty() && p[0] == '!') numNegated++;
+        if (numNegated >= 1) return true;
+
+        // nse=3 neutralisation relaxation:
+        //   A positive (in[v,X]) premise may ground a bound variable v that would
+        //   otherwise be free. Accept the conjecture if v also appears as an argument
+        //   of the OTHER non-anchor premise OR of the head — the in[] premise is then
+        //   the explicit typing that makes the conjecture well-formed (e.g. the
+        //   additive-cancellation family `(in[a,N]), (in3[a,b,i0,+]) -> (=[b,i0])`).
+        //   A negated !(in[v,X]) asserts v ∉ X and does NOT type v, so it is skipped.
+        //   Scope is deliberately cnt==2 (i.e. nse=3) so the conjecture population
+        //   cannot blow up on larger shapes — per user direction.
+        for (size_t i = 0; i < nonAnchor.size(); ++i) {
+            const std::string& p = nonAnchor[i];
+            if (!p.empty() && p[0] == '!') continue;
+            if (ce::extractExpression(p) != "in") continue;
+            auto inArgs = ce::getArgs(p);
+            if (inArgs.size() < 2) continue;
+            const std::string& v = inArgs[0];
+
+            auto argsContainV = [&v](const std::string& s) {
+                auto a = ce::getArgs(s);
+                return std::find(a.begin(), a.end(), v) != a.end();
+            };
+
+            bool elsewhere = false;
+            for (size_t j = 0; j < nonAnchor.size(); ++j) {
+                if (j == i) continue;
+                if (argsContainV(nonAnchor[j])) { elsewhere = true; break; }
+            }
+            if (!elsewhere && argsContainV(head)) elsewhere = true;
+
+            if (elsewhere) return true;
+        }
+        return false;
+    }
+    return false;
+}
+
+// ============================================================================
+// Negated-premise variants
+// ============================================================================
+
+std::vector<std::string> Conjecturer::generateNegatedPremiseVariants(const std::string& conj) const {
+    prof::Scope _p(prof::g_generateNegatedPremise);
+    std::vector<std::string> result;
+
+    using CE = std::tuple<std::string, std::vector<std::string>, std::set<std::string>>;
+    std::vector<CE> tempChain;
+    std::string head = ce::disintegrateImplication(conj, tempChain, coreExprMap_);
+
+    // Collect bound-var lists per chain level so we can reconstruct the original nesting verbatim
+    // (with exactly one premise replaced). Each entry in tempChain = (premiseString, bv-of-this-level).
+    auto joinBounds = [](const std::vector<std::string>& bv) {
+        std::string s;
+        for (size_t i = 0; i < bv.size(); ++i) {
+            if (i > 0) s += ",";
+            s += bv[i];
+        }
+        return s;
+    };
+
+    for (size_t i = 0; i < tempChain.size(); ++i) {
+        const std::string& premise = std::get<0>(tempChain[i]);
+        if (!premise.empty() && premise[0] == '!') continue;  // already negated, skip
+        std::string coreName = ce::extractExpression(premise);
+        auto it = config_.data.find(coreName);
+        if (it == config_.data.end()) continue;
+        if (!it->second.allow_negation) continue;
+
+        // Rebuild the implication with premise[i] replaced by "!" + premise[i].
+        // Structure: (>[bv_0](P_0)(>[bv_1](P_1)...(>[bv_{n-1}](P_{n-1})(head))))
+        std::string inner = head;
+        for (int j = (int)tempChain.size() - 1; j >= 0; --j) {
+            const std::string& p = std::get<0>(tempChain[j]);
+            const std::string& pOut = (j == (int)i) ? ("!" + p) : p;
+            std::string bvStr = joinBounds(std::get<1>(tempChain[j]));
+            inner = "(>[" + bvStr + "]" + pOut + inner + ")";
+        }
+        result.push_back(inner);
+    }
+
+    return result;
+}
+
+// ============================================================================
 // Constructor
 // ============================================================================
 
@@ -4068,6 +5273,8 @@ Conjecturer::Conjecturer(const std::string& anchorId)
             operators_.push_back(name);
         if (desc.input_args.size() == 2 && desc.output_args.empty())
             relations_.push_back(name);
+        if (desc.input_args.size() == 1 && desc.output_args.empty())
+            properties_.push_back(name);
     }
 
     // Build int-path data structures
@@ -4082,12 +5289,14 @@ Conjecturer::Conjecturer(const std::string& anchorId)
 // ============================================================================
 
 void Conjecturer::run() {
+    auto _run_t0 = std::chrono::steady_clock::now();
     std::set<std::string> resultExprSet;
     std::set<std::string> reshuffledExprSet;
     std::set<std::string> reshuffledMirroredExprSet;
     std::set<std::string> controlSet;
 
     // Pre-computation
+    auto _prec_t0 = std::chrono::steady_clock::now();
     mappingsMap_ = createMap(config_.parameters.max_size_mapping_def_set);
 
     int leftBound = determineLeftSideBoundary();
@@ -4123,7 +5332,11 @@ void Conjecturer::run() {
         exprLeafsArgsMap[expr] = std::move(entry);
     }
 
+    prof::g_phase_precomp.add((uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - _prec_t0).count());
+
     // --- Preliminary pass: nse=1 ---
+    auto _prel_t0 = std::chrono::steady_clock::now();
     if (config_.parameters.min_number_simple_expressions <= 1) {
         for (auto& expr : exprList) {
             auto& entry = exprLeafsArgsMap[expr];
@@ -4148,7 +5361,11 @@ void Conjecturer::run() {
         std::cout << "Preliminary pass (nse=1): " << resultExprSet.size() << " conjectures\n";
     }
 
+    prof::g_phase_prelim.add((uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - _prel_t0).count());
+
     // --- Main combination loop ---
+    auto _main_t0 = std::chrono::steady_clock::now();
     std::vector<std::string> growingTheorems = exprList;
     std::set<std::string> growingTheoremsSet(growingTheorems.begin(), growingTheorems.end());
     std::vector<int> lastVisitedMap(exprList.size(), -1);
@@ -4256,7 +5473,11 @@ void Conjecturer::run() {
         }
     }
 
+    prof::g_phase_mainLoop.add((uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - _main_t0).count());
+
     // Sort results
+    auto _sort_t0 = std::chrono::steady_clock::now();
     std::vector<std::string> sortedList(resultExprSet.begin(), resultExprSet.end());
     std::vector<std::string> reshuffledSortedList(reshuffledExprSet.begin(), reshuffledExprSet.end());
     std::vector<std::string> reshuffledMirroredSortedList(reshuffledMirroredExprSet.begin(), reshuffledMirroredExprSet.end());
@@ -4270,6 +5491,19 @@ void Conjecturer::run() {
         std::sort(sortedList.begin(), sortedList.end());
     }
 
+    // ---- OR theorem conjecture generation (non-incubator only) ----
+    std::vector<std::pair<std::string, std::string>> orPairs;
+    if (!config_.parameters.incubator_mode) {
+        orPairs = generateOrConjectures();
+        // Add OR conjectures directly to the main theorem list
+        for (const auto& [exist, companion] : orPairs) {
+            sortedList.push_back(exist);
+            sortedList.push_back(companion);
+        }
+        std::sort(sortedList.begin(), sortedList.end());
+        std::cout << "OR addon: " << orPairs.size() << " OR pairs (" << orPairs.size() * 2 << " conjectures added to theorems.txt)\n";
+    }
+
     // Determine output folder
     std::filesystem::path theoremsFolder;
     if (!config_.theorems_folder.empty()) {
@@ -4279,7 +5513,8 @@ void Conjecturer::run() {
     }
 
     // Clean folder (preserve special files)
-    std::set<std::string> preserve = {"proved_theorems.txt", "externally_provided_theorems.txt", "compressed_external_theorems.txt"};
+    std::set<std::string> preserve = {"proved_theorems.txt", "externally_provided_theorems.txt",
+        "compressed_external_theorems.txt", "or_pairs.txt"};
     if (std::filesystem::is_directory(theoremsFolder)) {
         for (auto& entry : std::filesystem::directory_iterator(theoremsFolder)) {
             if (preserve.find(entry.path().filename().string()) != preserve.end()) continue;
@@ -4300,7 +5535,306 @@ void Conjecturer::run() {
     writeFile(theoremsFolder / "reshuffled_theorems.txt", reshuffledSortedList);
     writeFile(theoremsFolder / "reshuffled_mirrored_theorems.txt", reshuffledMirroredSortedList);
 
-    std::cout << "Number conjectures: " << resultExprSet.size() << "\n";
+    // Write OR pairs metadata (which existence+companion form an OR theorem)
+    if (!orPairs.empty()) {
+        std::ofstream orOut(theoremsFolder / "or_pairs.txt", std::ios::out);
+        for (const auto& [exist, companion] : orPairs) {
+            orOut << exist << "\t" << companion << "\n";
+        }
+    }
+
+    std::cout << "Number conjectures: " << sortedList.size() << "\n";
+
+    prof::g_phase_sortAndOut.add((uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - _sort_t0).count());
+
+    // ---- Profiling report ----
+    // Disabled by default — flip the gate to 1 to re-enable when debugging
+    // conjecturer perf. The per-function counters are already compile-time
+    // no-ops via GL_PROF_SCOPE_ENABLE; this gate suppresses the empty-counter
+    // dump in the runtime log so a release run does not print 30+ rows of
+    // zeros.
+#if 0
+    double wallSec = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - _run_t0).count() / 1e9;
+    std::cout << "\n==== Conjecturer profiling (wall " << std::fixed << std::setprecision(3)
+              << wallSec << "s, "
+              << (int)std::thread::hardware_concurrency() << " HW threads) ====\n";
+    std::cout << "--- Phases (single-thread portions; main loop wall time includes thread join) ---\n";
+    prof::report("phase: pre-compute",      prof::g_phase_precomp,   wallSec);
+    prof::report("phase: preliminary (nse=1)", prof::g_phase_prelim, wallSec);
+    prof::report("phase: main loop (wall)", prof::g_phase_mainLoop,  wallSec);
+    prof::report("phase: sort+output",      prof::g_phase_sortAndOut,wallSec);
+    std::cout << "--- Hot functions (summed across threads; % vs wall) ---\n";
+    prof::report("singleThreadCalculation",   prof::g_singleThreadCalc,     wallSec);
+    prof::report("singleExprAnchorConnection",prof::g_singleExprAnchorConn, wallSec);
+    prof::report("reshuffle",                 prof::g_reshuffle,            wallSec);
+    prof::report("  reshuffle perm-inner",    prof::g_reshufflePermInner,   wallSec);
+    prof::report("createReshuffledMirrored",  prof::g_mirrored,             wallSec);
+    prof::report("encodeExpr",                prof::g_encodeExpr,           wallSec);
+    prof::report("decodeExpr",                prof::g_decodeExpr,           wallSec);
+    prof::report("encodeDefSetMap",           prof::g_encodeDefSetMap,      wallSec);
+    prof::report("connectExpressionsInt",     prof::g_connectExprInt,       wallSec);
+    prof::report("makeAllConnectionMapsInt",  prof::g_makeAllConnMapsInt,   wallSec);
+    prof::report("exprGood2Int",              prof::g_exprGood2Int,         wallSec);
+    prof::report("exprGood",                  prof::g_exprGood,             wallSec);
+    // disintegrateImplication lives in compiler.hpp; its counter is a raw
+    // atomic pair. Synthesize a Counter-equivalent view for the report.
+    prof::g_disintegrate.calls.store(ce::g_disintCalls.load());
+    prof::g_disintegrate.ns.store(ce::g_disintNs.load());
+    prof::report("disintegrateImplication",   prof::g_disintegrate,         wallSec);
+    std::cout << "--- Filter functions (most are string-based = int-ification candidates) ---\n";
+    prof::report("onlyInHeadGoodInt",         prof::g_onlyInHeadGoodInt,    wallSec);
+    prof::report("prohibitedHeadsGoodInt",    prof::g_prohibHeadsGoodInt,   wallSec);
+    prof::report("checkInputVariablesHead",   prof::g_checkInputVarsHead,   wallSec);
+    prof::report("triggersExistenceRef",      prof::g_triggersExistenceRef, wallSec);
+    prof::report("checkInputVariablesOrder",  prof::g_checkInputVarsOrder,  wallSec);
+    prof::report("patternInConjecture",       prof::g_patternInConjecture,  wallSec);
+    prof::report("evaluateOperatorExprs2",    prof::g_evaluateOperatorExprs2, wallSec);
+    prof::report("controlEquality",           prof::g_controlEquality,      wallSec);
+    prof::report("checkMinSizeExpression",    prof::g_checkMinSizeExpression, wallSec);
+    prof::report("passesMaxSizeAfterEx",      prof::g_passesMaxSizeAfterEx, wallSec);
+    prof::report("passesComplexityAfterEx",   prof::g_passesComplexityAfterEx, wallSec);
+    prof::report("passesInPremiseFilter",     prof::g_passesInPremiseFilter, wallSec);
+    prof::report("reformulateToExistence",    prof::g_reformulateToExistence, wallSec);
+    prof::report("generateNegatedPremise",    prof::g_generateNegatedPremise, wallSec);
+    prof::report("checkDefSets",              prof::g_checkDefSets,         wallSec);
+    prof::report("checkComplLevForDefSets",   prof::g_checkComplLevForDefSets, wallSec);
+    prof::report("countOperatorOccurrences",  prof::g_countOpOccurrences,   wallSec);
+    prof::report("checkDefSetsPriorInt",      prof::g_checkDefSetsPriorInt, wallSec);
+    prof::report("checkComplexityPerOpInt",   prof::g_checkComplexityPerOpInt, wallSec);
+    prof::report("getNumRemArgsInt",          prof::g_getNumRemArgsInt,     wallSec);
+    std::cout.flush();
+#endif
+}
+
+// ============================================================================
+// OR theorem conjecture generation: builds existence + companion directly
+// ============================================================================
+
+std::vector<std::pair<std::string,std::string>> Conjecturer::generateOrConjectures() const {
+    std::vector<std::pair<std::string,std::string>> result;
+
+    // Find anchor name and arity
+    std::string anchorName;
+    int anchorArity = 0;
+    for (const auto& [name, desc] : config_.data) {
+        if (name.find("Anchor") == 0) {
+            anchorName = name;
+            anchorArity = desc.arity;
+            break;
+        }
+    }
+    if (anchorName.empty() || anchorArity == 0) return result;
+
+    const auto& anchorDesc = config_.data.at(anchorName);
+
+    // Map anchor arg position (1-based) to def_set type string
+    std::map<int, std::string> anchorArgType;
+    for (const auto& [posStr, ds] : anchorDesc.definition_sets) {
+        anchorArgType[std::stoi(posStr)] = std::get<0>(ds);
+    }
+
+    // Build anchor string: (AnchorPeano[1,2,3,4,5,6])
+    std::string anchorStr = "(" + anchorName + "[";
+    for (int i = 1; i <= anchorArity; ++i) {
+        if (i > 1) anchorStr += ",";
+        anchorStr += std::to_string(i);
+    }
+    anchorStr += "])";
+
+    // Find the set arg in anchor: type "P(1)" — this is N
+    int setArg = -1;
+    for (const auto& [pos, type] : anchorArgType) {
+        if (type == "P(1)") { setArg = pos; break; }
+    }
+    if (setArg < 0) return result;
+
+    // Collect element anchor args: type "(1)"
+    std::vector<int> elementArgs;
+    for (const auto& [pos, type] : anchorArgType) {
+        if (type == "(1)") elementArgs.push_back(pos);
+    }
+
+    // Fresh bound vars start after anchor arity
+    int n = anchorArity + 1;  // shared var (universally quantified)
+    int m = anchorArity + 2;  // existential var
+
+    // For each (caseExpr with allow_negation) x (existExpr with allow_to_constitute_existence)
+    for (const auto& [caseName, caseDesc] : config_.data) {
+        if (!caseDesc.allow_negation) continue;
+
+        for (const auto& [existName, existDesc] : config_.data) {
+            if (!existDesc.allow_to_constitute_existence) continue;
+            if (existDesc.existence_variable_position < 1) continue;
+
+            int existVarPos = existDesc.existence_variable_position; // 1-based
+
+            // Exist expr must have a (1)-typed slot besides existVarPos for the shared var
+            int sharedSlotInExist = -1;  // 1-based position for shared var n
+            for (const auto& [posStr, ds] : existDesc.definition_sets) {
+                int pos = std::stoi(posStr);
+                if (pos == existVarPos) continue;
+                if (std::get<0>(ds) == "(1)") {
+                    sharedSlotInExist = pos;
+                    break;
+                }
+            }
+            if (sharedSlotInExist < 0) continue;  // no slot for shared var (e.g., "in")
+
+            // Build existExpr args: m at existVarPos, n at sharedSlot, anchor args elsewhere
+            std::vector<std::string> existArgs(existDesc.arity);
+            for (const auto& [posStr, ds] : existDesc.definition_sets) {
+                int pos = std::stoi(posStr);
+                int idx = pos - 1; // 0-based
+                if (pos == existVarPos) {
+                    existArgs[idx] = std::to_string(m);
+                } else if (pos == sharedSlotInExist) {
+                    existArgs[idx] = std::to_string(n);
+                } else {
+                    // Find anchor arg of matching type
+                    for (const auto& [apos, atype] : anchorArgType) {
+                        if (atype == std::get<0>(ds)) {
+                            existArgs[idx] = std::to_string(apos);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Build existExpr string: (in2[m,n,3])
+            std::string existExprStr = "(" + existName + "[";
+            for (std::size_t i = 0; i < existArgs.size(); ++i) {
+                if (i > 0) existExprStr += ",";
+                existExprStr += existArgs[i];
+            }
+            existExprStr += "])";
+
+            // For each element anchor arg as the "case constant" (e.g., i0, i1)
+            for (int elemArg : elementArgs) {
+                // Build caseExpr args: n at first (1)-typed position, elemArg at second
+                std::vector<std::string> caseArgs(caseDesc.arity);
+                bool nPlaced = false;
+                for (const auto& [posStr, ds] : caseDesc.definition_sets) {
+                    int pos = std::stoi(posStr);
+                    int idx = pos - 1;
+                    if (std::get<0>(ds) == "(1)" && !nPlaced) {
+                        caseArgs[idx] = std::to_string(n);
+                        nPlaced = true;
+                    } else if (std::get<0>(ds) == "(1)") {
+                        caseArgs[idx] = std::to_string(elemArg);
+                    } else {
+                        for (const auto& [apos, atype] : anchorArgType) {
+                            if (atype == std::get<0>(ds)) {
+                                caseArgs[idx] = std::to_string(apos);
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Build caseExpr string: (=[n,2])
+                std::string caseExprStr = "(" + caseName + "[";
+                for (std::size_t i = 0; i < caseArgs.size(); ++i) {
+                    if (i > 0) caseExprStr += ",";
+                    caseExprStr += caseArgs[i];
+                }
+                caseExprStr += "])";
+
+                std::string S = std::to_string(setArg);
+                std::string N = std::to_string(n);
+                std::string M = std::to_string(m);
+
+                // Inner quantifier: (>[m](in[m,N])!(existExpr))
+                std::string innerQuant = "(>[" + M + "](in[" + M + "," + S + "])!" + existExprStr + ")";
+
+                // Collect all anchor args that appear in inner expressions
+                // to determine outer bound vars
+                std::set<std::string> usedVars;
+                // From anchor: all args
+                for (int i = 1; i <= anchorArity; ++i) usedVars.insert(std::to_string(i));
+                // From (in[n,setArg]): n, setArg
+                usedVars.insert(N);
+                usedVars.insert(S);
+                // From caseExprStr: all args
+                for (auto& a : caseArgs) usedVars.insert(a);
+                // From existExprStr: m, n, and anchor args
+                for (auto& a : existArgs) usedVars.insert(a);
+
+                // Bound vars: count occurrences across ALL leaf expressions
+                // then split: anchor args → outerBound, non-anchor → level1Bound
+                std::map<std::string, int> varCount;
+                auto countArgs = [&](const std::string& expr) {
+                    auto args = ce::getArgs(expr);
+                    for (auto& a : args) {
+                        if (a.size() >= 2 && a[0] == 'u' && a[1] == '_') continue;
+                        varCount[a]++;
+                    }
+                };
+
+                varCount.clear();
+                countArgs(anchorStr);                    // [1,2,3,4,5,6]
+                countArgs("(in[" + N + "," + S + "])");  // [n, S]
+                countArgs("!" + caseExprStr);            // [n, elemArg]
+                countArgs(existExprStr);                 // [m, n, 3] etc.
+                countArgs("(in[" + M + "," + S + "])");  // [m, S]
+
+                // Anchor args that also appear in body → outer binding
+                std::set<std::string> anchorArgSet;
+                for (int i = 1; i <= anchorArity; ++i) anchorArgSet.insert(std::to_string(i));
+
+                std::vector<std::string> outerBound;
+                std::vector<std::string> level1Bound;  // non-anchor, non-M vars (bind at in[n,S] level)
+                for (auto& [v, c] : varCount) {
+                    if (c <= 1) continue;
+                    if (anchorArgSet.count(v)) {
+                        outerBound.push_back(v);
+                    } else if (v != M) {
+                        // M is already bound inside innerQuant's >[M]
+                        level1Bound.push_back(v);
+                    }
+                }
+                auto numSort = [](const std::string& a, const std::string& b){
+                    return std::stoi(a) < std::stoi(b);
+                };
+                std::sort(outerBound.begin(), outerBound.end(), numSort);
+                std::sort(level1Bound.begin(), level1Bound.end(), numSort);
+
+                auto joinVec = [](const std::vector<std::string>& v) {
+                    std::string s;
+                    for (std::size_t i = 0; i < v.size(); ++i) {
+                        if (i > 0) s += ",";
+                        s += v[i];
+                    }
+                    return s;
+                };
+                std::string outerBoundStr = joinVec(outerBound);
+                std::string level1BoundStr = joinVec(level1Bound);
+
+                // Existence form:
+                // (>[outerBound](Anchor)(>[level1Bound](in[n,S])(>[]!(caseExpr)!(innerQuant))))
+                std::string existence =
+                    "(>[" + outerBoundStr + "]" + anchorStr +
+                    "(>[" + level1BoundStr + "](in[" + N + "," + S + "])" +
+                    "(>[]!" + caseExprStr +
+                    "!" + innerQuant + ")))";
+
+                // Companion form:
+                // (>[outerBound](Anchor)(>[level1Bound](in[n,S])(>[](innerQuant)(caseExpr))))
+                std::string companion =
+                    "(>[" + outerBoundStr + "]" + anchorStr +
+                    "(>[" + level1BoundStr + "](in[" + N + "," + S + "])" +
+                    "(>[]" + innerQuant +
+                    caseExprStr + ")))";
+
+                result.push_back({existence, companion});
+                std::cout << "  OR exist: " << existence << "\n";
+                std::cout << "  OR compn: " << companion << "\n";
+            }
+        }
+    }
+
+    return result;
 }
 
 // ============================================================================

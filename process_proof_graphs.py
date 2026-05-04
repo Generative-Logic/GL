@@ -1,5 +1,5 @@
 # Generative Logic: A deterministic reasoning and knowledge generation engine.
-# Copyright (C) 2025 Generative Logic UG (haftungsbeschränkt)
+# Copyright (C) 2025-2026 Generative Logic UG (haftungsbeschränkt)
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as published by
@@ -150,8 +150,12 @@ def _build_fname_list(theorems):
     for parts in theorems:
         method = parts[1].lower() if len(parts) > 1 else ""
         if method == "induction":
-            fnames = [f"{idx}_check_zero.txt", f"{idx + 1}_check_induction_condition.txt"]
-            idx += 2
+            fnames = [
+                f"{idx}_induction_typing.txt",
+                f"{idx + 1}_check_zero.txt",
+                f"{idx + 2}_check_induction_condition.txt",
+            ]
+            idx += 3
         elif method == "direct":
             fnames = [f"{idx}_direct_proof.txt"]
             idx += 1
@@ -166,6 +170,9 @@ def _build_fname_list(theorems):
             idx += 1
         elif method == "incubator back reformulation":
             fnames = [f"{idx}_back_reformulated_statement.txt"]
+            idx += 1
+        elif method == "or theorem":
+            fnames = [f"{idx}_or_theorem.txt"]
             idx += 1
         else:
             safe = re.sub(r"[^A-Za-z0-9._\-+]+", "_", method)[:64] or "unknown"
@@ -184,7 +191,7 @@ def _prune_proof_graph(raw_theorems, raw_stacks, theorems_dir=None):
     """
     if theorems_dir is None:
         theorems_dir = PROJECT_ROOT / "files" / "theorems"
-    proved_file = theorems_dir / "proved_theorems.txt"
+    proved_file = theorems_dir / "compiled_proved_theorems.txt"
     essential = set()
     if proved_file.exists():
         with open(proved_file, "r", encoding="utf-8") as f:
@@ -292,8 +299,16 @@ def create_processed_proof_graph(config: configuration_reader,
         theorems_dir = PROJECT_ROOT / "files" / "theorems"
 
     if proc_dir.exists():
-        shutil.rmtree(proc_dir)
-    proc_dir.mkdir(parents=True, exist_ok=True)
+        # Remove contents but keep the directory itself — on Windows, the
+        # top-level dir can briefly hold a handle (indexer / explorer) that
+        # blocks os.rmdir even when the directory is empty.
+        for child in proc_dir.iterdir():
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+    else:
+        proc_dir.mkdir(parents=True, exist_ok=True)
 
     # Load raw global theorem list
     raw_theorems = []
@@ -337,9 +352,10 @@ def create_processed_proof_graph(config: configuration_reader,
         thm_expr = parts[0]
         method = parts[1].lower() if len(parts) > 1 else ""
         if method == "induction":
-            fname_to_raw_thm[f"{file_idx}_check_zero.txt"] = thm_expr
-            fname_to_raw_thm[f"{file_idx + 1}_check_induction_condition.txt"] = thm_expr
-            file_idx += 2
+            fname_to_raw_thm[f"{file_idx}_induction_typing.txt"] = thm_expr
+            fname_to_raw_thm[f"{file_idx + 1}_check_zero.txt"] = thm_expr
+            fname_to_raw_thm[f"{file_idx + 2}_check_induction_condition.txt"] = thm_expr
+            file_idx += 3
         elif method == "direct":
             fname_to_raw_thm[f"{file_idx}_direct_proof.txt"] = thm_expr
             file_idx += 1
@@ -354,6 +370,9 @@ def create_processed_proof_graph(config: configuration_reader,
             file_idx += 1
         elif method == "incubator back reformulation":
             fname_to_raw_thm[f"{file_idx}_back_reformulated_statement.txt"] = thm_expr
+            file_idx += 1
+        elif method == "or theorem":
+            fname_to_raw_thm[f"{file_idx}_or_theorem.txt"] = thm_expr
             file_idx += 1
         else:
             safe = re.sub(r"[^A-Za-z0-9._\-+]+", "_", method)[:64] or "unknown"

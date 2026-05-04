@@ -1,5 +1,5 @@
 /* Generative Logic : A deterministic reasoning and knowledge generation engine.
- Copyright(C) 2025 Generative Logic UG(haftungsbeschr�nkt)
+ Copyright(C) 2025-2026 Generative Logic UG(haftungsbeschr�nkt)
 
  This program is free software : you can redistribute it and /or modify
  it under the terms of the GNU Affero General Public License as published by
@@ -115,6 +115,9 @@ namespace run_modes {
                         if (pp.contains("ban_disintegration") && pp["ban_disintegration"].get<bool>()) {
                             skipCompression = true;
                         }
+                        if (pp.contains("incubator_mode") && pp["incubator_mode"].get<bool>()) {
+                            skipCompression = true;
+                        }
                     }
                 } catch (...) {}
             }
@@ -130,6 +133,17 @@ namespace run_modes {
             auto bg_set = loadLinesFromFile(BACKGROUND_PROVED_THEOREMS_FILE);
             proved_set.insert(bg_set.begin(), bg_set.end());
         }
+
+        // DEBUG FILTER disabled for hash-burst investigation: with the culprit
+        // theorem back in the broadcast pool, Gauss reverts to the failure
+        // mode and the trap in prover.hpp can capture its hash-burst output
+        // at the target LB.
+        // if (anchor_id == "Gauss") {
+        //     const std::string target =
+        //         "(>[1,3,6](AnchorPeano[1,2,3,4,5,6])!(>[7](in[7,1])!(in2[7,6,3])))";
+        //     proved_set.erase(target);
+        // }
+
         std::vector<std::string> proved_lst(proved_set.begin(), proved_set.end());
         std::sort(proved_lst.begin(), proved_lst.end());
         std::cout << "Loaded " << proved_lst.size() << " proved theorems." << std::endl;
@@ -149,11 +163,93 @@ namespace run_modes {
         std::vector<std::string> tmp_lst(theorem_set.begin(), theorem_set.end());
         std::sort(tmp_lst.begin(), tmp_lst.end());
 
+        // Load OR pairs if present
+        {
+            auto orPairsPath = THEOREMS_FOLDER / "or_pairs.txt";
+            if (fs::exists(orPairsPath)) {
+                std::ifstream orIn(orPairsPath);
+                std::string line;
+                while (std::getline(orIn, line)) {
+                    line = trim_copy(line);
+                    if (line.empty()) continue;
+                    auto tabPos = line.find('\t');
+                    if (tabPos != std::string::npos) {
+                        gl::ExpressionAnalyzer::OrCandidate oc;
+                        oc.existenceTheorem = line.substr(0, tabPos);
+                        oc.companionTheorem = line.substr(tabPos + 1);
+                        expressionAnalyzer.orCandidates.push_back(oc);
+                    }
+                }
+                std::cout << "Loaded " << expressionAnalyzer.orCandidates.size() << " OR pairs." << std::endl;
+            }
+        }
+
         expressionAnalyzer.analyzeExpressions(tmp_lst, proved_lst, external_lst);
 
         // Sort globalTheoremList for deterministic downstream processing
+        // (OR construction deferred to after compression)
         std::sort(expressionAnalyzer.globalTheoremList.begin(),
                   expressionAnalyzer.globalTheoremList.end());
+
+        // ====== COMPRESS (D-25: moved out of analyzeExpressions) ======
+        // Pool must include: (a) old proved theorems from prior batches, (b)
+        // new theorems proved in this batch (globalTheoremList), (c) external
+        // theorems read from compressed_external_theorems.txt. Otherwise the
+        // compressor cannot evaluate whether old/external theorems remain
+        // essential, and cross-batch pruning is broken.
+        // fullTheoremList is populated from the pre-compression batch even when
+        // skipCompression is true, so the proof-graph generator below can use
+        // it (run_modes.cpp:303-305 falls back to globalTheoremList only when
+        // fullTheoremList is empty).
+        if (!skipCompression) {
+            std::vector<std::string> theoremsForCompressor;
+            std::unordered_set<std::string> seen;
+            std::set<std::string> alreadyInFull;
+            // (a) Old proved theorems from prior batches.
+            for (const auto& thm : proved_lst) {
+                std::string compiled = thm;
+                expressionAnalyzer.precompileStructuralOperators(compiled);
+                if (seen.insert(compiled).second) {
+                    theoremsForCompressor.push_back(compiled);
+                }
+            }
+            // (b) New theorems from this batch (already compiled — produced
+            // in-flight through the compiled pipeline).
+            for (const auto& tpl : expressionAnalyzer.globalTheoremList) {
+                const std::string& thm = std::get<0>(tpl);
+                if (seen.insert(thm).second) {
+                    theoremsForCompressor.push_back(thm);
+                }
+                if (alreadyInFull.insert(thm).second) {
+                    expressionAnalyzer.fullTheoremList.push_back(tpl);
+                }
+            }
+            // (c) External theorems (mirrors included).
+            for (const auto& ext : external_lst) {
+                std::string compiled = ext;
+                expressionAnalyzer.precompileStructuralOperators(compiled);
+                if (seen.insert(compiled).second) {
+                    theoremsForCompressor.push_back(compiled);
+                }
+            }
+            if (theoremsForCompressor.size() > 1) {
+                std::cout << "\nCompressing (" << theoremsForCompressor.size() << " theorems)..." << std::endl;
+                gl::Compressor compressor(expressionAnalyzer, theoremsForCompressor);
+                std::vector<std::string> survivors = compressor.run();
+                std::unordered_set<std::string> survivorSet(survivors.begin(), survivors.end());
+
+                expressionAnalyzer.lastCompressionSurvivors = survivors;
+
+                auto& gtl = expressionAnalyzer.globalTheoremList;
+                gtl.erase(std::remove_if(gtl.begin(), gtl.end(),
+                    [&](const std::tuple<std::string, std::string, std::string, std::string>& t) {
+                        return survivorSet.find(std::get<0>(t)) == survivorSet.end();
+                    }), gtl.end());
+                std::cout << "After compression: " << survivors.size() << " essential theorems." << std::endl;
+            } else {
+                expressionAnalyzer.lastCompressionSurvivors = theoremsForCompressor;
+            }
+        }
 
         if (skipCompression) {
             // ====== INCUBATOR MODE: Save directly, no compression, no proof graph ======
@@ -172,37 +268,25 @@ namespace run_modes {
             // Generate proof graph in incubator mode too
             expressionAnalyzer.generateRawProofGraph(expressionAnalyzer.globalTheoremList, RAW_PROOF_DIR);
         } else {
-            // ====== PHASE 2: COMPRESS ======
-            std::cout << "\nInitiating Post-Proof Compression Phase..." << std::endl;
+            // ====== PHASE 2: SAVE ======
+            // globalTheoremList was compressed by the run_modes.cpp invocation above.
+            // Handle external theorem pruning and save proved_theorems.txt.
 
-            // Start from previously proved theorems (already loaded into proved_lst)
-            std::unordered_set<std::string> seenTheorems(proved_lst.begin(), proved_lst.end());
-            std::vector<std::string> theoremsToCompress(proved_lst.begin(), proved_lst.end());
+            // Full survivor set from compression: includes old proved theorems
+            // (from prior batches), new theorems from this batch, and external
+            // theorems that remain essential. Sourced from analyzeExpressions via
+            // lastCompressionSurvivors because globalTheoremList only contains
+            // this-batch entries after pruning.
+            const std::vector<std::string>& survivorsVec =
+                expressionAnalyzer.lastCompressionSurvivors;
+            std::unordered_set<std::string> survivorsSet(
+                survivorsVec.begin(), survivorsVec.end());
 
-            // Add newly proved theorems not already present
-            for (const auto& tpl : expressionAnalyzer.globalTheoremList) {
-                const std::string& thm = std::get<0>(tpl);
-                if (seenTheorems.insert(thm).second) {
-                    theoremsToCompress.push_back(thm);
-                }
-            }
-
-            // Add external theorems (incl. mirrors) to compression pool
-            for (const auto& ext : external_lst) {
-                if (seenTheorems.insert(ext).second) {
-                    theoremsToCompress.push_back(ext);
-                }
-            }
-
-            gl::Compressor compressor(expressionAnalyzer, theoremsToCompress);
-            std::vector<std::string> survivingTheorems = compressor.run();
-
-            // Determine which external theorems (incl. mirrors) survived compression
-            std::unordered_set<std::string> survivingSet(survivingTheorems.begin(), survivingTheorems.end());
+            // Determine which external theorems survived (are still needed)
             std::vector<std::string> survivingExternals;
             std::vector<std::string> eliminatedExternals;
             for (const auto& ext : external_lst) {
-                if (survivingSet.count(ext)) {
+                if (survivorsSet.count(ext)) {
                     survivingExternals.push_back(ext);
                 } else {
                     eliminatedExternals.push_back(ext);
@@ -226,20 +310,66 @@ namespace run_modes {
                 }
             }
 
-            // ====== PHASE 3: SAVE + GRAPH ======
-            // Save only essential theorems for cross-batch propagation
-            // Exclude surviving external theorems (they are not GL-proved)
+            // Save proved theorems (essential only, excluding externals).
+            // survivorsVec already contains prior-batch survivors plus this-batch
+            // survivors; saveProvedTheoremsFiltered skips externals internally.
+            std::vector<std::string> survivingTheorems = survivorsVec;
+            std::sort(survivingTheorems.begin(), survivingTheorems.end());
+            survivingTheorems.erase(
+                std::unique(survivingTheorems.begin(), survivingTheorems.end()),
+                survivingTheorems.end());
             std::unordered_set<std::string> survivingExternalSet(survivingExternals.begin(), survivingExternals.end());
             expressionAnalyzer.saveProvedTheoremsFiltered(survivingTheorems, survivingExternalSet);
 
-            // Generate proof graph from the full globalTheoremList (unfiltered)
+            // OR construction (after compression, before proof graph)
+            // Use orPairsFromHeadSwitch: (existence_compiled, companion_compiled)
+            // Both must be in globalTheoremList (survived compression) to construct OR
+            {
+                std::unordered_set<std::string> provedSet;
+                for (const auto& t : expressionAnalyzer.globalTheoremList)
+                    provedSet.insert(std::get<0>(t));
+
+                std::vector<std::string> orTheorems;
+                for (const auto& [exist, comp] : expressionAnalyzer.orPairsFromHeadSwitch) {
+                    if (provedSet.count(exist) && provedSet.count(comp)) {
+                        std::string orThm = expressionAnalyzer.constructOrTheorem(exist, comp);
+                        if (!orThm.empty()) {
+                            expressionAnalyzer.globalTheoremList.emplace_back(orThm, "or theorem", exist, comp);
+                            expressionAnalyzer.fullTheoremList.emplace_back(orThm, "or theorem", exist, comp);
+                            orTheorems.push_back(orThm);
+                            std::cout << "OR theorem constructed: " << orThm << std::endl;
+                        }
+                    }
+                }
+
+                // Append OR theorems to both proved_theorems files.
+                // proved_theorems.txt: expanded form for inter-batch communication.
+                // compiled_proved_theorems.txt: compiled form for proof graph pruning.
+                if (!orTheorems.empty()) {
+                    std::ofstream ofs(PROVED_THEOREMS_FILE, std::ios::app);
+                    std::ofstream ofsCompiled(THEOREMS_FOLDER / "compiled_proved_theorems.txt", std::ios::app);
+                    for (const auto& ot : orTheorems) {
+                        if (ofsCompiled.is_open()) ofsCompiled << ot << "\n";
+                        std::string expanded = expressionAnalyzer.expandToBaseForm(ot);
+                        ofs << expanded << "\n";
+                    }
+                }
+            }
+
+            // Generate proof graph using fullTheoremList (all proved theorems incl. non-essential)
+            // so proof stacks can reference non-essential theorems. Python pruning trims the rest.
             if (!skipProofGraph) {
+                // Use fullTheoremList if populated (big iteration mode); otherwise globalTheoremList
+                auto& listForGraph = expressionAnalyzer.fullTheoremList.empty()
+                    ? expressionAnalyzer.globalTheoremList
+                    : expressionAnalyzer.fullTheoremList;
+                std::sort(listForGraph.begin(), listForGraph.end());
                 if (expressionAnalyzer.parameters.debug) {
                     std::vector<std::string> expr_lst{ "(AnchorPeano[1,2,3,4,5,6])", "(in3[6,7,8,4])", "(in2[rec0,7,3])" };
                     expressionAnalyzer.findEnds(expr_lst, RAW_PROOF_DIR);
                 }
                 else {
-                    expressionAnalyzer.generateRawProofGraph(expressionAnalyzer.globalTheoremList, RAW_PROOF_DIR);
+                    expressionAnalyzer.generateRawProofGraph(listForGraph, RAW_PROOF_DIR);
                 }
             }
         }

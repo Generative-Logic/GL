@@ -1,5 +1,5 @@
 ﻿/* Generative Logic : A deterministic reasoning and knowledge generation engine.
- Copyright(C) 2025 Generative Logic UG(haftungsbeschränkt)
+ Copyright(C) 2025-2026 Generative Logic UG(haftungsbeschränkt)
 
  This program is free software : you can redistribute it and /or modify
  it under the terms of the GNU Affero General Public License as published by
@@ -81,6 +81,13 @@ namespace gl {
         std::vector<std::string> key;
         std::set<std::string> remainingArgs;
         std::string validityName;
+        // D-32: marks LMVs whose implication is itself a "product of
+        // disintegration" — at least one premise has an arg starting
+        // with "u_". Set at install time in addToHashMemory; consumed by
+        // checkLocalEncodedMemoryStatic to gate OR-disintegration on
+        // the head-firing path. Default false (admission/marker LMVs
+        // and non-disintegration-product implications).
+        bool productOfDisintegration;
 
         // Constructors
         LocalMemoryValue()
@@ -90,7 +97,8 @@ namespace gl {
             justification(),
             key(),
             remainingArgs(),
-            validityName("main") {
+            validityName("main"),
+            productOfDisintegration(false) {
         }
 
         LocalMemoryValue(const std::string& value_,
@@ -106,7 +114,8 @@ namespace gl {
             justification(justification_),
             key(key_),
             remainingArgs(remainingArgs_),
-            validityName(validityName_) {
+            validityName(validityName_),
+            productOfDisintegration(false) {
         }
 
         // Ordering so it can be stored in std::set<LocalMemoryValue>
@@ -265,6 +274,41 @@ namespace gl {
         }
     };
 
+    // Integration-side counterpart to RejectedMapValue. Stored in
+    // HashMemory::rejectedMapIntegration, keyed on a non-in[] constituent's
+    // marker form (the int_ var at `marker`). Integration has no iteration
+    // semantics (int_ mint uses level+startInt only at prover.cpp:6741), so
+    // no iteration field. `siblings` carries all OTHER body elements of the
+    // compound (including the (in[]) typing element) in concrete form so
+    // the internalMailIn revival can re-emit the full body together.
+    struct RejectedMapIntegrationValue {
+        std::string concreteConstituent;        // body element, u_ stripped, int_ intact
+        std::vector<std::string> siblings;      // other body elements (incl. in[]), concrete
+        std::string compoundExpression;         // original compound, for origin chaining
+
+        RejectedMapIntegrationValue()
+            : concreteConstituent(), siblings(), compoundExpression() {}
+
+        RejectedMapIntegrationValue(const std::string& concreteConstituent_,
+            const std::vector<std::string>& siblings_,
+            const std::string& compoundExpression_)
+            : concreteConstituent(concreteConstituent_),
+              siblings(siblings_),
+              compoundExpression(compoundExpression_) {}
+
+        bool operator<(const RejectedMapIntegrationValue& rhs) const {
+            if (concreteConstituent != rhs.concreteConstituent) return concreteConstituent < rhs.concreteConstituent;
+            if (siblings != rhs.siblings) return siblings < rhs.siblings;
+            return compoundExpression < rhs.compoundExpression;
+        }
+
+        bool operator==(const RejectedMapIntegrationValue& rhs) const {
+            return concreteConstituent == rhs.concreteConstituent
+                && siblings == rhs.siblings
+                && compoundExpression == rhs.compoundExpression;
+        }
+    };
+
     struct ExpressionWithValidity {
         std::string original;
         std::string validityName;
@@ -329,24 +373,245 @@ namespace gl {
     // ========================================================================
 
     /// Bidirectional string <-> int16_t dictionary. Simple counter, no intelligence.
+    ///
+    /// A validityName is a LIFO stack of sub-names. Canonical grammar:
+    ///
+    ///   validityName := Root ( "_boundary_" Payload )*
+    ///   Root         := arbitrary string; MUST NOT contain "_boundary_"
+    ///   Payload      := arbitrary string; MUST NOT contain "_boundary_"
+    ///
+    /// The root is typically the literal "main" (the general validity scope),
+    /// but any string free of the "_boundary_" delimiter is accepted as a
+    /// root. Each deeper scope is formed by appending "_boundary_" + payload.
+    /// Prefix relationship between two ids is precomputed into a sparse
+    /// pairMap: verdict(a, b) = -1 if a is a strict prefix of b, +1 if b is
+    /// a strict prefix of a, 0 if a == b, diverge (absent from map) if neither.
     struct NameMap {
+        // Existing — validity-name dictionary.
         std::unordered_map<std::string, int16_t> nameToId;
         std::vector<std::string> idToName;
         int16_t nextId = 1;  // 0 reserved for invalid
 
-        NameMap() { idToName.push_back(""); } // slot 0 = invalid
+        // Sub-name dictionary — interns each distinct payload.
+        std::unordered_map<std::string, int16_t> subToId;
+        std::vector<std::string> idToSub;  // slot 0 unused
+        int16_t nextSubId = 1;
 
+        // Per-validity-id stack of sub-ids; top at back(); empty for root.
+        std::vector<std::vector<int16_t>> stackOfValidity;
+
+        // Per-validity-id ancestor list (includes self at back).
+        std::vector<std::vector<int16_t>> ancestorsOf;
+
+        // String-level strict-ancestors mirror of `ancestorsOf`. Keyed by
+        // descendant canonical validity-name string, maps to the set of its
+        // strict-ancestor validity-name strings (self excluded). Populated
+        // eagerly inside encodePush in lock-step with `ancestorsOf`.
+        std::unordered_map<std::string, std::set<std::string>> stringAncestorsOf;
+
+        // Sparse prefix verdicts. Key packs ordered pair (a, b); value in {-1, +1}.
+        // Self-equality (a == a) not stored. Absence = diverge.
+        std::unordered_map<uint32_t, int16_t> pairMap;
+
+        static constexpr const char* BOUNDARY_STR = "_boundary_";
+        static constexpr std::size_t BOUNDARY_LEN = 10;  // strlen("_boundary_")
+
+        /// Canonical "main" (general validity scope) is always id 1.
+        /// Guaranteed by the NameMap constructor pre-registering "main".
+        static constexpr int16_t MAIN_ID = 1;
+
+        NameMap() {
+            idToName.push_back("");           // slot 0 = invalid
+            idToSub.push_back("");            // slot 0 = invalid
+            stackOfValidity.emplace_back();   // slot 0 unused
+            ancestorsOf.emplace_back();       // slot 0 unused
+            // Pre-register "main" so MAIN_ID == 1 invariant holds before any
+            // call site encodes it explicitly. Flat-root registration path,
+            // no pairMap entries added.
+            encode("main");
+            assert(nameToId["main"] == MAIN_ID);
+        }
+
+        static uint32_t packKey(int16_t a, int16_t b) {
+            return (static_cast<uint32_t>(static_cast<uint16_t>(a)) << 16)
+                 |  static_cast<uint32_t>(static_cast<uint16_t>(b));
+        }
+
+        /// Encode a validity name into a stable id, registering metadata on first sight.
+        /// Any string without "_boundary_" inside it is registered as a root with
+        /// an empty stack (canonical root = "main"). A string containing
+        /// "_boundary_" is split at the last delimiter: everything before it is
+        /// recursively encoded as the parent, and the tail is pushed as payload.
         int16_t encode(const std::string& s) {
             auto it = nameToId.find(s);
             if (it != nameToId.end()) return it->second;
-            int16_t id = nextId++;
-            nameToId[s] = id;
-            idToName.push_back(s);
+
+            std::size_t lastPos = s.rfind(BOUNDARY_STR, std::string::npos, BOUNDARY_LEN);
+            if (lastPos == std::string::npos) {
+                // Empty string or legacy flat string — register as a fresh root.
+                int16_t id = nextId++;
+                nameToId[s] = id;
+                idToName.push_back(s);
+                stackOfValidity.emplace_back();
+                ancestorsOf.emplace_back();
+                ancestorsOf.back().push_back(id);
+                return id;
+            }
+
+            // Has "_boundary_" — recursively register parent prefix, then push payload.
+            std::string parent  = s.substr(0, lastPos);
+            std::string payload = s.substr(lastPos + BOUNDARY_LEN);
+            int16_t parentId = encode(parent);
+            return encodePush(parentId, payload);
+        }
+
+        /// Intern a payload string, returning a stable sub-id.
+        int16_t encodeSub(const std::string& payload) {
+            auto it = subToId.find(payload);
+            if (it != subToId.end()) return it->second;
+            int16_t id = nextSubId++;
+            subToId[payload] = id;
+            idToSub.push_back(payload);
             return id;
+        }
+
+        /// Push `payload` onto `parentId`'s stack, returning id of the new scope.
+        /// Deduplicates via canonical string (parent + "_boundary_" + payload).
+        /// Asserts payload does not contain the "_boundary_" delimiter.
+        int16_t encodePush(int16_t parentId, const std::string& payload) {
+            assert(payload.find(BOUNDARY_STR) == std::string::npos
+                   && "payload must not contain '_boundary_'");
+
+            std::string canonical = idToName[parentId];
+            canonical.append(BOUNDARY_STR, BOUNDARY_LEN);
+            canonical.append(payload);
+
+            auto it = nameToId.find(canonical);
+            if (it != nameToId.end()) return it->second;
+
+            int16_t subId = encodeSub(payload);
+            int16_t newId = nextId++;
+            nameToId[canonical] = newId;
+            idToName.push_back(canonical);
+
+            // Derive stack from parent.
+            stackOfValidity.push_back(stackOfValidity[parentId]);
+            stackOfValidity.back().push_back(subId);
+
+            // Derive ancestors from parent + self.
+            ancestorsOf.push_back(ancestorsOf[parentId]);
+            ancestorsOf.back().push_back(newId);
+
+            // Mirror into stringAncestorsOf. `canonical` is the descendant's
+            // full validity-name string; every entry of `ancestorsOf[newId]`
+            // except self (which is `newId` itself, at back) is a strict
+            // ancestor — record the string form.
+            {
+                auto& strAncestors = stringAncestorsOf[canonical];
+                const std::vector<int16_t>& anc = ancestorsOf.back();
+                for (std::size_t i = 0; i + 1 < anc.size(); ++i) {
+                    strAncestors.insert(idToName[static_cast<std::size_t>(anc[i])]);
+                }
+            }
+
+            // Fill pairMap verdicts against all pre-existing ids.
+            for (int16_t x = 1; x < newId; ++x) {
+                if (x == parentId) {
+                    pairMap[packKey(newId, parentId)] = 1;
+                    pairMap[packKey(parentId, newId)] = -1;
+                    continue;
+                }
+                int16_t vpx;
+                if (!verdict(parentId, x, vpx)) continue;   // diverge → diverge
+                if (vpx == -1) continue;                    // parent < x → diverge
+                if (vpx == 1) {
+                    // x is strict ancestor of parent → strict ancestor of newId.
+                    pairMap[packKey(x, newId)] = -1;
+                    pairMap[packKey(newId, x)] = 1;
+                }
+            }
+            return newId;
         }
 
         const std::string& decode(int16_t id) const {
             return idToName[static_cast<std::size_t>(id)];
+        }
+
+        const std::vector<int16_t>& stackOf(int16_t id) const {
+            return stackOfValidity[static_cast<std::size_t>(id)];
+        }
+
+        /// Split a validity name into its ordered payload list.
+        /// The root prefix (everything up to the first "_boundary_") is
+        /// discarded — the root has an empty stack. Returns payloads in
+        /// bottom-to-top order. Returns {} for a pure root (e.g. "main").
+        std::vector<std::string> parse(const std::string& s) const {
+            std::vector<std::string> out;
+            std::size_t pos = s.find(BOUNDARY_STR, 0, BOUNDARY_LEN);
+            if (pos == std::string::npos) return out;   // pure root
+            pos += BOUNDARY_LEN;
+            while (true) {
+                std::size_t next = s.find(BOUNDARY_STR, pos, BOUNDARY_LEN);
+                if (next == std::string::npos) {
+                    out.push_back(s.substr(pos));
+                    break;
+                }
+                out.push_back(s.substr(pos, next - pos));
+                pos = next + BOUNDARY_LEN;
+            }
+            return out;
+        }
+
+        /// Lookup verdict. Returns true + value if strictly comparable or a == b.
+        /// Returns false when the pair is divergent (not in map).
+        bool verdict(int16_t a, int16_t b, int16_t& out) const {
+            if (a == b) { out = 0; return true; }
+            auto it = pairMap.find(packKey(a, b));
+            if (it == pairMap.end()) return false;
+            out = it->second;
+            return true;
+        }
+
+        bool comparable(int16_t a, int16_t b) const {
+            if (a == b) return true;
+            return pairMap.find(packKey(a, b)) != pairMap.end();
+        }
+
+        /// True iff `maybeAncestor` is a strict ancestor of `descendant` in
+        /// the validity hierarchy (same relation as pairMap verdict == -1
+        /// when packed (maybeAncestor, descendant), i.e. maybeAncestor is a
+        /// strict prefix of descendant). Backed by the eagerly populated
+        /// `stringAncestorsOf` cache — no string-level computation here.
+        inline bool isStrictAncestor(const std::string& maybeAncestor,
+                                     const std::string& descendant) const {
+            auto it = stringAncestorsOf.find(descendant);
+            if (it == stringAncestorsOf.end()) return false;
+            return it->second.count(maybeAncestor) > 0;
+        }
+
+        /// Caller guarantees comparable(a, b).
+        int16_t deeperOf(int16_t a, int16_t b) const {
+            if (a == b) return a;
+            int16_t v;
+            bool ok = verdict(a, b, v);
+            (void)ok;
+            assert(ok && "deeperOf called on divergent pair");
+            return (v >= 0) ? a : b;
+        }
+
+        /// String-level deeperOf — returns whichever of `a`, `b` is the
+        /// deeper validity in the scope tree. Caller must have established
+        /// that `a` and `b` are comparable (one is on the other's
+        /// root-to-leaf path). Used by `applyEquivalenceClass` and
+        /// `applyEquivalenceClassToRejectedMapIntegration` to route the
+        /// rewritten expression to the deeper of (class scope, expr scope).
+        inline std::string deeperOf(const std::string& a,
+                                    const std::string& b) const {
+            if (a == b) return a;
+            if (isStrictAncestor(a, b)) return b;   // a shallower
+            if (isStrictAncestor(b, a)) return a;   // b shallower
+            assert(false && "deeperOf called on divergent string pair");
+            return a;
         }
     };
 
@@ -625,6 +890,16 @@ namespace gl {
         std::set<ExpressionWithValidity> admissionSetIntegration;
         std::set<ExpressionWithValidity> triggersForAdmissionSetIntegration;
         std::map<ExpressionWithValidity, std::set<RejectedMapValue>> rejectedMap;
+        // Integration-side rejection buffer — keyed on a non-in[] constituent's
+        // marker form. See RejectedMapIntegrationValue for shape + rationale.
+        std::map<ExpressionWithValidity, std::set<RejectedMapIntegrationValue>> rejectedMapIntegration;
+        // Monotonically-growing cache of non-marker args that appear in any
+        // rejectedMapIntegration key. Used by applyEquivalenceClassToRejectedMapIntegration
+        // to short-circuit when an eq class has no overlap with any stored
+        // key — saves O(|rmi|) walk per class call on batches where rmi is
+        // large but most classes are unrelated (observed in Gauss: ~10^5 rmi
+        // entries and ~10^6 class calls).
+        std::unordered_set<std::string> varsInRejectedMapIntegrationKeys;
         std::map<ExpressionWithValidity, bool> admissionStatusMap;
         std::set<std::string> productsOfRecursion;
         std::unordered_set<int16_t> productsOfRecursionIds;
@@ -637,7 +912,9 @@ namespace gl {
               normalizedEncodedSubkeysMinusOne(), normalizedEncodedSubkeysMinusTwo(),
               originals(), admissionMap(), admissionMapIntegration(),
               admissionSetIntegration(), triggersForAdmissionSetIntegration(),
-              rejectedMap(), admissionStatusMap(), productsOfRecursion(), productsOfRecursionIds(),
+              rejectedMap(), rejectedMapIntegration(),
+              varsInRejectedMapIntegrationKeys(),
+              admissionStatusMap(), productsOfRecursion(), productsOfRecursionIds(),
               consumedAdmissionKeys(), revisitInProgress()
         {}
 
@@ -655,6 +932,8 @@ namespace gl {
             admissionSetIntegration.clear();
             triggersForAdmissionSetIntegration.clear();
             rejectedMap.clear();
+            rejectedMapIntegration.clear();
+            varsInRejectedMapIntegrationKeys.clear();
             admissionStatusMap.clear();
             productsOfRecursion.clear();
             productsOfRecursionIds.clear();
@@ -663,140 +942,6 @@ namespace gl {
         }
     };
 
-
-    // ========================================================================
-    // Debug dump: decode IntNormalizedKey to string vector matching
-    // NormalizedKey.data format, for diff-based validation.
-    // Requires arity lookup: exprName → number of arguments.
-    // ========================================================================
-
-    inline std::vector<std::string> decodeIntKey(
-        const IntNormalizedKey& ik,
-        const NameMap& nm,
-        const std::map<std::string, LogicalEntity>& compiledExpressions) {
-
-        std::vector<std::string> out;
-        int16_t pos = 0;
-        for (int16_t e = 0; e < ik.numberExpressions; ++e) {
-            if (pos + 2 > ik.length) break;
-            const std::string& name = nm.decode(ik.data[pos++]);
-            out.push_back(name);
-            out.push_back(ik.data[pos++] ? "True" : "False");
-
-            int arity = 0;
-            auto it = compiledExpressions.find(name);
-            if (it != compiledExpressions.end()) {
-                arity = it->second.arity;
-            }
-
-            for (int a = 0; a < arity; ++a) {
-                if (pos + 2 > ik.length) break;
-                int16_t varId = ik.data[pos++];
-                int16_t changeStatus = ik.data[pos++];
-                if (changeStatus == 1) {
-                    out.push_back("u_" + nm.decode(varId));
-                } else {
-                    out.push_back(std::to_string(varId));
-                }
-            }
-        }
-        return out;
-    }
-
-    inline std::string decodedKeyToString(int16_t numExpr, const std::vector<std::string>& data) {
-        std::string s = std::to_string(numExpr) + ":";
-        for (std::size_t i = 0; i < data.size(); ++i) {
-            if (i > 0) s += ",";
-            s += data[i];
-        }
-        return s;
-    }
-
-    inline void dumpHashMemory(
-        const HashMemory& mem,
-        const NameMap& nm,
-        const std::map<std::string, LogicalEntity>& compiledExpressions,
-        int burstIndex,
-        const std::string& prefix = ".dump/hash_int_") {
-
-        std::string path = prefix + std::to_string(burstIndex) + ".txt";
-        std::ofstream f(path);
-        if (!f.is_open()) return;
-
-        // encodedMap
-        {
-            std::vector<std::string> lines;
-            for (const auto& kv : mem.encodedMap) {
-                std::vector<std::string> decoded = decodeIntKey(kv.first, nm, compiledExpressions);
-                std::string keyStr = decodedKeyToString(kv.first.numberExpressions, decoded);
-                for (const auto& lmv : kv.second) {
-                    lines.push_back("EM|" + keyStr + "|" + lmv.value + "|" +
-                        lmv.justification + "|" + lmv.validityName + "|" +
-                        lmv.originalImplication);
-                }
-            }
-            std::sort(lines.begin(), lines.end());
-            for (const auto& l : lines) f << l << "\n";
-        }
-        // normalizedEncodedKeys
-        {
-            std::vector<std::string> lines;
-            for (const auto& ik : mem.normalizedEncodedKeys) {
-                std::vector<std::string> decoded = decodeIntKey(ik, nm, compiledExpressions);
-                lines.push_back("NK|" + decodedKeyToString(ik.numberExpressions, decoded));
-            }
-            std::sort(lines.begin(), lines.end());
-            for (const auto& l : lines) f << l << "\n";
-        }
-        // normalizedEncodedSubkeys
-        {
-            std::vector<std::string> lines;
-            for (const auto& ik : mem.normalizedEncodedSubkeys) {
-                std::vector<std::string> decoded = decodeIntKey(ik, nm, compiledExpressions);
-                lines.push_back("SK|" + decodedKeyToString(ik.numberExpressions, decoded));
-            }
-            std::sort(lines.begin(), lines.end());
-            for (const auto& l : lines) f << l << "\n";
-        }
-        // normalizedEncodedSubkeysMinusOne
-        {
-            std::vector<std::string> lines;
-            for (const auto& ik : mem.normalizedEncodedSubkeysMinusOne) {
-                std::vector<std::string> decoded = decodeIntKey(ik, nm, compiledExpressions);
-                lines.push_back("S1|" + decodedKeyToString(ik.numberExpressions, decoded));
-            }
-            std::sort(lines.begin(), lines.end());
-            for (const auto& l : lines) f << l << "\n";
-        }
-        // normalizedEncodedSubkeysMinusTwo
-        {
-            std::vector<std::string> lines;
-            for (const auto& ik : mem.normalizedEncodedSubkeysMinusTwo) {
-                std::vector<std::string> decoded = decodeIntKey(ik, nm, compiledExpressions);
-                lines.push_back("S2|" + decodedKeyToString(ik.numberExpressions, decoded));
-            }
-            std::sort(lines.begin(), lines.end());
-            for (const auto& l : lines) f << l << "\n";
-        }
-        // remainingArgsNormalizedEncodedMap
-        {
-            std::vector<std::string> lines;
-            for (const auto& kv : mem.remainingArgsNormalizedEncodedMap) {
-                std::string argsStr;
-                for (const auto& a : kv.first) {
-                    if (!argsStr.empty()) argsStr += ",";
-                    argsStr += nm.decode(a);
-                }
-                for (const auto& ik : kv.second) {
-                    std::vector<std::string> decoded = decodeIntKey(ik, nm, compiledExpressions);
-                    lines.push_back("RA|" + argsStr + "|" + decodedKeyToString(ik.numberExpressions, decoded));
-                }
-            }
-            std::sort(lines.begin(), lines.end());
-            for (const auto& l : lines) f << l << "\n";
-        }
-        f << "MAX_KEY_LEN|" << mem.maxKeyLength << "\n";
-    }
 
     // ========================================================================
 
@@ -989,6 +1134,23 @@ namespace gl {
         Mail() : statements(), implications(), exprOriginMap() {}
     };
 
+    // Separate, per-LB, validity-preserving inbox for integration-revival
+    // messages. Populated by applyEquivalenceClassToRejectedMapIntegration
+    // and revisitRejectedIntegration2 during hashburst body; drained at the
+    // top of the next hashburst (status=1 absorb — full disintegration
+    // pipeline re-fires).
+    //
+    // Kept separate from Mail to avoid disturbing smashMail / mailOut
+    // routing (which is main-only by contract). The third tuple element is
+    // validityName — may be non-main.
+    struct InternalMail {
+        std::set< std::tuple<std::string, std::set<int>, std::string> > statements;
+        std::map<ExpressionWithValidity,
+                 std::vector<std::pair<std::string, std::vector<ExpressionWithValidity>>>> exprOriginMap;
+
+        InternalMail() : statements(), exprOriginMap() {}
+    };
+
     
 
     struct EquivalenceClass {
@@ -1020,6 +1182,13 @@ namespace gl {
         std::vector<EncodedExpression> encodedStatements;
         std::map<EncodedExpression, std::set<int> > statementLevelsMap;
         std::string exprKey;
+        // The concrete "recursion" hypothesis deposited in this LB
+        // (tempExpr2 for check_induction_condition, tempExpr4 for
+        // check_zero). Empty when the LB is not an induction sub-block.
+        // Used by vacuous-truth emission as the 3rd ingredient so the
+        // verifier's chapter-local trace can actually reach it (the
+        // derivation chains inside the LB use this form, not exprKey).
+        std::string recursionHypothesis;
         Memory* parentMemory;
         int level;
 
@@ -1029,11 +1198,19 @@ namespace gl {
 
         std::map<std::string, std::vector<EquivalenceClass>> equivalenceClassesMap;
         std::vector<EncodedExpression> localEncodedStatements;
+        // Parallel set keyed by EncodedExpression for O(log N) membership lookups
+        // (vector lookup is O(N) and the local-premise gate inside
+        // checkLocalEncodedMemoryStatic iterates per disintegration candidate).
+        // Maintained in lockstep with localEncodedStatements at every push_back
+        // site and the one assignment site at prover.hpp. See I-7 / D-28 for
+        // the gate semantics.
+        std::set<EncodedExpression> localEncodedStatementsSet;
         std::vector<EncodedExpression> localEncodedStatementsDelta;
         std::map<std::string, int> integrationStartIntMap;
 
         Mail mailIn;
         Mail mailOut;
+        InternalMail internalMailIn;   // revival inbox for integration-side rejection recovery
 
         std::set<EncodedExpression> wholeExpressions;
         std::map<std::string, std::map<std::set<std::string>, int>> eqClassSttmntIndexMapMap;
@@ -1054,6 +1231,19 @@ namespace gl {
         // --- Incubator: contradiction proving ---
         bool primedForContradiction = false;
         std::string contradictionTheorem;
+
+        // --- OR admission: controls which OR expressions fire branch machinery ---
+        // Empty = no OR branches fire (implications always fire regardless).
+        // Contains ExpressionWithValidity entries (disjuncts with parent validity).
+        // OR fires only when ALL its disjuncts are in this set.
+        std::set<ExpressionWithValidity> orAdmissionSet;
+
+        // --- OR bookkeeping: convergence tracking ---
+        // Key: (derived_expression, or_signature) → set of branch disjuncts that produced it
+        // e.g. ("(in2[x,y,z])", "(or3[a,b,c])") → {"(in[7,1])", "(=[7,2])"}
+        std::map<std::pair<std::string, std::string>, std::set<std::string>> orBookkeeping;
+        // Number of disjuncts per OR expression for convergence check
+        std::map<std::string, int> orDisjunctCount;
 
         // --- Static hot path: int16_t-based hash memory ---
         NameMap nameMap;
@@ -1080,6 +1270,7 @@ namespace gl {
             encodedStatements(),
             statementLevelsMap(),
             exprKey(),
+            recursionHypothesis(),
             parentMemory(nullptr),
             level(-1),
             overallHashMemory(),
@@ -1091,6 +1282,7 @@ namespace gl {
 			integrationStartIntMap(),
             mailIn(),
             mailOut(),
+            internalMailIn(),
             wholeExpressions(),
             eqClassSttmntIndexMapMap(),
             isActive(true),
@@ -1108,6 +1300,9 @@ namespace gl {
 			axedVariables(),
 			primedForContradiction(false),
 			contradictionTheorem(),
+            orAdmissionSet(),
+            orBookkeeping(),
+            orDisjunctCount(),
             nameMap(),
             keyArena(),
             intValidityNamesToFilter(),

@@ -1,5 +1,5 @@
 ﻿/* Generative Logic : A deterministic reasoning and knowledge generation engine.
- Copyright(C) 2025 Generative Logic UG(haftungsbeschränkt)
+ Copyright(C) 2025-2026 Generative Logic UG(haftungsbeschränkt)
 
  This program is free software : you can redistribute it and /or modify
  it under the terms of the GNU Affero General Public License as published by
@@ -30,6 +30,18 @@ void ExpressionAnalyzer::buildStack(Memory& memoryBlock,
     const ExpressionWithValidity& proved,
     std::vector<std::vector<std::string>>& stack,
     std::set<ExpressionWithValidity>& covered) {
+    // TRIPWIRE: sentinel validity used by disintegrateExprHypothetically.
+    // Hypothetical disintegration products must never reach buildStack —
+    // they are throw-away structural probes and the lambda no-track path
+    // already suppresses their origin writes. If this ever fires, a new
+    // leak path has appeared that needs investigation.
+    static const std::string kHypoDisintMarker = "_boundary_hypothetical_disintegration";
+    if (proved.validityName.find(kHypoDisintMarker) != std::string::npos) {
+        std::cerr << "[buildStack] TRIPWIRE: hypothetical-disintegration sentinel "
+                  << "reached buildStack: " << proved.original
+                  << " (v=" << proved.validityName << ")\n";
+        assert(false && "buildStack: hypothetical disintegration sentinel leaked into proof graph");
+    }
     // Lookup origin list for `proved`: try exact ns first, then fallback to "main"
     auto it = memoryBlock.exprOriginMap.find(proved);
     if (it == memoryBlock.exprOriginMap.end() || it->second.empty()) {
@@ -42,6 +54,37 @@ void ExpressionAnalyzer::buildStack(Memory& memoryBlock,
             if (proved.original.find("_integration_goal") != std::string::npos) {
                 return;
             }
+            // Dump full LB state for debugging
+            std::ofstream dump(".debug/buildstack_dump.txt", std::ios::trunc);
+            dump << "Missing origin for: " << proved.original
+                 << " | validity=" << proved.validityName
+                 << " | exprKey=" << memoryBlock.exprKey << "\n";
+            dump << "Parent chain: " << memoryBlock.exprKey;
+            Memory* p = memoryBlock.parentMemory;
+            while (p) {
+                dump << " -> " << p->exprKey;
+                p = p->parentMemory;
+            }
+            dump << "\n\n";
+            dump << "=== Encoded Statements (" << memoryBlock.encodedStatements.size() << ") ===\n";
+            for (size_t i = 0; i < memoryBlock.encodedStatements.size(); ++i) {
+                dump << "  [" << i << "] " << memoryBlock.encodedStatements[i].original
+                     << " | v=" << memoryBlock.encodedStatements[i].validityName << "\n";
+            }
+            dump << "\n=== exprOriginMap (" << memoryBlock.exprOriginMap.size() << " entries) ===\n";
+            for (const auto& [key, origins] : memoryBlock.exprOriginMap) {
+                dump << "  " << key.original << " | v=" << key.validityName << "\n";
+                for (const auto& [tag, deps] : origins) {
+                    dump << "    <- " << tag;
+                    for (const auto& d : deps) dump << " | " << d.original << " (v=" << d.validityName << ")";
+                    dump << "\n";
+                }
+            }
+            dump.flush();
+            std::cerr << "[buildStack] no origin for: " << proved.original
+                      << " | validity=" << proved.validityName
+                      << " | exprKey=" << memoryBlock.exprKey
+                      << " — dump written to .debug/buildstack_dump.txt\n";
             assert(false && "buildStack: no origin found");
         }
     }
@@ -298,6 +341,122 @@ void gl::ExpressionAnalyzer::findEnds(const std::vector<std::string>& path, cons
     mapFile.close();
 }
 
+void ExpressionAnalyzer::loadGlBinary(const std::filesystem::path& jsonPath) {
+    namespace fs = std::filesystem;
+    if (!fs::exists(jsonPath)) {
+        return;  // first batch on a clean run; nothing to load.
+    }
+
+    nlohmann::json root;
+    {
+        std::ifstream f(jsonPath.string());
+        if (!f.is_open()) {
+            return;
+        }
+        try {
+            f >> root;
+        } catch (const std::exception& e) {
+            std::cerr << "[loadGlBinary] failed to parse " << jsonPath
+                      << ": " << e.what() << std::endl;
+            return;
+        }
+    }
+    if (!root.is_object()) {
+        return;
+    }
+
+    int loadedSpontaneous = 0;
+    int loadedTotal = 0;
+    int maxImpl = -1, maxExist = -1, maxAnd = -1, maxOr = -1;
+
+    for (auto it = root.begin(); it != root.end(); ++it) {
+        const std::string& name = it.key();
+        const auto& entry = it.value();
+        if (!entry.is_object()) continue;
+
+        std::string category  = entry.value("category", std::string("atomic"));
+        std::string signature = entry.value("signature", std::string());
+        int arity             = entry.value("arity", 0);
+        std::string definedSet = entry.value("definedSet", std::string());
+
+        std::vector<std::string> elements;
+        if (entry.contains("elements") && entry["elements"].is_array()) {
+            for (const auto& e : entry["elements"]) {
+                if (e.is_string()) elements.push_back(e.get<std::string>());
+            }
+        }
+
+        // Always populate compiledExpressions so any read-side path
+        // (e.g. encoded-expression resolution) sees the entry.
+        compiledExpressions[name] = LogicalEntity(category, elements, signature, arity, definedSet);
+        ++loadedTotal;
+
+        // Spontaneous categories also need a repetitionExclusionMap entry
+        // and contribute to counter seeding. Anchor / atomic entries are
+        // batch-local and stay out of these structures.
+        const bool isSpontaneous =
+            (category == "implication") || (category == "existence")
+            || (category == "or") || (category == "and");
+        if (!isSpontaneous) continue;
+
+        // Identify the prefix that matches the category and parse the
+        // trailing integer. Names that don't fit (e.g. an anchor
+        // mis-categorised to "and") are skipped for counter-seeding but
+        // still appear in compiledExpressions.
+        const std::string& prefix = category;  // implication / existence / or / and
+        if (name.size() <= prefix.size() ||
+            name.compare(0, prefix.size(), prefix) != 0) {
+            continue;
+        }
+        int n = -1;
+        try {
+            n = std::stoi(name.substr(prefix.size()));
+        } catch (...) {
+            continue;
+        }
+        if (n < 0) continue;
+
+        if      (category == "implication" && n > maxImpl)  maxImpl  = n;
+        else if (category == "existence"   && n > maxExist) maxExist = n;
+        else if (category == "and"         && n > maxAnd)   maxAnd   = n;
+        else if (category == "or"          && n > maxOr)    maxOr    = n;
+
+        // Use the loaded elements vector directly as splitNK. excludeRepetitions
+        // stores the splitNK in LogicalEntity::elements when allocating, so the
+        // JSON's "elements" field for a spontaneous entry IS the splitNK that
+        // was originally registered. We rebuild an identity reverseUnchMap over
+        // the u_<i> slots; permutation variants are not pre-registered (only
+        // the canonical chain order is), which is the conservative choice — the
+        // worst case is that a future call computes a permuted splitNK and
+        // misses the cache, falling through to the allocation path with a
+        // counter that's already past the existing N, so identifiers stay
+        // unique. The chapter-85 / Gauss-renames-Peano case (the bug this
+        // change fixes) hits the canonical key so it is covered.
+        std::map<std::string, std::string> reverseUnchMap;
+        for (int i = 1; i <= arity; ++i) {
+            const std::string uN = "u_" + std::to_string(i);
+            reverseUnchMap[uN] = uN;
+        }
+        repetitionExclusionMap[elements] = std::make_tuple(reverseUnchMap, name, elements);
+        ++loadedSpontaneous;
+    }
+
+    if (maxImpl  >= 0) implCounter      = std::max(implCounter,      maxImpl  + 1);
+    if (maxExist >= 0) existenceCounter = std::max(existenceCounter, maxExist + 1);
+    if (maxAnd   >= 0) andCounter       = std::max(andCounter,       maxAnd   + 1);
+    if (maxOr    >= 0) orCounter        = std::max(orCounter,        maxOr    + 1);
+
+#if 0
+    std::cout << "[loadGlBinary] loaded " << loadedTotal << " entries ("
+              << loadedSpontaneous << " spontaneous) from " << jsonPath
+              << " — counters seeded: implCounter=" << implCounter
+              << " existenceCounter=" << existenceCounter
+              << " andCounter=" << andCounter
+              << " orCounter=" << orCounter << std::endl;
+#endif
+}
+
+
 void ExpressionAnalyzer::exportCompiledExpressionsJSON(const std::filesystem::path& outDir) {
     namespace fs = std::filesystem;
     fs::create_directories(outDir);
@@ -541,6 +700,45 @@ void ExpressionAnalyzer::generateRawProofGraph(
             return std::vector<std::vector<std::string> >();
         };
 
+    // Induction typing chapter: walk back from (in[inductionVar, N]) in the
+    // PARENT memoryBlock's exprOriginMap. fXY / fXYZ forward-chaining on a
+    // positive (in2[inductionVar, …])/(in3[…, inductionVar, …, f]) premise
+    // fires at the parent memoryBlock, so the derivation's origin chain lives
+    // there (mail propagates statements to sub-blocks but the origin record
+    // stays with the block where the rule fired). The chapter corresponds to
+    // the typing sub-proof that gates induction promotion in updateGlobal.
+    // See docs/induction_typing_plan.md.
+    auto inductionTypingStack = [&](const std::string& theorem,
+        const std::string& inductionVar,
+        const std::string& /*recCounter*/) -> std::vector<std::vector<std::string> > {
+            std::vector< std::tuple<std::string, std::vector<std::string>, std::set<std::string> > > tempChain;
+            (void)ce::disintegrateImplication(theorem, tempChain, coreExpressionMap);
+
+            std::vector<std::string> chain;
+            chain.reserve(tempChain.size());
+            for (std::size_t i = 0; i < tempChain.size(); ++i) chain.push_back(std::get<0>(tempChain[i]));
+
+            Memory* mb = &body;
+            for (std::size_t i = 0; i < chain.size(); ++i) {
+                std::map<std::string, Memory*>::iterator it = mb->simpleMap.find(chain[i]);
+                if (it == mb->simpleMap.end() || it->second == NULL) return std::vector<std::vector<std::string> >();
+                mb = it->second;
+            }
+
+            // Anchor N slot (args[0] of the anchor expression in chain[0])
+            std::vector<std::string> args0 = ce::getArgs(chain[0]);
+            if (args0.empty()) return std::vector<std::vector<std::string> >();
+            const std::string nName = args0[0];
+
+            const std::string typingGoal =
+                std::string("(in[") + inductionVar + "," + nName + "])";
+
+            std::vector<std::vector<std::string> > stack;
+            std::set<ExpressionWithValidity> covered;
+            this->buildStack(*mb, ExpressionWithValidity(typingGoal, "main"), stack, covered);
+            return stack;
+        };
+
     auto debugStack = [&](const std::string& pathPlusEnd) -> std::vector<std::vector<std::string>> {
         std::string::size_type firstPlus = pathPlusEnd.find('+');
         if (firstPlus == std::string::npos) return std::vector<std::vector<std::string>>();
@@ -603,17 +801,34 @@ void ExpressionAnalyzer::generateRawProofGraph(
         const std::string method = toLower(methodOrig);
 
         if (method == "induction") {
-            std::vector<std::vector<std::string> > st0 = checkZeroStack(name, var, recCtr);
-            writeStackIndexed(idx, "check_zero", st0);
+            auto cacheIt = cachedProofStacks.find(name);
+
+            // Chapter order: typing first, then check_zero, then
+            // check_induction_condition. Typing is the gate — it establishes
+            // `(in[var,N])` which both subsequent chapters rely on.
+            // `mapping << name …` is written once against the TYPING chapter
+            // (chapter index `idx`) so the verifier pairs the induction row
+            // with index `idx` and its two siblings at `idx+1`, `idx+2`.
+            std::vector<std::vector<std::string> > stT =
+                (cacheIt != cachedProofStacks.end()) ? cacheIt->second.stack2 : inductionTypingStack(name, var, recCtr);
+            writeStackIndexed(idx, "induction_typing", stT);
             mapping << name << '\t' << methodOrig << '\t' << var << '\n';
             ++idx;
 
-            std::vector<std::vector<std::string> > st1 = checkInductionConditionStack(name, var, recCtr);
+            std::vector<std::vector<std::string> > st0 =
+                (cacheIt != cachedProofStacks.end()) ? cacheIt->second.stack0 : checkZeroStack(name, var, recCtr);
+            writeStackIndexed(idx, "check_zero", st0);
+            ++idx;
+
+            std::vector<std::vector<std::string> > st1 =
+                (cacheIt != cachedProofStacks.end()) ? cacheIt->second.stack1 : checkInductionConditionStack(name, var, recCtr);
             writeStackIndexed(idx, "check_induction_condition", st1);
             ++idx;
         }
         else if (method == "direct") {
-            std::vector<std::vector<std::string> > st = directStack(name);
+            auto cacheIt = cachedProofStacks.find(name);
+            std::vector<std::vector<std::string> > st =
+                (cacheIt != cachedProofStacks.end()) ? cacheIt->second.stack0 : directStack(name);
             writeStackIndexed(idx, "direct_proof", st);
             mapping << name << '\t' << methodOrig << '\t' << var << '\n';
             lastDirectIdx = idx;
@@ -658,6 +873,20 @@ void ExpressionAnalyzer::generateRawProofGraph(
             st.back().push_back(var);
             st.back().push_back("main");
             writeStackIndexed(idx, "back_reformulated_statement", st);
+            mapping << name << '\t' << methodOrig << '\t' << var << '\n';
+            ++idx;
+        }
+        else if (method == "or theorem") {
+            std::vector<std::vector<std::string>> st;
+            st.push_back(std::vector<std::string>());
+            st.back().push_back(name);
+            st.back().push_back("main");
+            st.back().push_back("or theorem");
+            st.back().push_back(var);       // existence theorem
+            st.back().push_back("main");
+            st.back().push_back(recCtr);    // companion theorem
+            st.back().push_back("main");
+            writeStackIndexed(idx, "or_theorem", st);
             mapping << name << '\t' << methodOrig << '\t' << var << '\n';
             ++idx;
         }

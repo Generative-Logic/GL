@@ -1,0 +1,5 @@
+(existence2[N,v1,s])	main	vacuous truth	!(=[i0,v1])	main	(=[i0,v1])	main	(=[v1,i0])	main
+!(=[i0,v1])	main	symmetry of inequality	!(=[v1,i0])	main
+!(=[v1,i0])	main	task formulation
+(=[i0,v1])	main	symmetry of equality	(=[v1,i0])	main
+(=[v1,i0])	main	recursion
