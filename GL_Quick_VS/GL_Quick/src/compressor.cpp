@@ -30,10 +30,17 @@
 
 namespace gl {
 
-    // =================================================================
-    // Constructor
-    // =================================================================
-
+    /// @brief Constructor — store references to the prover state and the
+    /// full theorem list, seed the compact↔expanded mapping.
+    ///
+    /// @details
+    /// `compactToExpanded` is populated up-front with the identity mapping
+    /// (compact == expanded). The compressor's Phase 1 may overwrite some
+    /// entries when it discovers that a theorem appears in the prover's
+    /// `globalTheoremList` under an expanded form different from its
+    /// compact one (the `or0`/`existence2` rewrite at `prover.cpp:7407`
+    /// is the canonical example). The map ensures `runPhase2`'s output
+    /// is in the same form the rest of the pipeline expects.
     Compressor::Compressor(ExpressionAnalyzer& analyzer,
         const std::vector<std::string>& all_theorems)
         : analyzer(analyzer),
@@ -44,10 +51,16 @@ namespace gl {
         }
     }
 
-    // =================================================================
-    // run() — top-level entry point
-    // =================================================================
-
+    /// @brief Top-level entry — run Phase 1 (graph extraction) then
+    /// Phase 2 (greedy redundancy elimination).
+    ///
+    /// @details
+    /// Prints progress banners between phases for the run-mode log; the
+    /// banners are part of `run_modes`'s narrative and downstream log
+    /// scrapers grep for them — do not silently change the text.
+    /// Returns the surviving theorem strings in stable order.
+    ///
+    /// @return Surviving theorem texts.
     std::vector<std::string> Compressor::run() {
         std::cout << "\n======================================" << std::endl;
         std::cout << "Starting Compressor Phase 1 (Hash Bursts)" << std::endl;
@@ -60,12 +73,39 @@ namespace gl {
         return runPhase2();
     }
 
-    // =================================================================
-    // Phase 1 — Build per-LB proof graphs
-    // =================================================================
-
-#pragma optimize("", off)
-
+    /// @brief Phase 1 — extract one `CompressorNode` per theorem by re-running
+    /// the prover under compressor flags.
+    ///
+    /// @details
+    /// Toggles `analyzer.parameters.compressor_mode = true` and
+    /// `analyzer.parameters.ban_disintegration = true` for the duration of
+    /// Phase 1. `compressor_mode` does several things:
+    /// 1. Disables Pass B (gated by `!compressor_mode` in prover.cpp's
+    ///    Pass B entry) so the compressor's per-theorem run does not
+    ///    spawn disintegration products that would explode the graph.
+    /// 2. Caps origin storage at `compressor_max_origins_per_expr`
+    ///    (vs the larger `max_origin_per_expr` used in the main run) so
+    ///    each `CompressorNode::graph` stays bounded.
+    /// 3. Selects compressor-specific filter / mail behaviours where
+    ///    relevant.
+    ///
+    /// `ban_disintegration` is the umbrella flag from D-28 (since
+    /// 2026-04-29) that gates Pass B + back-reformulation +
+    /// hypo-disintegration together; setting both flags is the
+    /// belt-and-suspenders approach.
+    ///
+    /// `#pragma optimize("", off)` disables MSVC's whole-function
+    /// optimizer for this body (some MSVC versions have eaten the
+    /// per-theorem loop's invariants under aggressive inlining; the
+    /// pragma is a known-good workaround). Do NOT remove without
+    /// re-verifying on the affected compiler version.
+    ///
+    /// @post `extracted_graphs.size() == all_theorems.size()`. Each
+    ///       node carries the LB's graph, premises, head, and original
+    ///       theorem text.
+    /// @invariant [I-7](../../docs/30_invariants.md#i-7) — Pass B is
+    ///            gated by `!ban_disintegration`; setting that flag here
+    ///            disables disintegration for compressor mode.
     void Compressor::runPhase1() {
         // --- Turn on compressor-specific flags ---
         analyzer.parameters.compressor_mode            = true;
@@ -204,6 +244,28 @@ namespace gl {
     //   4. Return whether the head is alive.
     // =================================================================
 
+    /// @brief Forward-reachability oracle — true iff `node.head` is reachable
+    /// from `node.premises` plus the surviving theorems given a candidate
+    /// kill set.
+    ///
+    /// @details
+    /// Walks `node.graph` BFS-style: a head is reachable if any of its
+    /// alternative dependency-lists has every dep reachable. Reachability
+    /// is determined by:
+    /// - presence in `node.premises` (always alive),
+    /// - presence in the surviving theorem set (i.e. the set of all
+    ///   theorems minus `dead_theorems`),
+    /// - or transitive reachability through other graph edges.
+    ///
+    /// Used inside Phase 2's per-theorem kill-test loop; called once per
+    /// `(theorem, candidate_kill_set)` pair, so its cost dominates Phase
+    /// 2 wall-clock. Implementation is iterative (no recursion) to
+    /// avoid stack growth on the largest Gauss graphs.
+    ///
+    /// @param node           The CompressorNode whose head we are testing.
+    /// @param dead_theorems  Candidate kill set; theorems in this set are
+    ///                       treated as unavailable.
+    /// @return True iff `node.head` is reachable.
     bool Compressor::isDerivable(const CompressorNode& node,
                              const std::set<std::string>& dead_theorems) const
     {
@@ -261,6 +323,26 @@ namespace gl {
     // Phase 2 — Greedy Elimination with multi-pass
     // =================================================================
 
+    /// @brief Phase 2 — greedy multi-pass redundancy elimination.
+    ///
+    /// @details
+    /// Iterates the theorem list in `std::stable_sort` order (per
+    /// `OPEN-13` in `docs/SwDD.md` — output determinism depends on
+    /// stable ordering). Each pass walks every theorem and tests
+    /// `isDerivable(node, dead ∪ {theorem})` on every other LB's
+    /// CompressorNode; if every head stays derivable, the theorem is
+    /// killed. Repeats until no theorem is killed in a full pass —
+    /// fixed-point convergence.
+    ///
+    /// Output is the surviving theorem texts in the same stable order
+    /// as the input. Compressed-out theorems are written to
+    /// `files/theorems/compressed_out_theorems.txt` (and
+    /// `compressed_external_theorems.txt` for the externals path) by
+    /// `run_modes::fullRun`'s post-compressor write step; this function
+    /// returns only the survivors.
+    ///
+    /// @return Surviving theorem texts.
+    /// @see OPEN-13 in `docs/SwDD.md` — stable-sort determinism.
     std::vector<std::string> Compressor::runPhase2() {
 
         // ---- 1. Compute per-theorem usage counts ----

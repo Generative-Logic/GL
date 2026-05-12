@@ -85,6 +85,46 @@ namespace gl {
 
 
 
+/// @brief Construct the prover for a named anchor batch.
+///
+/// @details
+/// One-shot constructor. Steps performed:
+/// 1. Default-initialize the per-batch state slots (parameters, body LB,
+///    permutation/mapping caches, dependency tracker, mailboxes,
+///    contradiction table, etc.) via the member initialiser list.
+/// 2. Locate `files/config/Config<anchorID>.json` via a search-path walk
+///    (the default search list covers typical run environments).
+/// 3. Load the JSON config into `coreExpressionMap` via
+///    `ce::modifyCoreExpressionMap` and build `anchorInfo` via
+///    `ce::initAnchor` (which asserts the anchor key exists).
+/// 4. Populate the `operators` and `expressionsFromConfig` sets from
+///    `coreExpressionMap` so hot-path classification queries are O(log N).
+/// 5. Seed the per-batch counters (`implCounter`, `existenceCounter`,
+///    `andCounter`, `orCounter`, `variableCounter`) from
+///    `ProverParameters` defaults; these get bumped on every fresh
+///    expression-name mint during the run.
+/// 6. Build `allMappingsAna` and `allPermutationsAna` for the fixed
+///    arity range so the static request pipeline does not have to
+///    enumerate at runtime.
+///
+/// Construction does **not** run the pipeline — it only loads
+/// configuration and prepares the per-batch state. The pipeline is
+/// driven by `run_modes::fullRun(anchorID)`.
+///
+/// @param anchorID Short anchor name (e.g. `"Peano"`, `"Gauss"`,
+///                 `"IncubatorPeano"`). The `"Anchor"` prefix is added
+///                 internally by `ce::initAnchor`.
+/// @pre  `files/config/Config<anchorID>.json` exists and is well-formed.
+/// @post `coreExpressionMap`, `anchorInfo`, `operators`,
+///       `expressionsFromConfig`, and the per-batch counters are
+///       populated. The body LB tree is empty (no theorem loaded yet).
+/// @invariant [I-1](../../docs/30_invariants.md#i-1) — every
+///            theorem-load path must call
+///            `precompileStructuralOperators` before disintegration.
+///            That call is in the per-theorem load site, not the
+///            constructor.
+/// @see [`ce::modifyCoreExpressionMap`](compiler.hpp#modifycoreexpressionmap),
+///      [`ce::initAnchor`](compiler.hpp#initanchor).
 // Default constructor definition
 ExpressionAnalyzer::ExpressionAnalyzer(std::string anchorID)
     :parameters(),
@@ -93,7 +133,6 @@ ExpressionAnalyzer::ExpressionAnalyzer(std::string anchorID)
     allPermutationsAna(),
     globalDependencies(),
     inductionMemoryBlocks(),
-    pendingAncestorOrigins(),
     contradictionTable(),
     index(),
     boxes(),
@@ -251,6 +290,19 @@ ExpressionAnalyzer::ExpressionAnalyzer(std::string anchorID)
 }
 
 //#pragma optimize("", off)
+/// @brief Canonicalize an MPL expression — strip whitespace and tighten
+/// the outer wrapping.
+///
+/// @details
+/// Canonical MPL never carries whitespace; if upstream produces an
+/// expression with stray spaces or tabs, `smoothenExpr` removes them.
+/// Also handles a few legacy wrapping cases (extra outer parens that
+/// crept in from older code paths) by normalising to the canonical
+/// `(<name>[args])` form. Idempotent: calling twice returns the same
+/// string.
+///
+/// @param expr Possibly non-canonical MPL text.
+/// @return Canonical form.
 std::string ExpressionAnalyzer::smoothenExpr(const std::string& expr) {
     struct Helper {
         static void deleteTree(ce::TreeNode1* n) {
@@ -345,6 +397,24 @@ std::string ExpressionAnalyzer::smoothenExpr(const std::string& expr) {
     return smoothenedExpr;
 }
 
+/// @brief Recursive helper for `groomExpr` — parse one subexpression of a
+/// tree-format MPL string, returning its flat-list form.
+///
+/// @details
+/// Walks `s` starting at `index`, recognising the tree-format constructs
+/// (`(>...)`, `(&...)`, `!(>...)`, `!(&...)`, atomic predicates,
+/// negated atomic predicates) and emitting one entry per subexpression
+/// into the returned flat vector. Updates `index` to the position
+/// immediately after the consumed subexpression so the caller can
+/// continue parsing.
+///
+/// @param s     Tree-format MPL text.
+/// @param side  Side flag (0 = left, 1 = right) — used by the caller's
+///              recursion to keep the parent's left/right ordering
+///              correct.
+/// @param index In/out: parse position. Advanced past the consumed
+///              subexpression on success.
+/// @return Flat-list form of the parsed subexpression.
 std::vector<std::string> ExpressionAnalyzer::groomSubexpr(const std::string& s, int side, std::size_t& index) {
     std::vector<std::string> subexprList;
 
@@ -475,11 +545,39 @@ std::vector<std::string> ExpressionAnalyzer::groomSubexpr(const std::string& s, 
     return subexprList;
 }
 
+/// @brief Convert a tree-format MPL expression into a flat
+/// `std::vector<std::string>` representation suitable for the hash engine.
+///
+/// @details
+/// Top-level driver around `groomSubexpr`. The flat form is what the
+/// hash-engine inserts and look-ups operate on — every node of the tree
+/// becomes one element of the returned vector. The flat-list form is
+/// what `addToHashMemory`'s `key` parameter expects.
+///
+/// Round-trip: `groomExpr(treeStr) → vector → ce::treeToExpr(parsed) →
+/// canonical string` should reproduce a smoothed form of `treeStr` for
+/// any well-formed MPL input. The flat-list pass is canonical for
+/// hash-engine purposes, not for human display.
+///
+/// @param treeStr Tree-format MPL expression text.
+/// @return Flat-list form, one entry per syntactic node.
 std::vector<std::string> ExpressionAnalyzer::groomExpr(const std::string& treeStr) {
     std::size_t index = 0;
     return groomSubexpr(treeStr, 1, index);
 }
 
+/// @brief Extract the args quantified out by the most recent `>[...]` of
+/// an implication.
+///
+/// @details
+/// Used during disintegration to identify which variables become bound
+/// in the head and need fresh-name minting (via `renameLastRemoved`).
+/// Walks the expression's outermost `>` operator and returns its
+/// bound-variable list.
+///
+/// @param expr Canonical MPL implication text.
+/// @return Vector of bound-variable names from the outermost `>[...]`.
+///         Empty if the expression has no outer quantifier.
 std::vector<std::string> ExpressionAnalyzer::listLastRemovedArgs(const std::string& expr) {
     std::vector<std::string> out;
     std::size_t start = expr.find(">[");
@@ -504,6 +602,30 @@ std::vector<std::string> ExpressionAnalyzer::listLastRemovedArgs(const std::stri
     return out;
 }
 
+/// @brief Rename the args quantified out by the most recent `>[...]` to
+/// fresh `it_<startInt>_lev_<lev>_<id>` names.
+///
+/// @details
+/// Used together with `listLastRemovedArgs` during disintegration. Each
+/// last-removed arg becomes a fresh, unique variable name; `startInt`
+/// is the seed used for the iteration counter and is bumped per arg.
+/// The new `startInt` is returned so the caller can continue minting
+/// names without collision.
+///
+/// **Per [I-17](../../docs/30_invariants.md#i-17), the freshness check
+/// inside `disintegrateExpr2`'s use of `savedStartInt` assumes
+/// `startInt` is a single monotonic counter. A parallel counter for
+/// these names would break the freshness check; do not introduce one.**
+///
+/// @param expr      Implication text whose outer `>[...]` args are to
+///                  be renamed.
+/// @param startInt  Seed for the iteration counter.
+/// @return `(renamed expression, new startInt, helper text)`. The
+///         third tuple slot carries auxiliary notes the caller may
+///         want — typically a stringified summary of which args got
+///         which new names.
+/// @invariant [I-17](../../docs/30_invariants.md#i-17) — single
+///            monotonic counter assumption.
 std::tuple<std::string, int, std::string>
 ExpressionAnalyzer::renameLastRemoved(const std::string& expr, int startInt) {
     const bool startsWithImp = expr.size() >= 2 && expr[0] == '(' && expr[1] == '>';
@@ -530,6 +652,24 @@ ExpressionAnalyzer::renameLastRemoved(const std::string& expr, int startInt) {
 }
 
 
+/// @brief Expand a compact MPL expression into its full operator-by-operator
+/// form via the `coreExpressionMap`'s definitions.
+///
+/// @details
+/// Compact MPL operators (e.g. `or0`, `existence2`, the per-anchor
+/// structural operators) are syntactic sugar; their semantics are
+/// declared in `Config<anchor>.json` as longer expansions. `expandExpr`
+/// substitutes each compact operator with its full body, producing the
+/// canonical un-sugared form that the verifier's chapter-walks expect.
+///
+/// Used by `precompileStructuralOperators` (per
+/// [I-1](../../docs/30_invariants.md#i-1)) on every theorem-load path
+/// before disintegration.
+///
+/// @param expr Possibly-compact MPL expression text.
+/// @return Fully-expanded canonical form.
+/// @invariant [I-1](../../docs/30_invariants.md#i-1) — expansion must
+///            happen on every theorem-load path before disintegration.
 std::string ExpressionAnalyzer::expandExpr(const std::string& expr) {
     // 1. Check if expression is simple (e.g., "Macro[arg1, arg2]")
     if (!ce::expressionIsSimple(expr)) {
@@ -635,6 +775,22 @@ std::string ExpressionAnalyzer::expandExpr(const std::string& expr) {
 
 
 
+/// @brief Compute the *global key* for a memory block — the canonical
+/// vector identifying its position in the LB tree.
+///
+/// @details
+/// The global key is a sequence of `exprKey` values from the LB up to
+/// the root sentinel, in deepest-first order. Used as a `std::map` key
+/// in cross-LB tables (e.g. proof-stack caches) where a `Memory*`
+/// pointer alone would not survive teardown / re-creation of the LB.
+///
+/// @param memoryBlock LB to compute the key for.
+/// @return Vector of `exprKey` values from this LB up to the root,
+///         deepest first. Returns an empty vector for the root sentinel
+///         itself (its `exprKey` is empty by definition).
+/// @see The full-LB-chain trace requirement for any debug trap that
+///      identifies a target LB; this function returns exactly the
+///      chain such traps must match.
 std::vector<std::string> ExpressionAnalyzer::getGlobalKey(const Memory& memoryBlock) {
     std::vector<std::string> globalKey;
     const Memory* current = &memoryBlock;
@@ -823,6 +979,30 @@ static bool numericLess(const std::string& a, const std::string& b) {
     return a < b;
 }
 
+/// @brief Expand an implication into all variable-renamed copies needed
+/// to cover every meaningful binding partition.
+///
+/// @details
+/// Used by `addToHashMemory` (Path 1) to produce the per-copy
+/// `(key, value)` pairs that get installed in the hash engine. For an
+/// implication `(>[v0,v1](p[v0])(q[v0,v1]))`, multiplyImplication
+/// generates the family of permutations / partition variants whose
+/// renormalized keys differ. The first copy is the input as-is; later
+/// copies carry origin records under the `"multiplied from"` tag so the
+/// verifier can chain the multiplications back to the original.
+///
+/// **Per [I-24](../../docs/30_invariants.md#i-24)**, multiplyImplication
+/// must NOT equate two distinct free `u_*` anchor parameters — they are
+/// the pinned anchor slots and cannot be unified by partition renaming.
+/// The function asserts on attempts to do so; a firing assert here means
+/// the input implication had a malformed anchor binding.
+///
+/// @param implication Source implication text.
+/// @return Vector of all multiplied copies. Always non-empty (at least
+///         the input itself). Order is deterministic.
+/// @invariant [I-24](../../docs/30_invariants.md#i-24) — no
+///            free-anchor-param equation.
+/// @see `addToHashMemory` — primary consumer (Path 1 head LMV inserts).
 std::vector<std::string> ExpressionAnalyzer::multiplyImplication(
     const std::string& implication)
 {
@@ -968,1266 +1148,46 @@ std::vector<std::string> ExpressionAnalyzer::multiplyImplication(
 // Turn optimizations OFF for just this section
 //#pragma optimize("", off)
 
-void ExpressionAnalyzer::addToHashMemory(const std::vector<std::string>& key,
-    const std::string& value,
-    const std::set<std::string>& remainingArgs,
-    Memory& mb,
-    HashMemory& targetIntMemory,
-    const std::set<int>& levels,
-    const std::string& originalImplication,
-    int maxAdmissionDepth,
-    int maxSecondaryNumber,
-    bool partOfRecursion,
-    int minNumOperatorsKey,
-    const std::string& justification,
-    bool performAdmissionMapUpdate,
-    const std::string& originalImplicationClean,
-    const std::string& validityName) {
+// addToHashMemory(), makeNormalizedKeysForAdmission(), lessByName(),
+// lessByOriginal() — moved to memory.cpp.
 
-    // Own multiplyImplication loop — fully independent from addToHashMemory.
-    std::vector<std::string> copies = multiplyImplication(originalImplication);
 
-    for (std::size_t c = 0; c < copies.size(); ++c) {
-        std::vector<std::string> curKey;
-        std::string curValue;
-        std::string curOrigImpl = copies[c];
+// growBaseCandidates(), generateEncodedRequestsStatic(), and
+// generateEncodedRequestsStaticPairs() — moved to memory.cpp (alongside
+// the inline filterIntEncodedStatements helper from prover.hpp).
 
-        if (c == 0) {
-            curKey = key;
-            curValue = value;
-        } else {
-            // Track history for multiplied copies
-            if (parameters.trackHistory) {
-                ExpressionWithValidity copyEv(copies[c], "main");
-                std::pair<std::string, std::vector<ExpressionWithValidity>> mulOrigin;
-                mulOrigin.first = "multiplied from";
-                mulOrigin.second.push_back(ExpressionWithValidity(originalImplicationClean, "main"));
-                addOrigin(mb.exprOriginMap, copyEv, mulOrigin,
-                    (parameters.compressor_mode
-                        ? parameters.compressor_max_origins_per_expr
-                        : parameters.max_origin_per_expr));
-                addOrigin(mb.mailOut.exprOriginMap, copyEv, mulOrigin,
-                    (parameters.compressor_mode
-                        ? parameters.compressor_max_origins_per_expr
-                        : parameters.max_origin_per_expr));
-            }
+// generateEncodedRequestsStaticCE() and filterIntEncodedStatementsCE() —
+// moved to filter.cpp.
 
-            std::vector< std::tuple<
-                std::string,
-                std::vector<std::string>,
-                std::set<std::string>
-            > > tc;
-            curValue = ce::disintegrateImplication(copies[c], tc, coreExpressionMap);
-            for (std::size_t ci = 0; ci < tc.size(); ++ci)
-                curKey.push_back(std::get<0>(tc[ci]));
-        }
 
-        // --- Shared members (path-independent, needed for integration) ---
-        std::vector<std::string> implication = curKey;
-        implication.push_back(curValue);
-        targetIntMemory.originals.insert(implication);
-        for (const auto& trigger : targetIntMemory.triggersForAdmissionSetIntegration)
-        {
-            makeAdmissionKeys(implication, trigger.original, targetIntMemory, trigger.validityName, mb);
-        }
-
-        this->makeNormalizedKeysForAdmission(curKey, targetIntMemory,
-            mb.nameMap, mb.keyArena, curValue, minNumOperatorsKey, &mb);
-
-        // Recompute remainingArgs for multiplied copies (u_ vars may have been equalized)
-        const std::set<std::string>& curRemainingArgs = (c == 0) ? remainingArgs : getRemainingArgs(curKey);
-
-        if (performAdmissionMapUpdate)
-        {
-            std::vector<std::string> keyPlusValue = curKey;
-            keyPlusValue.push_back(curValue);
-            updateAdmissionMap(mb,
-                keyPlusValue,
-                curRemainingArgs,
-                maxAdmissionDepth,
-                maxSecondaryNumber,
-                partOfRecursion,
-                "main");
-        }
-
-        // --- Inner: add this single key/value to int hash memory ---
-        const std::size_t n = curKey.size();
-        NameMap& nm = mb.nameMap;
-        KeyArena& arena = mb.keyArena;
-
-        std::set<int16_t> intRemainingArgs;
-        for (const auto& ra : curRemainingArgs) {
-            intRemainingArgs.insert(nm.encode(ra));
-        }
-
-        std::map<int, std::vector<std::vector<int>>>::const_iterator pit =
-            this->allPermutationsAna.find(static_cast<int>(n));
-        if (pit == this->allPermutationsAna.end()) {
-            continue;
-        }
-        const std::vector<std::vector<int>>& permuts = pit->second;
-
-        std::vector<std::string> ids;
-        ids.reserve(n);
-        for (std::size_t i = 0; i < n; ++i) {
-            ids.push_back(ce::extractExpression(curKey[i]));
-        }
-
-        int16_t bufIgnored[ExecutionParameters::MAX_KEY_SLOTS];
-        int16_t bufNotIgnored[ExecutionParameters::MAX_KEY_SLOTS];
-
-        for (std::size_t p = 0; p < permuts.size(); ++p) {
-            const std::vector<int>& permutation = permuts[p];
-
-            bool toContinue = false;
-            if (n >= 2) {
-                for (std::size_t k = 0; k + 1 < n; ++k) {
-                    if (ids[permutation[k]] > ids[permutation[k + 1]]) {
-                        toContinue = true;
-                        break;
-                    }
-                }
-            }
-            if (toContinue) continue;
-
-            std::vector<EncodedExpression> tempEncoded;
-            tempEncoded.reserve(n);
-            for (std::size_t k = 0; k < permutation.size(); ++k) {
-                tempEncoded.push_back(EncodedExpression(curKey[permutation[k]], "main"));
-            }
-
-            int16_t reverseMap[ExecutionParameters::MAX_KEY_SLOTS];
-            std::memset(reverseMap, 0, sizeof(reverseMap));
-            int16_t numNormVars = 0;
-            int16_t lenIgnored = makeIntNormalizedKeyWithMap(
-                tempEncoded, nm, true, bufIgnored,
-                ExecutionParameters::MAX_KEY_SLOTS, reverseMap, numNormVars, &mb);
-
-            int16_t lenNotIgnored = makeIntNormalizedKey(
-                tempEncoded, nm, false, bufNotIgnored,
-                ExecutionParameters::MAX_KEY_SLOTS);
-
-            const int16_t* pIgnored = arena.store(bufIgnored, lenIgnored);
-            const int16_t* pNotIgnored = arena.store(bufNotIgnored, lenNotIgnored);
-
-            IntNormalizedKey intIgnoredKey(static_cast<int16_t>(n), pIgnored, lenIgnored);
-            IntNormalizedKey intNotIgnoredKey(static_cast<int16_t>(n), pNotIgnored, lenNotIgnored);
-
-            std::string valueVariant = curValue;
-            {
-                std::pair<NormalizedKey, std::map<std::string, std::string>> pairIgnored =
-                    makeNormalizedEncodedKey(tempEncoded, true);
-                const std::map<std::string, std::string>& mp2 = pairIgnored.second;
-                valueVariant = ce::replaceKeysInString(curValue, mp2);
-            }
-
-            LocalMemoryValue lmv;
-            lmv.value = valueVariant;
-            lmv.levels = levels;
-            lmv.originalImplication = curOrigImpl;
-            lmv.remainingArgs = curRemainingArgs;
-            lmv.justification = justification;
-            lmv.validityName = validityName;
-
-            // D-32: stamp product-of-disintegration flag — true iff at
-            // least one premise (chain element) has an arg starting with
-            // "u_". The "u_" prefix is reserved for bound-variable
-            // placeholders introduced by prefixArgumentsWithU during
-            // disintegration; an anchor-bound theorem chain (e.g. starts
-            // with (AnchorPeano[1,2,3,...])) has only concrete integer
-            // args. Consumed by checkLocalEncodedMemoryStatic to gate
-            // OR-disintegration on the head-firing path.
-            for (const auto& premise : curKey) {
-                bool found = false;
-                for (const auto& arg : ce::getArgs(premise)) {
-                    if (arg.compare(0, 2, "u_") == 0) {
-                        lmv.productOfDisintegration = true;
-                        found = true;
-                        break;
-                    }
-                }
-                if (found) break;
-            }
-
-            targetIntMemory.encodedMap[intIgnoredKey].push_back(lmv);
-            targetIntMemory.normalizedEncodedKeys.insert(intNotIgnoredKey);
-            targetIntMemory.remainingArgsNormalizedEncodedMap[intRemainingArgs].insert(intNotIgnoredKey);
-        }
-
-        // --- makeNormalizedSubkeys equivalent ---
-        for (std::size_t p = 0; p < permuts.size(); ++p) {
-            const std::vector<int>& permut = permuts[p];
-
-            std::vector<std::string> tempList;
-            tempList.reserve(n);
-            for (std::size_t k = 0; k < permut.size(); ++k) {
-                tempList.push_back(curKey[permut[k]]);
-            }
-
-            for (std::size_t index = 0; index < n; ++index) {
-                bool toBreak = false;
-                for (std::size_t index2 = 0; index2 < index; ++index2) {
-                    if (ids[permut[index2]] > ids[permut[index2 + 1]]) {
-                        toBreak = true;
-                        break;
-                    }
-                }
-                if (toBreak) break;
-
-                std::vector<EncodedExpression> subkeyEncoded;
-                subkeyEncoded.reserve(index + 1);
-                for (std::size_t t = 0; t <= index; ++t) {
-                    subkeyEncoded.push_back(EncodedExpression(tempList[t], "main"));
-                }
-
-                int16_t subBuf[ExecutionParameters::MAX_KEY_SLOTS];
-                int16_t subLen = makeIntNormalizedKey(
-                    subkeyEncoded, nm, false, subBuf,
-                    ExecutionParameters::MAX_KEY_SLOTS);
-
-                const int16_t* pSub = arena.store(subBuf, subLen);
-                IntNormalizedKey intSubKey(static_cast<int16_t>(index + 1), pSub, subLen);
-
-                targetIntMemory.normalizedEncodedSubkeys.insert(intSubKey);
-
-                if (index + 1 == n - 1) {
-                    targetIntMemory.normalizedEncodedSubkeysMinusOne.insert(intSubKey);
-                }
-                if (index + 1 == n - 2) {
-                    targetIntMemory.normalizedEncodedSubkeysMinusTwo.insert(intSubKey);
-                }
-            }
-        }
-
-        targetIntMemory.maxKeyLength = std::max(static_cast<int16_t>(n), targetIntMemory.maxKeyLength);
-    }
-}
-
-void ExpressionAnalyzer::makeNormalizedKeysForAdmission(
-    const std::vector<std::string>& key,
-    HashMemory& intHashMemory,
-    NameMap& nameMap,
-    KeyArena& arena,
-    const std::string& value,
-    int minNumOperatorsKey,
-    const Memory* mbTrap) {
-
-    (void)mbTrap;
-
-    if (!implicationIsQualified(key, value, minNumOperatorsKey)) {
-        return;
-    }
-
-    const std::size_t n = key.size();
-
-    for (std::size_t index = 0; index < n; ++index) {
-        const std::string coreExpr = ce::extractExpression(key[index]);
-        const std::vector<std::string> args = ce::getArgs(key[index]);
-        auto cit = this->coreExpressionMap.find(coreExpr);
-        assert(cit != this->coreExpressionMap.end() && "Core expression not found");
-
-        std::vector<std::string> outputArgsList;
-        for (int idx : cit->second.outputIndices) {
-            if (idx >= 0 && idx < static_cast<int>(args.size()))
-                outputArgsList.push_back(args[idx]);
-        }
-        assert(outputArgsList.size() <= 1 && "Expression must have 0 or 1 output argument");
-        if (outputArgsList.empty()) {
-            continue;
-        }
-        const std::string outputArg = outputArgsList[0];
-
-        // Build binary mask and subkey (same logic as string path)
-        std::vector<int> binary(n, 0);
-        std::vector<std::string> subkey;
-        subkey.reserve(n);
-        int validCount = 0;
-        for (std::size_t i = 0; i < n; ++i) {
-            if (i == index) continue;
-            const std::vector<std::string> iArgs = ce::getArgs(key[i]);
-            bool containsOutput = false;
-            for (const auto& arg : iArgs) {
-                if (arg == outputArg) { containsOutput = true; break; }
-            }
-            if (!containsOutput) {
-                binary[i] = 1;
-                subkey.push_back(key[i]);
-                validCount++;
-            }
-        }
-
-        // Classic path is baseline behavior untouched — fires ONLY on
-        // keys that would have qualified via (A) or (B) in baseline.
-        // (C) qualification (hasUPrefix + localUCriterion) admits keys
-        // into this loop but does NOT enable the classic per-element
-        // gates. Those keys must go through the local-u path below.
-        const bool baselineQualified = baselineClassicQualifies(key, value, minNumOperatorsKey);
-        const bool acceptedByClassic = baselineQualified && (
-            (validCount == static_cast<int>(n) - 1) ||
-            (validCount == parameters.minLenLongKey - 1));
-        const bool acceptedByLocalU = hasUPrefixInKey(key) &&
-            this->elementMatchesLocalUCriterion(index, key, value);
-        bool accept = acceptedByClassic || acceptedByLocalU;
-
-        // Narrowing guard applies ONLY to the local u_-impl path — the
-        // NEW case. Classic path behavior stays exactly as baseline.
-        if (accept && !acceptedByClassic &&
-            this->outputMatchesHeadOutputSlot(outputArg, value)) {
-            accept = false;
-        }
-
-        if (!accept) continue;
-
-        // Replace output arg with "marker"
-        std::map<std::string, std::string> replacementMap;
-        replacementMap.insert(std::make_pair(outputArg, "marker"));
-        const std::string replaced = ce::replaceKeysInString(key[index], replacementMap);
-
-        // --- Int subkeys (mirrors makeNormalizedSubkeys for HashMemory) ---
-        {
-            const std::size_t sn = subkey.size();
-            auto pit = this->allPermutationsAna.find(static_cast<int>(sn));
-            if (pit != this->allPermutationsAna.end()) {
-                const auto& permuts = pit->second;
-                std::vector<std::string> sids;
-                sids.reserve(sn);
-                for (std::size_t i = 0; i < sn; ++i)
-                    sids.push_back(ce::extractExpression(subkey[i]));
-
-                for (std::size_t p = 0; p < permuts.size(); ++p) {
-                    const auto& permut = permuts[p];
-                    std::vector<std::string> tempList;
-                    tempList.reserve(sn);
-                    for (std::size_t k = 0; k < permut.size(); ++k)
-                        tempList.push_back(subkey[permut[k]]);
-
-                    for (std::size_t si = 0; si < sn; ++si) {
-                        bool toBreak = false;
-                        for (std::size_t si2 = 0; si2 < si; ++si2) {
-                            if (sids[permut[si2]] > sids[permut[si2 + 1]]) {
-                                toBreak = true; break;
-                            }
-                        }
-                        if (toBreak) break;
-
-                        std::vector<EncodedExpression> subEnc;
-                        subEnc.reserve(si + 1);
-                        for (std::size_t t = 0; t <= si; ++t)
-                            subEnc.push_back(EncodedExpression(tempList[t], "main"));
-
-                        int16_t subBuf[ExecutionParameters::MAX_KEY_SLOTS];
-                        int16_t subLen = makeIntNormalizedKey(
-                            subEnc, nameMap, false, subBuf, ExecutionParameters::MAX_KEY_SLOTS);
-                        const int16_t* pSub = arena.store(subBuf, subLen);
-                        IntNormalizedKey intSubKey(static_cast<int16_t>(si + 1), pSub, subLen);
-
-                        intHashMemory.normalizedEncodedSubkeys.insert(intSubKey);
-                        if (si + 1 == sn - 1)
-                            intHashMemory.normalizedEncodedSubkeysMinusOne.insert(intSubKey);
-                        if (si + 1 == sn - 2)
-                            intHashMemory.normalizedEncodedSubkeysMinusTwo.insert(intSubKey);
-                    }
-                }
-            }
-        }
-
-        // --- Main variants: create int keys for encodedMap marker entries ---
-        {
-            const std::size_t sn = subkey.size();
-            auto pit = this->allPermutationsAna.find(static_cast<int>(sn));
-            if (pit == this->allPermutationsAna.end()) continue;
-            const auto& permuts = pit->second;
-
-            std::vector<std::string> sids;
-            sids.reserve(sn);
-            for (std::size_t i = 0; i < sn; ++i)
-                sids.push_back(ce::extractExpression(subkey[i]));
-
-            std::set<std::string> remainingArgs = getRemainingArgs(subkey);
-            std::set<int16_t> intRemainingArgs;
-            for (const auto& ra : remainingArgs)
-                intRemainingArgs.insert(nameMap.encode(ra));
-
-            int16_t bufIgnored[ExecutionParameters::MAX_KEY_SLOTS];
-            int16_t bufNotIgnored[ExecutionParameters::MAX_KEY_SLOTS];
-
-            for (std::size_t p = 0; p < permuts.size(); ++p) {
-                const auto& permutation = permuts[p];
-
-                bool toContinue = false;
-                if (sn >= 2) {
-                    for (std::size_t k = 0; k + 1 < sn; ++k) {
-                        if (sids[permutation[k]] > sids[permutation[k + 1]]) {
-                            toContinue = true; break;
-                        }
-                    }
-                }
-                if (toContinue) continue;
-
-                std::vector<EncodedExpression> tempEncoded;
-                tempEncoded.reserve(sn);
-                for (std::size_t k = 0; k < permutation.size(); ++k)
-                    tempEncoded.push_back(EncodedExpression(subkey[permutation[k]], "main"));
-
-                // Int keys from subkey
-                int16_t lenIgnored = makeIntNormalizedKey(
-                    tempEncoded, nameMap, true, bufIgnored, ExecutionParameters::MAX_KEY_SLOTS);
-                int16_t lenNotIgnored = makeIntNormalizedKey(
-                    tempEncoded, nameMap, false, bufNotIgnored, ExecutionParameters::MAX_KEY_SLOTS);
-
-                const int16_t* pIgnored = arena.store(bufIgnored, lenIgnored);
-                const int16_t* pNotIgnored = arena.store(bufNotIgnored, lenNotIgnored);
-
-                IntNormalizedKey intIgnoredKey(static_cast<int16_t>(sn), pIgnored, lenIgnored);
-                IntNormalizedKey intNotIgnoredKey(static_cast<int16_t>(sn), pNotIgnored, lenNotIgnored);
-
-                // String normalization mapping for value variant and replKey
-                std::pair<NormalizedKey, std::map<std::string, std::string>> pairIgnored =
-                    makeNormalizedEncodedKey(tempEncoded, true);
-                const std::map<std::string, std::string>& mp2 = pairIgnored.second;
-
-                std::string valueVariant = ce::replaceKeysInString(replaced, mp2);
-
-                // Build replKey (valid subkey elements with mapping applied).
-                // Earlier this also pushed key[index] — the marker-source
-                // element — which polluted lmv.key with the target expression
-                // itself. downstream consumers (isAdmitted, admissionMapPropagate)
-                // iterate lmv.key expecting real premises; the self-row
-                // self-matches and produces spurious replacements. Subkey only.
-                std::map<std::string, std::string> mpMap(mp2.begin(), mp2.end());
-                std::vector<std::string> replKey;
-                replKey.reserve(subkey.size());
-                for (std::size_t i = 0; i < key.size(); ++i) {
-                    if (binary[i]) {
-                        replKey.push_back(ce::replaceKeysInString(key[i], mpMap));
-                    }
-                }
-
-                LocalMemoryValue lmv;
-                lmv.value = valueVariant;
-                lmv.key = replKey;
-                lmv.remainingArgs = remainingArgs;
-
-                intHashMemory.encodedMap[intIgnoredKey].push_back(lmv);
-                intHashMemory.normalizedEncodedKeys.insert(intNotIgnoredKey);
-                intHashMemory.remainingArgsNormalizedEncodedMap[intRemainingArgs].insert(intNotIgnoredKey);
-            }
-        }
-    }
-}
-
-bool ExpressionAnalyzer::lessByName(const EncodedExpression& a, const EncodedExpression& b) {
-    return a.name < b.name;
-}
-bool ExpressionAnalyzer::lessByOriginal(const EncodedExpression& a, const EncodedExpression& b) {
-    return a.original < b.original;
-}
-
-
-// ========================================================================
-// ========================================================================
-// growBaseCandidates — shared grow loop for Singles/Pairs.
-// Enumerates subsets of filtered allStatements up to targetLen, collecting
-// those that match targetSubkeys. Pruning via normalizedEncodedSubkeys.
-// ========================================================================
-void ExpressionAnalyzer::growBaseCandidates(
-    Memory& body,
-    const HashMemory& intMemory,
-    const IntEncodedExpr* allIntStmts,
-    const int16_t* filteredIdx, int16_t nFiltered,
-    int16_t mainValidityId,
-    int targetLen,
-    const std::unordered_set<IntNormalizedKey, IntNormalizedKeyHash>& targetSubkeys,
-    std::vector<BaseCandidate>& baseCandidates)
-{
-    NameMap& nm = body.nameMap;
-    struct StackItem {
-        int start;
-        int16_t allIdx[ExecutionParameters::MAX_EXPRESSIONS];
-        int16_t count;
-        int16_t validityId;
-    };
-
-    std::vector<StackItem> stack;
-    {
-        StackItem init;
-        init.start = 0;
-        init.count = 0;
-        init.validityId = mainValidityId;
-        stack.push_back(init);
-    }
-
-    while (!stack.empty()) {
-        StackItem top = stack.back();
-        stack.pop_back();
-
-        for (int i = top.start; i < nFiltered; ++i) {
-            if (top.count + 1 > targetLen) break;
-
-            const int16_t allIdx = filteredIdx[i];
-            const IntEncodedExpr& ie = allIntStmts[allIdx];
-
-            if (!nm.comparable(top.validityId, ie.validityId)) continue;
-            int16_t newValidityId = nm.deeperOf(top.validityId, ie.validityId);
-
-            const IntEncodedExpr* ptrs[ExecutionParameters::MAX_EXPRESSIONS];
-            for (int16_t k = 0; k < top.count; ++k)
-                ptrs[k] = &allIntStmts[top.allIdx[k]];
-            ptrs[top.count] = &ie;
-            const int16_t newCount = static_cast<int16_t>(top.count + 1);
-
-            std::pair<bool, IntNormalizedKey> pr =
-                preEvaluateFromEncoded(ptrs, newCount, body, mainValidityId,
-                    intMemory.normalizedEncodedSubkeys);
-
-            if (pr.first) {
-                if (targetSubkeys.find(pr.second) != targetSubkeys.end()) {
-                    BaseCandidate bc;
-                    std::memcpy(bc.allIdx, top.allIdx, top.count * sizeof(int16_t));
-                    bc.allIdx[top.count] = allIdx;
-                    bc.count = newCount;
-                    bc.validityId = newValidityId;
-                    baseCandidates.push_back(bc);
-                }
-                if (newCount < targetLen) {
-                    StackItem next;
-                    next.start = i + 1;
-                    std::memcpy(next.allIdx, top.allIdx, top.count * sizeof(int16_t));
-                    next.allIdx[top.count] = allIdx;
-                    next.count = newCount;
-                    next.validityId = newValidityId;
-                    stack.push_back(next);
-                }
-            }
-        }
-    }
-}
-
-// ========================================================================
-// generateEncodedRequestsStatic — singles (sizeOne=1).
-// Seed: mandatory singles as complete keys.
-// Grow: subsets up to maxKeyLen-1 via growBaseCandidates.
-// Merge: baseCandidates × mandatory singles → full keys.
-// ========================================================================
-int16_t ExpressionAnalyzer::generateEncodedRequestsStatic(
-    Memory& body,
-    const HashMemory& intMemory,
-    const int16_t* mandatoryIndices, int16_t mandatoryCount,
-    const IntEncodedExpr* mandatorySrcInt,
-    TypedArena<IntEncodedExpr>& exprArena,
-    StaticRequest* outBuf, int16_t maxOut)
-{
-    if (mandatoryCount <= 0) return 0;
-
-    NameMap& nm = body.nameMap;
-    int16_t buf[ExecutionParameters::MAX_KEY_SLOTS];
-    const int16_t mainValidityId = NameMap::MAIN_ID;
-    const int maxKeyLen = intMemory.maxKeyLength;
-    const int targetLen = std::max(0, maxKeyLen - 1);
-
-    StaticRequestEmitter emitter(exprArena, outBuf, maxOut);
-
-    // --- Seed: each mandatory single as complete key ---
-    for (int16_t i = 0; i < mandatoryCount; ++i) {
-        const IntEncodedExpr& ie = mandatorySrcInt[mandatoryIndices[i]];
-        const IntEncodedExpr* ptr = &ie;
-        int16_t len = makeIntNormalizedKeyFromEncoded(&ptr, 1, buf,
-            ExecutionParameters::MAX_KEY_SLOTS);
-        IntNormalizedKey probe(1, buf, len);
-        if (intMemory.normalizedEncodedKeys.find(probe) != intMemory.normalizedEncodedKeys.end()) {
-            const int16_t* p = body.keyArena.store(buf, len);
-            IntNormalizedKey nk(1, p, len);
-            emitter.emit(&ptr, 1, nk);
-        }
-    }
-
-    if (targetLen <= 0) return emitter.outCount;
-
-    // --- Filter + sort ---
-    const IntEncodedExpr* allIntStmts = body.intEncodedStatements.data();
-    const int16_t allIntCount = static_cast<int16_t>(body.intEncodedStatements.size());
-    int16_t filteredIdx[8192];
-    int16_t nFiltered = filterIntEncodedStatements(allIntStmts, allIntCount,
-        intMemory, filteredIdx, 8192);
-    std::sort(filteredIdx, filteredIdx + nFiltered, [&](int16_t a, int16_t b) {
-        return nm.decode(allIntStmts[a].nameId) < nm.decode(allIntStmts[b].nameId);
-    });
-
-    // --- Grow ---
-    std::vector<BaseCandidate> baseCandidates;
-    growBaseCandidates(body, intMemory, allIntStmts, filteredIdx, nFiltered,
-        mainValidityId, targetLen,
-        intMemory.normalizedEncodedSubkeysMinusOne, baseCandidates);
-
-    // --- Merge: baseCandidates × mandatory singles ---
-    for (std::size_t bi = 0; bi < baseCandidates.size(); ++bi) {
-        const BaseCandidate& base = baseCandidates[bi];
-
-        for (int16_t j = 0; j < mandatoryCount; ++j) {
-            const int16_t mIdx = mandatoryIndices[j];
-            const IntEncodedExpr& mIe = mandatorySrcInt[mIdx];
-            const int16_t mValidityId = mIe.validityId;
-
-            if (!nm.comparable(base.validityId, mValidityId)) continue;
-
-            bool dup = false;
-            for (int16_t k = 0; k < base.count && !dup; ++k) {
-                const IntEncodedExpr& bIe = allIntStmts[base.allIdx[k]];
-                if (bIe.originalId == mIe.originalId && nm.comparable(bIe.validityId, mIe.validityId)) {
-                    dup = true;
-                }
-            }
-            if (dup) continue;
-
-            // Build merged pointer array in name-sorted order
-            const IntEncodedExpr* merged[ExecutionParameters::MAX_EXPRESSIONS + 1];
-            int16_t mc = 0;
-            const std::string& mName = nm.decode(mIe.nameId);
-            bool mInserted = false;
-            for (int16_t k = 0; k < base.count; ++k) {
-                const std::string& bName = nm.decode(allIntStmts[base.allIdx[k]].nameId);
-                if (!mInserted && !(bName < mName)) {
-                    merged[mc++] = &mIe;
-                    mInserted = true;
-                }
-                merged[mc++] = &allIntStmts[base.allIdx[k]];
-            }
-            if (!mInserted) merged[mc++] = &mIe;
-
-            std::pair<bool, IntNormalizedKey> pr2 =
-                preEvaluateFromEncoded(merged, mc, body, mainValidityId,
-                    intMemory.normalizedEncodedKeys);
-
-            if (pr2.first) {
-                emitter.emit(merged, mc, pr2.second);
-            }
-        }
-    }
-
-    return emitter.outCount;
-}
-
-// ========================================================================
-// generateEncodedRequestsStaticPairs — pairs (sizeOne=2).
-// Seed: mandatory pairs as complete 2-element keys.
-// Grow: subsets up to maxKeyLen-2 via growBaseCandidates.
-// Merge: baseCandidates × mandatory pairs → full keys.
-// ========================================================================
-int16_t ExpressionAnalyzer::generateEncodedRequestsStaticPairs(
-    Memory& body,
-    const HashMemory& intMemory,
-    const MandatoryPair* pairs, int16_t pairCount,
-    const IntEncodedExpr* firstSrcInt,
-    const IntEncodedExpr* secondSrcInt,
-    TypedArena<IntEncodedExpr>& exprArena,
-    StaticRequest* outBuf, int16_t maxOut)
-{
-    if (pairCount <= 0) return 0;
-
-    NameMap& nm = body.nameMap;
-    int16_t buf[ExecutionParameters::MAX_KEY_SLOTS];
-    const int16_t mainValidityId = NameMap::MAIN_ID;
-    const int maxKeyLen = intMemory.maxKeyLength;
-    const int targetLen = std::max(0, maxKeyLen - 2);
-
-    StaticRequestEmitter emitter(exprArena, outBuf, maxOut);
-
-    // Pre-sort each pair by name for consistent key generation
-    struct SortedPair {
-        IntEncodedExpr sorted[2];
-    };
-    std::vector<SortedPair> sortedPairs(pairCount);
-    std::vector<bool> pairValid(pairCount, true);
-
-    for (int16_t i = 0; i < pairCount; ++i) {
-        const IntEncodedExpr& e1 = firstSrcInt[pairs[i].idx1];
-        const IntEncodedExpr& e2 = secondSrcInt[pairs[i].idx2];
-        const std::string& n1 = nm.decode(e1.nameId);
-        const std::string& n2 = nm.decode(e2.nameId);
-        if (n1 <= n2) { sortedPairs[i].sorted[0] = e1; sortedPairs[i].sorted[1] = e2; }
-        else          { sortedPairs[i].sorted[0] = e2; sortedPairs[i].sorted[1] = e1; }
-
-        if (!nm.comparable(e1.validityId, e2.validityId)) pairValid[i] = false;
-    }
-
-    // --- Seed: each pair as complete 2-element key ---
-    for (int16_t i = 0; i < pairCount; ++i) {
-        if (!pairValid[i]) continue;
-        const IntEncodedExpr* ptrs[2] = { &sortedPairs[i].sorted[0], &sortedPairs[i].sorted[1] };
-        int16_t len = makeIntNormalizedKeyFromEncoded(ptrs, 2, buf,
-            ExecutionParameters::MAX_KEY_SLOTS);
-        IntNormalizedKey probe(2, buf, len);
-        if (intMemory.normalizedEncodedKeys.find(probe) != intMemory.normalizedEncodedKeys.end()) {
-            const int16_t* p = body.keyArena.store(buf, len);
-            IntNormalizedKey nk(2, p, len);
-            emitter.emit(ptrs, 2, nk);
-        }
-    }
-
-    if (targetLen <= 0) return emitter.outCount;
-
-    // --- Filter + sort ---
-    const IntEncodedExpr* allIntStmts = body.intEncodedStatements.data();
-    const int16_t allIntCount = static_cast<int16_t>(body.intEncodedStatements.size());
-    int16_t filteredIdx[8192];
-    int16_t nFiltered = filterIntEncodedStatements(allIntStmts, allIntCount,
-        intMemory, filteredIdx, 8192);
-    std::sort(filteredIdx, filteredIdx + nFiltered, [&](int16_t a, int16_t b) {
-        return nm.decode(allIntStmts[a].nameId) < nm.decode(allIntStmts[b].nameId);
-    });
-
-    // --- Grow ---
-    std::vector<BaseCandidate> baseCandidates;
-    growBaseCandidates(body, intMemory, allIntStmts, filteredIdx, nFiltered,
-        mainValidityId, targetLen,
-        intMemory.normalizedEncodedSubkeysMinusTwo, baseCandidates);
-
-    // --- Merge: baseCandidates × mandatory pairs ---
-    for (std::size_t bi = 0; bi < baseCandidates.size(); ++bi) {
-        const BaseCandidate& base = baseCandidates[bi];
-
-        for (int16_t pi = 0; pi < pairCount; ++pi) {
-            if (!pairValid[pi]) continue;
-            const IntEncodedExpr& m0 = sortedPairs[pi].sorted[0];
-            const IntEncodedExpr& m1 = sortedPairs[pi].sorted[1];
-
-            // m0 and m1 are already known comparable (pair filter above).
-            int16_t pairVid = nm.deeperOf(m0.validityId, m1.validityId);
-            if (!nm.comparable(base.validityId, pairVid)) continue;
-
-            bool dup = false;
-            for (int16_t k = 0; k < base.count && !dup; ++k) {
-                const IntEncodedExpr& bIe = allIntStmts[base.allIdx[k]];
-                if ((bIe.originalId == m0.originalId && nm.comparable(bIe.validityId, m0.validityId)) ||
-                    (bIe.originalId == m1.originalId && nm.comparable(bIe.validityId, m1.validityId))) {
-                    dup = true;
-                }
-            }
-            if (dup) continue;
-
-            const IntEncodedExpr* merged[ExecutionParameters::MAX_EXPRESSIONS + 2];
-            int16_t mc = 0;
-            for (int16_t k = 0; k < base.count; ++k)
-                merged[mc++] = &allIntStmts[base.allIdx[k]];
-            merged[mc++] = &m0;
-            merged[mc++] = &m1;
-            std::sort(merged, merged + mc, [&](const IntEncodedExpr* a, const IntEncodedExpr* b) {
-                return nm.decode(a->nameId) < nm.decode(b->nameId);
-            });
-
-            std::pair<bool, IntNormalizedKey> pr2 =
-                preEvaluateFromEncoded(merged, mc, body, mainValidityId,
-                    intMemory.normalizedEncodedKeys);
-
-            if (pr2.first) {
-                emitter.emit(merged, mc, pr2.second);
-            }
-        }
-    }
-
-    return emitter.outCount;
-}
-
-// ========================================================================
-// generateEncodedRequestsStaticCE — CE mode: no mandatory elements.
-// Enumerates statement combinations that directly match full hash keys.
-// Own grow loop (dual-check: fullKeys for emit, subkeys for growth).
-// ========================================================================
-int16_t ExpressionAnalyzer::generateEncodedRequestsStaticCE(
-    Memory& body,
-    const HashMemory& intMemory,
-    TypedArena<IntEncodedExpr>& exprArena,
-    StaticRequest* outBuf, int16_t maxOut)
-{
-    const int maxKeyLen = intMemory.maxKeyLength;
-    if (maxKeyLen <= 0) return 0;
-
-    NameMap& nm = body.nameMap;
-    const int16_t mainValidityId = NameMap::MAIN_ID;
-
-    StaticRequestEmitter emitter(exprArena, outBuf, maxOut);
-
-    // Filter allStatements (CE filter: subkeys OR full keys)
-    const IntEncodedExpr* allIntStmts = body.intEncodedStatements.data();
-    const int16_t allIntCount = static_cast<int16_t>(body.intEncodedStatements.size());
-    int16_t filteredIdx[8192];
-    int16_t nFiltered = filterIntEncodedStatementsCE(allIntStmts, allIntCount,
-        intMemory, filteredIdx, 8192);
-    std::sort(filteredIdx, filteredIdx + nFiltered, [&](int16_t a, int16_t b) {
-        return nm.decode(allIntStmts[a].nameId) < nm.decode(allIntStmts[b].nameId);
-    });
-
-    // Combinatorial enumeration — directly target full keys
-    struct StackItem {
-        int start;
-        int16_t allIdx[ExecutionParameters::MAX_EXPRESSIONS];
-        int16_t count;
-        int16_t validityId;
-    };
-
-    std::vector<StackItem> stack;
-    {
-        StackItem init;
-        init.start = 0;
-        init.count = 0;
-        init.validityId = mainValidityId;
-        stack.push_back(init);
-    }
-
-    while (!stack.empty()) {
-        StackItem top = stack.back();
-        stack.pop_back();
-
-        for (int i = top.start; i < nFiltered; ++i) {
-            if (top.count + 1 > maxKeyLen) break;
-
-            const int16_t allIdx = filteredIdx[i];
-            const IntEncodedExpr& ie = allIntStmts[allIdx];
-
-            if (!nm.comparable(top.validityId, ie.validityId)) continue;
-            int16_t newValidityId = nm.deeperOf(top.validityId, ie.validityId);
-
-            const IntEncodedExpr* ptrs[ExecutionParameters::MAX_EXPRESSIONS];
-            for (int16_t k = 0; k < top.count; ++k)
-                ptrs[k] = &allIntStmts[top.allIdx[k]];
-            ptrs[top.count] = &ie;
-            const int16_t newCount = static_cast<int16_t>(top.count + 1);
-
-            // Check full key match → emit
-            std::pair<bool, IntNormalizedKey> prFull =
-                preEvaluateFromEncoded(ptrs, newCount, body, mainValidityId,
-                    intMemory.normalizedEncodedKeys);
-            if (prFull.first) {
-                emitter.emit(ptrs, newCount, prFull.second);
-            }
-
-            // Check subkey for further growth
-            if (newCount < maxKeyLen) {
-                std::pair<bool, IntNormalizedKey> prSub =
-                    preEvaluateFromEncoded(ptrs, newCount, body, mainValidityId,
-                        intMemory.normalizedEncodedSubkeys);
-                if (prSub.first) {
-                    StackItem next;
-                    next.start = i + 1;
-                    std::memcpy(next.allIdx, top.allIdx, top.count * sizeof(int16_t));
-                    next.allIdx[top.count] = allIdx;
-                    next.count = newCount;
-                    next.validityId = newValidityId;
-                    stack.push_back(next);
-                }
-            }
-        }
-    }
-
-    return emitter.outCount;
-}
-
-
-// ========================================================================
-// Static checkLocalEncodedMemory: int pre-hit checks, string post-hit
-// Takes StaticRequest — no string data in the request itself.
-// ========================================================================
-
-void ExpressionAnalyzer::checkLocalEncodedMemoryStatic(
-    const StaticRequest& req,
-    Memory& memoryBlock,
-    unsigned coreId)
-{
-    NameMap& nm = memoryBlock.nameMap;
-    const int16_t reqCount = req.count;
-    const int iteration = req.maxIteration + 1;
-    const IntNormalizedKey& tple = req.normalizedKey;
-
-    // 1. Validity check using int fields
-    const int16_t mainValidityId = NameMap::MAIN_ID;
-    int16_t consensusValidityId = mainValidityId;
-    for (int16_t i = 0; i < reqCount; ++i) {
-        const int16_t vid = req.intExprs[i]->validityId;
-        if (!nm.comparable(consensusValidityId, vid)) {
-            return;
-        }
-        consensusValidityId = nm.deeperOf(consensusValidityId, vid);
-    }
-
-    const std::string expressionListValidityName = nm.decode(consensusValidityId);
-
-    if (expressionListValidityName.find("_hypo_") != std::string::npos) {
-        for (int16_t i = 0; i < reqCount; ++i) {
-            if (req.intExprs[i]->validityId != consensusValidityId) {
-                if (!req.intExprs[i]->isAnchor) {
-                    return;
-                }
-            }
-        }
-    }
-
-    if (memoryBlock.validityNamesToFilter.count(expressionListValidityName)) {
-        return;
-    }
-
-    // 2. productsOfRecursion check using int fields
-    int algebraicCounter = 0;
-    const auto& prodRecIds = memoryBlock.overallHashMemory.productsOfRecursionIds;
-    for (int16_t i = 0; i < reqCount; ++i) {
-        const IntEncodedExpr& ex = *req.intExprs[i];
-        for (int16_t a = 0; a < ex.arity; ++a) {
-            if (ex.argIteration[a] > -1) {
-                if (prodRecIds.find(ex.argFullId[a]) == prodRecIds.end()) {
-                    algebraicCounter++;
-                }
-            }
-        }
-    }
-    const bool pure = (algebraicCounter == 0);
-
-    // 3. combinedLevels via statementLevelsMap (decoded lookup, per-request cost)
-    std::set<int> combinedLevels;
-    for (int16_t i = 0; i < reqCount; ++i) {
-        EncodedExpression lookup;
-        lookup.original = nm.decode(req.intExprs[i]->originalId);
-        lookup.validityName = nm.decode(req.intExprs[i]->validityId);
-        auto itL = memoryBlock.statementLevelsMap.find(lookup);
-        if (itL != memoryBlock.statementLevelsMap.end()) {
-            for (const auto& lv : itL->second) combinedLevels.insert(lv);
-        }
-    }
-
-    // 4. Build intAllArgs from int fields
-    std::set<int16_t> intAllArgs;
-    for (int16_t i = 0; i < reqCount; ++i) {
-        const IntEncodedExpr& ex = *req.intExprs[i];
-        for (int16_t a = 0; a < ex.arity; ++a) {
-            intAllArgs.insert(ex.argFullId[a]);
-        }
-    }
-
-    if (memoryBlock.overallHashMemory.encodedMap.empty()) {
-        return;
-    }
-
-    // 5. Candidate loop: find remaining-arg sets that are subsets of intAllArgs (sorted for determinism)
-    std::vector<std::set<int16_t>> candidates;
-    for (const auto& kv : memoryBlock.overallHashMemory.remainingArgsNormalizedEncodedMap) {
-        const std::set<int16_t>& st = kv.first;
-        bool subsetOk = true;
-        for (const auto& arg : st) {
-            if (intAllArgs.find(arg) == intAllArgs.end()) {
-                subsetOk = false; break;
-            }
-        }
-        if (subsetOk) candidates.push_back(st);
-    }
-    std::sort(candidates.begin(), candidates.end());
-
-    for (const auto& intSt : candidates) {
-        auto itRA = memoryBlock.overallHashMemory.remainingArgsNormalizedEncodedMap.find(intSt);
-        if (itRA == memoryBlock.overallHashMemory.remainingArgsNormalizedEncodedMap.end()) continue;
-
-        const std::unordered_set<IntNormalizedKey, IntNormalizedKeyHash>& nkSet = itRA->second;
-        if (nkSet.find(tple) == nkSet.end()) continue;
-
-        int16_t buf[ExecutionParameters::MAX_KEY_SLOTS];
-        int16_t reverseMap[ExecutionParameters::MAX_KEY_SLOTS];
-        std::memset(reverseMap, 0, sizeof(reverseMap));
-        int16_t numNormVars = 0;
-
-        // Build pointer array from request
-        const IntEncodedExpr* reqExprs[ExecutionParameters::MAX_EXPRESSIONS];
-        for (int16_t i = 0; i < reqCount; ++i) reqExprs[i] = req.intExprs[i];
-
-        const int16_t len = makeIntNormalizedKeyFromEncodedWithMap(
-            reqExprs, reqCount, intSt,
-            buf, ExecutionParameters::MAX_KEY_SLOTS,
-            reverseMap, numNormVars);
-
-        IntNormalizedKey probe(reqCount, buf, len);
-        auto itEnc = memoryBlock.overallHashMemory.encodedMap.find(probe);
-        if (itEnc == memoryBlock.overallHashMemory.encodedMap.end()) {
-            continue;
-        }
-
-        // HIT — build string back-replacement map from int reverseMap
-        std::map<std::string, std::string> backReplacementMap;
-        for (int16_t v = 1; v <= numNormVars; ++v) {
-            backReplacementMap[std::to_string(static_cast<int>(v))] = nm.decode(reverseMap[v]);
-        }
-
-        const std::vector<LocalMemoryValue>& valueVec = itEnc->second;
-
-        std::vector<LocalMemoryValue> ordered(valueVec.begin(), valueVec.end());
-        struct ByValue {
-            bool operator()(const LocalMemoryValue& a, const LocalMemoryValue& b) const {
-                return a.value < b.value;
-            }
-        };
-        std::sort(ordered.begin(), ordered.end(), ByValue());
-
-        // Build origin tail — preserve each premise's real validity.
-        // Mirror of the fix in checkLocalEncodedMemory: decode both
-        // originalId AND validityId per premise instead of flattening to
-        // strings and restamping with expressionListValidityName.
-        std::vector<ExpressionWithValidity> orderedPremises;
-        orderedPremises.reserve(reqCount);
-        for (int16_t i = 0; i < reqCount; ++i) {
-            orderedPremises.emplace_back(
-                nm.decode(req.intExprs[i]->originalId),
-                nm.decode(req.intExprs[i]->validityId));
-        }
-        std::sort(orderedPremises.begin(), orderedPremises.end(),
-            [](const ExpressionWithValidity& a, const ExpressionWithValidity& b) {
-                if (a.original != b.original) return a.original < b.original;
-                return a.validityName < b.validityName;
-            });
-
-        for (std::size_t vi = 0; vi < ordered.size(); ++vi) {
-            const LocalMemoryValue& lmv = ordered[vi];
-
-            const std::string rplExpr1 = ce::replaceKeysInString(lmv.value, backReplacementMap);
-            const std::string rplExpr2 = ExpressionAnalyzer::replaceUSubstrings(rplExpr1);
-
-            if (lmv.value.find("marker") == std::string::npos) {
-                if (lmv.validityName != "main" && expressionListValidityName != "main"
-                    && lmv.validityName != expressionListValidityName) {
-                    continue;
-                }
-
-                std::set<int> tempLevels = combinedLevels;
-                for (const auto& lv : lmv.levels) tempLevels.insert(lv);
-
-                std::pair<std::string, std::vector<ExpressionWithValidity>> origin =
-                    std::make_pair("implication", std::vector<ExpressionWithValidity>());
-                origin.second.push_back(ExpressionWithValidity(lmv.originalImplication, lmv.validityName));
-                for (const auto& p : orderedPremises) {
-                    origin.second.push_back(p);
-                }
-
-                bool doNotDisintegrate = (lmv.justification == "integration");
-                // D-29 two-part disintegration gate (only active when
-                // incubator_mode && !ban_disintegration — the SE2 /
-                // FTA-rung-1 combination):
-                //   (1) anchor LB: ALWAYS block disintegration (anchor never
-                //       disintegrates in this mode — its job is broadcast +
-                //       handle external rules without local fan-out).
-                //   (2) non-anchor LB: block disintegration unless at least
-                //       one matched premise is in this LB's
-                //       localEncodedStatementsSet (i.e. the rule was triggered
-                //       at least partly by THIS LB's own derivation work, not
-                //       solely by anchor / broadcast inputs).
-                // Without (1) the prover crashed at burst 2 / ~4570 exprs.
-                // Without (2) the prover crashed at burst 3 / ~7686 exprs.
-                // Both clauses are load-bearing.
-                // Pre-D-29 the prover crashed with NameMap exhaustion (cap
-                // 16384) at prover.hpp:807 — fold/sequence/etc. external
-                // rules from the prior IncubatorGauss batch fanning out
-                // across local (in[X, N]) rows.
-                if (parameters.incubator_mode && !parameters.ban_disintegration && !doNotDisintegrate) {
-                    const std::string anchorPrefix = "(" + this->anchorInfo.name;
-                    const bool isAnchorLB =
-                        (memoryBlock.exprKey.rfind(anchorPrefix, 0) == 0);
-                    if (isAnchorLB) {
-                        doNotDisintegrate = true;
-                    } else {
-                        bool hasLocalPremise = false;
-                        for (const auto& p : orderedPremises) {
-                            if (memoryBlock.localEncodedStatementsSet.count(
-                                    EncodedExpression(p.original, p.validityName))) {
-                                hasLocalPremise = true;
-                                break;
-                            }
-                        }
-                        if (!hasLocalPremise) doNotDisintegrate = true;
-                    }
-                }
-
-                bool allGood = expressionListValidityName == "main";
-                for (int16_t i = 0; i < reqCount; ++i) {
-                    if (!allowedForMail(nm.decode(req.intExprs[i]->originalId), memoryBlock)) {
-                        allGood = false;
-                    }
-                }
-                if (allGood) {
-                    memoryBlock.canBeSentSet.insert(rplExpr2);
-                }
-
-                // D-32: forward the install-time disintegration-product
-                // flag so disintegrateExprCore2's OR case can fire the
-                // sharper bypass at the OR-disint admission gate.
-                this->addExprToMemoryBlock(rplExpr2, memoryBlock, iteration, 1,
-                    tempLevels, origin, coreId, -1, expressionListValidityName, doNotDisintegrate,
-                    lmv.productOfDisintegration);
-            }
-            else {
-                // Purity gate is relaxed ONLY inside OR-branch scopes
-                // (`_boundary_orint_` in the validity name). Case-split
-                // branches legitimately carry fresh it_/int_ witnesses
-                // that are iteration-bearing but not yet products of
-                // recursion — denying those admissions leaves §4.2-style
-                // ladder steps unreachable.
-                // Anywhere else (main / hypo / non-or boundary) the
-                // original purity gate stands, to prevent runaway fan-out.
-                const bool inOrBranch =
-                    expressionListValidityName.find("_boundary_orint_")
-                    != std::string::npos;
-                if (!pure && !inOrBranch) {
-                    continue;
-                }
-
-                std::vector<std::string> replacedKey;
-                replacedKey.reserve(lmv.key.size());
-                for (std::size_t k = 0; k < lmv.key.size(); ++k) {
-                    const std::string tmp = ce::replaceKeysInString(lmv.key[k], backReplacementMap);
-                    replacedKey.push_back(ExpressionAnalyzer::replaceUSubstrings(tmp));
-                }
-
-                std::set<std::string> remainingArgs = lmv.remainingArgs;
-
-                auto itAdm = memoryBlock.overallHashMemory.admissionMap.find(
-                    ExpressionWithValidity(rplExpr2, expressionListValidityName));
-                AdmissionMapValue admv;
-                admv.key = replacedKey;
-                admv.remainingArgs = remainingArgs;
-                admv.standardMaxAdmissionDepth = parameters.standardMaxAdmissionDepth;
-                admv.standardMaxSecondaryNumber = parameters.standardMaxSecondaryNumber;
-                admv.flag = false;
-
-                if (memoryBlock.overallHashMemory.consumedAdmissionKeys.find(
-                    ExpressionWithValidity(rplExpr2, expressionListValidityName))
-                    != memoryBlock.overallHashMemory.consumedAdmissionKeys.end()) {
-                    continue;
-                }
-
-                std::vector<std::string> tempArgs = ce::getArgs(rplExpr2);
-                std::set<std::string> argSet(tempArgs.begin(), tempArgs.end());
-                assert(argSet.find("marker") != argSet.end());
-                argSet.erase("marker");
-
-                prepareIntegration(rplExpr2, argSet, memoryBlock, expressionListValidityName);
-
-                std::string core = ce::extractExpression(rplExpr2);
-                auto itComp = compiledExpressions.find(core);
-                assert(itComp != compiledExpressions.end());
-                if (itComp->second.category != "atomic") {
-                    memoryBlock.canBeSentMarkerSet.insert(rplExpr2);
-                }
-
-                if (itAdm != memoryBlock.overallHashMemory.admissionMap.end()) {
-                    itAdm->second.insert(admv);
-                } else {
-                    std::set<AdmissionMapValue> newSet;
-                    newSet.insert(admv);
-                    memoryBlock.overallHashMemory.admissionMap.insert(
-                        std::make_pair(ExpressionWithValidity(rplExpr2, expressionListValidityName), newSet));
-                }
-
-                memoryBlock.overallHashMemory.admissionStatusMap[
-                    ExpressionWithValidity(rplExpr2, expressionListValidityName)] = false;
-
-                this->revisitRejected2(rplExpr2, memoryBlock, expressionListValidityName);
-            }
-        }
-    }
-}
+// checkLocalEncodedMemoryStatic() — moved to memory.cpp.
 
 // ========================================================================
 // Static pipeline: IntEncodedExpr-based, zero-alloc request generation
 // ========================================================================
 
-int16_t ExpressionAnalyzer::makeMandatoryEncodedStatementLists1Static(
-    const HashMemory& mem,
-    const IntEncodedExpr* stmts, int16_t stmtCount,
-    int16_t* outIndices, int16_t maxOut)
-{
-    // Filter, then sort by originalId (proxy for stable sort by original string)
-    int16_t filtBuf[4096];
-    int16_t nFilt = filterIntEncodedStatements(stmts, stmtCount, mem, filtBuf, 4096);
-
-    // Insertion sort filtered indices by originalId (counts are small)
-    for (int16_t i = 1; i < nFilt; ++i) {
-        int16_t key = filtBuf[i];
-        int16_t j = i - 1;
-        while (j >= 0 && stmts[filtBuf[j]].originalId > stmts[key].originalId) {
-            filtBuf[j + 1] = filtBuf[j];
-            --j;
-        }
-        filtBuf[j + 1] = key;
-    }
-
-    int16_t nOut = std::min(nFilt, maxOut);
-    std::memcpy(outIndices, filtBuf, nOut * sizeof(int16_t));
-    return nOut;
-}
-
-int16_t ExpressionAnalyzer::makeMandatoryEncodedStatementLists2Static(
-    Memory& body, const HashMemory& mem,
-    const IntEncodedExpr* first, int16_t firstCount,
-    const IntEncodedExpr* second, int16_t secondCount,
-    MandatoryPair* outPairs, int16_t maxOut)
-{
-    if (firstCount == 0 || secondCount == 0) return 0;
-
-    // Filter both layers
-    int16_t filt1Buf[4096], filt2Buf[4096];
-    int16_t nF1 = filterIntEncodedStatements(first, firstCount, mem, filt1Buf, 4096);
-    int16_t nF2 = filterIntEncodedStatements(second, secondCount, mem, filt2Buf, 4096);
-
-    // Sort by originalId
-    auto sortByOriginal = [](int16_t* arr, int16_t n, const IntEncodedExpr* stmts) {
-        for (int16_t i = 1; i < n; ++i) {
-            int16_t key = arr[i];
-            int16_t j = i - 1;
-            while (j >= 0 && stmts[arr[j]].originalId > stmts[key].originalId) {
-                arr[j + 1] = arr[j];
-                --j;
-            }
-            arr[j + 1] = key;
-        }
-    };
-    sortByOriginal(filt1Buf, nF1, first);
-    sortByOriginal(filt2Buf, nF2, second);
-
-    // "main" ID is guaranteed to be NameMap::MAIN_ID (== 1).
-    int16_t mainId = NameMap::MAIN_ID;
-
-    int16_t nOut = 0;
-    int16_t buf[ExecutionParameters::MAX_KEY_SLOTS];
-
-    for (int16_t i = 0; i < nF1 && nOut < maxOut; ++i) {
-        const IntEncodedExpr& e1 = first[filt1Buf[i]];
-        for (int16_t j = 0; j < nF2 && nOut < maxOut; ++j) {
-            const IntEncodedExpr& e2 = second[filt2Buf[j]];
-
-            // Validity check
-            if (e1.validityId != e2.validityId) {
-                if (e1.validityId != mainId && e2.validityId != mainId) continue;
-            }
-
-            // Skip identical expressions
-            if (e1.originalId == e2.originalId && e1.validityId == e2.validityId)
-                continue;
-
-            // Build sorted pair and preEvaluate — sort by name string (lexicographic),
-            // NOT by nameId (insertion order), to match storage sort in addToHashMemory
-            IntEncodedExpr sorted[2];
-            const std::string& name1 = body.nameMap.decode(e1.nameId);
-            const std::string& name2 = body.nameMap.decode(e2.nameId);
-            if (name1 <= name2) { sorted[0] = e1; sorted[1] = e2; }
-            else { sorted[0] = e2; sorted[1] = e1; }
-
-            int16_t len = makeIntNormalizedKeyFromEncoded(sorted, 2, false, buf,
-                ExecutionParameters::MAX_KEY_SLOTS);
-            IntNormalizedKey probe(2, buf, len);
-
-            if (mem.normalizedEncodedSubkeys.find(probe) != mem.normalizedEncodedSubkeys.end()) {
-                outPairs[nOut].idx1 = filt1Buf[i];
-                outPairs[nOut].idx2 = filt2Buf[j];
-                ++nOut;
-            }
-        }
-    }
-    return nOut;
-}
+// makeMandatoryEncodedStatementLists1Static() and …2Static() — moved to memory.cpp.
 
 //#pragma optimize("", off)
+/// @brief Drive the per-LB hypothesis-reaction step — install the
+/// recursion hypothesis (or check-zero / check-induction-condition
+/// goal) into the LB before its hash burst.
+///
+/// @details
+/// Recursion / induction LBs carry a hypothesis that must be
+/// available as a statement before the hash burst can fire. For
+/// the successor case, the hypothesis is `(=[s(rec), zero]) → false`
+/// (the inductive step's antecedent); for the zero case, the
+/// hypothesis is the variable's typing predicate.
+///
+/// `reactToHypo` reads the LB's `recursionHypothesis` field
+/// (populated at LB-creation in `prover.cpp`) and installs the
+/// hypothesis statement via `addExprToMemoryBlock`. Without this
+/// step, induction-block hash bursts would lack their entry-point
+/// premise and never fire.
+///
+/// @param mb Owning induction / recursion LB.
+/// @see `Memory::recursionHypothesis` (memory.hpp).
 void ExpressionAnalyzer::reactToHypo(Memory& mb) {
     static const std::regex reInt(R"(^int_lev_\d+_\d+$)");
     const std::string hypoMarker = "_hypo_";
@@ -2368,6 +1328,54 @@ void ExpressionAnalyzer::reactToHypo(Memory& mb) {
 // Turn optimizations OFF for just this section
 //#pragma optimize("", off)
 
+/// @brief Run one elementary logical step on a single LB — the per-LB
+/// hash-burst worker.
+///
+/// @details
+/// Called from `proveKernel`'s parallel pool, once per `(LB, iteration)`
+/// pair per worker thread. This function is the single most-cited
+/// kernel of the prover; it generates the static request stream from
+/// `body.intEncodedStatements`, dispatches each request through
+/// `checkLocalEncodedMemoryStatic`, processes the resulting head
+/// emissions, drains the per-LB mail, applies any equivalence-class
+/// rewrites that came in this iteration, and wires up the
+/// hashburst dump that all multi-day investigations have hinged on.
+///
+/// **🔴 SACRED INFRASTRUCTURE. 🔴** The hashburst dump inside this
+/// function is OFF-LIMITS to autonomous edits — including:
+/// - The per-section lambdas (`dumpHeader`, `dumpLBChain`,
+///   `dumpEncodedStatements`, `dumpToBeProved`, `dumpExprOriginMap`,
+///   `dumpHashOriginals`, `dumpAdmissionMap`, `dumpEncodedMapMarkers`,
+///   `dumpMailIn`, `dumpCompiledExpressions`).
+/// - The three call sites (ENTRY / EARLY-EXIT at `!isActive` return /
+///   final EXIT).
+/// - The section ordering inside each call site.
+/// - The output file path `.debug/hashburst_trace.txt`.
+/// - The `isXxxTargetLB` lambda's chain-match condition.
+/// - Activate / deactivate state.
+///
+/// **Why the dump is sacred.** Multi-day investigations
+/// ([D-39](../../docs/40_decisions.md#d-39) race, mail unification,
+/// equality1 cycles, `&& false` regression, cap-30 walker, `_orint_`
+/// mistag) all hinged on diffs of this dump's output. Stable structure
+/// means the user can grep / diff / scroll the same section names
+/// across sessions. Even small touches risk breaking that compounding
+/// value. If the user wants the trap pointed at a new LB or turned
+/// off, the user says so explicitly.
+///
+/// @return Reference to `body` for chaining (the caller passes a
+///         reference and gets the same reference back).
+/// @invariant [I-21](../../docs/30_invariants.md#i-21) — `internalMailIn`
+///            cleared at TOP of hashburst after absorb, not END.
+/// @invariant [I-26](../../docs/30_invariants.md#i-26) — mail-out
+///            statements/implications MAIN-ONLY; exprOriginMap
+///            ALL-SCOPES.
+/// @invariant [I-28](../../docs/30_invariants.md#i-28) — cross-LB
+///            writes during the parallel phase deferred to
+///            post-`pool.join()` collectors.
+/// @see The hashburst-dump immutability contract in the project's
+///      ABSOLUTE-RULES section: read before any edit anywhere near
+///      this function.
 Memory& ExpressionAnalyzer::performElementaryLogicalStep(Memory& body,
     unsigned coreId,
     const ParentChildrenMap& index,
@@ -2377,160 +1385,194 @@ Memory& ExpressionAnalyzer::performElementaryLogicalStep(Memory& body,
         return body;
     }
 
-    // DEBUG: per-hashburst dump for the AnchorIncubator base LB —
-    // sandbox/non-determinism2 oracle target. AnchorIncubator is the single
-    // mailing recipient of the entire incubator deductive process, so its
-    // accumulated state is a fixed-point witness for run-to-run determinism.
-    // Unified 14-arg form, used by both IncubatorPeano and IncubatorGauss
-    // post SE2 migration (commit 27ce2062).
-    // LB chain (innermost → root):
-    //   [0] (AnchorIncubator[1,2,3,4,5,6,7,8,9,10,11,12,13,14])
-    //   [1] ""                             -- root (empty exprKey, parentMemory == nullptr)
-    {
+    // Hashburst trap helpers — split into per-section lambdas. Each call site
+    // (ENTRY / EARLY-EXIT at !isActive return / final EXIT) composes the
+    // subset of sections it needs, all writing to .debug/hashburst_trace.txt.
+    //
+    // 🔴 DO NOT TOUCH THIS DUMP. 🔴 CLAUDE.md Rule 14: the entire hashburst
+    // dump infrastructure — lambdas, call sites, sections, file path, AND the
+    // LB-targeting chain match below — requires explicit user approval to
+    // change. No autonomous edits, including activate/deactivate or LB
+    // retargeting. Mirrored in memory entry `feedback_dump_structure_immutable.md`.
+    //
+    // Current target: Gauss fold theorem recursion-block-#1 successor LB
+    // body `(in2[rec0,9,3])` — induction-step LB created at
+    // `tempMb->exprKey = tempExpr` inside `addRecursionBlocks` (the
+    // `(in2[recArg, digitArg, sName])` shape with recursionCounter=0,
+    // digitArg=9, sName=3 for the active Gauss fold theorem).
+    // Chain (innermost → root):
+    //   [0] (in2[rec0,9,3])             -- recursion-block-#1 successor LB
+    //   [1] (in2[9,10,3])               -- in2 premise
+    //   [2] (fold[1,3,4,8,2,9,12])      -- fold theorem head
+    //   [3] (in3[9,10,11,5])            -- in3 wrapper
+    //   [4] (AnchorGauss[1,2,3,4,5,6,7,8])
+    //   [5] <root> (empty exprKey, parentMemory == nullptr)
+    auto isChap193TargetLB = [&]() -> bool {
         const Memory* p1 = body.parentMemory;
-        const bool isTargetLB =
-            body.exprKey == "(AnchorIncubator[1,2,3,4,5,6,7,8,9,10,11,12,13,14])"
-            && p1 && p1->exprKey.empty()
-            && p1->parentMemory == nullptr;
-        // Hashburst-trace dump is gated off by default. This block is
-        // load-bearing during deep proof investigations (entire FTA-rung-1
-        // §1–§10 chain was unblocked through traces it produced) and stays
-        // in the source verbatim. To re-enable: flip the literal `false`
-        // below to `true`, optionally retarget the gate by editing the
-        // `isTargetLB` predicate, rebuild. .debug/hashburst_trace.txt is
-        // truncated by main.py at session start (see main.py:63), so a
-        // toggled-on run starts clean per session.
-        if (false && isTargetLB) {
-        static std::mutex dumpMtx;
-        std::lock_guard<std::mutex> lock(dumpMtx);
-        static int burstCount = 0;
-        burstCount++;
-        std::ofstream dump(".debug/hashburst_trace.txt", burstCount == 1 ? std::ios::trunc : std::ios::app);
-        // mbPtr (address of `body`) deliberately omitted — it varies per
-        // process and would force false-positive divergence in run-to-run
-        // byte-equality checks (sandbox/non-determinism2 oracle).
-        dump << "\n=== HASHBURST #" << burstCount
-             << " | stmts=" << body.encodedStatements.size()
-             << " | origins=" << body.exprOriginMap.size()
-             << " | hashMem=" << body.overallHashMemory.originals.size()
-             << " | toBeProved=" << body.toBeProved.size()
-             << " ===\n";
-        dump << "-- LB chain (innermost -> root):\n";
-        {
-            const Memory* cur = &body;
-            int depth = 0;
-            while (cur != nullptr) {
-                dump << "  [" << depth << "] " << cur->exprKey << "\n";
-                cur = cur->parentMemory;
-                ++depth;
-            }
+        const Memory* p2 = p1 ? p1->parentMemory : nullptr;
+        const Memory* p3 = p2 ? p2->parentMemory : nullptr;
+        const Memory* p4 = p3 ? p3->parentMemory : nullptr;
+        const Memory* p5 = p4 ? p4->parentMemory : nullptr;
+        return body.exprKey == "(in2[rec0,9,3])"
+            && p1 && p1->exprKey == "(in2[9,10,3])"
+            && p2 && p2->exprKey == "(fold[1,3,4,8,2,9,12])"
+            && p3 && p3->exprKey == "(in3[9,10,11,5])"
+            && p4 && p4->exprKey == "(AnchorGauss[1,2,3,4,5,6,7,8])"
+            && p5 && p5->exprKey.empty()
+            && p5->parentMemory == nullptr;
+    };
+    auto dumpHeader = [&](std::ofstream& f, const std::string& label, int count) {
+        f << "\n=== HASHBURST " << label << " #" << count
+          << " | stmts=" << body.encodedStatements.size()
+          << " | origins=" << body.exprOriginMap.size()
+          << " | hashMem=" << body.overallHashMemory.originals.size()
+          << " | toBeProved=" << body.toBeProved.size()
+          << " ===\n";
+    };
+    auto dumpLBChain = [&](std::ofstream& f) {
+        f << "-- LB chain (innermost -> root):\n";
+        const Memory* cur = &body;
+        int depth = 0;
+        while (cur != nullptr) {
+            f << "  [" << depth << "] " << cur->exprKey << "\n";
+            cur = cur->parentMemory;
+            ++depth;
         }
-        dump << "-- encodedStatements:\n";
+    };
+    auto dumpEncodedStatements = [&](std::ofstream& f) {
+        f << "-- encodedStatements:\n";
         for (size_t i = 0; i < body.encodedStatements.size(); ++i) {
-            dump << "  [" << i << "] " << body.encodedStatements[i].original
-                 << " | v=" << body.encodedStatements[i].validityName << "\n";
+            f << "  [" << i << "] " << body.encodedStatements[i].original
+              << " | v=" << body.encodedStatements[i].validityName << "\n";
         }
-        dump << "-- toBeProved (" << body.toBeProved.size() << "):\n";
+    };
+    auto dumpToBeProved = [&](std::ofstream& f) {
+        f << "-- toBeProved (" << body.toBeProved.size() << "):\n";
         for (const auto& [key, val] : body.toBeProved) {
             const auto& auxies = std::get<0>(val);
             const auto& tags   = std::get<1>(val);
-            dump << "  " << key.original << " | v=" << key.validityName;
-            dump << " | auxies={";
+            f << "  " << key.original << " | v=" << key.validityName;
+            f << " | auxies={";
             bool firstA = true;
-            for (int a : auxies) { if (!firstA) dump << ","; dump << a; firstA = false; }
-            dump << "} | tags={";
+            for (int a : auxies) { if (!firstA) f << ","; f << a; firstA = false; }
+            f << "} | tags={";
             bool firstT = true;
-            for (const auto& t : tags) { if (!firstT) dump << ","; dump << t; firstT = false; }
-            dump << "}\n";
+            for (const auto& t : tags) { if (!firstT) f << ","; f << t; firstT = false; }
+            f << "}\n";
         }
-        // exprOriginMap dump — provenance edges registered by origin-tracking
-        // paths. These record speculative origin registrations; the keyed
-        // expression need not be live in encodedStatements. Iteration is
-        // deterministic: exprOriginMap is std::map<ExpressionWithValidity,…>.
-        dump << "-- exprOriginMap:\n";
+    };
+    auto dumpExprOriginMap = [&](std::ofstream& f) {
+        f << "-- exprOriginMap:\n";
         for (const auto& [key, origins] : body.exprOriginMap) {
-            dump << "  " << key.original << " | v=" << key.validityName << "\n";
+            f << "  " << key.original << " | v=" << key.validityName << "\n";
             for (const auto& [tag, deps] : origins) {
-                dump << "    <- " << tag;
-                for (const auto& d : deps) dump << " | " << d.original << " (v=" << d.validityName << ")";
-                dump << "\n";
+                f << "    <- " << tag;
+                for (const auto& d : deps) f << " | " << d.original << " (v=" << d.validityName << ")";
+                f << "\n";
             }
         }
-        dump << "-- overallHashMemory.originals (" << body.overallHashMemory.originals.size() << "):\n";
+    };
+    auto dumpHashOriginals = [&](std::ofstream& f) {
+        f << "-- overallHashMemory.originals (" << body.overallHashMemory.originals.size() << "):\n";
         for (const auto& orig : body.overallHashMemory.originals) {
-            dump << " ";
-            for (const auto& s : orig) dump << " " << s;
-            dump << "\n";
+            f << " ";
+            for (const auto& s : orig) f << " " << s;
+            f << "\n";
         }
-        // TRAP: dump admissionMap (marker templates) — looking for the P2 auxy
-        // (in2[u_n,u_x,u_s]) (in3[u_x,u_m,u_y,u_+]) -> (in3[u_n,u_m,marker,u_+])
-        // or any admission entry whose marker expression exposes the in3 output slot.
-        dump << "-- overallHashMemory.admissionMap (" << body.overallHashMemory.admissionMap.size() << "):\n";
+    };
+    auto dumpAdmissionMap = [&](std::ofstream& f) {
+        f << "-- overallHashMemory.admissionMap (" << body.overallHashMemory.admissionMap.size() << "):\n";
         for (const auto& [keyEv, values] : body.overallHashMemory.admissionMap) {
-            dump << "  markerExpr=" << keyEv.original << " | v=" << keyEv.validityName
-                 << " | entries=" << values.size() << "\n";
+            f << "  markerExpr=" << keyEv.original << " | v=" << keyEv.validityName
+              << " | entries=" << values.size() << "\n";
             int ei = 0;
             for (const auto& v : values) {
-                dump << "    [" << ei++ << "] key={";
-                for (const auto& s : v.key) dump << s << " ";
-                dump << "} remainingArgs={";
-                for (const auto& r : v.remainingArgs) dump << r << " ";
-                dump << "} maxDepth=" << v.standardMaxAdmissionDepth
-                     << " maxSec=" << v.standardMaxSecondaryNumber
-                     << " flag=" << v.flag << "\n";
+                f << "    [" << ei++ << "] key={";
+                for (const auto& s : v.key) f << s << " ";
+                f << "} remainingArgs={";
+                for (const auto& r : v.remainingArgs) f << r << " ";
+                f << "} maxDepth=" << v.standardMaxAdmissionDepth
+                  << " maxSec=" << v.standardMaxSecondaryNumber
+                  << " flag=" << v.flag << "\n";
             }
         }
-        // TRAP: dump encodedMap entries whose value (markerExpr) contains
-        // "marker". These are the admission auxys produced by
-        // makeNormalizedKeysForAdmission — not visible in originals or
-        // admissionMap. encodedMap is std::unordered_map (the only unordered
-        // container in this dump), so we materialise matches into a local
-        // vector and sort by (value, key, remainingArgs) for run-to-run
-        // byte-equal output. Sort is dump-only — encodedMap itself is not
-        // touched.
-        {
-            std::vector<const LocalMemoryValue*> markerLmvs;
-            for (const auto& [intKey, lmvList] : body.overallHashMemory.encodedMap) {
-                for (const auto& lmv : lmvList) {
-                    if (lmv.value.find("marker") != std::string::npos) {
-                        markerLmvs.push_back(&lmv);
-                    }
+    };
+    auto dumpEncodedMapMarkers = [&](std::ofstream& f) {
+        std::vector<const LocalMemoryValue*> markerLmvs;
+        for (const auto& [intKey, lmvList] : body.overallHashMemory.encodedMap) {
+            for (const auto& lmv : lmvList) {
+                if (lmv.value.find("marker") != std::string::npos) {
+                    markerLmvs.push_back(&lmv);
                 }
             }
-            std::sort(markerLmvs.begin(), markerLmvs.end(),
-                [](const LocalMemoryValue* a, const LocalMemoryValue* b) {
-                    if (a->value != b->value) return a->value < b->value;
-                    if (a->key != b->key) return a->key < b->key;
-                    return a->remainingArgs < b->remainingArgs;
-                });
-            dump << "-- overallHashMemory.encodedMap marker entries (" << markerLmvs.size() << "):\n";
-            for (const auto* lmv : markerLmvs) {
-                dump << "  markerExpr=" << lmv->value << "\n";
-                dump << "    key={";
-                for (const auto& s : lmv->key) dump << s << " ";
-                dump << "}\n";
-                dump << "    remainingArgs={";
-                for (const auto& r : lmv->remainingArgs) dump << r << " ";
-                dump << "}\n";
-            }
         }
-        dump << "-- mailIn.statements (" << body.mailIn.statements.size() << "):\n";
+        std::sort(markerLmvs.begin(), markerLmvs.end(),
+            [](const LocalMemoryValue* a, const LocalMemoryValue* b) {
+                if (a->value != b->value) return a->value < b->value;
+                if (a->key != b->key) return a->key < b->key;
+                return a->remainingArgs < b->remainingArgs;
+            });
+        f << "-- overallHashMemory.encodedMap marker entries (" << markerLmvs.size() << "):\n";
+        for (const auto* lmv : markerLmvs) {
+            f << "  markerExpr=" << lmv->value << "\n";
+            f << "    key={";
+            for (const auto& s : lmv->key) f << s << " ";
+            f << "}\n";
+            f << "    remainingArgs={";
+            for (const auto& r : lmv->remainingArgs) f << r << " ";
+            f << "}\n";
+        }
+    };
+    auto dumpMailIn = [&](std::ofstream& f) {
+        f << "-- mailIn.statements (" << body.mailIn.statements.size() << "):\n";
         for (const auto& st : body.mailIn.statements) {
-            dump << "  " << st.first << "\n";
+            f << "  " << st.first.original
+              << " (vName=" << st.first.validityName << ")\n";
         }
-        dump << "-- mailIn.implications (" << body.mailIn.implications.size() << "):\n";
+        f << "-- mailIn.implications (" << body.mailIn.implications.size() << "):\n";
         for (const auto& imp : body.mailIn.implications) {
-            dump << "  full: " << std::get<4>(imp) << "\n";
+            f << "  full: " << std::get<4>(imp) << "\n";
         }
-        if (burstCount == 1) {
-            dump << "-- compiledExpressions (" << this->compiledExpressions.size() << "):\n";
-            for (const auto& [name, le] : this->compiledExpressions) {
-                dump << "  " << name << " | sig=" << le.signature << "\n";
+        f << "-- mailIn.exprOriginMap (" << body.mailIn.exprOriginMap.size() << "):\n";
+        for (const auto& [key, origins] : body.mailIn.exprOriginMap) {
+            f << "  " << key.original << " | v=" << key.validityName << "\n";
+            for (const auto& [tag, deps] : origins) {
+                f << "    <- " << tag;
+                for (const auto& d : deps) f << " | " << d.original << " (v=" << d.validityName << ")";
+                f << "\n";
             }
         }
-        dump.flush();
-        }  // if (isTargetLB)
-    }  // chain-extraction block
+    };
+    auto dumpCompiledExpressions = [&](std::ofstream& f) {
+        f << "-- compiledExpressions (" << this->compiledExpressions.size() << "):\n";
+        for (const auto& [name, le] : this->compiledExpressions) {
+            f << "  " << name << " | sig=" << le.signature << "\n";
+        }
+    };
+
+    // ENTRY trap — full dump (LB chain, encodedStatements, toBeProved,
+    // exprOriginMap, hashOriginals, admissionMap, encodedMap markers, mailIn
+    // sections, plus compiledExpressions one-shot on burst #1). Chain target
+    // documented at the `isChap193TargetLB` lambda above.
+    if (isChap193TargetLB()) {
+        static std::mutex entryMtx;
+        std::lock_guard<std::mutex> lock(entryMtx);
+        static int entryCount = 0;
+        ++entryCount;
+        std::ofstream f(".debug/hashburst_trace.txt",
+                        entryCount == 1 ? std::ios::trunc : std::ios::app);
+        dumpHeader(f, "ENTRY", entryCount);
+        dumpLBChain(f);
+        dumpEncodedStatements(f);
+        dumpToBeProved(f);
+        dumpExprOriginMap(f);
+        dumpHashOriginals(f);
+        dumpAdmissionMap(f);
+        dumpEncodedMapMarkers(f);
+        dumpMailIn(f);
+        if (entryCount == 1) dumpCompiledExpressions(f);
+        f.flush();
+    }
 
     // ingest implications into local memory
     for (std::set< std::tuple< std::vector<std::string>,
@@ -2550,17 +1592,69 @@ Memory& ExpressionAnalyzer::performElementaryLogicalStep(Memory& body,
             parameters.minNumOperatorsKey, "implication", true, orImpl, "main");
     }
 
-    // expr_origin_map = mail_in | current   (right wins on conflicts)
+    // expr_origin_map = mail_in merged into current via addOrigin (D-49).
+    // Pre-D-49: raw map merge with body-wins-on-conflict. mailIn's full
+    // origin vector landed verbatim; existing body entries overrode mail
+    // entries on conflict. With cap=1 effectively enforced only by
+    // addOrigin and bypassed here, the policy that ought to govern which
+    // origin survives (foundation displaces convenience) was inert.
+    // Routing through addOrigin lets the cap-full preference replacement
+    // (anything > equality1/equality2) decide per-key which origin wins.
     {
         // Sort mail origins for deterministic encoding order
         for (auto& kv : body.mailIn.exprOriginMap) {
             std::sort(kv.second.begin(), kv.second.end());
         }
+        const int maxOriginsForBulk = parameters.compressor_mode
+            ? parameters.compressor_max_origins_per_expr
+            : parameters.max_origin_per_expr;
+        for (const auto& kv : body.mailIn.exprOriginMap) {
+            for (const auto& origin : kv.second) {
+                addOrigin(body.exprOriginMap, kv.first, origin, maxOriginsForBulk);
+            }
+        }
+    }
 
-        std::map<ExpressionWithValidity, std::vector<std::pair<std::string, std::vector<ExpressionWithValidity>>>> merged;
-        for (const auto& kv : body.mailIn.exprOriginMap) merged[kv.first] = kv.second;
-        for (auto it = body.exprOriginMap.begin(); it != body.exprOriginMap.end(); ++it) merged[it->first] = it->second;
-        body.exprOriginMap.swap(merged);
+    // Sync mail-arrived equality origins into the receiving LB's
+    // EquivalenceClass.equalityOriginMap. The bulk-merge above covers
+    // body.exprOriginMap, but the per-class equalityOriginMap of any class
+    // already containing both args of (=[a,b]) is not updated by that merge.
+    // Without this sync, mergeTwoEquivalenceClasses (prover.hpp) consults
+    // class state when deciding whether to emit equality2 cross-pair origin
+    // records and does not see mail-derived origins as already-known —
+    // producing redundant transitive-closure records that can form cycles
+    // when distinct bridge variables (commonArg) generate mutually-pointing
+    // origins. The chapter-22 origin-chain-termination failures on theorem
+    // 12 zero-case were the trigger for this sync.
+    //
+    // Equalities whose vars are not yet class-bound in any scope are NOT
+    // synced here — they are picked up via prover.hpp's updateEquivalenceClasses
+    // when their own absorption (line 1483-1502 below) fires; line 5886 of
+    // prover.hpp seeds the class with the incoming equality's origin
+    // parameter, which itself is read from body.mailIn.exprOriginMap at
+    // line 1492-1498.
+    if (parameters.trackHistory) {
+        const int maxOrig = parameters.compressor_mode
+            ? parameters.compressor_max_origins_per_expr
+            : parameters.max_origin_per_expr;
+        for (const auto& kv : body.mailIn.exprOriginMap) {
+            const std::string& expr = kv.first.original;
+            // 2-arg positive equality only. Negated-equality keys begin
+            // with "!(=[" — they are skipped by the prefix gate.
+            if (expr.size() < 3 || expr.compare(0, 3, "(=[") != 0) continue;
+            const std::vector<std::string> args = ce::getArgs(expr);
+            if (args.size() != 2) continue;
+            const std::string& vName = kv.first.validityName;
+            auto itClasses = body.equivalenceClassesMap.find(vName);
+            if (itClasses == body.equivalenceClassesMap.end()) continue;
+            for (auto& cls : itClasses->second) {
+                if (cls.variables.find(args[0]) == cls.variables.end()) continue;
+                if (cls.variables.find(args[1]) == cls.variables.end()) continue;
+                for (const auto& origin : kv.second) {
+                    addOrigin(cls.equalityOriginMap, kv.first, origin, maxOrig);
+                }
+            }
+        }
     }
 
     // Arena for IntEncodedExpr copies (stable pointers through eval)
@@ -2584,12 +1678,12 @@ Memory& ExpressionAnalyzer::performElementaryLogicalStep(Memory& body,
     // hashburst body (via applyEquivalenceClassToRejectedMapIntegration or
     // revisitRejectedIntegration2) survive to next hashburst.
     {
-        std::vector< std::tuple<std::string, std::set<int>, std::string> > sortedInternal(
+        std::vector< std::pair<ExpressionWithValidity, std::set<int>> > sortedInternal(
             body.internalMailIn.statements.begin(), body.internalMailIn.statements.end());
-        for (const auto& tup : sortedInternal) {
-            const std::string& statement = std::get<0>(tup);
-            const std::set<int>& levels  = std::get<1>(tup);
-            const std::string& vName     = std::get<2>(tup);
+        for (const auto& entry : sortedInternal) {
+            const std::string& statement = entry.first.original;
+            const std::string& vName     = entry.first.validityName;
+            const std::set<int>& levels  = entry.second;
 
             EncodedExpression encStmt(statement, vName);
             if (body.statementLevelsMap.find(encStmt) == body.statementLevelsMap.end()) {
@@ -2597,9 +1691,12 @@ Memory& ExpressionAnalyzer::performElementaryLogicalStep(Memory& body,
                 if (parameters.trackHistory) {
                     ExpressionWithValidity stVal(statement, vName);
                     auto oit = body.internalMailIn.exprOriginMap.find(stVal);
-                    if (oit != body.internalMailIn.exprOriginMap.end() && !oit->second.empty()) {
-                        origin = oit->second.front();
-                    }
+                    // D-45: every internalMailIn.statements entry must have a
+                    // paired internalMailIn.exprOriginMap entry. The previous
+                    // defensive empty-origin fallback masked a sender-side
+                    // bug — replaced with a hard assert.
+                    assert(oit != body.internalMailIn.exprOriginMap.end() && !oit->second.empty());
+                    origin = oit->second.front();
                 }
                 addExprToMemoryBlock(statement, body, -1, /*status=*/1, levels,
                                      origin, coreId, -1, vName, false);
@@ -2609,18 +1706,28 @@ Memory& ExpressionAnalyzer::performElementaryLogicalStep(Memory& body,
         body.internalMailIn.exprOriginMap.clear();
     }
 
-    // Sort mail statements for deterministic absorption
-    std::vector< std::pair<std::string, std::set<int> > > sortedStatements(
+    // Sort mail statements for deterministic absorption.
+    // Element type is pair<ExpressionWithValidity, levels>; the EWV's
+    // validityName is "main" for routing-channel traffic by I-26 sender
+    // contract — performElementaryLogicalStep asserts this on consumption
+    // (D-53, 2026-05-07; renumbered from main's D-46 on merge into sandbox/incub_fix).
+    std::vector< std::pair<ExpressionWithValidity, std::set<int> > > sortedStatements(
         body.mailIn.statements.begin(), body.mailIn.statements.end());
 
     if (ceFilteringActive) {
         // --- CE mode: absorb mail, then enumerate all statement combos ---
-        for (std::vector< std::pair<std::string, std::set<int> > >::const_iterator it = sortedStatements.begin();
+        for (std::vector< std::pair<ExpressionWithValidity, std::set<int> > >::const_iterator it = sortedStatements.begin();
             it != sortedStatements.end(); ++it) {
-            const std::string& statement = it->first;
+            const std::string& statement = it->first.original;
+            const std::string& vName = it->first.validityName;
+            // I-26: routing-channel (mailIn) is main-only by sender contract.
+            // The EWV's validityName must be "main" here. Non-main scopes
+            // reach Mail-shaped absorb only via internalMailIn (separate
+            // top-of-burst block earlier in this function).
+            assert(vName == "main");
             const std::set<int>& levels = it->second;
-            EncodedExpression encStmt(statement, "main");
-            ExpressionWithValidity stVal(statement, "main");
+            EncodedExpression encStmt(statement, vName);
+            ExpressionWithValidity stVal(statement, vName);
             if (body.statementLevelsMap.find(encStmt) == body.statementLevelsMap.end()) {
                 std::pair<std::string, std::vector<ExpressionWithValidity>> origin;
                 if (parameters.trackHistory) {
@@ -2629,7 +1736,7 @@ Memory& ExpressionAnalyzer::performElementaryLogicalStep(Memory& body,
                         origin = oit->second.front();
                     }
                 }
-                addExprToMemoryBlock(statement, body, -1, 3, levels, origin, coreId, -1, "main", false);
+                addExprToMemoryBlock(statement, body, -1, 3, levels, origin, coreId, -1, vName, false);
             }
         }
 
@@ -2661,7 +1768,7 @@ Memory& ExpressionAnalyzer::performElementaryLogicalStep(Memory& body,
         std::vector<IntEncodedExpr> mailIntEncoded;
         mailIntEncoded.reserve(sortedStatements.size());
         for (const auto& st : sortedStatements) {
-            EncodedExpression tmp(st.first, "main");
+            EncodedExpression tmp(st.first.original, st.first.validityName);
             mailIntEncoded.push_back(encodeExpression(tmp, body.nameMap));
         }
 
@@ -2684,21 +1791,30 @@ Memory& ExpressionAnalyzer::performElementaryLogicalStep(Memory& body,
         }
 
         // absorb incoming statements
-        for (std::vector< std::pair<std::string, std::set<int> > >::const_iterator it = sortedStatements.begin();
+        for (std::vector< std::pair<ExpressionWithValidity, std::set<int> > >::const_iterator it = sortedStatements.begin();
             it != sortedStatements.end(); ++it) {
-            const std::string& statement = it->first;
+            const std::string& statement = it->first.original;
+            const std::string& vName = it->first.validityName;
+            // I-26: routing-channel (mailIn) is main-only by sender contract.
+            // The EWV's validityName must be "main" here. Non-main scopes
+            // reach Mail-shaped absorb only via internalMailIn (separate
+            // top-of-burst block earlier in this function).
+            assert(vName == "main");
             const std::set<int>& levels = it->second;
-            EncodedExpression encStmt(statement, "main");
-            ExpressionWithValidity stVal(statement, "main");
+            EncodedExpression encStmt(statement, vName);
+            ExpressionWithValidity stVal(statement, vName);
             if (body.statementLevelsMap.find(encStmt) == body.statementLevelsMap.end()) {
                 std::pair<std::string, std::vector<ExpressionWithValidity>> origin;
                 if (parameters.trackHistory) {
                     auto oit = body.mailIn.exprOriginMap.find(stVal);
-                    if (oit != body.mailIn.exprOriginMap.end() && !oit->second.empty()) {
-                        origin = oit->second.front();
-                    }
+                    // D-45: every mailIn.statements entry must have a paired
+                    // mailIn.exprOriginMap entry. The previous defensive
+                    // empty-origin fallback masked a sender-side bug —
+                    // replaced with a hard assert.
+                    assert(oit != body.mailIn.exprOriginMap.end() && !oit->second.empty());
+                    origin = oit->second.front();
                 }
-                addExprToMemoryBlock(statement, body, -1, 3, levels, origin, coreId, -1, "main", false);
+                addExprToMemoryBlock(statement, body, -1, 3, levels, origin, coreId, -1, vName, false);
             }
         }
 
@@ -2789,7 +1905,28 @@ Memory& ExpressionAnalyzer::performElementaryLogicalStep(Memory& body,
         bool changed = true;
         while (changed) {
             changed = false;
-            if (!body.isActive) return body;
+            if (!body.isActive) {
+                // EARLY-EXIT trap — !isActive fixpoint early return.
+                // Same dump as final EXIT but at this earlier return point.
+                if (isChap193TargetLB()) {
+                    static std::mutex earlyExitMtx;
+                    std::lock_guard<std::mutex> lock(earlyExitMtx);
+                    static int earlyExitCount = 0;
+                    ++earlyExitCount;
+                    std::ofstream f(".debug/hashburst_trace.txt", std::ios::app);
+                    dumpHeader(f, "EARLY-EXIT", earlyExitCount);
+                    dumpLBChain(f);
+                    dumpEncodedStatements(f);
+                    dumpToBeProved(f);
+                    dumpExprOriginMap(f);
+                    dumpHashOriginals(f);
+                    dumpAdmissionMap(f);
+                    dumpEncodedMapMarkers(f);
+                    dumpMailIn(f);
+                    f.flush();
+                }
+                return body;
+            }
 
             for (int16_t r = 0; r < totalReqs; ++r) {
                 const StaticRequest& req = reqBuf[r];
@@ -2822,9 +1959,42 @@ Memory& ExpressionAnalyzer::performElementaryLogicalStep(Memory& body,
 
 	reactToHypo(body);
 
+    // EXIT trap — final return. Same dump composition as ENTRY (full).
+    if (isChap193TargetLB()) {
+        static std::mutex exitMtx;
+        std::lock_guard<std::mutex> lock(exitMtx);
+        static int exitCount = 0;
+        ++exitCount;
+        std::ofstream f(".debug/hashburst_trace.txt", std::ios::app);
+        dumpHeader(f, "EXIT", exitCount);
+        dumpLBChain(f);
+        dumpEncodedStatements(f);
+        dumpToBeProved(f);
+        dumpExprOriginMap(f);
+        dumpHashOriginals(f);
+        dumpAdmissionMap(f);
+        dumpEncodedMapMarkers(f);
+        dumpMailIn(f);
+        f.flush();
+    }
+
     return body;
 }
 
+/// @brief Walk a theorem expression and return the set of args that must
+/// stay literal (immutable) — typically anchor slots and external
+/// arguments.
+///
+/// @details
+/// Used by the disintegration code to know which args may NOT be
+/// renamed during fresh-name minting. Anchor slots (the args of the
+/// outermost `Anchor*` operator) are always immutable; external
+/// arguments depend on the theorem's structure. The result feeds
+/// into `multiplyImplication`'s I-24 free-anchor-param check.
+///
+/// @param theorem Canonical MPL theorem text.
+/// @return Set of argument names that must not be renamed.
+/// @see `multiplyImplication` — consumer of the result via I-24.
 std::set<std::string>
 ExpressionAnalyzer::findImmutableArgs(const std::string& theorem,
     const std::string& digit) {
@@ -2900,6 +2070,24 @@ ExpressionAnalyzer::findImmutableArgs(const std::string& theorem,
     return immutables;
 }
 
+/// @brief Look up an LB by its global key (the deepest-first chain of
+/// `exprKey` values from the LB up to root).
+///
+/// @details
+/// Companion to `getGlobalKey`: round-trip
+/// `accessMemory(getGlobalKey(mb), root)` returns a pointer equal to
+/// `&mb` for any LB still alive. Walks the LB tree from `bodyOfProves1`
+/// step by step, taking the `simpleMap[K]` edge that matches each chain
+/// element. Returns `nullptr` if any step doesn't have a matching
+/// child — typically because the target LB has been torn down between
+/// iterations.
+///
+/// @param theoremKey     Global key of the target LB (deepest first).
+/// @param bodyOfProves1  Root sentinel from which to walk. Typically
+///                       `body` for the main LB tree or `ceBody` for
+///                       the CE-filter tree.
+/// @return Pointer to the matching LB, or `nullptr` on miss.
+/// @see `getGlobalKey` — produces the matching key.
 Memory* ExpressionAnalyzer::accessMemory(const std::vector<std::string>& theoremKey,
     Memory& bodyOfProves1) {
     Memory* memoryBlock = &bodyOfProves1;
@@ -2914,6 +2102,32 @@ Memory* ExpressionAnalyzer::accessMemory(const std::vector<std::string>& theorem
     return memoryBlock;
 }
 
+/// @brief Try to back-reformulate a theorem's head from its disintegrated
+/// form into a higher-level operator head.
+///
+/// @details
+/// One of the three back-paths gated by `!parameters.ban_disintegration`
+/// per I-7. The other two are Pass B disintegration and
+/// hypo-disintegration. Back-reformulation looks at the head of a theorem
+/// and asks whether it could be re-expressed using a configured operator
+/// from `coreExpressionMap` — converting, for instance, the disintegrated
+/// `(p[a]) ∧ (q[a])` form back into a single-operator equivalent.
+///
+/// Returns `true` iff the back-reformulation succeeded (i.e. the theorem
+/// has a viable higher-level head); `backReformulated` is populated with
+/// the rewritten form. Returns `false` if no operator matches, in which
+/// case `backReformulated` stays unchanged. The function additionally
+/// gates on `parameters.incubator_mode` — non-incubator runs early-exit
+/// false because the back-reformulation product is unsound for the
+/// real-math output set; incubator artefacts are tagged separately as
+/// `incubator back reformulation` and never promoted to the main
+/// theorem list.
+///
+/// @param theorem           Source theorem text.
+/// @param backReformulated  Reformulated form on success; untouched on
+///                          failure.
+/// @return True iff back-reformulation succeeded.
+/// @invariant I-7 — guarded by `!parameters.ban_disintegration`.
 bool ExpressionAnalyzer::tryBackReformulateOperatorHead(
     const std::string& theorem,
     std::string& backReformulated)
@@ -2995,6 +2209,24 @@ bool ExpressionAnalyzer::tryBackReformulateOperatorHead(
 
 // analyze_expressions.cpp
 // Thread-safe: locks globalTheoremList only when mutating it.
+/// @brief Drain the per-thread `updateGlobalDirectTuples` queue into
+/// the global theorem list — direct theorem path.
+///
+/// @details
+/// Post-`pool.join()` collector for theorems that were proved by a
+/// direct path (rather than via the auxy-indexed indirect path
+/// handled by `updateGlobal`). Same I-28 contract: workers never
+/// touch the global state during the parallel phase, only enqueue;
+/// this function is the single drain point.
+///
+/// Result: a fresh row in `globalTheoremList` and matching entries
+/// in `fullTheoremList` and `cachedProofStacks` so the proof-graph
+/// generator can pick the theorem up at export time.
+///
+/// @param theorem Theorem text being recorded.
+/// @param coreId  Producing thread id.
+/// @invariant [I-28](../../docs/30_invariants.md#i-28).
+/// @see `updateGlobal` — auxy-indexed counterpart.
 void ExpressionAnalyzer::updateGlobalDirect(const std::string& theorem, int coreId) {
     // 1) Disintegrate to chain + head
     std::vector<std::tuple<std::string, std::vector<std::string>, std::set<std::string>>> tempChain;
@@ -3163,6 +2395,23 @@ void ExpressionAnalyzer::updateGlobalDirect(const std::string& theorem, int core
 // Traverses the entire tree and deactivates any node where:
 // 1. All its children are inactive.
 // 2. It has no pending proofs (toBeProved is empty).
+/// @brief Walk the entire LB tree marking inactive LBs as torn down.
+///
+/// @details
+/// Called between outer iterations to reclaim memory for LBs whose
+/// purpose is complete. Walks every LB depth-first; when the
+/// deactivation predicate fires, sets `isActive = false` and frees
+/// per-LB state (intEncodedStatements, hash memories,
+/// equivalence-class state). Children of a deactivated LB are also
+/// deactivated.
+///
+/// Cached proof stacks (`cachedProofStacks`) are populated in a
+/// pre-teardown pass before this walk so theorems proven inside
+/// torn-down LBs still have their proof stack at export time.
+///
+/// @see `deactivateUnnecessary` — narrower variant that targets a
+///      specific theorem's LBs.
+/// @see `cachedProofStacks` (member) — per-theorem stack cache.
 void ExpressionAnalyzer::deactivateRecursively() {
     // Recursive lambda for post-order traversal
     std::function<void(Memory*)> traverse =
@@ -3211,6 +2460,22 @@ void ExpressionAnalyzer::deactivateRecursively() {
 //#pragma optimize("", off)
 
 
+/// @brief Deactivate the LBs that were created exclusively for proving
+/// the given theorem and are no longer needed.
+///
+/// @details
+/// Targeted variant of `deactivateRecursively`. Used at the end of
+/// each theorem's main-batch proof to trim LBs that supported only
+/// that theorem's hash bursts. The criterion is: an LB whose chain
+/// of ancestors traces back to a unique `theorem`-creation site and
+/// whose `localEncodedStatementsSet` is empty after the proof
+/// completes.
+///
+/// Same teardown protocol as `deactivateRecursively` — proof stacks
+/// are cached pre-teardown via `cachedProofStacks`.
+///
+/// @param theorem Theorem text identifying the per-theorem LBs.
+/// @param root    Root sentinel from which to walk.
 void ExpressionAnalyzer::deactivateUnnecessary(const std::string& theorem, Memory& root) {
     // 1) Collect original indices for this theorem
     std::vector<int> originals;
@@ -3293,6 +2558,25 @@ void ExpressionAnalyzer::deactivateUnnecessary(const std::string& theorem, Memor
 
 // analyze_expressions.cpp
 // Thread-safe: locks globalDependencies briefly, and locks globalTheoremList only when pushing.
+/// @brief Drain the per-thread `updateGlobalTuples` queue into the
+/// global theorem list / dependency tracker.
+///
+/// @details
+/// Post-`pool.join()` collector for the indirect (auxy-indexed) path.
+/// During the parallel hash burst, workers cannot write to
+/// `globalTheoremList` directly per
+/// [I-28](../../docs/30_invariants.md#i-28); they enqueue tuples
+/// `(auxyIndex, allLevelsInvolved, coreId)` instead. This function
+/// is the single drain point that locks `theoremListMutex` /
+/// `dependenciesMutex` once and folds every queued tuple into the
+/// global side-tables.
+///
+/// @param auxyIndex          Auxiliary index identifying the theorem.
+/// @param allLevelsInvolved  Flag: theorem spans every LB level.
+/// @param coreId             Producing thread id (purely informational).
+/// @invariant [I-28](../../docs/30_invariants.md#i-28) — drain runs
+///            only after `pool.join()`.
+/// @see `updateGlobalDirect` — direct (non-auxy) counterpart.
 void ExpressionAnalyzer::updateGlobal(int auxyIndex, bool allLevelsInvolved, int coreId) {
     // ---- dependency bookkeeping (short critical section) ----
     int originalIndex = -1;
@@ -3482,6 +2766,26 @@ void ExpressionAnalyzer::updateGlobal(int auxyIndex, bool allLevelsInvolved, int
 }
 
 
+/// @brief Update the admission map after a hash-engine deposit — record
+/// the depth/secondary-iteration budgets the rule consumes when fired.
+///
+/// @details
+/// Called from `addToHashMemory` (Path 1) when
+/// `performAdmissionMapUpdate == true`. Walks the per-(expression,
+/// validity) entry of `mb.overallHashMemory.admissionMap`, finds or
+/// creates the matching `AdmissionMapValue`, and folds in the new
+/// depth / secondary-number budgets. The result is the cap that
+/// `isAdmitted` uses to gate firing.
+///
+/// Per [I-22](../../docs/30_invariants.md#i-22), revival from
+/// `rejectedMapIntegration` does NOT clean the admission entry — the
+/// two side-tables are intentionally not coupled, so this function
+/// only adds; existing entries are preserved.
+///
+/// @param expr   Expression whose admission record is being updated.
+/// @param mb     Owning LB.
+/// @param ...    Routing parameters.
+/// @invariant [I-22](../../docs/30_invariants.md#i-22) — additive only.
 inline void ExpressionAnalyzer::updateAdmissionMap3(const std::string& expr,
     Memory& memoryBlock,
     int maxAdmissionDepth,
@@ -3545,6 +2849,23 @@ inline void ExpressionAnalyzer::updateAdmissionMap3(const std::string& expr,
 }
 
 
+/// @brief Negate an MPL expression — wrap with `!(...)` or peel off an
+/// existing `!(...)`.
+///
+/// @details
+/// Idempotent up to one application: `negate(negate(x)) == x` for
+/// well-formed input. Used by `addStatement` and the contradiction
+/// machinery to produce the negated form of a candidate without
+/// re-parsing.
+///
+/// **Per [OPEN-MPL-1](../../docs/SwDD.md#remaining-open) (resolved
+/// partial)**: double-negation cancellation happens at two sites; this
+/// is one of them. There is no universal normaliser, so a raw `!!X`
+/// in an external theorem would hash distinctly from `X` if it ever
+/// reaches the hash engine without going through `negate`.
+///
+/// @param expr Canonical MPL text. May or may not start with `!(`.
+/// @return Negated form.
 std::string ExpressionAnalyzer::negate(std::string expr) {
     if (!expr.empty() && expr.front() == '!') return expr.substr(1);
     return "!" + expr;
@@ -3552,6 +2873,27 @@ std::string ExpressionAnalyzer::negate(std::string expr) {
 
 //#pragma optimize("", off)
 
+/// @brief Install an anchor expression and register its slot mapping in the
+/// LB.
+///
+/// @details
+/// An anchor expression like `(AnchorPeano[N, i, s, p, m, j])` declares
+/// the per-batch typing of every anchor-slot variable. `handleAnchor`:
+/// 1. Records the anchor's slot-to-variable map so subsequent
+///    statements can reference slots by canonical name.
+/// 2. Per [I-11](../../docs/30_invariants.md#i-11), asserts that no
+///    anchor-slot name appears in any inner `>[...]` bound-variable
+///    list — anchor slots are GLOBAL pinned variables and binding them
+///    inside an inner quantifier is malformed.
+/// 3. Emits the `x_<varname>` prefixed marker statements that
+///    [OPEN-14 in `docs/SwDD.md`](../../docs/SwDD.md#open-questions)
+///    documents.
+///
+/// @param expr           Anchor expression text.
+/// @param memoryBlock    Owning LB.
+/// @param involvedLevels LB levels.
+/// @invariant [I-11](../../docs/30_invariants.md#i-11) — anchor slot
+///            names not in inner `>[...]` lists.
 void ExpressionAnalyzer::handleAnchor(const std::string& expr, Memory& memoryBlock, const std::set<int>& involvedLevels)
 {   
     std::string anchorCheck = "(" + this->anchorInfo.name;
@@ -3594,12 +2936,6 @@ void ExpressionAnalyzer::handleAnchor(const std::string& expr, Memory& memoryBlo
           memoryBlock.intEncodedStatements.push_back(ie);
           memoryBlock.intLocalEncodedStatements.push_back(ie);
           memoryBlock.intLocalEncodedStatementsDelta.push_back(ie); }
-        //in3[2,2,2,4] finder:
-        if (replacedAnchor == "(in3[2,2,2,4])" && memoryBlock.exprKey == "(AnchorIncubator[1,2,3,4,5,6,7,8,9,10])")
-        {
-            int test = 0;
-            test++;
-        }
         memoryBlock.statementLevelsMap[encReplacedAnchor] = involvedLevels;
         memoryBlock.intKnownStatements.insert(packStatementKey(
             memoryBlock.nameMap.encode(encReplacedAnchor.original),
@@ -3612,7 +2948,7 @@ void ExpressionAnalyzer::handleAnchor(const std::string& expr, Memory& memoryBlo
 
         addOrigin(memoryBlock.exprOriginMap, evReplacedAnchor, std::make_pair("anchor handling", std::vector<ExpressionWithValidity>{ ExpressionWithValidity(expr, "main") }), (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
 
-        memoryBlock.mailOut.statements.insert(std::make_pair(replacedAnchor, involvedLevels));
+        memoryBlock.mailOut.statements.insert(std::make_pair(ExpressionWithValidity(replacedAnchor, "main"), involvedLevels));
 
         addOrigin(memoryBlock.mailOut.exprOriginMap, evReplacedAnchor, handledOrigin, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
     }
@@ -3620,6 +2956,23 @@ void ExpressionAnalyzer::handleAnchor(const std::string& expr, Memory& memoryBlo
 
 // Turn optimizations OFF for just this section
 //#pragma optimize("", off)
+/// @brief Predicate: is the given expression allowed to be mailed to
+/// child LBs from this one?
+///
+/// @details
+/// Mail-out gating per [I-26](../../docs/30_invariants.md#i-26):
+/// statements/implications mailed out must be MAIN-validity-only;
+/// the exprOriginMap mirror is ALL-SCOPES. This function enforces
+/// the validity-side gate by reading the expression's scope and the
+/// LB's `canBeSentSet` / `canBeSentMarkerSet` filters. Returns
+/// false if the expression carries a non-`"main"` scope on the
+/// implication/statement channel.
+///
+/// @param expression  Canonical MPL expression text plus scope.
+/// @param body        Owning LB whose `canBeSentSet` defines the
+///                    mail-eligibility filters.
+/// @return True iff the expression is mailable on the routing channel.
+/// @invariant [I-26](../../docs/30_invariants.md#i-26).
 bool ExpressionAnalyzer::allowedForMail(const std::string& expression, Memory& body) {
     static const std::regex reInt(R"(int_lev_\d+_\d+)");
     std::smatch match;
@@ -3741,6 +3094,28 @@ std::set<std::string> ExpressionAnalyzer::extractRemainingArgs(const std::string
     return remainingArgs;
 }
 
+/// @brief Produce reformulated variants of a theorem — alternative
+/// equivalent expressions that may be easier for the prover to absorb.
+///
+/// @details
+/// Walks the theorem looking for reformulation opportunities:
+/// - swap commutative-operator argument order,
+/// - apply known operator-equivalences from `coreExpressionMap`,
+/// - extract sub-implications that are independently reformulable.
+///
+/// Each successful reformulation becomes a `(tag, expression)` pair
+/// in `outTheorems`. The tag distinguishes the reformulation type
+/// (`reformulated from`, `mirrored from`, `incubator back reformulation`,
+/// etc.). The tag is load-bearing: `reformulated from` is the
+/// real-math (sound) provenance, while `incubator back reformulation`
+/// is an incubator-only artefact that is unsound and must NEVER be
+/// folded into a `reformulated from`. Downstream consumers must
+/// preserve this distinction.
+///
+/// @param theorem      Source theorem text.
+/// @param outTheorems  Output vector. Each pair is
+///                     `(reformulation tag, reformulated text)`.
+/// @return True iff at least one reformulation was produced.
 bool ExpressionAnalyzer::reformulateTheorem(const std::string& theorem, std::vector<std::pair<std::string, std::string>>& outTheorems) {
     if (parameters.ban_disintegration) return false;
     
@@ -3873,12 +3248,39 @@ bool ExpressionAnalyzer::reformulateTheorem(const std::string& theorem, std::vec
 // Turn optimizations OFF for just this section
 //#pragma optimize("", off)
 
+/// @brief Install an equality `(=[a,b])` into an LB.
+///
+/// @details
+/// - Asserts `args[0] != args[1]` per I-9. A firing assert here means an
+///   upstream produced a trivial reflexive equality, which the
+///   conjecturer / prover should never emit (per I-8 trivial equality
+///   is forbidden in heads).
+/// - Searches `memoryBlock.equivalenceClassesMap` for an existing class
+///   containing either `args[0]` or `args[1]`; if found, merges the
+///   other arg into the class via `mergeTwoEquivalenceClasses` per I-33.
+/// - Otherwise creates a fresh
+///   `EquivalenceClass{ {args[0], args[1]}, ... }` and seeds
+///   `equalityLevelsMap` / `equalityOriginMap`.
+/// - Emits the canonical mirror `(=[args[1], args[0]])` as a separate
+///   statement so the verifier sees both directions; the per-pair
+///   `args[0] != args[1]` assert keeps this from looping.
+///
+/// @param expr         Equality expression text.
+/// @param memoryBlock  Owning LB.
+/// @param local        True if the deposit is local-only (no propagation
+///                     to the overall hash memory).
+/// @param levels       LB levels at which the equality is admissible.
+/// @param ...          Routing parameters.
+/// @invariant I-9 — mirror guard.
+/// @invariant I-33 — class-merge cross-vN preconditions.
+/// @see `addNegatedEquality` — negated counterpart.
 void ExpressionAnalyzer::addEquality(const std::string& expr,
     Memory& memoryBlock,
     bool local,
     const std::set<int>& levels,
     const std::pair<std::string, std::vector<ExpressionWithValidity>>& origin,
-    const std::string& validityName)
+    const std::string& validityName,
+    bool allowSymmetry)
 {
 
 
@@ -3914,7 +3316,7 @@ void ExpressionAnalyzer::addEquality(const std::string& expr,
             memoryBlock.intLocalEncodedStatementsDelta.push_back(ie);
 
             if (validityName == "main") {
-                memoryBlock.mailOut.statements.insert(std::make_pair(expr, levels));
+                memoryBlock.mailOut.statements.insert(std::make_pair(ExpressionWithValidity(expr, "main"), levels));
             }
             if (parameters.trackHistory) {
                 addOrigin(memoryBlock.mailOut.exprOriginMap, exprWithValidity, origin, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
@@ -3922,6 +3324,7 @@ void ExpressionAnalyzer::addEquality(const std::string& expr,
         }
         } // close IntEncodedExpr ie scope
 
+        if (allowSymmetry) {
         // 2. Register the MIRRORED equality
         std::vector<std::string> args = ce::getArgs(expr);
         assert(args.size() == 2);
@@ -3961,23 +3364,51 @@ void ExpressionAnalyzer::addEquality(const std::string& expr,
             memoryBlock.intLocalEncodedStatementsDelta.push_back(ieM);
 
             if (validityName == "main") {
-                memoryBlock.mailOut.statements.insert(std::make_pair(mirrored, levels));
+                memoryBlock.mailOut.statements.insert(std::make_pair(ExpressionWithValidity(mirrored, "main"), levels));
             }
             // Origin for mirrored already handled in trackHistory block above
         }
         } // close IntEncodedExpr ieM scope
         } // end if args[0] != args[1]
+        } // end if allowSymmetry
     }
 }
 
 //#pragma optimize("", off)
 
+/// @brief Install a negated equality `!(=[a,b])` into an LB.
+///
+/// @details
+/// Per I-12, `!(=[a,b])` expands **one-sidedly** via equivalence classes
+/// — never as a symmetric cross-product. The expansion picks the
+/// deeper-scoped variable as the substitution target so the resulting
+/// negated expression sits at the union scope of the original and the
+/// class's scope.
+///
+/// Concrete: if `b` is in a class `C = {b, c}` at scope `S`, then
+/// `!(=[a, b])` produces `!(=[a, c])` at the deeper of (current scope,
+/// S). It does NOT also produce `!(=[c, a])` — that would be the
+/// symmetric counterpart, which the one-sided rule forbids.
+///
+/// @param expr         Negated equality expression text.
+/// @param memoryBlock  Owning LB.
+/// @param local        True if the deposit is local-only (no propagation
+///                     to the overall hash memory).
+/// @param levels       LB levels at which the negated equality is
+///                     admissible.
+/// @param ...          Routing parameters.
+/// @invariant I-12 — one-sided expansion via equivalence classes; no
+///            symmetric cross-product.
+/// @see `addEquality` — positive counterpart.
+/// @see `applyEquivalenceClassToNegatedEquality` — class-driven sibling
+///      rewrite.
 void ExpressionAnalyzer::addNegatedEquality(const std::string& expr,
     Memory& memoryBlock,
     bool local,
     const std::set<int>& levels,
     const std::pair<std::string, std::vector<ExpressionWithValidity>>& origin,
-    const std::string& validityName)
+    const std::string& validityName,
+    bool allowSymmetry)
 {
     // Mirror of addEquality for negated form !(=[a,b]).
     // Pair invariant: original and mirror are registered together or not at all.
@@ -4015,7 +3446,7 @@ void ExpressionAnalyzer::addNegatedEquality(const std::string& expr,
             memoryBlock.intLocalEncodedStatementsDelta.push_back(ie);
 
             if (validityName == "main") {
-                memoryBlock.mailOut.statements.insert(std::make_pair(expr, levels));
+                memoryBlock.mailOut.statements.insert(std::make_pair(ExpressionWithValidity(expr, "main"), levels));
             }
             if (parameters.trackHistory) {
                 addOrigin(memoryBlock.mailOut.exprOriginMap, exprWithValidity, origin, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
@@ -4023,6 +3454,7 @@ void ExpressionAnalyzer::addNegatedEquality(const std::string& expr,
         }
         } // close IntEncodedExpr ie scope
 
+        if (allowSymmetry) {
         // 2. Register the MIRRORED negated equality
         std::vector<std::string> args = ce::getArgs(expr);
         assert(args.size() == 2);
@@ -4062,12 +3494,13 @@ void ExpressionAnalyzer::addNegatedEquality(const std::string& expr,
             memoryBlock.intLocalEncodedStatementsDelta.push_back(ieM);
 
             if (validityName == "main") {
-                memoryBlock.mailOut.statements.insert(std::make_pair(mirrored, levels));
+                memoryBlock.mailOut.statements.insert(std::make_pair(ExpressionWithValidity(mirrored, "main"), levels));
             }
             // Origin for mirrored already handled in trackHistory block above
         }
         } // close IntEncodedExpr ieM scope
         } // end if args[0] != args[1]
+        } // end if allowSymmetry
     }
 }
 
@@ -4270,6 +3703,29 @@ static int countOrDisjuncts(const std::string& expr) {
 // Turn optimizations OFF for just this section
 //#pragma optimize("", off)
 
+/// @brief Inner kernel of `addExprToMemoryBlock` — performs the actual
+/// deposit after the public entry has run dedupe and shape dispatch.
+///
+/// @details
+/// Splits responsibility:
+/// - Atomic statement: push into `encodedStatements` /
+///   `intEncodedStatements` / `localEncodedStatementsSet` /
+///   `intKnownStatements`. Recompute `Memory::deltaNumberStatements`.
+/// - Origin record: append a `(tag, antecedents)` entry into
+///   `mb.exprOriginMap` and (when applicable) the mail-out mirror,
+///   capped per `addOrigin`'s preference policy.
+/// - Mail-out: when the deposit should propagate to a child LB,
+///   queue it into `mb.mailOut[coreId].statements` per
+///   [I-26](../../docs/30_invariants.md#i-26) (main-only validity).
+/// - Equivalence-class admit: trigger `applyEquivalenceClass` on any
+///   class whose variables overlap with the new statement's args.
+///
+/// The split lets `addExprToMemoryBlock` short-circuit on
+/// already-known statements without paying the full deposit cost.
+///
+/// @invariant [I-26](../../docs/30_invariants.md#i-26) — mail-out
+///            statements/implications MAIN-ONLY; exprOriginMap
+///            ALL-SCOPES.
 void ExpressionAnalyzer::addExprToMemoryBlockKernel(const std::string& expr,
     Memory& memoryBlock,
     int status,
@@ -4283,10 +3739,10 @@ void ExpressionAnalyzer::addExprToMemoryBlockKernel(const std::string& expr,
     ExpressionWithValidity exprVal(expr, validityName);
     if (status != 2) {
         if (this->isEquality(expr)) {
-			addEquality(expr, memoryBlock, isLocal, involvedLevels, origin, validityName);
+            addEquality(expr, memoryBlock, isLocal, involvedLevels, origin, validityName, isLocal);
         }
         else if (this->isNegatedEquality(expr)) {
-            addNegatedEquality(expr, memoryBlock, isLocal, involvedLevels, origin, validityName);
+            addNegatedEquality(expr, memoryBlock, isLocal, involvedLevels, origin, validityName, isLocal);
         }
 
         memoryBlock.wholeExpressions.insert(EncodedExpression(expr, validityName));
@@ -4631,6 +4087,59 @@ void ExpressionAnalyzer::updateWeakVariables(Memory& mb, const std::string& vali
 
 // Turn optimizations OFF for just this section
 //#pragma optimize("", off)
+/// @brief Public entry to install an expression into an LB — the main
+/// kernel of the prover.
+///
+/// @details
+/// Every expression that lands in any LB goes through this function:
+/// fresh statements from the prover loop, mail-in deposits from the
+/// hash burst, head emissions from `checkLocalEncodedMemoryStatic`,
+/// and disintegration products from `disintegrateExpr2`. The function
+/// dispatches by expression shape:
+///
+/// 1. **Atomic predicate** (e.g. `(p[a])`) — installs as a statement
+///    via the kernel; updates `encodedStatements`,
+///    `intEncodedStatements`, `localEncodedStatementsSet`, and
+///    `intKnownStatements`.
+/// 2. **Equality** (e.g. `(=[a,b])`) — routes through `addEquality`
+///    so the equivalence-class machinery can absorb it
+///    (with mirror per [I-9](../../docs/30_invariants.md#i-9)).
+/// 3. **Negated equality** (e.g. `!(=[a,b])`) — routes through
+///    `addNegatedEquality` for the one-sided expansion per
+///    [I-12](../../docs/30_invariants.md#i-12).
+/// 4. **Anchor** (e.g. `(AnchorPeano[...])`) — routes through
+///    `handleAnchor` to register the anchor's slot mappings.
+/// 5. **Implication** (e.g. `(>[v](p[v])(q[v]))`) — installed as a
+///    hash rule via `addToHashMemory` (after disintegration when
+///    appropriate).
+///
+/// **Per [I-27](../../docs/30_invariants.md#i-27)**, ancestor-scan
+/// dedupe runs at this entry (Site F / Site H): if the expression
+/// already exists in any ancestor scope, the deposit is skipped.
+/// This is what keeps cross-LB writes during the parallel phase
+/// from causing duplicate-deposit storms
+/// ([I-28](../../docs/30_invariants.md#i-28)).
+///
+/// @param expr           Canonical MPL expression text.
+/// @param memoryBlock    Target LB.
+/// @param involvedLevels LB levels at which the expression is
+///                       admissible.
+/// @param ...            Many trailing parameters routing the deposit
+///                       through specific paths (origin tag,
+///                       admission-update flag, mail-out flag,
+///                       sender LB, etc.).
+/// @invariant [I-9](../../docs/30_invariants.md#i-9) — addEquality
+///            mirror guard.
+/// @invariant [I-12](../../docs/30_invariants.md#i-12) — !(=[a,b])
+///            one-sided expansion.
+/// @invariant [I-27](../../docs/30_invariants.md#i-27) — Site F / H
+///            ancestor-scan dedupe at entry.
+/// @invariant [I-28](../../docs/30_invariants.md#i-28) — cross-LB
+///            writes deferred to post-`pool.join()` collectors.
+/// @see `addExprToMemoryBlockKernel` — inner kernel.
+/// @see `addToHashMemory` (memory.cpp) — implication branch.
+/// @see `addEquality`, `addNegatedEquality`, `handleAnchor` —
+///      shape-specific branches.
 void ExpressionAnalyzer::addExprToMemoryBlock(const std::string& expr,
     Memory& memoryBlock,
     int iteration,
@@ -4760,23 +4269,20 @@ void ExpressionAnalyzer::addExprToMemoryBlock(const std::string& expr,
                     deps.push_back(ExpressionWithValidity(negation, validityName));
                     deps.push_back(ExpressionWithValidity(cleanOp, "main"));
                     int maxOrig = parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr;
-                    // Defer ancestor-origin writes to the post-pool.join() drain
-                    // in proveKernel. The original direct walk of
-                    // memoryBlock.parentMemory raced with the ancestor's own
-                    // thread (UB on std::map insert), producing the bimodal
-                    // hashburst pattern documented in D-39. The induction
-                    // collector pattern (inductionMemoryBlocks) is the existing
-                    // precedent — class-level mutex-guarded queue, drained
-                    // single-threaded after pool.join() in sorted order.
-                    {
-                        std::lock_guard<std::mutex> lock(this->pendingAncestorOriginsMutex);
-                        this->pendingAncestorOrigins.push_back(
-                            { &memoryBlock, evResult,
-                              std::make_pair("contradiction", deps), maxOrig });
-                    }
+                    // D-51: contradiction record stays IN the __contradiction__
+                    // LB only — no upward propagation to ancestors, no broadcast
+                    // via mailOut. The chapter walker (buildStack) finds the
+                    // record by switching INTO this contradiction LB via the
+                    // ancestor's simpleMap when the negated head has no
+                    // direct origin in the LB before the head. The previous
+                    // pendingAncestorOrigins drain (drained at proveKernel
+                    // post-pool.join, see D-39) duplicated the recipe across
+                    // every ancestor, which violates the parent→child mail
+                    // direction and produces chapter-walker confusion in
+                    // nested-contradiction cases (chapter-37-style missing
+                    // task-formulation rows). The local write at memoryBlock
+                    // is what the buildStack switch will read.
                     addOrigin(memoryBlock.exprOriginMap, evResult,
-                        std::make_pair("contradiction", deps), maxOrig);
-                    addOrigin(memoryBlock.mailOut.exprOriginMap, evResult,
                         std::make_pair("contradiction", deps), maxOrig);
                 }
                 updateGlobalDirect(theorem, coreId);
@@ -5157,6 +4663,15 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
                                             int iteration,
                                             bool proved,
                                             Dependencies& dependencyTable) {
+    // D-45: `proved` parameter is dead. The single caller
+    // (prover.cpp:7028 inside the conjecture-batch loop) always
+    // passes false, and the body's proved=true branch was already
+    // unreachable. Guard with assert so we notice if a future caller
+    // re-introduces proved=true (the branch's body has been deleted
+    // and would need to be reconstructed alongside a real origin row).
+    assert(!proved);
+    (void)proved;
+
     // 1) Disintegrate implication -> chain (left nodes) + head (rightmost)
     std::vector< std::tuple<
         std::string,                  // left expression
@@ -5197,16 +4712,11 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
             this->addExprToMemoryBlock(element, *child, iteration, 0, lv, origin, -1, -1, "main", false);
         }
 
-        // 3) At the last node: proved or set up recursion/auxiliaries
+        // 3) At the last node: set up recursion/auxiliaries.
+        // (D-45: the historical proved=true branch was dead — single caller
+        // always passes proved=false. Guarded by assert at function entry.)
         if (index == chain.size() - 1) {
-            if (proved) {
-                this->addExprToMemoryBlock(head, *memoryBlock, iteration, 1, std::set<int>(), std::pair<std::string, std::vector<ExpressionWithValidity>>(), -1, -1, "main", false);
-
-                // 1. Capture the vector returned by getArgs
-                std::vector<std::string> argsVec = ce::getArgs(head);
-                // 2. Use the range constructor of std::set
-                std::set<std::string> argsSet(argsVec.begin(), argsVec.end());
-            } else {
+            {
                 // digits / immutables
                 const std::set<std::string> digits = findDigitArgs(expr, this->anchorInfo, coreExpressionMap);
                 for (std::set<std::string>::const_iterator dit = digits.begin(); dit != digits.end(); ++dit) {
@@ -5504,6 +5014,15 @@ void ExpressionAnalyzer::revisitRejected2(const std::string& markedExpr,
         rm.erase(itRM);
     }
 
+    // No-equality direct revival — the rejection record's cohort is mailed
+    // verbatim to internalMailIn. The verifier-relevant `disintegration`
+    // origin for each child was written at the original production site by
+    // disintegrateExprCore2's trackExpansionHistory and is already present
+    // in memoryBlock.exprOriginMap; the mail's `equality1` self-source
+    // origin cannot displace it (addOrigin's cap-full preference protects
+    // foundation origins from convenience tags — see D-49 / I-35).
+    std::set<std::string> noEqualities;
+
     for (const auto& val : snapshot) {
         const std::string& rejectedStmt = val.renamedExpression;
         std::vector<std::string> markedArgs = ce::getArgs(markedExpr);
@@ -5522,8 +5041,6 @@ void ExpressionAnalyzer::revisitRejected2(const std::string& markedExpr,
         }
         assert(markerIndex != -1);
 
-        const std::string rejectedVariable = rejectedArgs[markerIndex];
-
         bool argsIdentical = true;
         for (size_t i = 0; i < markedArgs.size(); ++i) {
             if (static_cast<int>(i) == markerIndex) continue;
@@ -5535,80 +5052,24 @@ void ExpressionAnalyzer::revisitRejected2(const std::string& markedExpr,
         assert(argsIdentical && "Mismatch between marked and rejected args (other than marker)");
         if (!argsIdentical) continue;
 
-        // IMPORTANT:
-        // val.expression is the compact existence expression, not the expanded one.
-        // We must reconstruct the expanded form and record the missing
-        // compact -> expansion -> disintegration history chain.
-        const std::string& compactExpr = val.expression;
-        const int iteration = val.iteration;
+        // statementLevelsMap consistency check intentionally absent here —
+        // the compact form's level entry may legitimately be missing when
+        // the rejection was committed before the kernel's stmts-loop wrote
+        // the compound's entry. val.levels (captured at buffer time, may
+        // be empty) is the authoritative deposit-time levels set.
 
-        EncodedExpression encCompactExpr(compactExpr, validityName);
-        auto itLev = memoryBlock.statementLevelsMap.find(encCompactExpr);
-        assert(itLev != memoryBlock.statementLevelsMap.end());
-        std::set<int> levels = itLev->second;
-
-        std::string replExpr = prefixArgumentsWithU(compactExpr);
-        Instruction instructions;
-        prepareIntegrationCore(replExpr, instructions, memoryBlock, compactExpr);
-
-        auto itInstr = std::find_if(instructions.data.begin(), instructions.data.end(),
-            [&](const LogicalEntity& le) { return le.signature == replExpr; });
-
-        if (itInstr == instructions.data.end()) continue;
-
-        const LogicalEntity& ent = *itInstr;
-        assert(ent.category == "existence" && "Reprocessed instruction must be existence");
-        if (ent.category != "existence") continue;
-
-        std::vector<std::string> removedArgs = listLastRemovedArgsLE(ent);
-        if (removedArgs.empty()) continue;
-
-        std::string boundVar = removedArgs[0];
-        std::map<std::string, std::string> replacementMap;
-        replacementMap[boundVar] = rejectedVariable;
-
-        LogicalEntity modifiedEnt = ent;
-        for (std::string& elem : modifiedEnt.elements) {
-            elem = ce::replaceKeysInString(elem, replacementMap);
-        }
-
-        const std::string expandedExpr = expandSignature(modifiedEnt);
-
-        if (parameters.trackHistory) {
-            std::pair<std::string, std::vector<ExpressionWithValidity>> originExpansion;
-            originExpansion.first = "expansion";
-            originExpansion.second.push_back(ExpressionWithValidity(compactExpr, validityName));
-
-            ExpressionWithValidity expandVal(expandedExpr, validityName);
-            addOrigin(memoryBlock.exprOriginMap,
-                expandVal,
-                originExpansion,
-                (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
-            addOrigin(memoryBlock.mailOut.exprOriginMap,
-                expandVal,
-                originExpansion,
-                (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
-        }
-
-        std::pair<std::string, std::vector<ExpressionWithValidity>> localOrigin =
-            std::make_pair("disintegration", std::vector<ExpressionWithValidity>());
-        localOrigin.second.push_back(ExpressionWithValidity(expandedExpr, validityName));
-
-        for (const std::string& elem : ent.elements) {
-            std::string s = ce::replaceKeysInString(elem, replacementMap);
-            std::string removedU = removeUPrefixFromArguments(s);
-
-            addExprToMemoryBlock(removedU,
-                memoryBlock,
-                iteration,
-                0,
-                levels,
-                localOrigin,
-                -1,
-                -1,
-                validityName,
-                false);
-        }
+        // Deposit the stored cohort onto internalMailIn for absorb at the
+        // next hashburst. pre == post (no rewrite participated here);
+        // noEqualities is empty. The mail's equality1 origin is a soft
+        // placeholder that does NOT overwrite the foundation `disintegration`
+        // origin already in memoryBlock.exprOriginMap.
+        this->emitIntegrationRevivalToInternalMailIn(
+            val.concreteConstituent, val.concreteConstituent,
+            val.siblings,            val.siblings,
+            val.levels,
+            validityName,
+            noEqualities,
+            memoryBlock);
     }
 
     memoryBlock.overallHashMemory.revisitInProgress.erase(evKey);
@@ -5830,6 +5291,13 @@ void ExpressionAnalyzer::updateAdmissionMapRecursion(const std::string& expressi
                 mb.overallHashMemory.admissionMap[ExpressionWithValidity(newMarkedExpr, validityName)].insert(newVal);
                 mb.overallHashMemory.admissionStatusMap[ExpressionWithValidity(newMarkedExpr, validityName)] = mb.overallHashMemory.admissionStatusMap[ExpressionWithValidity(markedExpr, validityName)];
 
+                // Populate vars-in-keys cache for the algebra equi-class hook.
+                for (const std::string& a : ce::getArgs(newMarkedExpr)) {
+                    if (a != "marker") {
+                        mb.overallHashMemory.varsInAdmissionMapKeys.insert(a);
+                    }
+                }
+
                 this->revisitRejected2(newMarkedExpr, mb, validityName);
             }
         }
@@ -5843,182 +5311,8 @@ void ExpressionAnalyzer::updateAdmissionMapRecursion(const std::string& expressi
 
 
 
-void ExpressionAnalyzer::loadFactsForCEFiltering(
-    std::vector<std::string> simpleFacts,
-    int batchSize) {
-
-    for (std::size_t start = 0; start < batchSize; start++) {
-        Memory* lb0 = nullptr;
-        {
-            std::map<std::string, Memory*>::iterator it = ceBody.simpleMap.find(std::to_string(start));
-            if (it != ceBody.simpleMap.end() && it->second) {
-                lb0 = it->second;
-            }
-            else {
-                lb0 = new Memory();
-                ceBody.simpleMap[std::to_string(start)] = lb0;
-                lb0->parentMemory = &ceBody;
-                lb0->level = 0;
-                lb0->exprKey = std::to_string(start);
-                lb0->contradictionIndex = -1;
-                permanentBodiesCE.push_back(lb0);
-            }
-        }
-
-        // Origins and levels
-        std::pair<std::string, std::vector<ExpressionWithValidity>> origin = std::make_pair("", std::vector<ExpressionWithValidity>());
-        if (parameters.trackHistory) {
-            origin.first = "CE_building_block";
-        }
-        const std::set<int> lvl0{ 0 };
-
-        // LB0: +, *, s
-        for (const auto& s : simpleFacts) this->addExprToMemoryBlock(s, *lb0, 0, 4, lvl0, origin, -1, -1, "main", false);
-    }
-}
-
-void ExpressionAnalyzer::addConjectureForCEFiltering(const std::string& conjecture,
-    Memory *mb,
-    int cIndex) {
-
-    mb->contradictionIndex = cIndex;
-
-    // Store conjecture in the LB0 hash memory
-    const std::map<std::string, std::string> replacementMap{
-    {"1","N"},
-    {"2","i0"},
-    {"3","s"},
-    {"4","+"},
-    {"5","*"},
-    {"6","i1"},
-    {"7","i2"},  
-    {"8","id"}   
-    };
-    std::string replacedConjecture = ce::replaceKeysInString(conjecture, replacementMap);
-
-
-    // 1) Disintegrate implication -> chain (left nodes) + head (rightmost)
-    std::vector< std::tuple<
-        std::string,                  // left expression
-        std::vector<std::string>,     // node args
-        std::set<std::string>         // left-node arguments
-    > > tempChain;
-    const std::string head = ce::disintegrateImplication(replacedConjecture, tempChain, this->coreExpressionMap);
-
-
-    std::vector<std::string> chain;
-    chain.reserve(tempChain.size());
-    for (std::size_t i = 0; i < tempChain.size(); ++i) chain.push_back(std::get<0>(tempChain[i]));
-
-    const std::set<int> lvl0{ 0 };
-
-    this->addToHashMemory(chain, head, std::set<std::string>{},
-        *mb, mb->overallHashMemory, lvl0,
-        replacedConjecture,
-        parameters.standardMaxAdmissionDepth,
-        parameters.standardMaxSecondaryNumber,
-        false,
-        parameters.minNumOperatorsKeyCE,
-        "implication", true, replacedConjecture, "main");
-}
-
-void ExpressionAnalyzer::releaseCEBatchMemory() {
-    // ---- 0) Defensive: clear tiny per-iteration queues (cheap, may carry strings) ----
-    inductionMemoryBlocks.clear();
-    std::vector<Memory*>().swap(inductionMemoryBlocks);
-
-    pendingAncestorOrigins.clear();
-    std::vector<PendingAncestorOrigin>().swap(pendingAncestorOrigins);
-
-    updateGlobalTuples.clear();
-    std::vector<std::tuple<int, bool, int>>().swap(updateGlobalTuples);
-
-    updateGlobalDirectTuples.clear();
-    std::vector<std::tuple<std::string, int>>().swap(updateGlobalDirectTuples);
-
-    // ---- 1) Collect ALL potential CE roots from every holder ----
-    std::vector<Memory*> roots;
-    roots.reserve(ceBody.simpleMap.size()
-        + permanentBodiesCE.size()
-        + indexCE.size() * 2);
-
-    // from ceBody root map
-    for (std::map<std::string, Memory*>::iterator it = ceBody.simpleMap.begin();
-        it != ceBody.simpleMap.end(); ++it) {
-        if (it->second) roots.push_back(it->second);
-    }
-    // from permanentBodiesCE
-    for (std::size_t i = 0; i < permanentBodiesCE.size(); ++i)
-        if (permanentBodiesCE[i]) roots.push_back(permanentBodiesCE[i]);
-    // from indexCE keys + values (sorted by exprKey for determinism)
-    {
-        std::vector<Memory*> indexCEKeys;
-        for (auto it = indexCE.begin(); it != indexCE.end(); ++it)
-            if (it->first) indexCEKeys.push_back(it->first);
-        std::sort(indexCEKeys.begin(), indexCEKeys.end(),
-            [](const Memory* a, const Memory* b) { return a->exprKey < b->exprKey; });
-        for (Memory* ik : indexCEKeys) {
-            roots.push_back(ik);
-            const std::vector<Memory*>& vs = indexCE[ik];
-            for (std::size_t j = 0; j < vs.size(); ++j)
-                if (vs[j]) roots.push_back(vs[j]);
-        }
-    }
-
-    // ---- 2) Iterative DFS to delete each node exactly once ----
-    std::unordered_set<Memory*> seen;
-    std::vector<Memory*> stack;
-    stack.reserve(roots.size());
-    for (Memory* r : roots) if (r) stack.push_back(r);
-
-    while (!stack.empty()) {
-        Memory* node = stack.back(); stack.pop_back();
-        if (!node || !seen.insert(node).second) continue;
-
-        for (std::map<std::string, Memory*>::iterator it = node->simpleMap.begin();
-            it != node->simpleMap.end(); ++it)
-            if (it->second) stack.push_back(it->second);
-
-        delete node; // d-tor frees STL members
-    }
-
-    // ---- 3) Drop/compact all CE containers & maps (release capacity) ----
-    // ceBody’s root map
-    std::map<std::string, Memory*>().swap(ceBody.simpleMap);
-
-    // explicit reset of ceBody's heavy members via swap-with-empty
-    {
-        Memory empty;
-        using std::swap;
-        swap(ceBody.startInt, empty.startInt);
-        swap(ceBody.toBeProved, empty.toBeProved);
-        swap(ceBody.encodedStatements, empty.encodedStatements);
-        swap(ceBody.statementLevelsMap, empty.statementLevelsMap);
-        swap(ceBody.exprKey, empty.exprKey);
-        ceBody.parentMemory = nullptr;
-        swap(ceBody.level, empty.level);
-        swap(ceBody.overallHashMemory, empty.overallHashMemory);
-        swap(ceBody.equivalenceClassesMap, empty.equivalenceClassesMap);
-        swap(ceBody.localEncodedStatements, empty.localEncodedStatements);
-        swap(ceBody.localEncodedStatementsDelta, empty.localEncodedStatementsDelta);
-        swap(ceBody.mailIn, empty.mailIn);
-        swap(ceBody.mailOut, empty.mailOut);
-        swap(ceBody.wholeExpressions, empty.wholeExpressions);
-        swap(ceBody.eqClassSttmntIndexMapMap, empty.eqClassSttmntIndexMapMap);
-        swap(ceBody.isActive, empty.isActive);
-        swap(ceBody.isPartOfRecursion, empty.isPartOfRecursion);
-        swap(ceBody.deltaNumberStatements, empty.deltaNumberStatements);
-        swap(ceBody.exprOriginMap, empty.exprOriginMap);
-        swap(ceBody.recursionCounter, empty.recursionCounter);
-        swap(ceBody.contradictionIndex, empty.contradictionIndex);
-    }
-
-    // CE containers
-    destroyParentChildrenMap(indexCE);
-    destroyMailboxes(boxesCE);
-    std::vector<Memory*>().swap(permanentBodiesCE);
-
-}
+// loadFactsForCEFiltering(), addConjectureForCEFiltering(),
+// releaseCEBatchMemory() — moved to filter.cpp.
 
 void ExpressionAnalyzer::destroyParentChildrenMap(ParentChildrenMap& m) {
     for (ParentChildrenMap::iterator it = m.begin(); it != m.end(); ++it)
@@ -6048,62 +5342,7 @@ void ExpressionAnalyzer::destroyMailboxes(PerCoreMailboxes& boxes) {
 
 
 
-std::vector<std::string> ExpressionAnalyzer::filterConjecturesWithCE(
-    const std::vector<std::string>& conjectures,
-    const std::vector<std::string>& simpleFacts)
-{
-    ceFilteringActive = true;
-
-    // Keep contradiction indices stable across batches
-    contradictionTable.clear();
-    contradictionTable.reserve(contradictionTable.size() + conjectures.size());
-    for (int i = 0; i < static_cast<int>(conjectures.size()); ++i)
-        contradictionTable.push_back(ContradictionItem(conjectures[i], false));
-
-    const unsigned batchSize = std::max(1u, logicalCores);
-
-    loadFactsForCEFiltering(simpleFacts, batchSize);
-
-    for (std::size_t start = 0; start < conjectures.size(); start += batchSize) {
-        for (int index = 0; index < static_cast<int>(batchSize); ++index) {
-            std::map<std::string, Memory*>::iterator it = ceBody.simpleMap.find(std::to_string(index));
-            if (it != ceBody.simpleMap.end() && it->second) {
-                // Clear local memory from previous batch
-                it->second->overallHashMemory.clear();
-                it->second->contradictionIndex = -1;
-                it->second->isActive = true;
-            }
-        }
-
-        const std::size_t end = std::min(start + batchSize, conjectures.size());
-
-        // Build CE memory for THIS batch only
-        for (std::size_t i = start; i < end; ++i) {
-            const int cIndex = static_cast<int>(i);
-            this->addConjectureForCEFiltering(conjectures[i], ceBody.simpleMap[std::to_string(i % batchSize)], cIndex);
-        }
-
-        // Parent->children index and mailboxes for THIS batch
-        indexCE = buildParentChildrenMap(permanentBodiesCE);
-        boxesCE = buildPerCoreMailboxes(indexCE);
-
-        // Run the prover on this batch
-        this->prove(parameters.numberIterationsConjectureFiltering,
-            permanentBodiesCE, indexCE, boxesCE);
-    }
-
-    // Extra explicit cleanup “as if between batches” (no-op if already clean)
-    this->releaseCEBatchMemory();
-
-    // Keep non-contradictory conjectures
-    std::vector<std::string> filtered;
-    filtered.reserve(conjectures.size());
-    for (int i = 0; i < static_cast<int>(conjectures.size()); ++i)
-        if (!contradictionTable[i].successful) filtered.push_back(conjectures[i]);
-
-    ceFilteringActive = false;
-    return filtered;
-}
+// filterConjecturesWithCE() — moved to filter.cpp.
 
 
 
@@ -6246,6 +5485,40 @@ void ExpressionAnalyzer::activateZeroCondition(Memory& memoryBlock)
     }
 }
 
+/// @brief Drive one outer iteration over every LB in `bodies` — the
+/// prover's main parallel hash-burst loop.
+///
+/// @details
+/// Spawns a worker pool sized at `logicalCores`; each worker pulls
+/// LBs off the queue and calls `performElementaryLogicalStep` on each.
+/// Cross-LB state mutations are forbidden during the worker phase per
+/// [I-28](../../docs/30_invariants.md#i-28); each worker writes only
+/// to its own LB's local state and to the per-thread queues
+/// (`updateGlobalTuples`, `updateGlobalDirectTuples`, the
+/// per-core-slot mail outboxes).
+///
+/// After `pool.join()`, the post-parallel collector phase runs:
+/// 1. `smashMail` — sorts per-recipient mail by `exprKey` and drains
+///    each LB's `mailOut` into the receivers' `mailIn` slots, with
+///    the per-item validity assert per
+///    [I-26](../../docs/30_invariants.md#i-26).
+/// 2. `updateGlobal` / `updateGlobalDirect` — drains the per-thread
+///    tuple queues into the global theorem list / dependencies.
+/// 3. Equivalence-class merger pass — folds any new equalities
+///    discovered this iteration.
+///
+/// The loop continues until either:
+/// - no LB produced any new statement this iteration
+///   (`Memory::deltaNumberStatements == 0` everywhere), or
+/// - the iteration cap from `parameters` is reached.
+///
+/// @param bodies        LB pointers to iterate over.
+/// @param iteration     Outer iteration counter.
+/// @param ...           Routing parameters.
+/// @invariant [I-26](../../docs/30_invariants.md#i-26),
+///            [I-28](../../docs/30_invariants.md#i-28).
+/// @see `performElementaryLogicalStep` — the per-LB worker.
+/// @see `smashMail` — post-parallel mail-drain step.
 void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies,
     const ParentChildrenMap& index,
     PerCoreMailboxes& boxes) {
@@ -6298,33 +5571,13 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies,
         updateGlobalDirect(std::get<0>(t), std::get<1>(t));
     }
 
-    // Drain pendingAncestorOrigins (deferred ancestor-write queue produced by
-    // the primedForContradiction handler in addStatement). Single-threaded,
-    // race-safe; sort key fully determines drain order so duplicate entries
-    // and arrival-order variation across threads do not affect the result.
-    // See D-39 + memory.hpp PendingAncestorOrigin struct.
-    std::sort(pendingAncestorOrigins.begin(), pendingAncestorOrigins.end(),
-        [](const PendingAncestorOrigin& a, const PendingAncestorOrigin& b) {
-            if (a.emitter->exprKey != b.emitter->exprKey)
-                return a.emitter->exprKey < b.emitter->exprKey;
-            if (a.ev.original != b.ev.original)
-                return a.ev.original < b.ev.original;
-            if (a.ev.validityName != b.ev.validityName)
-                return a.ev.validityName < b.ev.validityName;
-            return a.origin.first < b.origin.first;
-        });
-    for (const auto& e : pendingAncestorOrigins) {
-        Memory* pred = e.emitter->parentMemory;
-        while (pred != nullptr) {
-            addOrigin(pred->exprOriginMap, e.ev, e.origin, e.maxOrigins);
-            pred = pred->parentMemory;
-        }
-    }
+    // (D-39 pendingAncestorOrigins drain retired by D-51 — contradiction record
+    // now lives only in the __contradiction__ LB, no upward propagation. Drain
+    // queue + sort + iteration removed in the post-D-52 cleanup commit.)
 
 	inductionMemoryBlocks.clear();
 	updateGlobalTuples.clear();
 	updateGlobalDirectTuples.clear();
-	pendingAncestorOrigins.clear();
 }
 
 void ExpressionAnalyzer::removeExpressionFromMemoryBlock(const EncodedExpression& encExpr, Memory& mb, int state) {
@@ -7112,15 +6365,51 @@ void ExpressionAnalyzer::disintegrateExprCore2(const std::string& expr,
         }
 
         if (currentOrDepth < parameters.max_or_depth) {
+            // Compute the OR's expanded De-Morgan form once; used as the
+            // disintegration origin for the K mutual-exclusion implications
+            // below, mirroring the &/existence pattern in trackExpansionHistory.
+            // See D-55.
+            std::string expandedOrSignature = expandSignature(ent);
+            std::pair<std::string, std::vector<ExpressionWithValidity>> originOrDisintegration;
+            originOrDisintegration.first = "disintegration";
+            originOrDisintegration.second.push_back(
+                ExpressionWithValidity(expandedOrSignature, validityName));
+
+            // Hoisted from the orAdmitted block: the K mutual-exclusion
+            // implications below cite expandedOrSignature as their disintegration
+            // origin, which requires the matching expansion-origin record
+            // (expandedOrSignature -> compact OR name) to exist regardless of
+            // whether per-branch case-split fires. Pre-fix, trackExpansionHistory
+            // ran only when orAdmitted was true, leaving the K implications
+            // referenceable only by an expansion row that did not exist.
+            trackExpansionHistory(ent, false);
+
             // 1. Generate N implications: for each d_i, (!d_0 & ... & !d_{i-1} & !d_{i+1} & ... & !d_{N-1}) -> d_i
             //    These go to collected (parent validity) for normal hash memory insertion.
+            //    Each is also stamped with `disintegration` origin pointing at the
+            //    OR's expanded form so the proof graph can audit the K rules back
+            //    to the originating OR (verifier check_disintegration's `or` branch
+            //    rebuilds and verifies the exact shape).
             for (size_t i = 0; i < ent.elements.size(); ++i) {
                 std::vector<std::string> premises;
                 for (size_t j = 0; j < ent.elements.size(); ++j) {
                     if (j != i) premises.push_back("!" + ent.elements[j]);
                 }
-                collected[currentStatement].first.insert(ExpressionWithValidity(
-                    reconstructImplicationFullBind(premises, ent.elements[i]), validityName));
+                std::string impStr = reconstructImplicationFullBind(premises, ent.elements[i]);
+                collected[currentStatement].first.insert(ExpressionWithValidity(impStr, validityName));
+
+                if (parameters.trackHistory && trackHistoryLocal) {
+                    // KEY u_-stripped (matches the &/existence pattern in
+                    // trackExpansionHistory's section 2 — chapter rows
+                    // surface u_-stripped expressions; the u_-prefixed form
+                    // lives only in hash memory for unification).
+                    ExpressionWithValidity impEv(removeUPrefixFromArguments(impStr), validityName);
+                    int maxOrigins = parameters.compressor_mode
+                        ? parameters.compressor_max_origins_per_expr
+                        : parameters.max_origin_per_expr;
+                    addOrigin(memoryBlock.exprOriginMap, impEv, originOrDisintegration, maxOrigins);
+                    addOrigin(memoryBlock.mailOut.exprOriginMap, impEv, originOrDisintegration, maxOrigins);
+                }
             }
 
             // 2. Check OR admission. Two paths (D-32, supersedes D-31):
@@ -7161,7 +6450,8 @@ void ExpressionAnalyzer::disintegrateExprCore2(const std::string& expr,
                 std::string orSignature = removeUPrefixFromArguments(ent.signature);  // e.g. "(or3[1,2,3])"
                 memoryBlock.orDisjunctCount[orSignature] = static_cast<int>(ent.elements.size());
 
-                trackExpansionHistory(ent, false);
+                // (trackExpansionHistory hoisted above the orAdmitted gate —
+                //  see the K-implications block earlier in the OR case.)
 
                 // 4. Each disjunct becomes a statement with branch validity name
                 for (size_t i = 0; i < ent.elements.size(); ++i) {
@@ -7294,9 +6584,17 @@ ExpressionAnalyzer::disintegrateExpr2(const std::string& expr,
     }
 
     // --- FIX: Deferred Rejection Structures ---
+    // Algebra-side pending rejection. Carries the same cohort information as
+    // PendingRejectionIntegration so the revival path (revisitRejected2) can
+    // mail-emit the constituent + siblings without re-running
+    // prepareIntegrationCore to recover them. compactExpr + levels are
+    // captured at buffer time from the disintegrated compound.
     struct PendingRejection {
-        std::string removedU;
-        std::string markedExpr;
+        std::string removedU;                 // concreteConstituent (post u_-strip)
+        std::string markedExpr;               // marker form (key into rejectedMap)
+        std::vector<std::string> siblings;    // other body elements, concrete form
+        std::string compactExpr;              // the compound being disintegrated
+        std::set<int> levels;                 // levels of the compound at rejection
     };
     // Map var -> list of potential rejections
     std::map<std::string, std::vector<PendingRejection>> pendingRejections;
@@ -7387,7 +6685,31 @@ ExpressionAnalyzer::disintegrateExpr2(const std::string& expr,
                         }
                         else {
                             // Buffer rejection instead of calling updateRejectedMap immediately.
-                            pendingRejections[var].push_back({ removedU, markedExpr });
+                            // Capture the cohort (other expressions sharing this it_ var)
+                            // and the parent compound's levels so the revival path can
+                            // mail-emit the full body without re-running
+                            // prepareIntegrationCore. Symmetric to the int_ branch below.
+                            std::vector<std::string> siblings;
+                            siblings.reserve(expressions.size() > 0 ? expressions.size() - 1 : 0);
+                            for (const auto& other : expressions) {
+                                if (&other == &stmt) continue;
+                                siblings.push_back(removeUPrefixFromArguments(other));
+                            }
+                            std::set<int> lvls;
+                            {
+                                EncodedExpression encCompound(topLevelExprClean, validityName);
+                                auto itLev = memoryBlock.statementLevelsMap.find(encCompound);
+                                if (itLev != memoryBlock.statementLevelsMap.end()) {
+                                    lvls = itLev->second;
+                                }
+                            }
+                            PendingRejection pr;
+                            pr.removedU    = removedU;
+                            pr.markedExpr  = markedExpr;
+                            pr.siblings    = std::move(siblings);
+                            pr.compactExpr = topLevelExprClean;
+                            pr.levels      = std::move(lvls);
+                            pendingRejections[var].push_back(std::move(pr));
                         }
                     }
                 }
@@ -7520,7 +6842,15 @@ ExpressionAnalyzer::disintegrateExpr2(const std::string& expr,
 
             // Variable was truly rejected (dependencies never resolved)
             for (const auto& fail : failures) {
-                updateRejectedMap(fail.removedU, fail.markedExpr, topLevelExprClean, memoryBlock.overallHashMemory, iteration, validityName);
+                updateRejectedMap(fail.removedU,
+                                  fail.markedExpr,
+                                  fail.compactExpr,
+                                  fail.removedU,         // concreteConstituent (= removedU)
+                                  fail.siblings,
+                                  fail.levels,
+                                  memoryBlock.overallHashMemory,
+                                  iteration,
+                                  validityName);
             }
         }
     }
@@ -7605,96 +6935,7 @@ void ExpressionAnalyzer::prove(int numberIterations,
     }
 }
 
-std::vector<std::vector<std::string>> ExpressionAnalyzer::readSimpleFacts() const {
-    // 1) Derive actual name from anchor: strip leading "Anchor", lowercase everything.
-    std::string anchorName = this->anchorInfo.name;  // e.g., "AnchorPeano", "AnchorGauss"
-    const std::string prefix = "Anchor";
-    if (anchorName.rfind(prefix, 0) == 0) { // starts with "Anchor"
-        anchorName.erase(0, prefix.size());
-    }
-    else {
-        // Best effort: remove first occurrence if it's not a strict prefix.
-        std::size_t pos = anchorName.find(prefix);
-        if (pos != std::string::npos) anchorName.erase(pos, prefix.size());
-    }
-    std::string actualName;
-    actualName.reserve(anchorName.size());
-    for (unsigned char ch : anchorName) actualName.push_back(static_cast<char>(std::tolower(ch)));
-
-    // 2) Resolve directory: <repo>/files/simple_facts
-    const auto simpleFactsDir =
-        std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path()
-        / "files" / "simple_facts";
-
-    std::vector<std::pair<int, std::filesystem::path>> hits;   // (n, path)
-
-    // 3) Filename pattern: simple_facts_<actual_name>.txt  or  simple_facts_<actual_name>_<n>.txt
-    //    We match case-insensitively for the <actual_name> part and parse the optional trailing integer.
-    const std::regex rx(R"(^(?:simple_facts)_([A-Za-z]+?)(?:_(\d+))?\.txt$)",
-        std::regex::ECMAScript | std::regex::icase);
-
-    if (std::filesystem::exists(simpleFactsDir) && std::filesystem::is_directory(simpleFactsDir)) {
-        for (const auto& dirent : std::filesystem::directory_iterator(simpleFactsDir)) {
-            if (!dirent.is_regular_file()) continue;
-
-            const std::string fname = dirent.path().filename().string();
-            std::smatch m;
-            if (!std::regex_match(fname, m, rx)) continue;
-
-            // m[1] -> actual_name candidate, m[2] -> n (optional)
-            std::string candidateName = m[1].str();
-            for (auto& c : candidateName) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            if (candidateName != actualName) continue;
-
-            int n = m[2].matched ? std::stoi(m[2].str()) : 0;
-            hits.emplace_back(n, dirent.path());
-        }
-    }
-
-    // 4) Sort by n ascending (5 before 6, etc.)
-    std::sort(hits.begin(), hits.end(),
-        [](const auto& a, const auto& b) { return a.first < b.first; });
-
-    // 5) Read files: one file -> one list<string> (one line == one element).
-    //    Preserve line order; strip trailing '\r' if present (Windows line endings).
-    std::vector<std::vector<std::string>> out;
-    out.reserve(hits.size());
-
-    for (const auto& [n, path] : hits) {
-        std::ifstream in(path);
-        std::vector<std::string> lines;
-        if (in) {
-            std::string line;
-            while (std::getline(in, line)) {
-                if (!line.empty() && line.back() == '\r') line.pop_back();
-                lines.push_back(std::move(line));
-            }
-        }
-        out.push_back(std::move(lines));
-    }
-
-    return out;
-}
-
-void ExpressionAnalyzer::saveFilteredConjectures(const std::vector<std::string>& filteredConjectures) {
-    namespace fs = std::filesystem;
-
-    const auto dir =
-        fs::path(__FILE__).parent_path().parent_path().parent_path().parent_path()
-        / "files" / "theorems";
-    const auto out = dir / "filtered_conjectures.txt";
-
-    std::error_code ec;
-    fs::create_directories(dir, ec);
-    if (ec) throw std::runtime_error("Failed to create directory: " + dir.string());
-
-    std::ofstream ofs(out);
-    if (!ofs) throw std::runtime_error("Failed to open output file: " + out.string());
-
-    for (const auto& line : filteredConjectures) ofs << line << '\n';
-    ofs.flush();
-    if (!ofs) throw std::runtime_error("Failed while writing: " + out.string());
-}
+// readSimpleFacts() and saveFilteredConjectures() — moved to filter.cpp.
 
 void ExpressionAnalyzer::saveProvedTheorems() {
     namespace fs = std::filesystem;
@@ -8065,13 +7306,6 @@ void ExpressionAnalyzer::prefillIntegrationMapsRecursive(Memory* mb) {
 void ExpressionAnalyzer::disintegrateExprHypothetically(const std::string& expr, Memory& memoryBlock, std::string validityName) {
     if (parameters.ban_disintegration) return;
 
-    // DEBUG: catch interval[1,4,2,6,11] in the limitSet LB
-    if (expr.find("interval[1,4,2,6,11]") != std::string::npos &&
-        memoryBlock.exprKey.find("interval[1,4,2,12,9]") != std::string::npos) {
-        int breakpoint_here = 0; // <-- SET BREAKPOINT HERE
-        breakpoint_here++;
-    }
-
     // 1. Extract input variables
     std::vector<std::string> inputVars = ce::getArgs(expr);
 
@@ -8258,12 +7492,6 @@ void ExpressionAnalyzer::disintegrateExprHypothetically(const std::string& expr,
             continue; // Skip if already present
 		}
 
-        //in3[2,2,2,4] finder:
-        if (enc.original == "(in3[2,2,2,4])" && memoryBlock.exprKey == "(AnchorIncubator[1,2,3,4,5,6,7,8,9,10])")
-        {
-            int test = 0;
-            test++;
-        }
         memoryBlock.encodedStatements.push_back(enc);
         memoryBlock.localEncodedStatements.push_back(enc);
         memoryBlock.localEncodedStatementsSet.insert(enc);
@@ -8359,12 +7587,6 @@ void ExpressionAnalyzer::prehandleAnchor(Memory* mb) {
 
                     std::set<int> levels{ 0 };
 
-                    //in3[2,2,2,4] finder:
-                    if (enc.original == "(in3[2,2,2,4])" && mb->exprKey == "(AnchorIncubator[1,2,3,4,5,6,7,8,9,10])")
-                    {
-                        int test = 0;
-                        test++;
-                    }
                     mb->localEncodedStatements.push_back(enc);
                     mb->localEncodedStatementsSet.insert(enc);
                     mb->localEncodedStatementsDelta.push_back(enc);

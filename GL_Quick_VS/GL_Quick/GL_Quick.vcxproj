@@ -106,20 +106,30 @@
     <ClCompile Include="src\main.cpp" />
     <ClCompile Include="src\compiler.cpp" />
     <ClCompile Include="src\prover.cpp" />
+    <ClCompile Include="src\memory.cpp" />
+    <ClCompile Include="src\filter.cpp" />
     <ClCompile Include="src\visualizer.cpp" />
     <ClCompile Include="src\compressor.cpp" />
     <ClCompile Include="src\run_modes.cpp" />
     <ClCompile Include="src\conjecturer.cpp" />
+    <ClCompile Include="src\tests\test_harness.cpp" />
+    <ClCompile Include="src\tests\test_memory.cpp" />
+    <ClCompile Include="src\tests\test_compiler.cpp" />
+    <ClCompile Include="src\tests\test_filter.cpp" />
+    <ClCompile Include="src\tests\test_compressor.cpp" />
+    <ClCompile Include="src\tests\test_conjecturer.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\compiler.hpp" />
     <ClInclude Include="src\memory.hpp" />
     <ClInclude Include="src\prover.hpp" />
+    <ClInclude Include="src\filter.hpp" />
     <ClInclude Include="src\conjecturer.hpp" />
     <ClInclude Include="src\json.hpp" />
     <ClInclude Include="src\parameters.hpp" />
     <ClInclude Include="src\compressor.hpp" />
     <ClInclude Include="src\run_modes.hpp" />
+    <ClInclude Include="src\tests\test_harness.hpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />

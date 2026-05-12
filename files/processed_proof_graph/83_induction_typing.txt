@@ -1,5 +1,5 @@
-(in[v1,N])	main	implication	(>[v5,v6,v7](in3[v5,v6,v7,+])(in[v5,N]))	main	(in3[v1,v4,v3,+])	main
-(>[v5,v6,v7](in3[v5,v6,v7,+])(in[v5,N]))	main	expansion	(implication6[+,N])	main
+(in[v1,N])	main	implication	(>[w1,w2,w3](in3[w1,w2,w3,+])(in[w1,N]))	main	(in3[v1,v4,v3,+])	main
+(>[w1,w2,w3](in3[w1,w2,w3,+])(in[w1,N]))	main	expansion	(implication6[+,N])	main
 (implication6[+,N])	main	disintegration	(&(&(&(&(implication6[+,N])(implication7[+,N]))(implication8[+,N]))(implication9[N,N,N,+]))(implication10[N,N,+]))	main
 (&(&(&(&(implication6[+,N])(implication7[+,N]))(implication8[+,N]))(implication9[N,N,N,+]))(implication10[N,N,+]))	main	expansion	(fXYZ[+,N,N,N])	main
 (fXYZ[+,N,N,N])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication4[N,i0,s]))(implication5[N,s]))(fXYZ[+,N,N,N]))(implication11[N,i0,+]))(implication12[N,i0,+]))(implication13[N,s,+]))(implication14[N,s,+]))(fXYZ[*,N,N,N]))(implication15[N,i0,*]))(implication16[N,s,*,+]))(implication17[N,s,*,+]))	main

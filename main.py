@@ -41,8 +41,93 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 import os
+import subprocess
 
 import run_modes
+
+
+# Path to the native gl_quick binary. Resolved relative to this file so
+# the gate works identically when main.py is invoked from a worktree
+# (`.worktree/<name>/`) or from the main repo. Windows-only suffix on
+# Windows; POSIX paths elsewhere.
+_GL_QUICK_EXE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "GL_Quick_VS", "GL_Quick",
+    "gl_quick.exe" if os.name == "nt" else "gl_quick",
+)
+
+
+def _run_unit_test_gate():
+    """Run the in-tree C++ unit-test harness; abort on any failure.
+
+    Invokes ``gl_quick --unit-tests``. The harness is fast (sub-second
+    today, target <30 s for the full suite) and runs entirely on
+    synthetic in-memory inputs — no config-file reads, no real proof
+    runs. First failure aborts main.py before any pipeline work, so
+    regressions are caught before the 10–60-minute prover invocation
+    starts.
+
+    Skipped silently when the binary does not exist yet (typical fresh
+    clone before first build) so the bootstrap-cycle isn't blocked.
+    """
+    if not os.path.exists(_GL_QUICK_EXE):
+        print(
+            f"[main.py] {_GL_QUICK_EXE} not found; skipping unit-test gate.",
+            file=sys.stderr,
+        )
+        return
+    proc = subprocess.run([_GL_QUICK_EXE, "--unit-tests"], check=False)
+    if proc.returncode != 0:
+        print(
+            f"[main.py] Unit tests failed (exit {proc.returncode}). Aborting.",
+            file=sys.stderr,
+        )
+        sys.exit(proc.returncode)
+
+
+# Path to the Python verifier unit-test harness. Resolved relative to this
+# file so the gate works identically from a worktree (`.worktree/<name>/`)
+# and the main repo.
+_VERIFIER_TEST_HARNESS = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "tests", "test_harness.py",
+)
+
+
+def _run_verifier_unit_test_gate():
+    """Run the Python verifier-side unit-test harness; abort on any failure.
+
+    Invokes ``python tests/test_harness.py`` which imports every sibling
+    ``test_verifier_<group>.py`` module and runs ~340 subtle-error tests
+    against the live ``verifier.py`` checkers (plus a handful of positive
+    sanity tests that prove the fixture rig is intact). Each failure test
+    feeds a malformed ``ProofLine`` into the relevant ``TAG_CHECKERS`` entry
+    (or ``verify_chapter`` for chapter-level meta-checks) and asserts the
+    verifier reports a failure. Runtime is <5 s — comparable to the C++
+    harness — so a regression in any checker surfaces seconds into the
+    pipeline rather than after a 10–60-minute prover run.
+
+    Skipped silently when ``tests/test_harness.py`` is absent (matches the
+    fresh-clone fall-through used by ``_run_unit_test_gate``). Black-box:
+    the harness imports ``verifier.py`` symbols and calls them as-is — zero
+    modifications to verifier logic, in keeping with invariant I-16.
+    """
+    if not os.path.exists(_VERIFIER_TEST_HARNESS):
+        print(
+            f"[main.py] {_VERIFIER_TEST_HARNESS} not found; "
+            "skipping verifier unit-test gate.",
+            file=sys.stderr,
+        )
+        return
+    proc = subprocess.run(
+        [sys.executable, _VERIFIER_TEST_HARNESS], check=False)
+    if proc.returncode != 0:
+        print(
+            f"[main.py] Verifier unit tests failed "
+            f"(exit {proc.returncode}). Aborting.",
+            file=sys.stderr,
+        )
+        sys.exit(proc.returncode)
 
 
 def main():
@@ -61,6 +146,17 @@ def main():
     # following Gauss-main batch started).
     os.makedirs(".debug", exist_ok=True)
     open(".debug/hashburst_trace.txt", "w").close()
+
+    # Unit-test gate. First failure aborts main.py before any pipeline
+    # work or proof run. See _run_unit_test_gate's docstring for budget.
+    _run_unit_test_gate()
+
+    # Verifier-side Python unit-test gate. Runs the in-tree harness at
+    # tests/test_harness.py which exercises every verifier.py checker
+    # (TAG_CHECKERS + chapter-level meta-checks) with subtle-error inputs.
+    # First failure aborts main.py before any pipeline work, just like the
+    # C++ gate above.
+    _run_verifier_unit_test_gate()
 
     run_modes.full_run()
 

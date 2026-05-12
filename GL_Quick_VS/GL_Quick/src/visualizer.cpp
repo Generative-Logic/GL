@@ -23,118 +23,286 @@
  Contributor License Agreement(CLA).See the project's CONTRIBUTING.md file.*/
 
 #include "prover.hpp"
+#include <numeric>
 
 namespace gl {
 
-void ExpressionAnalyzer::buildStack(Memory& memoryBlock,
-    const ExpressionWithValidity& proved,
+// =====================================================================
+// D-51 (option 1 + backtracking) — path-stack cycle filter for buildStack
+// origin choice.
+//
+// With max_origin_per_expr raised to 30 (matching compressor mode), each
+// expression typically carries multiple candidate origins. buildStack:
+//   1. Sorts origins per D-49-style preference: non-equality tags first
+//      (preserving insertion order within group), then equality1/equality2
+//      tags. Within each group, insertion order survives — matches the
+//      legacy cap=1 + D-49 surviving-origin choice for the common case.
+//   2. Walks candidates in that order; skips any whose deps include an
+//      expression already on the current proof-tree path (would form a
+//      cycle with the recursion stack — Knuth (1977) AND-OR graph
+//      acyclic-derivation extraction).
+//   3. Backtracks: if the recursive walk fails for a candidate's deps,
+//      rolls back stack/covered/path snapshots and tries the next
+//      candidate. Guarantees a valid acyclic tree if one exists.
+//
+// Returns true on success. False signals to the recursive caller that no
+// acyclic origin exists for this node given the current path; caller
+// retries with its own next candidate. Top-level callers (directStack,
+// checkZeroStack, ...) ignore the return.
+// =====================================================================
+static thread_local std::set<ExpressionWithValidity> g_buildStackPath;
+
+void clearBuildStackPath() { g_buildStackPath.clear(); }
+
+// Order origins by (D-49-style preference, insertion index): non-equality
+// tags first preserving insertion order, then equality1/equality2 tags
+// preserving insertion order. This matches the cap=1 + D-49 surviving-
+// origin choice for chapters whose proof structure is acyclic.
+static std::vector<size_t> sortedOriginIndicesD49(
+    const std::vector<std::pair<std::string, std::vector<ExpressionWithValidity>>>& origins)
+{
+    std::vector<size_t> result;
+    result.reserve(origins.size());
+    auto isEq = [&](size_t i) {
+        return origins[i].first == "equality1" || origins[i].first == "equality2";
+    };
+    for (size_t i = 0; i < origins.size(); ++i) if (!isEq(i)) result.push_back(i);
+    for (size_t i = 0; i < origins.size(); ++i) if (isEq(i)) result.push_back(i);
+    return result;
+}
+
+// Lift (expr, validity) to the closest-to-"main" ancestor of validity whose
+// (expr, ancestor) key has an origin in this LB's exprOriginMap. Per I-2 and
+// NameMap::encodePush, every non-root validity is parent + "_boundary_" +
+// payload, so the ancestor chain is recoverable by splitting on "_boundary_".
+// Returns v unchanged if no ancestor (including v itself) has an origin —
+// caller handles the miss (assertion / dump).
+//
+// OR-branch barrier: lifting may NOT cross "_boundary_orint_" or
+// "_boundary_ordis_" delimiters. Those scopes are conditional on a disjunct
+// hypothesis (or<N>-integration / -disintegration); chapter rows must preserve
+// branch-distinct namespaces for the OR-family verifier checkers (or
+// convergence, or branch proven, or branch assumption, or disintegration) to
+// recognise the convergence/branch-proof pattern. Without the barrier, both
+// branches' deps would be lifted to the parent boundary where the post-
+// convergence origin lives, collapsing them to identical pairs and breaking
+// `check_or_convergence`'s branch-distinctness expectation. The deepest
+// orint_/ordis_ ancestor sets the shallowest allowed lift target.
+static ExpressionWithValidity liftToShallowestOriginAncestor(
+        const Memory& mb,
+        const ExpressionWithValidity& v) {
+    const std::string& s = v.validityName;
+    static const std::string sep = "_boundary_";
+    std::vector<std::string> ancestors;
+    ancestors.reserve(8);
+    ancestors.push_back("main");
+    if (s.size() > 4
+        && s.compare(0, 4, "main") == 0
+        && s.size() >= 4 + sep.size()
+        && s.compare(4, sep.size(), sep) == 0) {
+        std::size_t pos = 4 + sep.size();
+        while (pos <= s.size()) {
+            std::size_t next = s.find(sep, pos);
+            if (next == std::string::npos) {
+                ancestors.push_back(s);
+                break;
+            }
+            ancestors.push_back(s.substr(0, next));
+            pos = next + sep.size();
+        }
+    }
+    std::size_t minLift = 0;
+    static const std::string kOrint = "orint_";
+    static const std::string kOrdis = "ordis_";
+    for (std::size_t i = 1; i < ancestors.size(); ++i) {
+        const std::size_t payloadStart = ancestors[i - 1].size() + sep.size();
+        if (payloadStart >= ancestors[i].size()) continue;
+        const std::string& child = ancestors[i];
+        const std::size_t payloadLen = child.size() - payloadStart;
+        if ((payloadLen >= kOrint.size()
+             && child.compare(payloadStart, kOrint.size(), kOrint) == 0)
+            || (payloadLen >= kOrdis.size()
+                && child.compare(payloadStart, kOrdis.size(), kOrdis) == 0)) {
+            minLift = i;
+        }
+    }
+    for (std::size_t i = minLift; i < ancestors.size(); ++i) {
+        ExpressionWithValidity probe(v.original, ancestors[i]);
+        auto it = mb.exprOriginMap.find(probe);
+        if (it != mb.exprOriginMap.end() && !it->second.empty()) {
+            return probe;
+        }
+    }
+    return v;
+}
+
+bool ExpressionAnalyzer::buildStack(Memory& memoryBlock,
+    const ExpressionWithValidity& provedIn,
     std::vector<std::vector<std::string>>& stack,
     std::set<ExpressionWithValidity>& covered) {
     // TRIPWIRE: sentinel validity used by disintegrateExprHypothetically.
     // Hypothetical disintegration products must never reach buildStack —
     // they are throw-away structural probes and the lambda no-track path
-    // already suppresses their origin writes. If this ever fires, a new
-    // leak path has appeared that needs investigation.
+    // already suppresses their origin writes. Check the INCOMING expression
+    // before any lifting; the sentinel is structural, not a validity-stack
+    // ancestor of anything legitimate.
     static const std::string kHypoDisintMarker = "_boundary_hypothetical_disintegration";
-    if (proved.validityName.find(kHypoDisintMarker) != std::string::npos) {
+    if (provedIn.validityName.find(kHypoDisintMarker) != std::string::npos) {
         std::cerr << "[buildStack] TRIPWIRE: hypothetical-disintegration sentinel "
-                  << "reached buildStack: " << proved.original
-                  << " (v=" << proved.validityName << ")\n";
+                  << "reached buildStack: " << provedIn.original
+                  << " (v=" << provedIn.validityName << ")\n";
         assert(false && "buildStack: hypothetical disintegration sentinel leaked into proof graph");
     }
-    // Lookup origin list for `proved`: try exact ns first, then fallback to "main"
+
+    // Lift to the closest-to-"main" ancestor of provedIn.validityName whose
+    // (expr, ancestor) key has an origin in this LB's exprOriginMap. From
+    // here on, `proved` is the lifted form — chapter rows are emitted at
+    // the lifted scope (truthful "this is where the derivation lives"), the
+    // path-cycle filter uses the lifted form, and recursion lifts each dep
+    // so duplicates collapse to a single (expr, lifted_v) row per chapter.
+    const ExpressionWithValidity proved = liftToShallowestOriginAncestor(memoryBlock, provedIn);
+
     auto it = memoryBlock.exprOriginMap.find(proved);
     if (it == memoryBlock.exprOriginMap.end() || it->second.empty()) {
-        if (proved.validityName != "main") {
-            ExpressionWithValidity mainFallback(proved.original, "main");
-            it = memoryBlock.exprOriginMap.find(mainFallback);
+        // _integration_goal expressions are synthetic markers — no origin expected.
+        if (proved.original.find("_integration_goal") != std::string::npos) {
+            return true;
         }
-        if (it == memoryBlock.exprOriginMap.end() || it->second.empty()) {
-            // _integration_goal expressions are synthetic markers — no origin expected
-            if (proved.original.find("_integration_goal") != std::string::npos) {
-                return;
-            }
-            // Dump full LB state for debugging
-            std::ofstream dump(".debug/buildstack_dump.txt", std::ios::trunc);
-            dump << "Missing origin for: " << proved.original
-                 << " | validity=" << proved.validityName
-                 << " | exprKey=" << memoryBlock.exprKey << "\n";
-            dump << "Parent chain: " << memoryBlock.exprKey;
-            Memory* p = memoryBlock.parentMemory;
-            while (p) {
-                dump << " -> " << p->exprKey;
-                p = p->parentMemory;
-            }
-            dump << "\n\n";
-            dump << "=== Encoded Statements (" << memoryBlock.encodedStatements.size() << ") ===\n";
-            for (size_t i = 0; i < memoryBlock.encodedStatements.size(); ++i) {
-                dump << "  [" << i << "] " << memoryBlock.encodedStatements[i].original
-                     << " | v=" << memoryBlock.encodedStatements[i].validityName << "\n";
-            }
-            dump << "\n=== exprOriginMap (" << memoryBlock.exprOriginMap.size() << " entries) ===\n";
-            for (const auto& [key, origins] : memoryBlock.exprOriginMap) {
-                dump << "  " << key.original << " | v=" << key.validityName << "\n";
-                for (const auto& [tag, deps] : origins) {
-                    dump << "    <- " << tag;
-                    for (const auto& d : deps) dump << " | " << d.original << " (v=" << d.validityName << ")";
-                    dump << "\n";
+        // D-51: contradiction-LB fallback. When `proved` is a negation !(X)
+        // and has no direct origin in this LB (or any of its ancestors with
+        // an origin entry), search the LB chain for "__contradiction__(X)"
+        // and resolve locally there.
+        if (proved.original.size() > 1 && proved.original[0] == '!') {
+            std::string positive = proved.original.substr(1);
+            std::string contraKey = "__contradiction__" + positive;
+            Memory* contraLB = nullptr;
+            for (Memory* anc = &memoryBlock; anc != nullptr; anc = anc->parentMemory) {
+                auto sit = anc->simpleMap.find(contraKey);
+                if (sit != anc->simpleMap.end() && sit->second != nullptr) {
+                    contraLB = sit->second;
+                    break;
                 }
             }
-            dump.flush();
-            std::cerr << "[buildStack] no origin for: " << proved.original
-                      << " | validity=" << proved.validityName
-                      << " | exprKey=" << memoryBlock.exprKey
-                      << " — dump written to .debug/buildstack_dump.txt\n";
-            assert(false && "buildStack: no origin found");
-        }
-    }
-
-    // Type adjustment: grab the first path from the vector to maintain exact same logic
-    const std::pair<std::string, std::vector<ExpressionWithValidity>>& origin = it->second.front();
-
-    if (origin.first == "broadcast" || origin.first == "externally provided theorem") {
-        return;  // theorem proved in previous batch or externally provided, no local proof stack
-    }
-
-    // Push one row: [proved] + origin
-    std::vector<std::string> row;
-    row.reserve(1 + origin.second.size());
-    row.push_back(proved.original);
-    row.push_back(proved.validityName);
-    row.push_back(origin.first);
-
-    // CHANGED: Start from 0 to include the first element (rule/source)
-    for (std::size_t i = 0; i < origin.second.size(); ++i) {
-        row.push_back(origin.second[i].original);
-        row.push_back(origin.second[i].validityName);
-    }
-    stack.push_back(row);
-
-    // Recurse for each ingredient in origin
-    // CHANGED: Start from 0 to recurse on the first element as well
-    if (origin.first == "contradiction" && origin.second.size() >= 3) {
-        // Navigate into the contradiction LB child to trace deps
-        const std::string& cleanOp = origin.second[2].original;
-        std::string contraKey = "__contradiction__" + cleanOp;
-        auto childIt = memoryBlock.simpleMap.find(contraKey);
-        if (childIt != memoryBlock.simpleMap.end() && childIt->second != nullptr) {
-            Memory& contraLB = *childIt->second;
-            for (std::size_t i = 0; i < origin.second.size(); ++i) {
-                const ExpressionWithValidity& ingredient = origin.second[i];
-                if (covered.insert(ingredient).second) {
-                    buildStack(contraLB, ingredient, stack, covered);
-                }
+            if (contraLB != nullptr) {
+                return buildStack(*contraLB, proved, stack, covered);
             }
         }
-    } else {
-        for (std::size_t i = 0; i < origin.second.size(); ++i) {
-            const ExpressionWithValidity& ingredient = origin.second[i];
-            // only visit once
+        std::cerr << "[buildStack] no origin for: " << proved.original
+                  << " | validity=" << proved.validityName
+                  << " | exprKey=" << memoryBlock.exprKey << "\n";
+        assert(false && "buildStack: no origin found");
+    }
+
+    g_buildStackPath.insert(proved);
+
+    const auto& origins = it->second;
+    auto candidateOrder = sortedOriginIndicesD49(origins);
+
+    auto emitRow = [&](const std::pair<std::string, std::vector<ExpressionWithValidity>>& origin,
+                       const std::vector<ExpressionWithValidity>& liftedDeps) {
+        std::vector<std::string> row;
+        row.reserve(3 + liftedDeps.size() * 2);
+        row.push_back(proved.original);
+        row.push_back(proved.validityName);
+        row.push_back(origin.first);
+        for (const auto& d : liftedDeps) {
+            row.push_back(d.original);
+            row.push_back(d.validityName);
+        }
+        stack.push_back(row);
+    };
+
+    // Candidate loop. Each candidate's deps are lifted before cycle-filter,
+    // emission, and recursion so chapter cells, the path-cycle filter, and
+    // the `covered` dedup all key on the same lifted form.
+    for (size_t idx : candidateOrder) {
+        const auto& origin = origins[idx];
+
+        std::vector<ExpressionWithValidity> liftedDeps;
+        liftedDeps.reserve(origin.second.size());
+        for (const auto& d : origin.second) {
+            liftedDeps.push_back(liftToShallowestOriginAncestor(memoryBlock, d));
+        }
+
+        bool cyclic = false;
+        for (const auto& d : liftedDeps) {
+            if (g_buildStackPath.count(d)) { cyclic = true; break; }
+        }
+        if (cyclic) continue;
+
+        // Early-return tags: theorem proved in previous batch / external — no row, success.
+        if (origin.first == "broadcast" || origin.first == "externally provided theorem") {
+            g_buildStackPath.erase(proved);
+            return true;
+        }
+
+        const size_t stackSnap = stack.size();
+        const std::set<ExpressionWithValidity> coveredSnap = covered;
+
+        emitRow(origin, liftedDeps);
+
+        bool subtreeOk = true;
+        for (const auto& ingredient : liftedDeps) {
             if (covered.insert(ingredient).second) {
-                buildStack(memoryBlock, ingredient, stack, covered);
+                if (!buildStack(memoryBlock, ingredient, stack, covered)) {
+                    subtreeOk = false; break;
+                }
+            }
+        }
+
+        if (subtreeOk) {
+            g_buildStackPath.erase(proved);
+            return true;
+        }
+
+        stack.resize(stackSnap);
+        covered = coveredSnap;
+    }
+
+    // D-51: no acyclic direct origin worked. For a negated head, try the
+    // contradiction-LB fallback before falling back to the degraded
+    // front()-emit. Walk the LB chain for "__contradiction__(positive)";
+    // if found, switch in and resolve there.
+    if (proved.original.size() > 1 && proved.original[0] == '!') {
+        std::string positive = proved.original.substr(1);
+        std::string contraKey = "__contradiction__" + positive;
+        Memory* contraLB = nullptr;
+        for (Memory* anc = &memoryBlock; anc != nullptr; anc = anc->parentMemory) {
+            auto sit = anc->simpleMap.find(contraKey);
+            if (sit != anc->simpleMap.end() && sit->second != nullptr) {
+                contraLB = sit->second;
+                break;
+            }
+        }
+        if (contraLB != nullptr && contraLB != &memoryBlock) {
+            g_buildStackPath.erase(proved);
+            return buildStack(*contraLB, proved, stack, covered);
+        }
+    }
+
+    // Last-resort fallback: emit front() and recurse on its deps fully
+    // (matches pre-D-51 chapter shape — chapter has rows even if cyclic,
+    // verifier flags). Deps are lifted like the per-candidate loop.
+    if (!origins.empty()) {
+        const auto& fb = origins.front();
+        if (fb.first == "broadcast" || fb.first == "externally provided theorem") {
+            g_buildStackPath.erase(proved);
+            return false;
+        }
+        std::vector<ExpressionWithValidity> liftedDeps;
+        liftedDeps.reserve(fb.second.size());
+        for (const auto& d : fb.second) {
+            liftedDeps.push_back(liftToShallowestOriginAncestor(memoryBlock, d));
+        }
+        emitRow(fb, liftedDeps);
+        for (const auto& d : liftedDeps) {
+            if (covered.insert(d).second) {
+                (void) buildStack(memoryBlock, d, stack, covered);
             }
         }
     }
+    g_buildStackPath.erase(proved);
+    return false;
 }
 
 
@@ -496,6 +664,11 @@ void ExpressionAnalyzer::generateRawProofGraph(
 {
     namespace fs = std::filesystem;
 
+    // D-51 (option 1): reset thread_local path stack at run start. Each
+    // chapter emission pushes/pops independently — the clear here is a
+    // belt-and-suspenders against any leak across runs.
+    clearBuildStackPath();
+
     std::cout << "Number proven theorems: "
         << theoremList.size() / 2 << "\n";
 
@@ -506,7 +679,15 @@ void ExpressionAnalyzer::generateRawProofGraph(
     // MODIFIED: Removed fs::remove_all to preserve previous runs
     fs::create_directories(outDir, ec);
 
-    fs::path glBinDir = outDir.parent_path() / "GL_binaries";
+    // Single canonical GL-binary folder regardless of per-batch outDir
+    // (mirrors prover.cpp::compileCoreExpressionMap reader path). Without
+    // this, configs that override raw_proof_graph_folder (incubator batches
+    // set it to files/incubator/raw_proof_graph) would land the export in
+    // files/incubator/GL_binaries/ — a directory the loader and the Python
+    // _merge_into_shared step never read from. See D-54.
+    fs::path glBinDir = fs::path(__FILE__).parent_path()
+                        .parent_path().parent_path().parent_path()
+                      / "files" / "GL_binaries";
     this->exportCompiledExpressionsJSON(glBinDir);
 
     // MODIFIED: Scan for start index based on existing files
@@ -601,7 +782,18 @@ void ExpressionAnalyzer::generateRawProofGraph(
 
         std::vector<std::vector<std::string> > stack;
         std::set<ExpressionWithValidity> covered;
+        // D-51: insert the chapter goal (the wrapped theorem expression) into
+        // the buildStack path. The existing path-cycle filter then rejects any
+        // origin whose deps include the chapter goal — this is exactly the
+        // self-reference shape (origin tag "implication" with the wrapped
+        // theorem as a dep, which would emit a chapter row that fails the
+        // verifier's self-reference check). Backtracking then falls through
+        // to the contradiction-LB fallback (where the actual contradiction
+        // recipe lives).
+        ExpressionWithValidity chapterGoalEv(theorem, "main");
+        g_buildStackPath.insert(chapterGoalEv);
         this->buildStack(*mb, ExpressionWithValidity(head, "main"), stack, covered);
+        g_buildStackPath.erase(chapterGoalEv);
         return stack;
         };
 
@@ -620,12 +812,16 @@ void ExpressionAnalyzer::generateRawProofGraph(
             Memory* mb = &body;
             for (std::size_t i = 0; i < chain.size(); ++i) {
                 std::map<std::string, Memory*>::iterator it = mb->simpleMap.find(chain[i]);
-                if (it == mb->simpleMap.end() || it->second == NULL) return std::vector<std::vector<std::string> >();
+                if (it == mb->simpleMap.end() || it->second == NULL) {
+                    return std::vector<std::vector<std::string> >();
+                }
                 mb = it->second;
             }
 
             std::vector<std::string> args0 = ce::getArgs(chain[0]);
-            if (args0.size() < 2) return std::vector<std::vector<std::string> >();
+            if (args0.size() < 2) {
+                return std::vector<std::vector<std::string> >();
+            }
             const std::string zeroName = args0[1];
 
             for (std::map<std::string, Memory*>::iterator it = mb->simpleMap.begin();
@@ -637,20 +833,34 @@ void ExpressionAnalyzer::generateRawProofGraph(
                 }
 
                 Memory* eqNode = it->second;
-                if (eqNode == NULL) continue;
+                if (eqNode == NULL) {
+                    continue;
+                }
 
-                if (!containsEncoded(eqNode->localEncodedStatements, head)) continue;
+                // Relaxed: head may live in eqNode->encodedStatements
+                // without being in localEncodedStatements when it arrived
+                // via mailIn (status=3, isLocal=false). The original
+                // localEncodedStatements gate missed this case after the
+                // symmetry-disabling sequence.
+                bool inLocal = containsEncoded(eqNode->encodedStatements, head);
+                if (!inLocal) continue;
 
                 std::vector<std::string> ev = ce::getArgs(eqNode->exprKey);
-                if (ev.empty() || ev[0] != inductionVar) continue;
+                if (ev.empty() || ev[0] != inductionVar) {
+                    continue;
+                }
 
                 std::vector<std::string> keyArgs = ce::getArgs(key);
-                if (keyArgs.size() < 2) continue;
+                if (keyArgs.size() < 2) {
+                    continue;
+                }
                 const std::string recName = keyArgs[0];
 
                 const std::string tempExpr = std::string("(=[") + recName + "," + zeroName + "])";
                 std::map<std::string, Memory*>::iterator it2 = mb->simpleMap.find(tempExpr);
-                if (it2 == mb->simpleMap.end() || it2->second == NULL) continue;
+                if (it2 == mb->simpleMap.end() || it2->second == NULL) {
+                    continue;
+                }
 
                 Memory* mbTarget = it2->second;
                 std::vector<std::vector<std::string> > stack;

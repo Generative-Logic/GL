@@ -1,0 +1,13 @@
+C:/Users/nikol/pycharmprojects/GL/vcpkg_installed/vcpkg/pkgs/mimalloc_x64-windows/lib/mimalloc.dll.lib
+C:/Users/nikol/pycharmprojects/GL/vcpkg_installed/vcpkg/pkgs/mimalloc_x64-windows/bin/mimalloc.dll
+C:/Users/nikol/pycharmprojects/GL/vcpkg_installed/vcpkg/pkgs/mimalloc_x64-windows/lib/cmake/mimalloc/mimalloc.cmake
+C:/Users/nikol/pycharmprojects/GL/vcpkg_installed/vcpkg/pkgs/mimalloc_x64-windows/lib/cmake/mimalloc/mimalloc-release.cmake
+C:/Users/nikol/pycharmprojects/GL/vcpkg_installed/vcpkg/pkgs/mimalloc_x64-windows/lib/mimalloc.dll.lib
+C:/Users/nikol/pycharmprojects/GL/vcpkg_installed/vcpkg/pkgs/mimalloc_x64-windows/bin/mimalloc-redirect.dll
+C:/Users/nikol/pycharmprojects/GL/vcpkg_installed/vcpkg/pkgs/mimalloc_x64-windows/include/mimalloc.h
+C:/Users/nikol/pycharmprojects/GL/vcpkg_installed/vcpkg/pkgs/mimalloc_x64-windows/include/mimalloc-override.h
+C:/Users/nikol/pycharmprojects/GL/vcpkg_installed/vcpkg/pkgs/mimalloc_x64-windows/include/mimalloc-new-delete.h
+C:/Users/nikol/pycharmprojects/GL/vcpkg_installed/vcpkg/pkgs/mimalloc_x64-windows/include/mimalloc-stats.h
+C:/Users/nikol/pycharmprojects/GL/vcpkg_installed/vcpkg/pkgs/mimalloc_x64-windows/lib/cmake/mimalloc/mimalloc-config.cmake
+C:/Users/nikol/pycharmprojects/GL/vcpkg_installed/vcpkg/pkgs/mimalloc_x64-windows/lib/cmake/mimalloc/mimalloc-config-version.cmake
+C:/Users/nikol/pycharmprojects/GL/vcpkg_installed/vcpkg/pkgs/mimalloc_x64-windows/lib/pkgconfig/mimalloc.pc

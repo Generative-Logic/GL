@@ -70,7 +70,7 @@ f. Use the Software in violation of any applicable law, including export control
 7.3 Compelled Disclosure. A Party may disclose Confidential Information to the extent required by law or court order, provided it gives prompt notice and cooperates with efforts to limit disclosure.
 
 8. Limited Warranty
-8.1 Performance Warranty. Licensor warrants that, for ninety (12) months from delivery, the Software will substantially conform to the documentation provided by Licensor when used as authorized.
+8.1 Performance Warranty. Licensor warrants that, for twelve (12) months from delivery, the Software will substantially conform to the documentation provided by Licensor when used as authorized.
 
 8.2 Remedy. Licensee’s sole and exclusive remedy for breach of the above warranty is for Licensor, at its option, to (a) repair or replace the non-conforming Software, or (b) terminate the license for the affected Software and refund the unused portion of prepaid fees.
 

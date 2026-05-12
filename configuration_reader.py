@@ -342,6 +342,7 @@ class configuration_reader(MappingABC):
         self.only_in_head_patterns: List[re.Pattern] = []
         self.prohibited_combinations: List[Set[str]] = []
         self.prohibited_heads: List[str] = []
+        self.external_anchors: List[str] = []
         self.theorems_folder: Optional[str] = None
         self.background_theorems_folder: Optional[str] = None
         self.anchor_name: Optional[str] = None
@@ -409,6 +410,13 @@ class configuration_reader(MappingABC):
 
         # Reuse _parse_args_list helper which handles ["a", "b"] or "a,b"
         self.prohibited_heads = _parse_args_list(obj, "prohibited_heads")
+
+        # --- external_anchors (top-level, list of anchor-expression names) ---
+        # Used by the proof-graph processor to identify external-theorem
+        # citations whose first premise is one of these anchors and to apply
+        # proper variable renaming. See ConfigVisu.json's external_anchors
+        # field; defaults to [] when absent.
+        self.external_anchors = _parse_args_list(obj, "external_anchors")
 
         # --- optional folder overrides ---
         self.theorems_folder = obj.pop("theorems_folder", None)

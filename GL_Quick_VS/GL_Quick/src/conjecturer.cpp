@@ -237,9 +237,20 @@ alignAndSortArgs(const std::vector<std::string>& names, const std::vector<std::s
 }
 
 // ============================================================================
+// ============================================================================
 // ConfigurationData::getAnchorName
 // ============================================================================
 
+/// @brief Convenience accessor matching Python's
+///        `get_anchor_name`.
+///
+/// @details
+/// Prefers the configured `anchor_name` when it resolves to a
+/// known expression in `data`; otherwise falls back on the
+/// derived `"Anchor" + anchor_id` candidate. Returns the empty
+/// string when neither resolves.
+///
+/// @return Resolved anchor name, or empty on miss.
 std::string ConfigurationData::getAnchorName() const {
     if (!anchor_name.empty() && data.find(anchor_name) != data.end())
         return anchor_name;
@@ -256,6 +267,8 @@ std::string ConfigurationData::getAnchorName() const {
 // Free utility functions (Phase 3)
 // ============================================================================
 
+/// @brief Check whether any integer arg id appears more than once
+///        in `s`. See header declaration for the full contract.
 bool repetitionsExist(const std::string& s) {
     std::regex pat(R"(\([^()]*\))");
     std::sregex_iterator it(s.begin(), s.end(), pat);
@@ -325,6 +338,9 @@ std::pair<ce::TreeNode1*, std::vector<int>> parseDefSet(const std::string& s) {
     return parseSubexpr();
 }
 
+/// @brief Render a `TreeNode1` to its string form, reordering
+///        commutative arg lists into canonical (ascending) order.
+///        See header declaration for the full contract.
 std::string treeToStrReorder(const ce::TreeNode1* root) {
     std::string result;
     int counter = 1;
@@ -351,6 +367,10 @@ std::string treeToStrReorder(const ce::TreeNode1* root) {
     return result;
 }
 
+/// @brief Render a `TreeNode1` to its string form, applying
+///        `subMap` as an integer-id substitution and shifting
+///        every retained id by `offset`. See header declaration
+///        for the full contract.
 std::string treeToStr(const ce::TreeNode1* root, int offset, const std::map<int,int>& subMap) {
     std::string result;
 
@@ -412,6 +432,8 @@ std::set<int> findAllIds(const std::string& s) {
     return result;
 }
 
+/// @brief Merge `(num1, num2)` into a transitive replacement map.
+///        See header declaration for the full contract.
 void updateReplacementMap(std::map<int,int>& repMap, int num1, int num2) {
     std::set<int> connected;
     connected.insert(num1);
@@ -468,6 +490,9 @@ std::pair<std::string, std::vector<int>> reorderNumbers(const std::string& s) {
     return {newStr, leafIds};
 }
 
+/// @brief Adjust every def-set text in `argDefSetMap` so they
+///        share a contiguous integer-id space. See header
+///        declaration for the full contract.
 void shiftTogether(std::map<std::string,std::string>& argDefSetMap) {
     std::set<int> idSet;
     for (auto& [arg, ds] : argDefSetMap) {
@@ -572,6 +597,9 @@ connectExpressionSets(
     return {commonMap, commonSet, success, removedArgs};
 }
 
+/// @brief Extract the substring between the first `[` at or after
+///        `startIndex` and its matching `]`. See header
+///        declaration for the full contract.
 std::string extractBetweenBrackets(const std::string& s, size_t startIndex) {
     auto start = s.find('[', startIndex);
     if (start == std::string::npos) return "";
@@ -580,6 +608,9 @@ std::string extractBetweenBrackets(const std::string& s, size_t startIndex) {
     return s.substr(start + 1, end - start - 1);
 }
 
+/// @brief Find the position of `substring` inside `text`,
+///        accepting only matches enclosed by `[...]` brackets.
+///        See header declaration for the full contract.
 int findPositionSurrounded(const std::string& text, const std::string& substring) {
     size_t subLen = substring.size();
     size_t pos = text.find(substring);
@@ -620,12 +651,18 @@ std::vector<std::string> findOrderedIntegers(const std::vector<std::string>& int
     return found;
 }
 
+/// @brief Replace one occurrence of an integer-ish substring
+///        inside a bigger string. See header declaration for the
+///        full contract.
 std::string replaceIntegerInString(const std::string& bigString, const std::string& targetInt, const std::string& replacementInt) {
     std::string pattern = "\\b" + targetInt + "\\b";
     std::regex re(pattern);
     return std::regex_replace(bigString, re, replacementInt);
 }
 
+/// @brief Subtract `number` from every integer arg id in `expr`
+///        that satisfies the `numbersToReplace` filter. See
+///        header declaration for the full contract.
 std::string subtractNumberFromInts(const std::string& expr, int number, const std::set<int>& numbersToReplace, bool replaceAll) {
     if (expr.empty()) return expr;
 
@@ -658,6 +695,8 @@ std::string subtractNumberFromInts(const std::string& expr, int number, const st
     return result;
 }
 
+/// @brief Count identity entries in `mapping`. See header
+///        declaration for the full contract.
 int getNumberRemovableArgs(const std::map<std::string,std::string>& mapping) {
     std::map<std::string,std::string> subMap;
     for (auto& [k, v] : mapping) {
@@ -668,6 +707,8 @@ int getNumberRemovableArgs(const std::map<std::string,std::string>& mapping) {
     return (int)vals.size();
 }
 
+/// @brief Validate that `mapping` is a well-formed substitution.
+///        See header declaration for the full contract.
 bool mappingGood(const std::map<std::string,std::string>& mapping) {
     std::map<std::string, std::string> reversed;
     for (auto& [key, value] : mapping) {
@@ -688,6 +729,29 @@ bool mappingGood(const std::map<std::string,std::string>& mapping) {
 // Configuration loading (Phase 1)
 // ============================================================================
 
+/// @brief Locate and parse `Config<anchorId>.json` into a fully-populated
+///        `ConfigurationData` record.
+///
+/// @details
+/// Uses `nlohmann::ordered_json` for the first parse so the JSON key
+/// order in `expressionOrder` survives — downstream enumeration walks
+/// expressions in author order for deterministic conjecture sequences.
+/// The same JSON is re-parsed via plain `json::parse(oj.dump())` to
+/// pick up the rest of the schema.
+///
+/// Compiles every `patterns_to_exclude_raw` and `only_in_head_raw`
+/// regex; failure is reported but does not abort the load (the
+/// affected pattern is dropped). Anchor expression description is
+/// looked up by name once the loop has populated `data`.
+///
+/// @param anchorId Short anchor name (e.g. `"Peano"`, `"Gauss"`,
+///                 `"IncubatorPeano"`) used to assemble the config
+///                 file path `files/config/Config<anchorId>.json`.
+/// @return Fully populated `ConfigurationData`. Invalid path /
+///         malformed JSON yields a default-constructed record with
+///         `anchor_id` set but `data` empty (caller should treat
+///         that as a hard error).
+/// @see Header declaration for the contract.
 ConfigurationData Conjecturer::loadConfiguration(const std::string& anchorId) {
     ConfigurationData config;
     config.anchor_id = anchorId;
@@ -906,6 +970,13 @@ ConfigurationData Conjecturer::loadConfiguration(const std::string& anchorId) {
     return config;
 }
 
+/// @brief Build the `coreExprMap_` adapter shim from `config_.data`.
+///
+/// @details
+/// One-to-one projection: every `ExpressionDescription` produces a
+/// `ce::CoreExpressionConfig` that downstream shim functions
+/// (originally written against the prover's compiled-config record
+/// shape) consume without further translation.
 void Conjecturer::buildCoreExprMapAdapter() {
     for (auto& [name, desc] : config_.data) {
         ce::CoreExpressionConfig cfg;
@@ -927,6 +998,9 @@ void Conjecturer::buildCoreExprMapAdapter() {
 // Int-path: NameMap + encode/decode
 // ============================================================================
 
+/// @brief Populate `nameMap_` from every expression name, handle, and
+///        def-set text appearing in `config_.data`. Called once during
+///        construction.
 void Conjecturer::buildNameMap() {
     // Register all expression names and def-set texts
     for (auto& [name, desc] : config_.data) {
@@ -938,6 +1012,17 @@ void Conjecturer::buildNameMap() {
     }
 }
 
+/// @brief Populate `intExprConfigs_` (indexed by nameId) plus the
+///        per-defSetId limit arrays from `config_`.
+///
+/// @details
+/// Walks every `ExpressionDescription` once, projecting it into the
+/// dense int16_t per-expression record, then a second pass over the
+/// per-type config maps populates `maxForDefSets_`,
+/// `maxForUncombDefSets_`, `maxForDefSetsPrior_`, and
+/// `maxComplexityAnchorConn_`. After this returns the int-path hot
+/// loop can answer every per-expression / per-def-set query with a
+/// single indexed read.
 void Conjecturer::buildIntExprConfigs() {
     // Size to cover all nameIds
     intExprConfigs_.resize(nameMap_.nextId);
@@ -997,6 +1082,28 @@ void Conjecturer::buildIntExprConfigs() {
     }
 }
 
+/// @brief Serialize an MPL expression string into a flat
+///        `IntConjBuf` (inverse of `decodeExpr`).
+///
+/// @details
+/// Companion to `decodeExpr`: round-trip
+/// `decodeExpr(encodeExpr(s)) == s` for any conjecturer-emitted
+/// `s` (tested via the `intpath_*` suite). Walks `expr` block by
+/// block, emitting `[boundCount, bv0..bvN, nameId, arity,
+/// arg0..argN]` per quantifier layer. The output buffer is
+/// suitable for the int-path filter cascade — no further
+/// string-form parsing is needed once it is built. Returns an
+/// empty buffer (`len == 0`) when `expr` is empty or malformed —
+/// typically because the caller passed a non-conjecturer input.
+///
+/// @param expr Expression text in numbered-variable form (e.g.
+///             `"(>[1,2](AnchorPeano[...])(in[1,2]))"`). Must be
+///             a recognised conjecture/sub-expression shape with
+///             `name[arg0,...]` heads.
+/// @return Encoded buffer with `len <= MAX_CONJ_BUF`.
+/// @pre  `expr` is in the conjecturer's numbered-variable form.
+/// @post `len <= MAX_CONJ_BUF`.
+/// @see `decodeExpr` — recovers `expr` from the returned buffer.
 IntConjBuf Conjecturer::encodeExpr(const std::string& expr) const {
     prof::Scope _prof_enc(prof::g_encodeExpr);
     // Encodes a conjecture string into a flat int16_t array.
@@ -1090,6 +1197,27 @@ IntConjBuf Conjecturer::encodeExpr(const std::string& expr) const {
     return buf;
 }
 
+/// @brief Deserialize a flat `IntConjBuf` back into its MPL string
+///        form (inverse of `encodeExpr`).
+///
+/// @details
+/// Companion to `encodeExpr`: round-trip
+/// `decodeExpr(encodeExpr(s)) == s` for any expression `s` the
+/// conjecturer emits (verified by the `intpath_*` suite). Walks
+/// `buf` block by block, reading each `[boundCount, bv0..bvN,
+/// nameId, arity, arg0..argN]` record and emitting the
+/// corresponding `(>[bv0,bv1](nameHandle[arg0,arg1])(...))`
+/// fragment. Returns the empty string when `buf.len == 0` —
+/// typically because the buffer has not been initialised by
+/// `encodeExpr`.
+///
+/// @param buf Encoded buffer previously produced by `encodeExpr`.
+///            Must satisfy `buf.len <= MAX_CONJ_BUF`; otherwise
+///            the walker reads past the valid range and returns
+///            garbage.
+/// @return MPL expression text byte-equivalent to the original
+///         input of `encodeExpr`, or empty on `buf.len == 0`.
+/// @see `encodeExpr` — produces the matching buffer.
 std::string Conjecturer::decodeExpr(const IntConjBuf& buf) const {
     prof::Scope _prof_dec(prof::g_decodeExpr);
     // Read sequential blocks from the flat array, wrap right-to-left.
@@ -1145,6 +1273,29 @@ std::string Conjecturer::decodeExpr(const IntConjBuf& buf) const {
     return result;
 }
 
+/// @brief Serialize a string-keyed `DefSetMap` into the
+///        parallel-array `IntDefSetMap` (inverse of
+///        `decodeDefSetMap`).
+///
+/// @details
+/// Companion to `decodeDefSetMap`: round-trip
+/// `decodeDefSetMap(encodeDefSetMap(m)) == m` is byte-stable for
+/// any `m` whose keys are decimal-integer strings and whose
+/// def-set texts are already registered in `nameMap_`. Each
+/// `argId` is decoded from the stringified arg name (`"5"` -> `5`);
+/// each def-set text goes through `nameMap_.encode`. The
+/// combinable / connectable bools are projected to int16_t.
+/// Truncates silently if `dsm.size() > MAX_CONJ_ARGS` —
+/// typically because the caller passed an oversized merge result
+/// that bypassed the per-type combinable / uncombinable caps.
+///
+/// @param dsm Source map keyed by stringified arg ids
+///            (e.g. `"1"`, `"5"`). Values are `(text, combinable,
+///            connectable)` tuples.
+/// @return `IntDefSetMap` with `count == min(dsm.size(),
+///         MAX_CONJ_ARGS)` and parallel arrays populated.
+/// @see `decodeDefSetMap` — recovers `dsm` from the returned
+///      record.
 IntDefSetMap Conjecturer::encodeDefSetMap(const DefSetMap& dsm) const {
     prof::Scope _prof_eds(prof::g_encodeDefSetMap);
     IntDefSetMap idsm;
@@ -1163,6 +1314,24 @@ IntDefSetMap Conjecturer::encodeDefSetMap(const DefSetMap& dsm) const {
     return idsm;
 }
 
+/// @brief Deserialize an `IntDefSetMap` back into a string-keyed
+///        `DefSetMap` (inverse of `encodeDefSetMap`).
+///
+/// @details
+/// Companion to `encodeDefSetMap`: round-trip
+/// `decodeDefSetMap(encodeDefSetMap(m)) == m` is byte-stable for
+/// any `m` whose def-set texts were registered in `nameMap_` at
+/// encode time. Each `argId` is rendered as a decimal string; each
+/// `defSetId` is resolved through `nameMap_.decode`. Returns an
+/// empty map when `idsm.count == 0` — typically because the
+/// caller passed an uninitialised buffer.
+///
+/// @param idsm Encoded def-set map previously produced by
+///             `encodeDefSetMap` (or by an int-path filter that
+///             writes directly into the parallel arrays).
+/// @return `DefSetMap` keyed by stringified arg ids; size equals
+///         `idsm.count`.
+/// @see `encodeDefSetMap` — produces the matching encoded map.
 DefSetMap Conjecturer::decodeDefSetMap(const IntDefSetMap& idsm) const {
     DefSetMap dsm;
     for (int i = 0; i < idsm.count; ++i) {
@@ -1177,6 +1346,19 @@ DefSetMap Conjecturer::decodeDefSetMap(const IntDefSetMap& idsm) const {
 // Pre-computation (Phase 2)
 // ============================================================================
 
+/// @brief Pre-compute every injective mapping of arity `2..N` from
+///        `[1..p]` -> `[1..q]` for every `(p, q)` cross product
+///        within the size budget.
+///
+/// @details
+/// Built once during construction; consumed read-only by
+/// `makeAllConnectionMaps` / `makeAllConnectionMapsInt` in the hot
+/// path. Memory footprint scales combinatorially in `N`; the current
+/// production batches use `N <= 5` so the table fits comfortably
+/// in a few MB.
+///
+/// @param N Maximum arity to enumerate.
+/// @return `MappingsMap[size][(p, q)]` -> list of injections.
 MappingsMap Conjecturer::createMap(int N) {
     MappingsMap outer;
     if (N < 2) return outer;
@@ -1327,6 +1509,23 @@ MappingsMap Conjecturer::createMap(int N) {
     return outer;
 }
 
+/// @brief Pre-compute anchor <-> expression argument permutation
+///        tables.
+///
+/// @details
+/// Cartesian product over `T \subseteq S` with `targets^|T|` images
+/// per subset. For `AnchorIncubator` with its 7 `(1)`-typed slots
+/// `leftMax = 7`; `rightMax` is the max over def-sets of
+/// `(uncomb + comb)` values from the per-batch config.
+///
+/// @warning `rightMax > 3` causes RAM explosion: millions of
+///          permutation dicts materialise. There is no assert
+///          currently — see SwDD `OPEN-8`. Keep
+///          `parameters.max_values_for_def_sets` plus
+///          `parameters.max_values_for_uncomb_def_sets` so that
+///          their per-type maximum sum stays at most 3. Adding the
+///          assert is recommended; it is a Rule-8 architectural
+///          touch and currently deferred.
 MappingsMap Conjecturer::createMapAnchor(int leftMax, int rightMax) {
     MappingsMap outer;
     if (leftMax < 1 || rightMax < 1) return outer;
@@ -1408,6 +1607,8 @@ MappingsMap Conjecturer::createMapAnchor(int leftMax, int rightMax) {
     return outer;
 }
 
+/// @brief Compute the maximum anchor-slot id over the loaded
+///        config; used as `leftMax` for `createMapAnchor`.
 int Conjecturer::determineLeftSideBoundary() const {
     std::string anchorName = config_.getAnchorName();
     auto& sets = config_.data.at(anchorName).definition_sets;
@@ -1425,6 +1626,10 @@ int Conjecturer::determineLeftSideBoundary() const {
     return boundary;
 }
 
+/// @brief Compute the maximum candidate-slot id (sum of `uncomb +
+///        comb` per type) over the loaded config; used as `rightMax`
+///        for `createMapAnchor`. Result must stay <= 3 to avoid RAM
+///        explosion (SwDD `OPEN-8`).
 int Conjecturer::determineRightSideBoundary() const {
     int boundary = -1;
     for (auto& [defSet, val] : config_.parameters.max_values_for_def_sets) {
@@ -1440,6 +1645,22 @@ int Conjecturer::determineRightSideBoundary() const {
 // Expression parsing & arg maps (Phase 4)
 // ============================================================================
 
+/// @brief Walk an expression and extract every arg name with its
+///        definition-set type, combinable flag, and connectable
+///        flag.
+///
+/// @details
+/// Pure walk: descends into nested `(>[...])` quantifier blocks,
+/// pulls every `name[arg0,arg1,...]` token, and looks up the
+/// def-set tuple for each arg position via `coreExprMap_`. The
+/// returned `DefSetMap` is the canonical input to every string-path
+/// filter and to the encoders that produce the int-path twin.
+///
+/// @param exprIn Expression text in numbered-variable form. Must
+///               be a recognised conjecture/sub-expression shape
+///               with `name[arg0,...]` heads.
+/// @return `DefSetMap` keyed by arg name (as string). Empty when
+///         `exprIn` carries no recognised expression.
 DefSetMap Conjecturer::findArgMap(const std::string& exprIn) const {
     std::string expr = stripWs(exprIn);
     int index = 0;
@@ -1523,6 +1744,21 @@ DefSetMap Conjecturer::findArgMap(const std::string& exprIn) const {
     return findArgMapCore();
 }
 
+/// @brief Legacy reshuffle predecessor: rename bound variables
+///        in `exprIn` to canonical `1..N` ids in first-occurrence
+///        order.
+///
+/// @details
+/// Largely superseded by `reshuffle` on the `rt_conjecturer*`
+/// branches but retained because some callers still consume
+/// its returned `(text, defSets, renameMap)` triple directly.
+/// Walks `exprIn` left-to-right, assigning the next free id the
+/// first time each old id is encountered. `deep` controls whether
+/// nested existence heads participate in the renumber.
+///
+/// @param exprIn Source expression text.
+/// @param deep   When true, descend into nested existence heads.
+/// @return Tuple `(renamed, defSets, renameMap)`.
 std::tuple<std::string, DefSetMap, std::map<std::string,std::string>>
 Conjecturer::renameVariablesInExpr(const std::string& exprIn, bool deep) const {
     std::string expr = stripWs(exprIn);
@@ -1694,6 +1930,26 @@ Conjecturer::renameVariablesInExpr(const std::string& exprIn, bool deep) const {
 // Expression connection (Phase 5)
 // ============================================================================
 
+/// @brief String-path: merge two expressions via a substitution
+///        map and a binary-sign vector.
+///
+/// @details
+/// `subMap` carries the bijection between a subset of `map1`'s
+/// args and a subset of `map2`'s args; `binaryList` carries one
+/// sign bit per merge slot to enumerate negation variants.
+/// `connectToAnchor` toggles whether the second expression is the
+/// anchor (uses `mappingsMapAnchor_` instead of `mappingsMap_`).
+/// String-path twin of `connectExpressionsInt`; the int lane is
+/// the hot path and is byte-equivalent in output.
+///
+/// @param expr1            First expression text.
+/// @param expr2            Second expression text (or anchor).
+/// @param map1             First expression's def-set map.
+/// @param map2             Second expression's def-set map.
+/// @param subMap           Bijection between subset args.
+/// @param binaryList       Per-slot sign bits.
+/// @param connectToAnchor  Toggle anchor-attach mode.
+/// @return Tuple `(success, mergedExpr, mergedDefSets)`.
 std::tuple<bool, std::string, DefSetMap>
 Conjecturer::connectExpressions(const std::string& expr1, const std::string& expr2,
                                 const DefSetMap& map1, const DefSetMap& map2,
@@ -1775,6 +2031,8 @@ Conjecturer::connectExpressions(const std::string& expr1, const std::string& exp
 // Int-path: connectExpressions
 // ============================================================================
 
+/// @brief Sort `removableArgs` by their first-occurrence position in
+///        `expr`; result written to caller-owned `sortedOut`.
 void Conjecturer::sortByOccurrenceInt(const IntConjBuf& expr, const int16_t* removableArgs, int numRemovable,
                                        int16_t* sortedOut) const {
     // Find first occurrence of each removable arg as an argument in the expression buffer.
@@ -1817,6 +2075,27 @@ void Conjecturer::sortByOccurrenceInt(const IntConjBuf& expr, const int16_t* rem
     for (int i = 0; i < numRemovable; ++i) sortedOut[i] = removableArgs[indices[i]];
 }
 
+/// @brief Int-path twin of `getNumberRemovableArgs` — count
+///        distinct non-identity targets in a connection map.
+///
+/// @details
+/// Companion to string-path `getNumberRemovableArgs`: implements
+/// the same `set(v for k, v in subMap if k != v).size()`
+/// semantics on the int-encoded `connMap` instead of a
+/// `std::map<string, string>`. Walks `connMap.map[1..maxArg]`,
+/// skipping identity entries (`map[k] == k`) and 0 entries
+/// (unmapped slots), then deduplicates the remaining values.
+/// Returns 0 when every entry is identity or unmapped —
+/// typically the case for a fresh `IntConnMap` initialised by
+/// the cartesian-product enumerator before any non-trivial
+/// substitution slot is filled.
+///
+/// @param connMap Int-encoded connection map (one entry per
+///                source argId in `[1, maxArg]`).
+/// @return Count of distinct non-identity values; `0` when no
+///         non-identity entries exist.
+/// @see `getNumberRemovableArgs` — string-path twin with
+///      identical contract.
 int Conjecturer::getNumberRemovableArgsInt(const IntConnMap& connMap) const {
     prof::Scope _p(prof::g_getNumRemArgsInt);
     // Count unique VALUES (not keys) in non-identity mappings.
@@ -1834,6 +2113,20 @@ int Conjecturer::getNumberRemovableArgsInt(const IntConnMap& connMap) const {
     return numVals;
 }
 
+/// @brief Int-path: merge two encoded expressions via a connection
+///        map and binary-sign vector. Hot-path twin of
+///        `connectExpressions`.
+///
+/// @details
+/// `subMap` carries the bijection between a subset of `map1`'s args
+/// and a subset of `map2`'s args; `binaryList` carries one sign bit
+/// per merge slot to enumerate negation variants.
+/// `connectToAnchor` toggles whether the second expression is the
+/// anchor (uses `mappingsMapAnchor_` instead of `mappingsMap_`).
+/// Outputs are written into `outExpr` / `outMap` (caller-owned) to
+/// avoid per-call allocation; this keeps the hot loop allocation-free.
+///
+/// @return `true` on a successful merge; `false` on rejection.
 bool Conjecturer::connectExpressionsInt(
     const IntConjBuf& expr1, const IntConjBuf& expr2,
     const IntDefSetMap& map1, const IntDefSetMap& map2,
@@ -2153,6 +2446,22 @@ bool Conjecturer::connectExpressionsInt(
     return true;
 }
 
+/// @brief String-path: enumerate every valid connection map
+///        between the args of `argsMap1` and `argsMap2`.
+///
+/// @details
+/// Walks the precomputed `mappingsMap` (or `mappingsMapAnchor_`
+/// when `withAnchor` is true), generating every valid bijection
+/// between the two arg sets. One entry in the returned vector
+/// becomes the `subMap` argument of a subsequent
+/// `connectExpressions` call. String-path twin of
+/// `makeAllConnectionMapsInt`.
+///
+/// @param argsMap1     First def-set map.
+/// @param argsMap2     Second def-set map.
+/// @param withAnchor   Toggle anchor-attach mode.
+/// @param mappingsMap  Pre-computed bijection table.
+/// @return All valid connection maps.
 std::vector<std::map<std::string,std::string>>
 Conjecturer::makeAllConnectionMaps(const DefSetMap& argsMap1, const DefSetMap& argsMap2,
                                     bool withAnchor, const MappingsMap& mappingsMap) const {
@@ -2282,6 +2591,16 @@ Conjecturer::makeAllConnectionMaps(const DefSetMap& argsMap1, const DefSetMap& a
 // Int-path: makeAllConnectionMaps
 // ============================================================================
 
+/// @brief Int-path: enumerate every connection map between two
+///        encoded def-set maps. Hot-path twin of
+///        `makeAllConnectionMaps`.
+///
+/// @details
+/// Walks the precomputed `mappingsMap` (or `mappingsMapAnchor_` when
+/// `withAnchor` is true), generating every valid bijection between
+/// the two arg sets. Output appended to `outMaps`. Cap on the number
+/// of maps written is `MAX_CONN_MAPS`; misconfiguration that would
+/// blow past this triggers a hard cut.
 void Conjecturer::makeAllConnectionMapsInt(
     const IntDefSetMap& argsMap1, const IntDefSetMap& argsMap2,
     bool withAnchor, const MappingsMap& mappingsMap,
@@ -2534,6 +2853,28 @@ void Conjecturer::makeAllConnectionMapsInt(
 // Int-path: validation filters
 // ============================================================================
 
+/// @brief Int-path twin of `repetitionsExist` — reject candidates
+///        that carry the same leaf twice.
+///
+/// @details
+/// Companion to string-path `repetitionsExist`: applied to the
+/// flat-encoded candidate instead of the rendered string, but
+/// enforces the same contract — `repetitionsExistInt(buf) ==
+/// repetitionsExist(decodeExpr(buf))` for any buffer the
+/// conjecturer emits. Walks `buf` block by block, packing each
+/// `(nameId, arity, args)` tuple into a `Leaf` record, then
+/// scans for duplicates. The structural-uniqueness gate prevents
+/// the chain from carrying the same predicate twice (which would
+/// add no constraint and would inflate the conjecture set).
+/// Returns `false` when `buf` carries fewer than 2 leaves —
+/// nothing to deduplicate.
+///
+/// @param buf Encoded candidate previously produced by
+///            `encodeExpr` (or by `connectExpressionsInt`).
+/// @return `true` when the same `(nameId, args)` tuple appears
+///         at least twice; `false` otherwise.
+/// @see `repetitionsExist` — string-path twin with identical
+///      contract.
 bool Conjecturer::repetitionsExistInt(const IntConjBuf& buf) const {
     // Check for duplicate leaf expressions (same nameId + same args).
     // Matches the string regex R"(\([^()]*\))" which finds all leaf nodes.
@@ -2566,6 +2907,25 @@ bool Conjecturer::repetitionsExistInt(const IntConjBuf& buf) const {
     return false;
 }
 
+/// @brief Int-path twin of `numbersGood` — per-expression
+///        occurrence-count cap.
+///
+/// @details
+/// Companion to string-path `numbersGood`: enforces the same
+/// per-expression `max_count_per_conjecture` cap on the flat
+/// encoded buffer instead of the rendered string. Walks `buf`
+/// block by block, indexing `intExprConfigs_` by nameId to find
+/// each expression's configured cap; rejects when any count
+/// exceeds. Despite the misleading name, this is a count-cap
+/// check — not a contiguity check on arg ids. Returns `true`
+/// when every nameId stays at or below its cap (or when no
+/// nameId has a positive cap, meaning the cap is "unlimited").
+///
+/// @param buf Encoded candidate previously produced by
+///            `encodeExpr` (or by `connectExpressionsInt`).
+/// @return `true` to accept; `false` when any nameId's count
+///         exceeds its configured `maxCountPerConj`.
+/// @see `numbersGood` — string-path twin with identical contract.
 bool Conjecturer::numbersGoodInt(const IntConjBuf& buf) const {
     // Count occurrences of each nameId, compare against maxCountPerConj
     int16_t counts[256]; // indexed by nameId — safe since we have ~15 expression names
@@ -2586,6 +2946,18 @@ bool Conjecturer::numbersGoodInt(const IntConjBuf& buf) const {
     return true;
 }
 
+/// @brief Int-path twin of `checkDefSets`.
+///
+/// @details
+/// Reject when the def-set type per-arg counts exceed the
+/// per-type `max_values_for_def_sets` (combinable) or
+/// `max_values_for_uncomb_def_sets` (uncombinable) caps.
+/// Consults `maxForDefSets_` and `maxForUncombDefSets_` (the
+/// per-defSetId dense lookup tables built by
+/// `buildIntExprConfigs`).
+///
+/// @param argMap Encoded def-set map of the candidate.
+/// @return `true` to accept; `false` to reject.
 bool Conjecturer::checkDefSetsInt(const IntDefSetMap& argMap) const {
     int16_t combCounts[256];
     int16_t uncombCounts[256];
@@ -2609,6 +2981,9 @@ bool Conjecturer::checkDefSetsInt(const IntDefSetMap& argMap) const {
     return true;
 }
 
+/// @brief Int-path twin of `checkComplexityLevelForDefSets`. Reject
+///        if any def-set type's complexity exceeds the configured
+///        pre-existence cap (consults `maxComplexityAnchorConn_`).
 bool Conjecturer::checkComplexityLevelInt(const IntDefSetMap& argMap, int complexityLevel) const {
     for (int i = 0; i < argMap.count; ++i) {
         int16_t dsId = argMap.defSetId[i];
@@ -2620,6 +2995,9 @@ bool Conjecturer::checkComplexityLevelInt(const IntDefSetMap& argMap, int comple
     return true;
 }
 
+/// @brief Int-path twin of `checkDefSetsPriorToConnection`. Pre-merge
+///        per-type cap: reject when the union of args from both
+///        sides would exceed the configured prior-connection cap.
 bool Conjecturer::checkDefSetsPriorInt(const IntDefSetMap& argsStmt, const IntDefSetMap& argsGT) const {
     prof::Scope _p(prof::g_checkDefSetsPriorInt);
     int16_t counts[256];
@@ -2636,6 +3014,24 @@ bool Conjecturer::checkDefSetsPriorInt(const IntDefSetMap& argsStmt, const IntDe
     return true;
 }
 
+/// @brief Int-path twin of `countOperatorOccurrences` — count
+///        quantifier-block headers in an encoded buffer.
+///
+/// @details
+/// Companion to string-path `countOperatorOccurrences`:
+/// `countOperatorOccurrencesInt(buf) ==
+/// countOperatorOccurrences(decodeExpr(buf))` for any conjecturer-
+/// emitted buffer. Walks `buf` block by block; each block whose
+/// `boundCount > 0` contributes one operator-block header (the
+/// flat-encoded analogue of a `(>[...]...)` opening). Returns 0
+/// for atom-only buffers (e.g. the encoded anchor or a single
+/// predicate without an outer quantifier).
+///
+/// @param buf Encoded candidate.
+/// @return Number of `boundCount > 0` blocks (operator-layer
+///         count == complexity level).
+/// @see `countOperatorOccurrences` — string-path twin with
+///      identical contract.
 int Conjecturer::countOperatorOccurrencesInt(const IntConjBuf& buf) const {
     prof::Scope _p(prof::g_countOpOccurrences);
     // Count quantifier layers: blocks whose boundCount > 0 (matches string "(>[" counting)
@@ -2650,6 +3046,26 @@ int Conjecturer::countOperatorOccurrencesInt(const IntConjBuf& buf) const {
     return count;
 }
 
+/// @brief Int-path twin of `onlyInHeadGood` — reject when a
+///        head-only expression appears outside the head.
+///
+/// @details
+/// Companion to string-path `onlyInHeadGood`:
+/// `onlyInHeadGoodInt(buf) ==
+/// onlyInHeadGood(decodeExpr(buf))` for any conjecturer-emitted
+/// buffer. Walks `buf` block by block; for every non-head block
+/// whose nameId matches an entry in `config_.only_in_head_patterns`
+/// (compiled regex list), rejects the candidate. The head block
+/// (last block in the buffer) is exempt by definition. Returns
+/// `true` when no `only_in_head` pattern matches outside the
+/// head — typically the case for any well-formed Peano / Gauss
+/// candidate, since the patterns target known-pathological shapes.
+///
+/// @param buf Encoded candidate.
+/// @return `true` when no `only_in_head` pattern matches a
+///         non-head leaf; `false` otherwise.
+/// @see `onlyInHeadGood` — string-path twin with identical
+///      contract.
 bool Conjecturer::onlyInHeadGoodInt(const IntConjBuf& buf) const {
     prof::Scope _p(prof::g_onlyInHeadGoodInt);
     // For each only_in_head expression, check it appears only in the head (last block).
@@ -2682,6 +3098,25 @@ bool Conjecturer::onlyInHeadGoodInt(const IntConjBuf& buf) const {
     return true;
 }
 
+/// @brief Int-path twin of `prohibitedHeadsGood` — reject when
+///        `buf`'s head is on the per-batch prohibited list.
+///
+/// @details
+/// Companion to string-path `prohibitedHeadsGood`:
+/// `prohibitedHeadsGoodInt(buf) ==
+/// prohibitedHeadsGood(decodeExpr(buf))` for any conjecturer-
+/// emitted buffer. Reads the last block's nameId (the head) and
+/// looks it up in `config_.prohibited_heads` (per-batch block
+/// list). Short-circuits to `true` when the prohibited-heads list
+/// is empty — typically the case for Peano / Gauss; some
+/// incubator configs set the list non-empty to suppress
+/// known-pathological head shapes.
+///
+/// @param buf Encoded candidate.
+/// @return `true` when the head's nameId is not on the prohibited
+///         list; `false` otherwise.
+/// @see `prohibitedHeadsGood` — string-path twin with identical
+///      contract.
 bool Conjecturer::prohibitedHeadsGoodInt(const IntConjBuf& buf) const {
     prof::Scope _p(prof::g_prohibHeadsGoodInt);
     if (config_.prohibited_heads.empty()) return true;
@@ -2700,6 +3135,25 @@ bool Conjecturer::prohibitedHeadsGoodInt(const IntConjBuf& buf) const {
     return true;
 }
 
+/// @brief Int-path twin of `checkConjectureComplexityPerOperator`
+///        — per-operator complexity gate on a prospective merge.
+///
+/// @details
+/// Companion to string-path `checkConjectureComplexityPerOperator`:
+/// answers the same per-operator-complexity question on encoded
+/// inputs. Walks `growingTheorem` to collect per-operator counts,
+/// then conditionally adds `statement`'s contribution; rejects
+/// when any operator's projected count exceeds its
+/// `max_size_expression_before_existence` cap from
+/// `intExprConfigs_`. Returns `true` on the empty-stmt case
+/// (`statement.len == 0`) — there's nothing to add.
+///
+/// @param growingTheorem Encoded partial theorem being grown.
+/// @param statement      Encoded candidate to merge in.
+/// @return `true` to accept the merge; `false` when any
+///         operator's projected count exceeds its cap.
+/// @see `checkConjectureComplexityPerOperator` — string-path twin
+///      with identical contract.
 bool Conjecturer::checkComplexityPerOpInt(const IntConjBuf& growingTheorem, const IntConjBuf& statement) const {
     prof::Scope _p(prof::g_checkComplexityPerOpInt);
     // Count total expressions in growingTheorem + 1 (for statement)
@@ -2744,6 +3198,10 @@ bool Conjecturer::checkComplexityPerOpInt(const IntConjBuf& growingTheorem, cons
     return true;
 }
 
+/// @brief Int-path twin of `exprGood2`. Final structural-approval
+///        gate at the int-path level — combines numeric-arg
+///        contiguity, per-type combinable / uncombinable caps, and
+///        operator-block accounting.
 bool Conjecturer::exprGood2Int(const IntConjBuf& buf, int nse, const IntDefSetMap& connectedMap) const {
     prof::Scope _prof_eg2(prof::g_exprGood2Int);
     if (repetitionsExistInt(buf)) return false;
@@ -2809,6 +3267,8 @@ bool Conjecturer::exprGood2Int(const IntConjBuf& buf, int nse, const IntDefSetMa
 // Validation filters (Phase 6)
 // ============================================================================
 
+/// @brief First-pass structural sanity check on `expr` — cheap
+///        gate before per-conjecture filters.
 bool Conjecturer::exprGood(const std::string& expr) const {
     prof::Scope _prof_eg(prof::g_exprGood);
     if (expr.substr(0, 3) == "(>[" && expr.substr(0, 4) != "(>[]") {
@@ -2817,6 +3277,8 @@ bool Conjecturer::exprGood(const std::string& expr) const {
     return false;
 }
 
+/// @brief Reject if integer arg ids in `expr` are not contiguous
+///        `1..N` (string-path twin of `numbersGoodInt`).
 bool Conjecturer::numbersGood(const std::string& expr) const {
     for (auto& [name, desc] : config_.data) {
         int count = 0;
@@ -2830,6 +3292,9 @@ bool Conjecturer::numbersGood(const std::string& expr) const {
     return true;
 }
 
+/// @brief Reject if def-set type per-arg counts exceed the per-type
+///        `max_values_for_def_sets` / `max_values_for_uncomb_def_sets`
+///        caps (string-path twin of `checkDefSetsInt`).
 bool Conjecturer::checkDefSets(const DefSetMap& argMap) const {
     prof::Scope _p(prof::g_checkDefSets);
     // Count combinable
@@ -2856,6 +3321,9 @@ bool Conjecturer::checkDefSets(const DefSetMap& argMap) const {
     return true;
 }
 
+/// @brief Reject if any def-set type's complexity exceeds the
+///        configured pre-existence cap (string-path twin of
+///        `checkComplexityLevelInt`).
 bool Conjecturer::checkComplexityLevelForDefSets(const DefSetMap& argMap, int complexityLevel) const {
     prof::Scope _p(prof::g_checkComplLevForDefSets);
     std::set<std::string> defSets;
@@ -2868,6 +3336,8 @@ bool Conjecturer::checkComplexityLevelForDefSets(const DefSetMap& argMap, int co
     return true;
 }
 
+/// @brief Pre-equality-emission qualification check. Used before
+///        letting `(=[...])` into a candidate's head position.
 bool Conjecturer::qualifiedForEquality(const std::string& expr) const {
     using ChainEntry = std::tuple<std::string, std::vector<std::string>, std::set<std::string>>;
     std::vector<ChainEntry> tempChain;
@@ -2912,6 +3382,7 @@ bool Conjecturer::qualifiedForEquality(const std::string& expr) const {
     return eqArgs == outPair;
 }
 
+/// @brief Collect operator-headed sub-expressions inside `expr`.
 std::vector<std::string> Conjecturer::extractOperatorExpressions(const std::string& expr) const {
     if (operators_.empty()) return {};
     std::vector<std::string> sortedOps = operators_;
@@ -2942,6 +3413,8 @@ std::vector<std::string> Conjecturer::extractOperatorExpressions(const std::stri
     return result;
 }
 
+/// @brief Reject when `expression` matches an entry on
+///        `config_.prohibited_combinations` (per-batch block list).
 bool Conjecturer::checkProhibitedCombinations(const std::string& expression) const {
     using ChainEntry = std::tuple<std::string, std::vector<std::string>, std::set<std::string>>;
     std::vector<ChainEntry> tempChain;
@@ -2958,6 +3431,9 @@ bool Conjecturer::checkProhibitedCombinations(const std::string& expression) con
     return true;
 }
 
+/// @brief Reject when the head of `conjecture` is on
+///        `config_.prohibited_heads` (string-path twin of
+///        `prohibitedHeadsGoodInt`).
 bool Conjecturer::prohibitedHeadsGood(const std::string& conjecture) const {
     if (config_.prohibited_heads.empty()) return true;
     using ChainEntry = std::tuple<std::string, std::vector<std::string>, std::set<std::string>>;
@@ -2969,6 +3445,8 @@ bool Conjecturer::prohibitedHeadsGood(const std::string& conjecture) const {
     return true;
 }
 
+/// @brief Reject if the total argument count of `conjecture`
+///        exceeds `parameters.max_number_args_expr`.
 bool Conjecturer::countArgumentsFilter(const std::string& conjecture) const {
     using ChainEntry = std::tuple<std::string, std::vector<std::string>, std::set<std::string>>;
     std::vector<ChainEntry> chain;
@@ -3007,6 +3485,8 @@ bool Conjecturer::countArgumentsFilter(const std::string& conjecture) const {
     return true;
 }
 
+/// @brief Reject when `conjecture` matches any compiled regex in
+///        `config_.patterns_to_exclude`.
 bool Conjecturer::patternInConjecture(const std::string& conjecture) const {
     prof::Scope _p(prof::g_patternInConjecture);
     for (auto& pat : config_.patterns_to_exclude) {
@@ -3015,6 +3495,9 @@ bool Conjecturer::patternInConjecture(const std::string& conjecture) const {
     return false;
 }
 
+/// @brief Reject when an `only_in_head` pattern matches outside the
+///        head position of `conjecture` (string-path twin of
+///        `onlyInHeadGoodInt`).
 bool Conjecturer::onlyInHeadGood(const std::string& conjecture) const {
     for (auto& handle : config_.only_in_head_raw) {
         if (conjecture.find(handle) != std::string::npos) {
@@ -3034,6 +3517,9 @@ bool Conjecturer::onlyInHeadGood(const std::string& conjecture) const {
     return true;
 }
 
+/// @brief Reject if appending `newExpr` to `conjecture` would push
+///        any per-operator complexity over its config cap
+///        (string-path twin of `checkComplexityPerOpInt`).
 bool Conjecturer::checkConjectureComplexityPerOperator(const std::string& conjecture, const std::string& newExpr) const {
     using CE = std::tuple<std::string, std::vector<std::string>, std::set<std::string>>;
     std::vector<CE> tempChain;
@@ -3053,6 +3539,8 @@ bool Conjecturer::checkConjectureComplexityPerOperator(const std::string& conjec
     return true;
 }
 
+/// @brief Reject if `conjecture` is below the per-expression minimum
+///        size threshold (`min_size_expression`).
 bool Conjecturer::checkMinSizeExpression(const std::string& conjecture) const {
     prof::Scope _p(prof::g_checkMinSizeExpression);
     std::string anchorName = config_.getAnchorName();
@@ -3073,6 +3561,19 @@ bool Conjecturer::checkMinSizeExpression(const std::string& conjecture) const {
     return true;
 }
 
+/// @brief Equality-head guards.
+///
+/// @details
+/// Rejects `(=[x, x])` heads (per
+/// [I-8](../../docs/30_invariants.md#i-8)) and descending-ordered
+/// `(=[a, b])` with `stoi(a) > stoi(b)` to keep only one orientation
+/// of the symmetric pair. The descending-rejection rule is the
+/// post-D-23 form; the pre-D-23 `nse <= 3` exception was reverted at
+/// [D-23](../../docs/40_decisions.md#d-23). See SwDD chapter
+/// `02_conjecturer.md` section *controlEquality* for history.
+///
+/// @invariant [I-8](../../docs/30_invariants.md#i-8) — trivial
+///            equality forbidden in head.
 bool Conjecturer::controlEquality(const std::string& conjecture) const {
     prof::Scope _p(prof::g_controlEquality);
     std::regex pat(R"(\(=\[\d+,\d+\]\))");
@@ -3095,6 +3596,21 @@ bool Conjecturer::controlEquality(const std::string& conjecture) const {
     return result && countArgumentsFilter(conjecture);
 }
 
+/// @brief Pre-connection per-type cap.
+///
+/// @details
+/// Reject when the union of candidate args from both sides would
+/// exceed the configured prior-connection cap. Called before
+/// committing to a `connectExpressions` merge so that mergers
+/// guaranteed to fail downstream are dropped early. Consults
+/// `parameters.max_values_for_def_sets_prior_connection`.
+/// String-path twin of `checkDefSetsPriorInt`.
+///
+/// @param argsStatement       Def-set map of the candidate
+///                            statement.
+/// @param argsGrowingTheorem  Def-set map of the partial theorem
+///                            being grown.
+/// @return `true` to accept; `false` to reject.
 bool Conjecturer::checkDefSetsPriorToConnection(const DefSetMap& argsStatement, const DefSetMap& argsGrowingTheorem) const {
     std::map<std::string, int> counterMap;
     for (auto& [arg, tpl] : argsStatement) {
@@ -3117,6 +3633,26 @@ bool Conjecturer::checkDefSetsPriorToConnection(const DefSetMap& argsStatement, 
 // evaluateOperatorExprs2 and helpers (Phase 6 continued)
 // ============================================================================
 
+/// @brief Validate every operator-headed sub-expression in
+///        `expression`.
+///
+/// @details
+/// Walks the expression tree, locating every operator-headed
+/// sub-expression (those with `output_args` non-empty), and
+/// verifies its output binding is well-formed in the current
+/// context. Skipped on the `nse = 1` path when `anchorAttached` is
+/// false — a single expression cannot consume an operator's
+/// output binding so the validity check is meaningless. See SwDD
+/// chapter `02_conjecturer.md` section *Operator head vs relation
+/// head*.
+///
+/// @param expression       Expression to validate.
+/// @param anchorAttached   Whether the expression is already
+///                         attached to the anchor; controls
+///                         whether the operator-output check
+///                         applies.
+/// @return `true` when every operator sub-expression is
+///         well-formed.
 bool Conjecturer::evaluateOperatorExprs2(const std::string& expression, bool anchorAttached) const {
     prof::Scope _p(prof::g_evaluateOperatorExprs2);
     using CE = std::tuple<std::string, std::vector<std::string>, std::set<std::string>>;
@@ -3315,6 +3851,16 @@ bool Conjecturer::evaluateOperatorExprs2(const std::string& expression, bool anc
 // checkInputVariablesTheoremOperatorHead
 // ============================================================================
 
+/// @brief Operator-head-specific validity check.
+///
+/// @details
+/// Skipped on the `nse = 1` path because a single expression
+/// cannot consume an operator's output binding. When run, walks
+/// the theorem's head and verifies the operator-head's input
+/// variables are properly bound either by anchor slots or by
+/// chain-introduced bound variables. Distinct from
+/// `evaluateOperatorExprs2` in that it focuses on the head only,
+/// not every operator sub-expression in the chain.
 bool Conjecturer::checkInputVariablesTheoremOperatorHead(const std::string& theorem) const {
     prof::Scope _p(prof::g_checkInputVarsHead);
     using CE = std::tuple<std::string, std::vector<std::string>, std::set<std::string>>;
@@ -3332,6 +3878,14 @@ bool Conjecturer::checkInputVariablesTheoremOperatorHead(const std::string& theo
             break;
         }
     }
+
+    // Empty chain after anchor removal: a bare-anchor theorem has no
+    // operator head to validate, so the check vacuously passes. Without
+    // this guard, the subsequent `chain.back()` is undefined behavior;
+    // MSVC happens to produce garbage that falls through the operator-
+    // membership check at line below and returns true, libstdc++ at -O3
+    // produces SIGABRT.
+    if (chain.empty()) return true;
 
     std::string lastExpr = chain.back();
     std::string coreExpr = ce::extractExpression(lastExpr);
@@ -3383,6 +3937,16 @@ bool Conjecturer::checkInputVariablesTheoremOperatorHead(const std::string& theo
 // Sub-functions for checkInputVariablesOrder
 // ============================================================================
 
+/// @brief Collect every "digit" arg id appearing in `theorem`.
+///
+/// @details
+/// A digit arg is a bound variable that will appear in the
+/// rendered output as a numeric token (1, 2, ...). The returned
+/// set drives the ordering checks in `checkInputVariablesOrder`
+/// and its sub-helpers.
+///
+/// @param theorem Conjecture text.
+/// @return Set of digit-arg ids (as strings).
 std::set<std::string> Conjecturer::findDigitArgs(const std::string& theorem) const {
     using CE = std::tuple<std::string, std::vector<std::string>, std::set<std::string>>;
     std::vector<CE> tempChain;
@@ -3417,6 +3981,24 @@ std::set<std::string> Conjecturer::findDigitArgs(const std::string& theorem) con
     return allInputArgs;
 }
 
+/// @brief Walk a chain from a chosen `expression` and partition
+///        the visited digit args into left-side and right-side
+///        contributions.
+///
+/// @details
+/// Recursive walker with cycle prevention via `visited`. From
+/// `expression` (an operator-headed entry in `chain`), follow
+/// the operator's input/output bindings to neighbouring entries
+/// and accumulate the digit args those entries contribute,
+/// classifying each as left- or right-side based on the chain's
+/// orientation.
+///
+/// @param chain       Chain entries.
+/// @param expression  Operator-headed entry to walk from.
+/// @param digits      Digit args to consider.
+/// @param counter     Recursion depth tracker.
+/// @param visited     Mutable set of already-visited entries.
+/// @return Pair `(leftDigits, rightDigits)`.
 std::pair<std::set<std::string>, std::set<std::string>>
 Conjecturer::getLeftRight(const std::vector<std::string>& chain,
                           const std::string& expression,
@@ -3470,6 +4052,19 @@ Conjecturer::getLeftRight(const std::vector<std::string>& chain,
     return {left, right};
 }
 
+/// @brief Compute the right-side sub-chain reachable from `head`,
+///        marking visited entries to prevent re-traversal.
+///
+/// @details
+/// Used by `getLeftRightChains` to collect every chain entry
+/// reachable through input/output-arg connections starting from
+/// the head. `visited` is the cycle guard.
+///
+/// @param chain    Source chain.
+/// @param head     Starting entry (typically the implication
+///                 head).
+/// @param visited  Cycle-guard set (mutated).
+/// @return Reachable sub-chain in walk order.
 std::vector<std::string>
 Conjecturer::getRightChain(const std::vector<std::string>& chain,
                            const std::string& head, std::set<std::string>& visited) const {
@@ -3496,6 +4091,17 @@ Conjecturer::getRightChain(const std::vector<std::string>& chain,
     return rightChain;
 }
 
+/// @brief Split `chain` into its left and right subchains
+///        relative to the conjecture's outer implication.
+///
+/// @details
+/// `chain[0]` is the anchor and is excluded from both sides.
+/// Walks from `chain.back()` (the head) using `getRightChain` to
+/// collect the right subchain; everything else (in chain order)
+/// becomes the left subchain.
+///
+/// @param chain Source chain.
+/// @return Pair `(leftChain, rightChain)`.
 std::pair<std::vector<std::string>, std::vector<std::string>>
 Conjecturer::getLeftRightChains(const std::vector<std::string>& chain) const {
     std::vector<std::string> noAnchor(chain.begin() + 1, chain.end());
@@ -3508,6 +4114,13 @@ Conjecturer::getLeftRightChains(const std::vector<std::string>& chain) const {
     return {leftChain, rightChain};
 }
 
+/// @brief Extract the operator id (expression name) from the head
+///        of `expr`.
+///
+/// @details
+/// Used by the `checkInputVariablesOrder` sub-helpers to route
+/// operator-specific behaviour. Returns the empty string when
+/// `expr` does not have a recognised operator head.
 std::string Conjecturer::getOperatorId(const std::string& expr) const {
     std::string coreExpr = ce::extractExpression(expr);
     if (std::find(operators_.begin(), operators_.end(), coreExpr) == operators_.end()) return "";
@@ -3518,6 +4131,15 @@ std::string Conjecturer::getOperatorId(const std::string& expr) const {
     return ce::replaceKeysInString(expr, replMap);
 }
 
+/// @brief Check that input-variable positions in `chain` respect
+///        the canonical left-to-right order over `digits`.
+///
+/// @details
+/// Walks `chain` and for each digit arg in `digits` records the
+/// first position at which it appears in an input slot. A
+/// canonical chain has these positions in non-decreasing order;
+/// rearrangements that would place a higher-id digit before a
+/// lower-id one are rejected.
 bool Conjecturer::checkInputVariablePosition(const std::vector<std::string>& chain,
                                               const std::set<std::string>& digits) const {
     std::map<std::pair<std::string,int>, int> orderMap;
@@ -3562,6 +4184,14 @@ bool Conjecturer::checkInputVariablePosition(const std::vector<std::string>& cha
     return true;
 }
 
+/// @brief Drop output-arg indices from each entry in `chain`.
+///
+/// @details
+/// Useful for reasoning about chain structure independent of
+/// operator-output-binding details — input-only views feed the
+/// tautology and tertiary checks.
+///
+/// @return Single-string concatenation of the input-only forms.
 std::string Conjecturer::removeOutputs(const std::vector<std::string>& chain) const {
     std::map<std::string,std::string> replMap;
     for (auto& expr : chain) {
@@ -3574,10 +4204,26 @@ std::string Conjecturer::removeOutputs(const std::vector<std::string>& chain) co
     return ce::replaceKeysInString(joined, replMap);
 }
 
+/// @brief Reject a conjecture whose left and right subchains are
+///        identical modulo bound-var renaming.
+///
+/// @details
+/// A tautological implication adds nothing to the theorem set; the
+/// filter uses `removeOutputs` to compare structure first, then
+/// falls back on a more careful renaming-aware comparison if the
+/// fast path is inconclusive.
 bool Conjecturer::checkTautology(const std::vector<std::string>& leftChain, const std::vector<std::string>& rightChain) const {
     return removeOutputs(leftChain) != removeOutputs(rightChain);
 }
 
+/// @brief Reject a chain whose function-position usage violates
+///        the conjecturer's well-formedness rules.
+///
+/// @details
+/// Used by `checkInputVariablesOrder` as a final structural gate.
+/// Catches malformed function-position arrangements that survive
+/// the upstream filters but would produce a malformed proof
+/// graph downstream.
 bool Conjecturer::checkFunctions(const std::vector<std::string>& chain) const {
     std::set<std::string> removedSet;
     for (auto& expr : chain) {
@@ -3595,6 +4241,14 @@ bool Conjecturer::checkFunctions(const std::vector<std::string>& chain) const {
     return true;
 }
 
+/// @brief Test whether `chain` carries exactly one operator
+///        expression.
+///
+/// @details
+/// Used as a special-case relaxation gate in
+/// `checkInputVariablesOrder`: when only one operator is present,
+/// some otherwise-restrictive ordering rules are relaxed because
+/// there is nothing for them to mis-order.
 bool Conjecturer::onlyOneOperator(const std::vector<std::string>& chain) const {
     std::vector<std::string> noAnchor(chain.begin() + 1, chain.end());
     if (noAnchor.empty()) return false;
@@ -3608,6 +4262,16 @@ bool Conjecturer::onlyOneOperator(const std::vector<std::string>& chain) const {
     return true;
 }
 
+/// @brief Compute the closure of input args reachable from
+///        position `index`, threading through output-arg bindings.
+///
+/// @details
+/// Recursive closure: starts at `index`, collects its input args,
+/// then for each output arg of `index` finds every other position
+/// that consumes that output as an input, and recursively expands
+/// from there. `visited` prevents cycles.
+///
+/// @return Closure of reachable input args.
 std::set<std::string> Conjecturer::findEntryArgs2(
     const std::vector<std::vector<std::string>>& inputArgsList,
     const std::vector<std::vector<std::string>>& outputArgsList,
@@ -3633,6 +4297,14 @@ std::set<std::string> Conjecturer::findEntryArgs2(
     return entryArgs;
 }
 
+/// @brief Collect tertiary (third-tier) bound variables from
+///        `chain`.
+///
+/// @details
+/// Tertiary args are bound variables that do not appear in the
+/// head's input positions but do appear elsewhere in the chain.
+/// They mark the variables introduced in the middle of the chain
+/// for intermediate predicates rather than for the conclusion.
 std::set<std::string> Conjecturer::getTertiaries(const std::vector<std::string>& chain) const {
     std::set<std::string> tertiaries;
     for (auto& expr : chain) {
@@ -3645,6 +4317,14 @@ std::set<std::string> Conjecturer::getTertiaries(const std::vector<std::string>&
     return tertiaries;
 }
 
+/// @brief Check tertiary-variable compatibility between left and
+///        right subchains; backstop for `checkTautology`.
+///
+/// @details
+/// A pair of subchains that differ only in their tertiary args
+/// (those not directly cited in the head's input positions) is
+/// not a useful theorem; this filter rejects such pairs after
+/// the more direct `checkTautology` first-pass.
 bool Conjecturer::checkTertiaries(const std::vector<std::string>& leftChain, const std::vector<std::string>& rightChain) const {
     auto leftTert = getTertiaries(leftChain);
     auto rightTert = getTertiaries(rightChain);
@@ -3662,6 +4342,21 @@ bool Conjecturer::checkTertiaries(const std::vector<std::string>& leftChain, con
 // checkInputVariablesOrder
 // ============================================================================
 
+/// @brief Enforce input-variable ordering across the chain to
+///        suppress trivially-rearranged conjectures.
+///
+/// @details
+/// Composes the 13 sub-helpers (`findDigitArgs`, `getLeftRight`,
+/// `getRightChain`, `getLeftRightChains`, `getOperatorId`,
+/// `checkInputVariablePosition`, `removeOutputs`, `checkTautology`,
+/// `checkFunctions`, `onlyOneOperator`, `findEntryArgs2`,
+/// `getTertiaries`, `checkTertiaries`) into a single ordering
+/// gate. Reduces the permutation surface — otherwise
+/// trivially-rearranged variants would all pass filtering.
+///
+/// @invariant [I-10](../../docs/30_invariants.md#i-10) — bound
+///            variables appear left-to-right in input-arg
+///            positions.
 bool Conjecturer::checkInputVariablesOrder(const std::string& theorem) const {
     prof::Scope _p(prof::g_checkInputVarsOrder);
     using CE = std::tuple<std::string, std::vector<std::string>, std::set<std::string>>;
@@ -3749,6 +4444,22 @@ bool Conjecturer::checkInputVariablesOrder(const std::string& theorem) const {
 // exprGood2 (combines multiple filters)
 // ============================================================================
 
+/// @brief Final structural-approval gate at the string-path
+///        level.
+///
+/// @details
+/// Combines numeric-arg contiguity (`numbersGood`), per-type
+/// combinable / uncombinable caps (`checkDefSets`), and
+/// operator-block accounting. String-path twin of
+/// `exprGood2Int`. Called after `exprGood` (the cheap first
+/// pass) and before the per-cascade filters so cheap rejections
+/// land before expensive filter work runs.
+///
+/// @param expr           Expression text.
+/// @param nse            Number of simple expressions in `expr`.
+/// @param connectedMap   Def-set map after the latest connection
+///                       step.
+/// @return `true` to accept; `false` to reject.
 bool Conjecturer::exprGood2(const std::string& expr, int nse, const DefSetMap& connectedMap) const {
     if (repetitionsExist(expr)) return false;
     if (!numbersGood(expr)) return false;
@@ -3810,6 +4521,15 @@ bool Conjecturer::exprGood2(const std::string& expr, int nse, const DefSetMap& c
 // Reshuffling & mirroring (Phase 7)
 // ============================================================================
 
+/// @brief Count `(>[` operator-block headers in `s`.
+///
+/// @details
+/// String-path twin of `countOperatorOccurrencesInt`. Equivalent
+/// to the conjecture's complexity level — every `(>[` introduces
+/// a new quantifier layer.
+///
+/// @param s Expression text.
+/// @return Number of operator-block headers.
 int Conjecturer::countOperatorOccurrences(const std::string& s) const {
     prof::Scope _p(prof::g_countOpOccurrences);
     int count = 0;
@@ -3821,6 +4541,21 @@ int Conjecturer::countOperatorOccurrences(const std::string& s) const {
     return count;
 }
 
+/// @brief Test whether `outputVariable` survives in `fullExpr`
+///        after the conjecture is constructed.
+///
+/// @details
+/// An operator's output variable should persist into at least one
+/// other position of the conjecture; if it does not, the
+/// conjecture binds an output to nothing and is malformed. Used
+/// by the operator-head reformulation gate to decide whether the
+/// candidate qualifies for existence-head treatment.
+///
+/// @param fullExpr        Whole conjecture text.
+/// @param outputVariable  Variable id (as string) of the
+///                        operator's output position.
+/// @return `true` when the variable appears at least once outside
+///         the operator that introduced it.
 bool Conjecturer::staysOutputVariable(const std::string& fullExpr, const std::string& outputVariable) const {
     std::string coreExpr = ce::extractExpression(fullExpr);
     auto args = ce::getArgs(fullExpr);
@@ -3831,6 +4566,35 @@ bool Conjecturer::staysOutputVariable(const std::string& fullExpr, const std::st
     return false;
 }
 
+/// @brief Canonicalise a conjecture into its `theorems.txt` /
+///        `reshuffled_theorems.txt` form.
+///
+/// @details
+/// Pipeline (per SwDD chapter `02_conjecturer.md` section
+/// *Reshuffle pipeline*):
+/// 1. Flat-walk rename — first-occurrence numbering of the
+///    arg-id space. Replaces the older recursive
+///    `renameVariablesInExpr` walker; produces a deterministic
+///    numbering independent of recursive tree shape.
+/// 2. Existence-head pinning — extract the outermost existence
+///    bv-list before the flat-walk so existence bvs land at
+///    canonical positions. Without this, existence bvs would
+///    end up higher-numbered than chain-introduced bvs that
+///    appear later in walk order.
+/// 3. Contiguous-arg renumber post-connect — drop holes left
+///    by `connectExpressionsInt`'s `subMap`.
+/// 4. Anchor position-0 pin — anchor args are never permuted
+///    across reshuffle variants.
+///
+/// Each stage's output feeds the next; skipping any stage
+/// produces drift in the canonical form vs the `_mirrored`
+/// companion. See decision
+/// [D-20](../../docs/40_decisions.md#d-20) for the int-path
+/// acceleration history.
+///
+/// @param expr Source expression.
+/// @param deep When true, descend into nested existence heads.
+/// @return Tuple `(canonical, defSets, renameMap)`.
 std::tuple<std::string, DefSetMap, std::map<std::string,std::string>>
 Conjecturer::reshuffle(const std::string& expr, bool deep) const {
     prof::Scope _prof_reshuffle(prof::g_reshuffle);
@@ -4213,6 +4977,25 @@ Conjecturer::reshuffle(const std::string& expr, bool deep) const {
     return {minReshuffled, minArgMap, minReplacementMap};
 }
 
+/// @brief Build the mirror variant of a reshuffled conjecture.
+///
+/// @details
+/// The mirror swaps left and right of the implication; for
+/// equality heads the mirror is the symmetric orientation. The
+/// pipeline is reshuffle-then-mirror-then-reshuffle so the
+/// mirror is itself in canonical form. Per
+/// [I-9](../../docs/30_invariants.md#i-9), a mirror is dropped
+/// when it equals its source (i.e. the conjecture is its own
+/// mirror) — keeping it would emit a duplicate.
+///
+/// @param expr         Source conjecture (already reshuffled).
+/// @param anchorFirst  When true, force the anchor to position 0
+///                     in the result. Used when the caller has
+///                     not yet anchor-pinned the input.
+/// @return Mirror variant in canonical form, or empty when the
+///         distinctness guard rejects.
+/// @invariant [I-9](../../docs/30_invariants.md#i-9) — equality
+///            mirror guarded by distinctness.
 std::string Conjecturer::createReshuffledMirrored(const std::string& expr, bool anchorFirst) const {
     prof::Scope _prof_mirrored(prof::g_mirrored);
     using ChainEntry = std::tuple<std::string, std::vector<std::string>, std::set<std::string>>;
@@ -4287,6 +5070,36 @@ std::string Conjecturer::createReshuffledMirrored(const std::string& expr, bool 
 // Int-path worker functions (Phase 5)
 // ============================================================================
 
+/// @brief Int-path worker driver — combine `intStatement` with
+///        `intGrowingTheorem` and emit the per-candidate result
+///        bundle.
+///
+/// @details
+/// Hot-path twin of `singleThreadCalculation` (string path).
+/// Per call: enumerate every connection map between the two
+/// candidates' def-set maps via `makeAllConnectionMapsInt`; for
+/// each map, attempt `connectExpressionsInt`; for each successful
+/// merge, run the int-path filter cascade; for each survivor,
+/// optionally attach the anchor and reshuffle into canonical
+/// form. The bundle's four lists capture every output category
+/// the outer driver needs (intermediate non-anchor connections,
+/// anchor-attached survivors, canonical forms, mirrors).
+///
+/// Both lanes (int + string) must agree on output. The
+/// `worker_*` test category pins int-vs-string identity on a
+/// fixed candidate to catch drift.
+///
+/// @param intStatement            First encoded input.
+/// @param intGrowingTheorem       Second encoded input (the
+///                                partial theorem being grown).
+/// @param nseStatement            `nse` count of `intStatement`.
+/// @param nseGrowingTheorem       `nse` count of
+///                                `intGrowingTheorem`.
+/// @param intArgsStatement        Encoded def-set map for the
+///                                first input.
+/// @param intArgsGrowingTheorem   Encoded def-set map for the
+///                                second input.
+/// @return Filled `WorkerResult`.
 WorkerResult Conjecturer::singleThreadCalculationInt(
     const IntConjBuf& intStatement, const IntConjBuf& intGrowingTheorem,
     int nseStatement, int nseGrowingTheorem,
@@ -4438,6 +5251,21 @@ WorkerResult Conjecturer::singleThreadCalculationInt(
     return result;
 }
 
+/// @brief Int-path: attach a single encoded expression directly
+///        to the encoded anchor (`nse = 1` path).
+///
+/// @details
+/// Twin of string-path `singleExprAnchorConnection`. Skips
+/// operator-head validity checks because a single expression
+/// cannot consume an operator's output binding. Runs only when
+/// `parameters.min_number_simple_expressions == 1`.
+///
+/// @param intExpr          Encoded candidate expression.
+/// @param intExprDefSets   Encoded def-set map for `intExpr`.
+/// @return Filled `WorkerResult`. Only `connected_list2`,
+///         `reshuffled_list`, and `reshuffled_mirrored_list` are
+///         populated — `connected_list` (intermediate) is empty
+///         on the `nse = 1` path.
 WorkerResult Conjecturer::singleExprAnchorConnectionInt(
     const IntConjBuf& intExpr, const IntDefSetMap& intExprDefSets) const
 {
@@ -4520,6 +5348,26 @@ WorkerResult Conjecturer::singleExprAnchorConnectionInt(
 // Worker functions (Phase 8)
 // ============================================================================
 
+/// @brief String-path worker driver — combine `statement` with
+///        `growingTheorem` and emit the per-candidate result
+///        bundle.
+///
+/// @details
+/// String-path twin of `singleThreadCalculationInt`. The string
+/// lane is retained for final-stage structural checks where the
+/// string form is unavoidable (pattern matching, mirror
+/// generation, reshuffle); the int lane is the hot path. Both
+/// lanes must agree on output (see `worker_*` test category for
+/// the int-vs-string identity check on a fixed candidate).
+///
+/// @param statement           First input expression text.
+/// @param growingTheorem      Second input expression (the
+///                            partial theorem being grown).
+/// @param nseStatement        `nse` count of `statement`.
+/// @param nseGrowingTheorem   `nse` count of `growingTheorem`.
+/// @param argsStatement       `statement`'s def-set map.
+/// @param argsGrowingTheorem  `growingTheorem`'s def-set map.
+/// @return Filled `WorkerResult`.
 WorkerResult Conjecturer::singleThreadCalculation(
     const std::string& statement, const std::string& growingTheorem,
     int nseStatement, int nseGrowingTheorem,
@@ -4597,6 +5445,18 @@ WorkerResult Conjecturer::singleThreadCalculation(
     return result;
 }
 
+/// @brief String-path: attach a single expression directly to
+///        the anchor (`nse = 1` path). Twin of
+///        `singleExprAnchorConnectionInt`.
+///
+/// @details
+/// Skips operator-head validity checks because a single
+/// expression cannot consume an operator's output binding. Runs
+/// only when `parameters.min_number_simple_expressions == 1`.
+///
+/// @param expr         Source expression text.
+/// @param exprDefSets  Def-set map for `expr`.
+/// @return Filled `WorkerResult`.
 WorkerResult Conjecturer::singleExprAnchorConnection(
     const std::string& expr, const DefSetMap& exprDefSets) const
 {
@@ -4658,6 +5518,23 @@ WorkerResult Conjecturer::singleExprAnchorConnection(
     return result;
 }
 
+/// @brief Detect an ungrounded-operator-head conjecture and
+///        rewrite it with the operator's allowed argument wrapped
+///        in a negated-universal existence head.
+///
+/// @details
+/// A conjecture `(>[bvs](Anchor[...])(...)(operator[a, b, c, ...]))`
+/// where `operator` has output args may be ungrounded — the
+/// operator's output is not consumed elsewhere in the chain. Such
+/// candidates would be malformed at the prover. Reformulation
+/// wraps the offending arg in `!(>[w](in[w, X])!(operator[...]))`
+/// to express "there exists a `w` such that `operator` holds with
+/// `w` substituted". Pass-through if no reformulation applies;
+/// the new form is returned otherwise.
+///
+/// @param conjecture Source conjecture text.
+/// @return Reformulated conjecture, or the original on
+///         pass-through.
 std::string Conjecturer::reformulateOperatorHead(const std::string& conjecture) const {
     using ChainEntry = std::tuple<std::string, std::vector<std::string>, std::set<std::string>>;
     std::vector<ChainEntry> chain;
@@ -4729,6 +5606,23 @@ Disassembled disassemble(const std::string& candidate,
 }
 } // anonymous namespace
 
+/// @brief Existence-head reformulation eligibility test.
+///
+/// @details
+/// True iff the ungrounded-operator-head filter rejection hits
+/// AND the candidate qualifies for existence reformulation:
+/// 1. The head's `coreExpr` has non-empty
+///    `allowed_for_existence`.
+/// 2. The chain contains `(in[x, X])` for some `x` at an allowed
+///    position.
+/// 3. `x` occurs nowhere else in the chain besides `P_x` and the
+///    head.
+///
+/// Caller runs `reformulateToExistenceHead` in lieu of rejecting
+/// the candidate when this returns true.
+///
+/// @param theorem Candidate conjecture text.
+/// @return `true` when the candidate qualifies for reformulation.
 bool Conjecturer::triggersExistenceReformulation(const std::string& theorem) const {
     prof::Scope _p(prof::g_triggersExistenceRef);
     Disassembled d = disassemble(theorem, coreExprMap_);
@@ -4806,6 +5700,20 @@ bool Conjecturer::triggersExistenceReformulation(const std::string& theorem) con
     return false;
 }
 
+/// @brief Rebuild the candidate with the allowed arg wrapped in
+///        a negated-universal existence head.
+///
+/// @details
+/// Concrete realisation of the `triggersExistenceReformulation`
+/// rewrite: pick the `(in[x, X])` premise whose `x` is at an
+/// allowed position, lift `x` into a fresh existence-head bound
+/// variable, and replace the operator's input argument
+/// accordingly.
+///
+/// @param theorem Candidate conjecture text.
+/// @return Reformulated conjecture.
+/// @pre `triggersExistenceReformulation(theorem)` was true at the
+///      same state.
 std::string Conjecturer::reformulateToExistenceHead(const std::string& theorem) const {
     prof::Scope _p(prof::g_reformulateToExistence);
     using CE = std::tuple<std::string, std::vector<std::string>, std::set<std::string>>;
@@ -4896,6 +5804,22 @@ std::string Conjecturer::reformulateToExistenceHead(const std::string& theorem) 
 // max_size_expression_after_existence filter
 // ============================================================================
 
+/// @brief Per-expression after-existence size cap.
+///
+/// @details
+/// Returns true iff every leaf expression in the
+/// pre-reformulation `conj` has
+/// `max_size_expression_after_existence >= leafCount`. Intended
+/// to be called on the post-anchor-attach,
+/// pre-existence-reformulation string; a single disintegrate
+/// pass yields the flat chain + head and we check each leaf once
+/// (no descent into any nested structure).
+///
+/// @param conj      Post-anchor-attach,
+///                  pre-existence-reformulation conjecture.
+/// @param leafCount Already-available leaf count (typically
+///                  `nse + 1`).
+/// @return `true` to accept; `false` to reject.
 bool Conjecturer::passesMaxSizeAfterExistence(const std::string& conj, int leafCount) const {
     prof::Scope _p(prof::g_passesMaxSizeAfterEx);
     // Operate on the pre-reformulation string: one disintegrate pass yields the flat
@@ -4919,6 +5843,27 @@ bool Conjecturer::passesMaxSizeAfterExistence(const std::string& conj, int leafC
     return checkLeaf(head);
 }
 
+/// @brief Post-existence per-type 2-tuple cap.
+///
+/// @details
+/// Mirror of `checkComplexityLevelForDefSets` but keyed by
+/// `max_complexity_if_anchor_parameter_connected_after_existence`.
+/// Operates on the pre-reformulation post-anchor-attach string;
+/// gathers every def-set type that appears on any leaf via the
+/// static per-expression definition, then rejects when, for some
+/// capped type T, all three hold:
+/// 1. Complexity-level exceeds T's complexity cap.
+/// 2. Arity-sum exceeds T's arity-sum cap.
+/// 3. A slot of type T appears in non-anchor leaves.
+///
+/// All three must hold; if any one is not exceeded the conjecture
+/// survives via that dimension. Implements the post-D-23
+/// 3-condition rule (see SwDD chapter `02_conjecturer.md`
+/// section *passesComplexityAfterExistence*).
+///
+/// @param conj Post-anchor-attach,
+///             pre-existence-reformulation conjecture.
+/// @return `true` to accept; `false` to reject.
 bool Conjecturer::passesComplexityAfterExistence(const std::string& conj) const {
     prof::Scope _p(prof::g_passesComplexityAfterEx);
     // Semantic: "max chain length when a chain arg is connected to an anchor slot
@@ -5022,6 +5967,21 @@ bool Conjecturer::passesComplexityAfterExistence(const std::string& conj) const 
     return true;
 }
 
+/// @brief Per-type cap on distinct anchor-slot values appearing
+///        in non-anchor leaves.
+///
+/// @details
+/// For each def-set type T present in
+/// `parameters.max_distinct_anchor_values_per_type`, counts how
+/// many DISTINCT anchor-slot values of type T appear as args of
+/// non-anchor leaves of `conj`. Returns false (reject) if any
+/// type's count exceeds the configured cap. Empty config map ->
+/// always true (filter off). Walk descends into nested
+/// `!(>[...]...)` existence heads so the cap applies to the full
+/// body, not just the top-level chain.
+///
+/// @param conj Post-anchor-attach conjecture.
+/// @return `true` when every counted type stays within its cap.
 bool Conjecturer::passesMaxDistinctAnchorValuesPerType(const std::string& conj) const {
     // Config-steered "at most N distinct anchor-slot values of type T
     // appearing in non-anchor leaves" filter. Parallels the anchor-slot
@@ -5104,6 +6064,34 @@ bool Conjecturer::passesMaxDistinctAnchorValuesPerType(const std::string& conj) 
 // in[…]-premise shape filter
 // ============================================================================
 
+/// @brief `(in[...])`-premise shape filter.
+///
+/// @details
+/// Top-of-function gate: anchor-membership-axiom rejection
+/// ([D-23](../../docs/40_decisions.md#d-23)). Walk the chain and
+/// reject any `(in[v, X])` premise (positive or negated) where
+/// BOTH `v` AND `X` are anchor-slot values, since the anchor's
+/// own axioms already entail it.
+///
+/// Cnt-shape rules (post-anchor-membership gate). When `hasIn`
+/// is true, accept iff one of:
+/// 1. `cnt == 1` AND head is an existence form
+///    `!(>[...]...)`.
+/// 2. `cnt == 2` AND at least one of the two non-anchor
+///    premises is negated.
+/// 3. `cnt == 2` AND there exists a positive `(in[v, X])`
+///    premise whose first arg `v` participates elsewhere
+///    (neutralisation rule).
+///
+/// `cnt >= 3` is rejected unconditionally. Order of premises is
+/// irrelevant; the anchor never counts as a premise.
+///
+/// @warning `parameters.apply_in_premise_filter` is dead code;
+///          this function ignores it. SwDD `OPEN-9` documents
+///          the gap.
+///
+/// @param conj Post-anchor-attach conjecture text.
+/// @return `true` to accept; `false` to reject.
 bool Conjecturer::passesInPremiseFilter(const std::string& conj) const {
     prof::Scope _p(prof::g_passesInPremiseFilter);
     using CE = std::tuple<std::string, std::vector<std::string>, std::set<std::string>>;
@@ -5212,6 +6200,22 @@ bool Conjecturer::passesInPremiseFilter(const std::string& conj) const {
 // Negated-premise variants
 // ============================================================================
 
+/// @brief Emit one negated-premise variant per negatable premise
+///        in `conj`.
+///
+/// @details
+/// For each premise of `conj` whose core expression has
+/// `allow_negation = true` in the config, emit one new
+/// conjecture where that single premise is wrapped in `!(...)`.
+/// The head of the outer implication is never negated (which
+/// implicitly excludes the `!(>[...])` existence-head form when
+/// it sits at head position). Multiple negatable premises ->
+/// one new variant per premise (never co-negated). The original
+/// is NOT included in the returned list.
+///
+/// @param conj Source conjecture (positive form).
+/// @return List of negated-premise variants. Empty when no
+///         premise is negatable.
 std::vector<std::string> Conjecturer::generateNegatedPremiseVariants(const std::string& conj) const {
     prof::Scope _p(prof::g_generateNegatedPremise);
     std::vector<std::string> result;
@@ -5258,6 +6262,43 @@ std::vector<std::string> Conjecturer::generateNegatedPremiseVariants(const std::
 // Constructor
 // ============================================================================
 
+/// @brief Construct the conjecturer for one anchor batch.
+///
+/// @details
+/// Steps performed:
+/// 1. Resolve `projectRoot_` from `__FILE__` so the
+///    config-loader can locate `files/config/Config<Tag>.json`
+///    via the standard search path.
+/// 2. Call `loadConfiguration` to populate `config_`.
+/// 3. Call `buildCoreExprMapAdapter` so downstream shim functions
+///    expecting prover-side compiled metadata can borrow it.
+/// 4. Look up the anchor expression description by name from
+///    `config_.data` and seed `anchor_`.
+/// 5. Walk every loaded expression and classify it as operator
+///    (input + output args), relation (2 inputs, no outputs), or
+///    property (1 input, no output).
+/// 6. Encode the anchor into `anchorInt_` /
+///    `anchorDefSetsInt_` for the int path.
+/// 7. Build the int-path lookup tables (`buildNameMap`,
+///    `buildIntExprConfigs`).
+/// 8. Pre-compute the bijection / permutation tables
+///    (`createMap`, `createMapAnchor`, ...) into the immutable
+///    caches.
+///
+/// Construction does NOT enumerate conjectures — that is `run()`'s
+/// job. Construction also does not write any output file.
+///
+/// @param anchorId Short anchor name (e.g. `"Peano"`,
+///                 `"Gauss"`, `"IncubatorPeano"`). Combined with
+///                 the prefix `"Anchor"` to form the full anchor
+///                 name (e.g. `"AnchorPeano"`).
+/// @pre  `files/config/Config<anchorId>.json` exists and is
+///       well-formed JSON.
+/// @post `config_`, `anchor_`, `mappingsMap_`,
+///       `mappingsMapAnchor_`, `binarySeqsMap_`,
+///       `allPermutations_`, the operator / relation / property
+///       classifications, the int-path lookup tables, and
+///       `projectRoot_` are all populated.
 Conjecturer::Conjecturer(const std::string& anchorId)
     : projectRoot_(std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path())
 {
@@ -5288,6 +6329,48 @@ Conjecturer::Conjecturer(const std::string& anchorId)
 // Main orchestrator (Phase 9)
 // ============================================================================
 
+/// @brief Generate conjectures for the loaded batch and write
+///        `theorems.txt` plus the canonical-form / mirror-form
+///        companion files.
+///
+/// @details
+/// One-shot orchestrator. Steps performed:
+/// 1. Pre-compute the bijection / permutation / binary-sequence
+///    tables (`createMap`, `createMapAnchor`,
+///    `generateAllPermutations`, ...) into the immutable caches.
+///    Cached tables are read-only afterwards and shared across
+///    every worker thread without locks.
+/// 2. Seed `growing_theorems` with the initial expressions from
+///    `config_.data` (in `expressionOrder`).
+/// 3. Walk the `nse` axis from
+///    `parameters.min_number_simple_expressions` to
+///    `parameters.max_number_simple_expressions`. For each
+///    `nse`, dispatch worker invocations (`singleThreadCalculation*`
+///    or `singleExprAnchorConnection*` for the `nse = 1` path)
+///    in parallel, collect their `WorkerResult` bundles, and
+///    feed the survivors into the next round's `growing_theorems`.
+/// 4. After the main loop, run the existence-head reformulation
+///    pass (`triggersExistenceReformulation` /
+///    `reformulateToExistenceHead`) and the negated-premise
+///    variant pass (`generateNegatedPremiseVariants`).
+/// 5. (Optionally) emit OR conjectures via
+///    `generateOrConjectures`.
+/// 6. Write the survivors to:
+///    - `theorems.txt` — raw survivors.
+///    - `reshuffled_theorems.txt` — canonical-form survivors.
+///    - `reshuffled_mirrored_theorems.txt` — mirror variants.
+///    - `or_pairs.txt` — OUTPUT artefact recording the
+///      `(existence, companion)` pairs emitted this run; opened
+///      with `std::ios::out` so it is overwritten each invocation.
+///      The file is preserved (not deleted) by the upstream
+///      cleanup pass that removes other stale outputs, but its
+///      content is replaced on every successful run.
+///
+/// Equivalent to Python's `create_expressions_parallel(config)`.
+///
+/// @pre  Constructor completed successfully.
+/// @post `files/theorems/` (or the override path from
+///       `config_.theorems_folder`) carries the four output files.
 void Conjecturer::run() {
     auto _run_t0 = std::chrono::steady_clock::now();
     std::set<std::string> resultExprSet;
@@ -5612,6 +6695,21 @@ void Conjecturer::run() {
 // OR theorem conjecture generation: builds existence + companion directly
 // ============================================================================
 
+/// @brief Generate `(existence, companion)` pairs for OR-shaped
+///        conjectures.
+///
+/// @details
+/// Replaces the older `generateOrConjectures` path that read
+/// `or_pairs.txt`. The current implementation derives pairs
+/// directly from per-expression
+/// `allow_to_constitute_existence` flags. Pairs are emitted into
+/// `theorems.txt` alongside ordinary conjectures and the prover
+/// treats them via the `or disintegration` /
+/// `or convergence` tags. See SwDD chapter
+/// [`07_or_branching.md`](../../docs/20_core_concepts/07_or_branching.md)
+/// for downstream prover behaviour.
+///
+/// @return Pairs of `(existence_conjecture, companion_conjecture)`.
 std::vector<std::pair<std::string,std::string>> Conjecturer::generateOrConjectures() const {
     std::vector<std::pair<std::string,std::string>> result;
 
@@ -5835,19 +6933,6 @@ std::vector<std::pair<std::string,std::string>> Conjecturer::generateOrConjectur
     }
 
     return result;
-}
-
-// ============================================================================
-// Debug
-// ============================================================================
-
-void Conjecturer::dumpDebug(const std::string& tag, const std::string& data) const {
-#ifdef CONJ_DEBUG_DUMP
-    auto path = projectRoot_ / ".debug" / ("conj_dump_" + tag + ".txt");
-    std::filesystem::create_directories(path.parent_path());
-    std::ofstream out(path);
-    out << data;
-#endif
 }
 
 } // namespace conj

@@ -30,6 +30,28 @@ namespace gl {
 
 
 
+    /// @brief One element of a request *Instruction*: a typed (category, signature, arity)
+    /// description of a single logical entity plus its bound elements.
+    ///
+    /// @details
+    /// Used inside `Instruction::data` (a sequence of `LogicalEntity` values) to describe
+    /// a logical pattern the prover wants to match or instantiate. The fields are deliberately
+    /// stringly typed because the same struct is keyed on `std::set` / `std::map` for
+    /// deduplication and admission-map indexing.
+    ///
+    /// `category` is one of the high-level conceptual labels (e.g. "expression",
+    /// "anchor", "operator"); `signature` is the concrete operator name; `elements`
+    /// holds the bound argument names; `arity` is the declared arity; `definedSet`
+    /// names the type set the entity belongs to (added to track the typing-set
+    /// per the Pass-B / induction-typing fix scaffolding — see I-18).
+    ///
+    /// `operator<` orders by (category, signature, elements, arity, definedSet) so the
+    /// struct works as a stable key in `std::set<LogicalEntity>` and inside compound
+    /// containers like `std::map<Instruction, ...>`.
+    ///
+    /// @see [`Instruction`](#instruction) — owns a `std::vector<LogicalEntity> data`.
+    /// @see [`HashMemory::admissionMapIntegration`](#hashmemory) — keyed on `Instruction`,
+    ///      so transitively keyed on this type.
     struct LogicalEntity {
         // Member Variables
         std::string category = "Uncategorized";
@@ -73,6 +95,46 @@ namespace gl {
         }
     };
 
+    /// @brief Value record stored in `HashMemory::encodedMap` — the cached effect of
+    /// firing a single hash-engine rule.
+    ///
+    /// @details
+    /// One `LocalMemoryValue` (LMV) describes a single (premise-key → head) entry of
+    /// the hash engine. Multiple LMVs may share a key when several distinct
+    /// implications collapse onto the same normalized premise pattern (e.g. mirror
+    /// statements after `addEquality` symmetrization). The fields:
+    ///
+    /// - `value`            — the head expression (what the rule produces).
+    /// - `levels`           — the set of LB levels at which the rule is admissible.
+    /// - `originalImplication` — the producer rule's full implication text, kept for
+    ///   provenance and origin chaining.
+    /// - `justification`    — the proof-tag string emitted on firing
+    ///   (`hash`, `head`, `equality1`, etc.).
+    /// - `key`              — the human-readable normalized key (string form). The
+    ///   int16_t mirror lives in `IntNormalizedKey` and is what the unordered_map
+    ///   actually keys on; this string form is retained for diagnostics.
+    /// - `remainingArgs`    — argument names that were not consumed by the key match
+    ///   and must be carried into the head substitution.
+    /// - `validityName`     — the validity scope at which the rule fires. `"main"` is
+    ///   the canonical root; non-`"main"` names are minted via `NameMap::encodePush`
+    ///   per [I-2](../../docs/30_invariants.md#i-2).
+    /// - `productOfDisintegration` — D-32 marker. True when at least one premise of
+    ///   the producing implication carries a `u_`-prefixed arg (i.e. the implication
+    ///   itself is a product of an earlier disintegration step). Set in
+    ///   `addToHashMemory`; consumed by `checkLocalEncodedMemoryStatic` to gate
+    ///   OR-disintegration on the head-firing path.
+    ///
+    /// `operator<` is lexicographic over the user-visible fields so the struct
+    /// serves as a key in `std::set<LocalMemoryValue>` (used at a few inspection
+    /// sites) without depending on `productOfDisintegration` (which is a runtime
+    /// classification of the same content).
+    ///
+    /// @see [`HashMemory`](#hashmemory) — owns the `encodedMap` keyed on
+    ///      `IntNormalizedKey`, valued as `std::vector<LocalMemoryValue>`.
+    /// @see `prover.hpp::addToHashMemory` — installs LMVs.
+    /// @see `prover.hpp::checkLocalEncodedMemoryStatic` — reads LMVs on hash hit.
+    /// @see [D-32 in 40_decisions.md](../../docs/40_decisions.md#d-32) for the
+    ///      `productOfDisintegration` rationale.
     struct LocalMemoryValue {
         std::string value;
         std::set<int> levels;
@@ -148,6 +210,33 @@ namespace gl {
 
 
 
+    /// @brief One entry in the *admission map* — pre-computed parameters that bound how
+    /// far a hash-engine rule may be applied at a given expression / validity pair.
+    ///
+    /// @details
+    /// The admission map (`HashMemory::admissionMap`, keyed on `ExpressionWithValidity`
+    /// → `std::set<AdmissionMapValue>`) caches the work of `updateAdmissionMap3` so
+    /// repeated firings of the same rule under the same scope do not have to
+    /// re-derive the depth budget. Each `AdmissionMapValue` carries:
+    ///
+    /// - `key` and `remainingArgs` — the same shapes used inside `LocalMemoryValue`,
+    ///   so the admission record can be matched against the rule's own key during
+    ///   `checkLocalEncodedMemoryStatic`.
+    /// - `standardMaxAdmissionDepth` — the maximum recursive depth at which the rule
+    ///   is allowed to fire from this anchor point. Caps blow-up.
+    /// - `standardMaxSecondaryNumber` — the maximum secondary-iteration counter the
+    ///   rule is allowed to consume.
+    /// - `flag` — admission-side discriminator; `true` for marker LMVs (the entries
+    ///   that exist only to gate other rules), `false` for ordinary head LMVs.
+    ///
+    /// The struct is value-equal under lexicographic ordering of all fields, which
+    /// lets it live in the `std::set<AdmissionMapValue>` slot of `admissionMap`.
+    ///
+    /// @see [`HashMemory::admissionMap`](#hashmemory) — owns these values.
+    /// @see `prover.hpp::updateAdmissionMap3` — populates new entries.
+    /// @see [I-22](../../docs/30_invariants.md#i-22) — `rejectedMapIntegration`
+    ///      revival does NOT clean the admission-map entry; the two side-tables
+    ///      are intentionally not coupled.
     struct AdmissionMapValue {
         // Fields (camelCase)
         std::vector<std::string> key;
@@ -203,6 +292,23 @@ namespace gl {
 
 
 
+    /// @brief Legacy string-form of a hash-engine normalized key.
+    ///
+    /// @details
+    /// Predecessor of `IntNormalizedKey`. Each `data` entry is an alternating
+    /// expression-name / variable-name string sequence; `numberExpressions` is the
+    /// count of expression segments. Read by older paths that have not yet been
+    /// migrated to the int16-only static path; new code keys hash memory on
+    /// `IntNormalizedKey` instead. The string-form key is kept primarily for
+    /// debug printing and for cross-checks during the static-mirror build-up
+    /// in `addToHashMemory`.
+    ///
+    /// `operator<` and `operator==` give lexicographic ordering over
+    /// `(numberExpressions, data)` so the struct can be used as a `std::map` key
+    /// or a `std::set` element.
+    ///
+    /// @see [`IntNormalizedKey`](#intnormalizedkey) — int16_t replacement on the
+    ///      hot path.
     struct NormalizedKey {
         // Fields (camelCase)
         int numberExpressions;
@@ -233,29 +339,76 @@ namespace gl {
     };
 
 
+    /// @brief One rejection record for the disintegration-side admission map.
+    ///
+    /// @details
+    /// Lives in `HashMemory::rejectedMap`, keyed on the rejected
+    /// `ExpressionWithValidity`. Used to remember disintegration-rejected products
+    /// across iterations so the same rejection isn't re-emitted on every fold of
+    /// the same producer rule. The fields:
+    ///
+    /// - `renamedExpression` — the expression after the disintegration-rename pass
+    ///   (variables substituted to fresh names so identity-collision is
+    ///   distinguishable across LBs).
+    /// - `expression`        — the original (pre-rename) compact-compound expression
+    ///   text (the compound that was being disintegrated when this child was
+    ///   rejected), retained for origin chaining, human-readable diagnostics, and
+    ///   `statementLevelsMap` lookup at revival time.
+    /// - `iteration`         — the prover iteration at which the rejection was
+    ///   recorded. Used to expire stale rejections when iteration advances.
+    /// - `concreteConstituent` — the rejected child element with the `u_` prefix
+    ///   stripped (matches the integration-side `RejectedMapIntegrationValue`
+    ///   field). This is the post-disintegration form that revival mails to
+    ///   `internalMailIn` as the primary constituent.
+    /// - `siblings`            — the OTHER body elements of the parent compound
+    ///   (same disintegration cohort, in concrete u_-stripped form). Carried so
+    ///   the `internalMailIn` revival path can re-emit the full body together.
+    /// - `levels`              — the deductive-depth level set inherited from the
+    ///   parent compound. Snapshot at rejection time; used as the mail-deposit
+    ///   levels at revival.
+    ///
+    /// `operator<` orders lexicographically over all fields so the struct fits
+    /// directly into `std::set<RejectedMapValue>`.
+    ///
+    /// @see [`HashMemory::rejectedMap`](#hashmemory).
+    /// @see [`RejectedMapIntegrationValue`](#rejectedmapintegrationvalue) — the
+    ///      integration-side counterpart with no iteration semantics.
     struct RejectedMapValue {
         // Fields (camelCase)
         std::string renamedExpression;
         std::string expression;
         int iteration;
+        std::string concreteConstituent;
+        std::vector<std::string> siblings;
+        std::set<int> levels;
 
         // Constructors
         RejectedMapValue()
             : renamedExpression(),
             expression(),
-            iteration(0) {
+            iteration(0),
+            concreteConstituent(),
+            siblings(),
+            levels() {
         }
 
         RejectedMapValue(const std::string& renamedExpression_,
             const std::string& expression_,
-            int iteration_)
+            int iteration_,
+            const std::string& concreteConstituent_,
+            const std::vector<std::string>& siblings_,
+            const std::set<int>& levels_)
             : renamedExpression(renamedExpression_),
             expression(expression_),
-            iteration(iteration_) {
+            iteration(iteration_),
+            concreteConstituent(concreteConstituent_),
+            siblings(siblings_),
+            levels(levels_) {
         }
 
         // Ordering so it can be used in std::set<RejectedMapValue>
-        // Lexicographic over (renamedExpression, markedLeft, expression, iteration)
+        // Lexicographic over (renamedExpression, expression, iteration,
+        // concreteConstituent, siblings, levels).
         bool operator<(const RejectedMapValue& rhs) const {
             if (renamedExpression != rhs.renamedExpression) {
                 return renamedExpression < rhs.renamedExpression;
@@ -263,24 +416,51 @@ namespace gl {
             if (expression != rhs.expression) {
                 return expression < rhs.expression;
             }
-            return iteration < rhs.iteration;
+            if (iteration != rhs.iteration) {
+                return iteration < rhs.iteration;
+            }
+            if (concreteConstituent != rhs.concreteConstituent) {
+                return concreteConstituent < rhs.concreteConstituent;
+            }
+            if (siblings != rhs.siblings) {
+                return siblings < rhs.siblings;
+            }
+            return levels < rhs.levels;
         }
 
         // Optional equality (useful for comparisons; not required for std::set)
         bool operator==(const RejectedMapValue& rhs) const {
             return renamedExpression == rhs.renamedExpression
                 && expression == rhs.expression
-                && iteration == rhs.iteration;
+                && iteration == rhs.iteration
+                && concreteConstituent == rhs.concreteConstituent
+                && siblings == rhs.siblings
+                && levels == rhs.levels;
         }
     };
 
-    // Integration-side counterpart to RejectedMapValue. Stored in
-    // HashMemory::rejectedMapIntegration, keyed on a non-in[] constituent's
-    // marker form (the int_ var at `marker`). Integration has no iteration
-    // semantics (int_ mint uses level+startInt only at prover.cpp:6741), so
-    // no iteration field. `siblings` carries all OTHER body elements of the
-    // compound (including the (in[]) typing element) in concrete form so
-    // the internalMailIn revival can re-emit the full body together.
+    /// @brief One rejection record for the integration-side admission map.
+    ///
+    /// @details
+    /// Integration counterpart to `RejectedMapValue`. Stored in
+    /// `HashMemory::rejectedMapIntegration`, keyed on a non-`(in[...])` constituent's
+    /// marker form (the `int_` variable at the `marker` position). Integration has
+    /// no iteration semantics (the `int_` mint pulls only `level + startInt` per
+    /// the integration-side counter), so this struct has no iteration field.
+    ///
+    /// - `concreteConstituent` — the body element with the `u_` prefix stripped and
+    ///   its `int_` marker intact; this is what the marker keys on.
+    /// - `siblings`            — all OTHER body elements of the compound, including
+    ///   the typing `(in[...])` element, in concrete form. Carried so the
+    ///   `internalMailIn` revival path can re-emit the full body together.
+    /// - `compoundExpression`  — the original compound, kept for origin chaining.
+    ///
+    /// @see [`HashMemory::rejectedMapIntegration`](#hashmemory).
+    /// @see [I-22](../../docs/30_invariants.md#i-22) — revival does NOT clean the
+    ///      admission-map entry; revival is additive.
+    /// @see [I-30](../../docs/30_invariants.md#i-30) —
+    ///      `applyEquivalenceClassToRejectedMapIntegration` is additive (existing
+    ///      entries are never erased).
     struct RejectedMapIntegrationValue {
         std::string concreteConstituent;        // body element, u_ stripped, int_ intact
         std::vector<std::string> siblings;      // other body elements (incl. in[]), concrete
@@ -309,6 +489,32 @@ namespace gl {
         }
     };
 
+    /// @brief Pair of `(expression, validityName)` used as a `std::map` / `std::set`
+    /// key throughout the prover.
+    ///
+    /// @details
+    /// The validity stack matters for almost every map keyed on an expression — the
+    /// same expression text in two different scopes is two distinct facts. This
+    /// struct couples the expression text with its scope name so the pair can be
+    /// used directly as a key (no manual concatenation, no fragile string
+    /// delimiters).
+    ///
+    /// - `original`     — the expression text (typically already disintegrated and
+    ///   placed into pretty form).
+    /// - `validityName` — the scope id in canonical string form. `"main"` is the
+    ///   root; deeper scopes are produced by `NameMap::encodePush`. Per
+    ///   [I-2](../../docs/30_invariants.md#i-2), non-`"main"` scopes are minted
+    ///   only via `encodePush` so the `pairMap` cache stays consistent.
+    ///
+    /// `operator<` is lexicographic over `(original, validityName)`; `operator==`
+    /// is the natural equality.
+    ///
+    /// @see [`HashMemory::admissionMap`](#hashmemory) — keyed on this type.
+    /// @see [`Memory::exprOriginMap`](#memory) — keyed on this type for origin
+    ///      provenance lookups.
+    /// @see [I-25](../../docs/30_invariants.md#i-25) — `addStatement` returns
+    ///      `ExpressionWithValidity` pairs; cross-scope deposits ride through
+    ///      `newStatements` so the receiver scope is preserved end-to-end.
     struct ExpressionWithValidity {
         std::string original;
         std::string validityName;
@@ -337,6 +543,24 @@ namespace gl {
         }
     };
 
+    /// @brief A typed sequence of `LogicalEntity` items plus a marked goal — one
+    /// integration-side request shape.
+    ///
+    /// @details
+    /// Used inside `HashMemory::admissionMapIntegration` (keyed on
+    /// `ExpressionWithValidity`, valued as `map<Instruction, set<string>>`) to
+    /// record, per scope, which structured request bodies have been admitted and
+    /// which sibling expressions still gate them. The `data` vector holds the
+    /// per-element `LogicalEntity` description; `markedGoal` is the consequent the
+    /// instruction is steering toward. Together they form a stable, deduplicated
+    /// description of an integration request.
+    ///
+    /// `operator<` orders lexicographically over `(data, markedGoal)`; both
+    /// underlying types provide their own ordering, so the comparison is
+    /// well-defined and stable.
+    ///
+    /// @see [`LogicalEntity`](#logicalentity) — the element type.
+    /// @see [`HashMemory::admissionMapIntegration`](#hashmemory) — owns this map.
     struct Instruction {
         // Members
         std::vector<LogicalEntity> data;
@@ -657,6 +881,18 @@ namespace gl {
         }
     };
 
+    /// @brief FNV-1a 64-bit hasher for `IntNormalizedKey`, suitable for
+    /// `std::unordered_map` / `std::unordered_set`.
+    ///
+    /// @details
+    /// FNV offset basis 14695981039346656037 / FNV prime 1099511628211, applied
+    /// per-byte over `numberExpressions` first, then over each `int16_t` of `data`.
+    /// Determinism is essential: the same key produced on two different LBs (or
+    /// across two threads in the parallel hash burst) must hash identically so the
+    /// dedupe in `addToHashMemory` and the lookup in `checkLocalEncodedMemoryStatic`
+    /// agree.
+    ///
+    /// @see [`IntNormalizedKey`](#intnormalizedkey) — the type being hashed.
     struct IntNormalizedKeyHash {
         std::size_t operator()(const IntNormalizedKey& k) const {
             std::size_t h = 14695981039346656037ULL;
@@ -670,13 +906,38 @@ namespace gl {
         }
     };
 
-    /// Bump allocator for persisting int16_t key data. All-or-nothing release.
+    /// @brief Bump allocator for persisting `int16_t` key data, all-or-nothing release.
+    ///
+    /// @details
+    /// `IntNormalizedKey::data` is a non-owning pointer; the bytes it points at must
+    /// outlive the unordered_map entries that key on it. `KeyArena` is the storage
+    /// backing those bytes — chunked, append-only, freed wholesale at LB teardown.
+    /// Each `store(src, len)` copies `len` `int16_t`s into the current chunk
+    /// (allocating a new chunk of `ExecutionParameters::KEY_ARENA_CHUNK` slots when
+    /// the current one fills) and returns a stable pointer.
+    ///
+    /// Lifetime contract: all returned pointers are valid until `release()` (or
+    /// destructor) runs. Because the arena hands out interior pointers into
+    /// individual chunks, and chunks are never reallocated, the pointers do not
+    /// invalidate when more `store` calls happen — unlike `std::vector` whose
+    /// elements move on growth.
+    ///
+    /// @note `KeyArena` allocates with `new int16_t[capacity]`; it is **not** the
+    ///       same object as `ChunkPool` (which lives in `prover.hpp` and uses a
+    ///       static `char[]` per [I-13](../../docs/30_invariants.md#i-13)).
+    ///       The two arenas are conceptually similar but back different storage
+    ///       contracts.
+    /// @see [`IntNormalizedKey`](#intnormalizedkey) — its `data` pointer references
+    ///      memory owned here.
     struct KeyArena {
         std::vector<int16_t*> blocks;
         int16_t* current = nullptr;
         int32_t used = 0;
         int32_t capacity = 0;
 
+        /// Append `len` int16_t slots from `src` into the arena, allocating a fresh
+        /// chunk if the current one is full. Returns a stable pointer to the start
+        /// of the copied region. Pointer remains valid until `release()`.
         int16_t* store(const int16_t* src, int16_t len) {
             if (used + len > capacity) {
                 capacity = ExecutionParameters::KEY_ARENA_CHUNK;
@@ -690,6 +951,9 @@ namespace gl {
             return dst;
         }
 
+        /// Free every chunk and reset the arena to empty. Invalidates every
+        /// pointer previously returned by `store`. Idempotent — calling on an
+        /// already-released arena is a no-op.
         void release() {
             for (auto* b : blocks) delete[] b;
             blocks.clear();
@@ -700,10 +964,27 @@ namespace gl {
         ~KeyArena() { release(); }
     };
 
-    // ========================================================================
-    // IntEncodedExpr — pre-encoded statement for static request pipeline.
-    // All fields int16_t. No heap allocation. Fixed-size (176 bytes).
-    // ========================================================================
+    /// @brief Pre-encoded statement for the static request pipeline. All fields
+    /// `int16_t`; no heap allocation; fixed size (176 bytes on x64).
+    ///
+    /// @details
+    /// The static request pipeline operates entirely on `int16_t` IDs minted from
+    /// the per-LB `NameMap` so the hot path in `generateEncodedRequests*` never
+    /// touches strings. Each `IntEncodedExpr` carries the canonicalized form of
+    /// one expression: its name id, negation flag, arity, two flags for hypo /
+    /// anchor classification, and the four fixed-capacity per-arg arrays
+    /// (`argId`, `argUnchangeable`, `argIteration`, `argLevPlus1`, `argFullId`).
+    /// Capacity is `ExecutionParameters::MAX_ARITY` per arg array.
+    ///
+    /// The struct is purely arithmetic — no constructors, no operator overloads,
+    /// no virtual table — so it can be `memcpy`'d directly into the typed arena
+    /// (`TypedArena<IntEncodedExpr>`). This is what lets the request emitter copy
+    /// expressions in O(1) and key on the resulting pointer for dedupe.
+    ///
+    /// @see [`StaticRequestEmitter`](#staticrequestemitter) — populates an arena
+    ///      of these and tracks dedupe.
+    /// @see `prover.hpp::encodeExpression` — canonical EncodedExpression →
+    ///      IntEncodedExpr converter.
     struct IntEncodedExpr {
         int16_t nameId;          // NameMap ID of expression name
         int16_t negation;        // 0 or 1
@@ -722,9 +1003,35 @@ namespace gl {
 
     // encodeExpression is defined after EncodedExpression (forward reference).
 
-    // ========================================================================
-    // TypedArena — per-type bump allocator. Reset per LB, no deallocation.
-    // ========================================================================
+    /// @brief Per-type bump allocator. Allocates a fixed pool at construction and
+    /// hands out aligned slots; resets per LB without freeing the underlying
+    /// buffer.
+    ///
+    /// @details
+    /// Used to back the static-request pipeline's per-thread storage of
+    /// `IntEncodedExpr`, `StaticRequest`, `MandatoryPair`, and `int16_t` index
+    /// arrays. The contract is:
+    ///
+    /// - Construction with `cap` slots allocates `cap * sizeof(T)` bytes via
+    ///   `::operator new`. `cap == 0` means no buffer (subsequent `alloc` is
+    ///   undefined behaviour and trips the assert below).
+    /// - `alloc(n)` advances the bump pointer by `n` slots and returns the head
+    ///   pointer. Asserts that capacity is not exceeded — a firing assert here
+    ///   means the per-thread arena was undersized for the LB.
+    /// - `reset()` rewinds `used` to 0; the buffer stays alive. Use between LBs.
+    /// - Destructor releases the buffer once.
+    ///
+    /// Move-only: copy construction and assignment are deleted because two
+    /// arenas pointing at the same buffer would double-free on destruction.
+    /// Move construction transfers ownership and zeroes the source.
+    ///
+    /// @tparam T element type. The arena makes no constructor calls, so `T` must
+    ///         be trivially default-constructible or fully overwritten by callers
+    ///         after `alloc`.
+    /// @see [`ThreadArenas`](#threadarenas) — assembles four `TypedArena<T>` for
+    ///      one thread of the static-request pipeline.
+    /// @see [I-19](../../docs/30_invariants.md#i-19) — assert is first-class; the
+    ///      capacity assert here is intentional and must not be weakened.
     template<typename T>
     struct TypedArena {
         T* buf;
@@ -757,18 +1064,39 @@ namespace gl {
         ~TypedArena() { if (buf) ::operator delete(buf); }
     };
 
-    // ========================================================================
-    // MandatoryPair — index pair for static makeMandatory2.
-    // ========================================================================
+    /// @brief Index pair used by the static `makeMandatory2` pass.
+    ///
+    /// @details
+    /// `makeMandatory2` filters statement pairs whose hash keys are mutually
+    /// mandatory (one's key is a strict subset of the other's, modulo
+    /// remainingArgs). Each surviving pair is recorded as a `MandatoryPair`
+    /// (`idx1`, `idx2` are indices into the per-LB `intEncodedStatements`
+    /// vector). The struct is plain pair arithmetic; no ordering or hashing
+    /// because consumers walk the array sequentially.
+    ///
+    /// @see `memory.cpp::makeMandatoryEncodedStatementLists2Static` — emits these.
     struct MandatoryPair {
         int16_t idx1;
         int16_t idx2;
     };
 
-    // ========================================================================
-    // StaticRequest — fully static request: no string data, no heap allocs.
-    // intExprs point into TypedArena (stable through vector reallocation).
-    // ========================================================================
+    /// @brief Fully-static request — no string data, no heap allocations.
+    ///
+    /// @details
+    /// One element of the per-LB request stream consumed by the static pipeline.
+    /// Each request bundles up to `ExecutionParameters::MAX_EXPRESSIONS` pointers
+    /// into a `TypedArena<IntEncodedExpr>` (so the pointers stay stable through
+    /// the arena's lifetime), the count of those pointers, the maximum iteration
+    /// counter across the bundle, and the precomputed `IntNormalizedKey` used to
+    /// look the request up in the hash memory.
+    ///
+    /// Pointer stability matters: requests are emplaced into a contiguous
+    /// `StaticRequest*` output buffer; if the underlying arena were a
+    /// `std::vector<IntEncodedExpr>`, every push could reallocate and invalidate
+    /// the pointers. The arena is append-only with stable interior pointers, so
+    /// pointer-based identity holds through emission.
+    ///
+    /// @see [`StaticRequestEmitter`](#staticrequestemitter) — produces these.
     struct StaticRequest {
         const IntEncodedExpr* intExprs[ExecutionParameters::MAX_EXPRESSIONS]; // ptrs into arena
         int16_t count;
@@ -776,15 +1104,51 @@ namespace gl {
         IntNormalizedKey normalizedKey;
     };
 
-    // Pack (originalId, validityId) into int32_t for fast set/map lookup.
+    /// @brief Pack `(originalId, validityId)` into a single `int32_t` for fast
+    /// `std::unordered_set` / `std::map` lookup.
+    ///
+    /// @details
+    /// Concatenates the two `int16_t` halves into a 32-bit value with
+    /// `originalId` in the high 16 bits and `validityId` in the low 16. Cheaper
+    /// than hashing a `std::pair<int16_t, int16_t>` and equivalent to
+    /// `std::tuple<int16_t, int16_t>` ordering for keys with the same
+    /// `originalId`. Used by `Memory::intKnownStatements` for the O(1)
+    /// "is this statement already known here" check.
+    ///
+    /// @param originalId NameMap id of the original (un-normalized) expression
+    ///                   string.
+    /// @param validityId NameMap id of the scope's canonical validity name.
+    /// @return Combined key value. Uniqueness is guaranteed because both inputs
+    ///         are distinct ids minted by the same `NameMap`.
     inline int32_t packStatementKey(int16_t originalId, int16_t validityId) {
         return (static_cast<int32_t>(static_cast<uint16_t>(originalId)) << 16)
              | static_cast<int32_t>(static_cast<uint16_t>(validityId));
     }
 
-    // ========================================================================
-    // StaticRequestEmitter — dedup + emit for all generateEncodedRequests* variants.
-    // ========================================================================
+    /// @brief Dedupe + emit for all `generateEncodedRequests*` variants.
+    ///
+    /// @details
+    /// The static request pipeline produces a stream of `StaticRequest` values
+    /// destined for the hash memory lookup. Many of those requests turn out to
+    /// duplicate previously emitted ones (same expressions in same order under
+    /// the same scope). The emitter keeps a `seen` set of `RequestKey` (the
+    /// packed `(originalId, validityId)` tuple per expression) and rejects
+    /// duplicates before they ever reach the output buffer.
+    ///
+    /// `emit` flow:
+    /// 1. Build a `RequestKey` from the input expressions' packed IDs.
+    /// 2. Insert into `seen`. If the entry already existed, return early.
+    /// 3. Otherwise copy each `IntEncodedExpr` into the per-thread arena and
+    ///    record pointers into the output buffer slot.
+    /// 4. Compute and store `maxIteration` across the bundle.
+    /// 5. Increment `outCount`.
+    ///
+    /// The arena copy is what guarantees pointer stability across the rest of
+    /// the request stream — without it, the input expression pointers might
+    /// dangle when the caller's container reallocates.
+    ///
+    /// @see [`StaticRequest`](#staticrequest) — output element type.
+    /// @see [`TypedArena`](#typedarena) — arena that backs `intExprs` storage.
     struct StaticRequestEmitter {
         struct RequestKey {
             int32_t packed[ExecutionParameters::MAX_EXPRESSIONS];
@@ -827,18 +1191,43 @@ namespace gl {
         }
     };
 
-    // ========================================================================
-    // BaseCandidate — grow-phase output for mandatory merge.
-    // ========================================================================
+    /// @brief One candidate produced by the *grow* phase of the static
+    /// `makeMandatory` merge pass.
+    ///
+    /// @details
+    /// The grow phase iterates through pre-encoded statements building partial
+    /// match-candidate sets. Each surviving partial candidate is recorded as a
+    /// `BaseCandidate` (its statement indices in `allIdx[count]` plus the scope
+    /// id). The merge phase then folds these candidates into final
+    /// `StaticRequest`s. Plain index storage; no ordering or hashing.
+    ///
+    /// @see `memory.cpp::makeMandatoryEncodedStatementLists2Static` — grow phase.
     struct BaseCandidate {
         int16_t allIdx[ExecutionParameters::MAX_EXPRESSIONS];
         int16_t count;
         int16_t validityId;
     };
 
-    // ========================================================================
-    // ThreadArenas — per-thread typed arenas for static request pipeline.
-    // ========================================================================
+    /// @brief Per-thread bundle of typed arenas backing one thread's slice of
+    /// the static request pipeline.
+    ///
+    /// @details
+    /// Four sub-arenas, sized for the typical worst case observed on a Gauss
+    /// batch:
+    ///
+    /// - `requests`     (capacity 4096) — `StaticRequest` storage.
+    /// - `encodedExprs` (capacity 2048) — `IntEncodedExpr` copies.
+    /// - `pairs`        (capacity 8192) — `MandatoryPair`s.
+    /// - `indices`      (capacity 4096) — `int16_t` index arrays.
+    ///
+    /// `reset()` rewinds all four arenas to zero use; called once per LB-
+    /// iteration boundary so storage is reused without going through the
+    /// allocator. The destructor releases the underlying buffers.
+    ///
+    /// @see [`TypedArena`](#typedarena) — the per-arena type.
+    /// @see [I-28](../../docs/30_invariants.md#i-28) — cross-LB writes during
+    ///      `proveKernel`'s parallel phase are forbidden; per-thread arenas are
+    ///      one of the mechanisms that keep that invariant true.
     struct ThreadArenas {
         TypedArena<StaticRequest>   requests;
         TypedArena<IntEncodedExpr>  encodedExprs;
@@ -860,7 +1249,18 @@ namespace gl {
         }
     };
 
-    /// Hash for std::set<int16_t> used as map key in remainingArgsNormalizedEncodedMap
+    /// @brief FNV-1a 64-bit hasher for `std::set<int16_t>`, used as the key type
+    /// in `HashMemory::remainingArgsNormalizedEncodedMap`.
+    ///
+    /// @details
+    /// `std::set` orders its elements, so iteration is deterministic; combined
+    /// with the same FNV constants used elsewhere in the file, the hash value
+    /// is stable across LBs and across threads. That stability is what allows
+    /// the `remainingArgs`-keyed dispatch in `checkLocalEncodedMemoryStatic` to
+    /// agree with the inserts performed in `addToHashMemory`.
+    ///
+    /// @see [`HashMemory::remainingArgsNormalizedEncodedMap`](#hashmemory) — the
+    ///      consumer.
     struct SetInt16Hash {
         std::size_t operator()(const std::set<int16_t>& s) const {
             std::size_t h = 14695981039346656037ULL;
@@ -872,6 +1272,59 @@ namespace gl {
         }
     };
 
+    /// @brief Central rule store of one *logic block* (LB) — the hash engine's
+    /// per-LB state.
+    ///
+    /// @details
+    /// A `Memory` instance owns three `HashMemory` slots (`overallHashMemory`,
+    /// `localHashMemory`, `localHashMemoryDelta`); together they index every
+    /// rule the prover can fire from this LB. The members fall into three
+    /// groups:
+    ///
+    /// **Hot-path indices (int16_t-keyed)**
+    /// - `encodedMap` — primary index. Maps a normalized premise key to the
+    ///   stack of `LocalMemoryValue`s that can fire from it.
+    /// - `remainingArgsNormalizedEncodedMap` — secondary index by the set of
+    ///   carried arg ids; lets `checkLocalEncodedMemoryStatic` skip rules
+    ///   whose remaining-args set has no overlap with the candidate.
+    /// - `normalizedEncodedKeys`, `normalizedEncodedSubkeys`,
+    ///   `normalizedEncodedSubkeysMinusOne`, `normalizedEncodedSubkeysMinusTwo`
+    ///   — bloom-filter-style fast-rejection sets keyed at full / 1-short /
+    ///   2-short / 3-short subkey lengths.
+    /// - `maxKeyLength` — saturating upper bound used to short-circuit lookup
+    ///   loops when the candidate exceeds anything stored.
+    ///
+    /// **Path-independent shared state**
+    /// - `originals` — the set of original expression strings ever installed,
+    ///   used during dedupe.
+    /// - `admissionMap`, `admissionMapIntegration` — depth and instruction
+    ///   budgets per `(expression, validity)`. See [`AdmissionMapValue`](#admissionmapvalue).
+    /// - `admissionSetIntegration`, `triggersForAdmissionSetIntegration` —
+    ///   integration-side admission control.
+    /// - `rejectedMap`, `rejectedMapIntegration` — disintegration- and
+    ///   integration-side rejection caches respectively. The integration side
+    ///   has an extra `varsInRejectedMapIntegrationKeys` cache: a
+    ///   monotonically-growing set of non-marker args appearing anywhere in
+    ///   `rejectedMapIntegration` keys, used by
+    ///   `applyEquivalenceClassToRejectedMapIntegration` to short-circuit
+    ///   when a class has no key overlap (was the hot spot on Gauss
+    ///   batches with ~10⁵ rmi entries × ~10⁶ class calls).
+    /// - `admissionStatusMap` — per-key admission verdict cache.
+    /// - `productsOfRecursion`, `productsOfRecursionIds` — string and
+    ///   int16_t views of expressions known to be products of a recursion
+    ///   block; consulted for OR-disintegration gating.
+    /// - `consumedAdmissionKeys`, `revisitInProgress` — re-entrant guards.
+    ///
+    /// `clear()` wipes every slot; called when a `HashMemory` is reset for
+    /// reuse or torn down.
+    ///
+    /// @see [`Memory`](#memory) — owns three `HashMemory` slots.
+    /// @see [`LocalMemoryValue`](#localmemoryvalue) — value type of `encodedMap`.
+    /// @see [I-22](../../docs/30_invariants.md#i-22),
+    ///      [I-30](../../docs/30_invariants.md#i-30) — invariants on the
+    ///      `rejectedMapIntegration` lifecycle.
+    /// @see [I-32](../../docs/30_invariants.md#i-32) — cross-pair `equality2`
+    ///      emission gated on existing class / LB origin (consumes this state).
     struct HashMemory {
         std::unordered_map<IntNormalizedKey, std::vector<LocalMemoryValue>,
             IntNormalizedKeyHash> encodedMap;
@@ -900,6 +1353,10 @@ namespace gl {
         // large but most classes are unrelated (observed in Gauss: ~10^5 rmi
         // entries and ~10^6 class calls).
         std::unordered_set<std::string> varsInRejectedMapIntegrationKeys;
+        // Symmetric cache for admissionMap, populated at every admissionMap
+        // insert. Used by applyEquivalenceClassToAdmissionMap to short-circuit
+        // when an eq class has no overlap with any stored admission key.
+        std::unordered_set<std::string> varsInAdmissionMapKeys;
         std::map<ExpressionWithValidity, bool> admissionStatusMap;
         std::set<std::string> productsOfRecursion;
         std::unordered_set<int16_t> productsOfRecursionIds;
@@ -914,6 +1371,7 @@ namespace gl {
               admissionSetIntegration(), triggersForAdmissionSetIntegration(),
               rejectedMap(), rejectedMapIntegration(),
               varsInRejectedMapIntegrationKeys(),
+              varsInAdmissionMapKeys(),
               admissionStatusMap(), productsOfRecursion(), productsOfRecursionIds(),
               consumedAdmissionKeys(), revisitInProgress()
         {}
@@ -934,6 +1392,7 @@ namespace gl {
             rejectedMap.clear();
             rejectedMapIntegration.clear();
             varsInRejectedMapIntegrationKeys.clear();
+            varsInAdmissionMapKeys.clear();
             admissionStatusMap.clear();
             productsOfRecursion.clear();
             productsOfRecursionIds.clear();
@@ -945,6 +1404,41 @@ namespace gl {
 
     // ========================================================================
 
+    /// @brief String-form encoded expression — the legacy expression record kept
+    /// alongside `IntEncodedExpr` for paths that have not yet migrated to the
+    /// int16-only static pipeline.
+    ///
+    /// @details
+    /// Carries the parsed structure of one expression — name, negation flag,
+    /// argument vector (5 fields per argument: `[isUnchangeable, arg, iteration,
+    /// levPlus1, argId]`), the maximum iteration counter across all arguments,
+    /// the original (raw) string, and the validity scope name.
+    ///
+    /// Three constructors:
+    /// - default — empty record (used for `std::map`/`std::set` insertion).
+    /// - parameterized — caller already has the parsed pieces; we normalize
+    ///   each raw arg via `parseArgument` and compute `maxIterationNumber`.
+    /// - explicit-from-`(original, validityName)` — peels off the leading `!`
+    ///   if present, splits the expression name from the args via
+    ///   `ce::extractExpression*`, parses each arg.
+    ///
+    /// `parseArgument` handles two grammar shapes:
+    /// 1. The full `it_<iter>_lev_<lev>_<argId>` form (with optional `u_`
+    ///    prefix) — produces a 5-tuple with the raw iteration / level + 1 /
+    ///    argId broken out.
+    /// 2. Anything else — passes through as `[u/False, arg, "-1", "0", arg]`.
+    ///
+    /// `operator<` orders by `(original, validityName)` so identical text in
+    /// different scopes is two distinct entries; `operator==` is a full
+    /// field-by-field compare.
+    ///
+    /// @warning The `arguments` vector's inner shape is positional. Callers
+    ///          rely on indices 0..4 having the documented meaning. Adding a
+    ///          new positional field requires a coordinated change wherever
+    ///          this struct is read.
+    /// @see [`IntEncodedExpr`](#intencodedexpr) — int16_t replacement on the
+    ///      hot path.
+    /// @see `encodeExpression` — converts this into an `IntEncodedExpr`.
     struct EncodedExpression {
         // Fields (CamelCase)
         std::string name;
@@ -1082,7 +1576,41 @@ namespace gl {
         }
     };
 
-    /// Encode an EncodedExpression into IntEncodedExpr using NameMap.
+    /// @brief Convert a parsed `EncodedExpression` (string fields) into an
+    /// `IntEncodedExpr` (int16_t fields) using a `NameMap` to mint stable ids.
+    ///
+    /// @details
+    /// The string-side `EncodedExpression` is the language-level record; the
+    /// int16-side `IntEncodedExpr` is the hot-path record. This function maps
+    /// every string field through `nm.encode` (mints a fresh id on first
+    /// sight, returns the existing id otherwise) and copies the per-arg flags
+    /// directly. Three encoder details worth flagging:
+    ///
+    /// 1. `argId[i]` stores the *u_-prefixed* version when the argument is
+    ///    unchangeable — matching what `makeIntNormalizedKey` does with
+    ///    `ignoreU=false`. The non-prefixed full string is in `argFullId[i]`.
+    /// 2. Arity is capped at `ExecutionParameters::MAX_ARITY` even if the
+    ///    `EncodedExpression` carries more arguments — silent truncation, but
+    ///    in practice expressions never exceed the cap (Gauss-tail Anchor at
+    ///    arity 6 is the observed maximum).
+    /// 3. `isHypo` is derived by substring-search for `_hypo_` in the
+    ///    validity name; `isAnchor` by prefix-match `Anchor` on the
+    ///    expression name. Both are precomputed here so the hot path can
+    ///    branch on a single `int16_t` flag instead of a string scan.
+    ///
+    /// @pre `ee` was constructed via the canonical pipeline (parser →
+    ///      `EncodedExpression(...)` ctor); fields are not partially-populated.
+    /// @post Returns an `IntEncodedExpr` whose every id field references `nm`.
+    ///       The returned value is trivially copyable; consumers store it
+    ///       into `TypedArena<IntEncodedExpr>` or
+    ///       `Memory::intEncodedStatements`.
+    /// @invariant All non-`"main"` validity names registered through `nm`
+    ///            during this call are minted via `NameMap::encode` (which
+    ///            either returns an existing id or recurses into `encodePush`
+    ///            for `_boundary_`-bearing names). See
+    ///            [I-2](../../docs/30_invariants.md#i-2).
+    /// @see [`EncodedExpression`](#encodedexpression),
+    ///      [`IntEncodedExpr`](#intencodedexpr).
     inline IntEncodedExpr encodeExpression(const EncodedExpression& ee, NameMap& nm) {
         IntEncodedExpr ie;
         ie.nameId = nm.encode(ee.name);
@@ -1124,8 +1652,49 @@ namespace gl {
         return ie;
     }
 
+    /// @brief Inter-LB message bag — statements + implications + origin map
+    /// queued for the receiver to absorb on its next hash burst.
+    ///
+    /// @details
+    /// The mail subsystem is the *only* sanctioned cross-LB write channel
+    /// during a parallel hash burst (per
+    /// [I-28](../../docs/30_invariants.md#i-28) — "cross-LB writes during
+    /// `proveKernel`'s parallel phase forbidden — defer to post-`pool.join()`
+    /// collectors"). The flow direction is parent-to-children only; no
+    /// upward writes (per [D-51](../../docs/40_decisions.md#d-51)).
+    ///
+    /// Three slots:
+    /// - `statements`     — each element is `(ExpressionWithValidity, levels)`.
+    ///   The EWV's `validityName` is `"main"` for routing-channel traffic
+    ///   (`mailIn`/`mailOut`) — enforced by `smashMail` / `sendMail`'s
+    ///   per-item assert per [I-26](../../docs/30_invariants.md#i-26) —
+    ///   and may be non-main for the per-LB integration-revival channel
+    ///   `Memory::internalMailIn`. Migrated 2026-05-07 under
+    ///   [D-53](../../docs/40_decisions.md#d-53); was previously
+    ///   `pair<string, set<int>>` with validity hardcoded to `"main"` at
+    ///   the receiver.
+    /// - `implications`   — each element is the 5-tuple `(key, value,
+    ///   remainingArgs, levels, originalImplication)`. Mail-out
+    ///   implications are MAIN-ONLY per
+    ///   [I-26](../../docs/30_invariants.md#i-26).
+    /// - `exprOriginMap`  — origin-chain mirror, ALL-SCOPES per the same
+    ///   invariant. Carries the provenance edges that the verifier needs
+    ///   to reconstruct the proof tree on the receiver side.
+    ///
+    /// @see [I-21](../../docs/30_invariants.md#i-21) — `internalMailIn`
+    ///      is cleared at the top of the hashburst (after absorb), not
+    ///      at the end.
+    /// @see [I-26](../../docs/30_invariants.md#i-26) — channel-membership
+    ///      rule for routed traffic.
     struct Mail {
-        std::set< std::pair<std::string, std::set<int> > > statements;
+        // statements element: pair<ExpressionWithValidity, levels>. The EWV's
+        // validityName is "main" for routing-channel traffic (mailIn/mailOut)
+        // — enforced by smashMail / sendMail per-item assert (I-26) — and may
+        // be non-main for the per-LB integration-revival channel
+        // (Memory::internalMailIn). Migrated 2026-05-07 (D-53, renumbered from main's D-46 on merge into sandbox/incub_fix) — was previously
+        // pair<string, set<int>>, with validity hardcoded to "main" at the
+        // receiver.
+        std::set< std::pair<ExpressionWithValidity, std::set<int> > > statements;
         std::set< std::tuple<std::vector<std::string>, std::string, std::set<std::string>, std::set<int>, std::string> > implications;
 
         // CHANGED: Tracking multiple origins (Vector of Pairs)
@@ -1134,25 +1703,45 @@ namespace gl {
         Mail() : statements(), implications(), exprOriginMap() {}
     };
 
-    // Separate, per-LB, validity-preserving inbox for integration-revival
-    // messages. Populated by applyEquivalenceClassToRejectedMapIntegration
-    // and revisitRejectedIntegration2 during hashburst body; drained at the
-    // top of the next hashburst (status=1 absorb — full disintegration
-    // pipeline re-fires).
-    //
-    // Kept separate from Mail to avoid disturbing smashMail / mailOut
-    // routing (which is main-only by contract). The third tuple element is
-    // validityName — may be non-main.
-    struct InternalMail {
-        std::set< std::tuple<std::string, std::set<int>, std::string> > statements;
-        std::map<ExpressionWithValidity,
-                 std::vector<std::pair<std::string, std::vector<ExpressionWithValidity>>>> exprOriginMap;
-
-        InternalMail() : statements(), exprOriginMap() {}
-    };
-
-    
-
+    /// @brief One equivalence class — a set of variables known to be equal
+    /// in some scope, together with provenance.
+    ///
+    /// @details
+    /// Equivalence classes are the prover's internal representation of
+    /// `(=[a,b])` chains. Whenever `addEquality` fires it either creates a
+    /// fresh class with two variables or merges existing classes; whenever
+    /// `applyEquivalenceClass` rewrites an expression it routes through this
+    /// data structure to look up which variable to substitute.
+    ///
+    /// Three slots:
+    /// - `variables`           — the class members. Membership is symmetric
+    ///   and transitive; the order in which members were added is not
+    ///   preserved.
+    /// - `equalityLevelsMap`   — for each pair of variables, the set of LB
+    ///   levels at which the equality is admissible. Used by
+    ///   `applyEquivalenceClass` to gate substitution by level.
+    /// - `equalityOriginMap`   — origin chains for each `(expression, scope)`
+    ///   pair that this class produced. Carries multiple origins per pair
+    ///   so the verifier can reconstruct the full provenance tree.
+    ///
+    /// Class storage lives in `Memory::equivalenceClassesMap` (keyed by an
+    /// internal class-id string). Mutations are subject to:
+    /// - [I-30](../../docs/30_invariants.md#i-30) —
+    ///   `applyEquivalenceClassToRejectedMapIntegration` is additive; the
+    ///   original entries are never erased.
+    /// - [I-31](../../docs/30_invariants.md#i-31) —
+    ///   `updateEquivalenceClasses` ancestor-pass never modifies ancestor-scope
+    ///   class state.
+    /// - [I-32](../../docs/30_invariants.md#i-32) — cross-pair `equality2`
+    ///   emission gated on existing class / LB origin.
+    /// - [I-33](../../docs/30_invariants.md#i-33) —
+    ///   `mergeTwoEquivalenceClasses` cross-vN preconditions.
+    /// - [I-34](../../docs/30_invariants.md#i-34) — cross-substitution
+    ///   `equality1` emission gated on existing target origin.
+    ///
+    /// @see [`Memory::equivalenceClassesMap`](#memory) — owns these.
+    /// @see `prover.hpp::applyEquivalenceClass` — consumer.
+    /// @see `prover.hpp::mergeTwoEquivalenceClasses` — merger.
     struct EquivalenceClass {
         std::set<std::string> variables;
         std::map<std::set<std::string>, std::set<int> > equalityLevelsMap;
@@ -1173,6 +1762,138 @@ namespace gl {
 
 
 
+    /// @brief One *logic block* (LB) — the prover's primary unit of state.
+    ///
+    /// @details
+    /// A `Memory` instance is one node in the LB tree. The tree's root is the
+    /// "main" sentinel (default-constructed, `exprKey.empty()`,
+    /// `parentMemory == nullptr`); every non-root LB carries the expression
+    /// it owns (`exprKey`) and a back-pointer to its parent (`parentMemory`).
+    /// Children are reached via `simpleMap[K] -> Memory*` where `K` is a
+    /// routing-key string set at LB creation in `prover.cpp`.
+    ///
+    /// The `Memory` struct is intentionally large — it bundles every kind of
+    /// per-LB state the prover touches:
+    ///
+    /// **Tree structure**
+    /// - `simpleMap`        — routing-key → child LB pointer.
+    /// - `parentMemory`     — parent pointer (`nullptr` at the sentinel root).
+    /// - `exprKey`          — the expression text owned by this LB. Empty at
+    ///   the root sentinel; otherwise carries the disintegrated form. NOTE:
+    ///   the `simpleMap` routing key may differ from `exprKey` (the
+    ///   recursion-block-#2 site sets `simpleMap[(=[s(recN),zero])] -> child`
+    ///   while the child's `exprKey` is the substituted induction-variable
+    ///   form `(=[<digitArg>,<zero>])`). Always match a target LB by
+    ///   walking the full parent chain to root, never by `exprKey` alone.
+    /// - `level`            — depth in the LB tree (`-1` for the root sentinel).
+    ///
+    /// **Iteration / counter state**
+    /// - `startInt`, `startIntRepl`, `startIntPi` — counters for the three
+    ///   independent name-mint streams used during disintegration. See
+    ///   [I-17](../../docs/30_invariants.md#i-17): the freshness check
+    ///   relies on these being a single monotonic stream within their
+    ///   respective category.
+    /// - `recursionCounter`, `contradictionIndex`, `recursionHypothesis`,
+    ///   `isPartOfRecursion`, `primedForContradiction`, `contradictionTheorem`
+    ///   — induction- / recursion- / contradiction-LB bookkeeping.
+    ///
+    /// **Statement state**
+    /// - `toBeProved`               — pending obligations on this LB.
+    /// - `encodedStatements`        — full string-form statements known here.
+    /// - `localEncodedStatements`,
+    ///   `localEncodedStatementsSet`,
+    ///   `localEncodedStatementsDelta` — local-premise gate inputs (see
+    ///   [I-7](../../docs/30_invariants.md#i-7) /
+    ///   [D-28](../../docs/40_decisions.md#d-28)). The set mirror is
+    ///   maintained in lockstep with the vector for O(log N) membership
+    ///   lookups inside `checkLocalEncodedMemoryStatic`.
+    /// - `intEncodedStatements`,
+    ///   `intLocalEncodedStatements`,
+    ///   `intLocalEncodedStatementsDelta` — int16_t mirrors used by the
+    ///   static request pipeline.
+    /// - `intKnownStatements`       — packed `(originalId, validityId)`
+    ///   keys for the O(1) "is this statement already known here" check.
+    /// - `statementLevelsMap`       — per-statement set of LB levels at
+    ///   which it was deposited.
+    /// - `wholeExpressions`         — set of expressions that originated as
+    ///   whole assertions (not as derivative products).
+    ///
+    /// **Hash memory slots** (each is a [`HashMemory`](#hashmemory))
+    /// - `overallHashMemory`        — full set of rules visible from this LB.
+    /// - `localHashMemory`          — rules installed at this LB.
+    /// - `localHashMemoryDelta`     — rules installed since the last burst,
+    ///   awaiting absorption.
+    ///
+    /// **Equivalence classes**
+    /// - `equivalenceClassesMap`    — class-id → list of [`EquivalenceClass`](#equivalenceclass).
+    /// - `eqClassSttmntIndexMapMap` — class-id → (rmaining-args set →
+    ///   statement index) cache used by the cross-pair `equality2` gate
+    ///   ([I-32](../../docs/30_invariants.md#i-32)).
+    ///
+    /// **Mail subsystem**
+    /// - `mailIn`, `mailOut`        — routing-channel mail (parent → child;
+    ///   [I-26](../../docs/30_invariants.md#i-26) /
+    ///   [I-28](../../docs/30_invariants.md#i-28)).
+    /// - `internalMailIn`           — per-LB integration-revival channel
+    ///   (typed `Mail` since 2026-05-07; see
+    ///   [D-53](../../docs/40_decisions.md#d-53)). Cleared at the top of
+    ///   the hashburst after absorb per
+    ///   [I-21](../../docs/30_invariants.md#i-21).
+    ///
+    /// **Origin / provenance**
+    /// - `exprOriginMap`            — `(expression, scope)` → vector of
+    ///   `(tag, list-of-antecedents)` pairs. The ALL-SCOPES half of the
+    ///   mail-out contract per
+    ///   [I-26](../../docs/30_invariants.md#i-26).
+    /// - `integrationStartIntMap`   — per-int_-prefix counter snapshots used
+    ///   to keep integration-side renames stable across iterations.
+    /// - `integrationPrepared`,
+    ///   `integrationPreparedMarker` — integration-side admission tracking.
+    /// - `validityNamesToFilter`,
+    ///   `intValidityNamesToFilter` — receiver-side mail filter sets.
+    /// - `canBeSentSet`,
+    ///   `canBeSentMarkerSet`       — sender-side mail-eligibility sets.
+    /// - `weakVariables`,
+    ///   `axedVariables`,
+    ///   `intAxedVariables`         — variable-eligibility classification
+    ///   used by `multiplyImplication` and admission.
+    ///
+    /// **OR-branching state**
+    /// - `orAdmissionSet`           — per-LB set of `(disjunct, scope)`s
+    ///   that have been admitted; OR fires only when ALL disjuncts in this
+    ///   set are present.
+    /// - `orBookkeeping`            — convergence tracking: keyed by
+    ///   `(derived_expression, or_signature)` → set of branch disjuncts that
+    ///   produced it.
+    /// - `orDisjunctCount`          — disjunct count per OR expression for
+    ///   the convergence check.
+    ///
+    /// **State flags**
+    /// - `isActive`                 — set to `false` by `deactivate*` paths
+    ///   when this LB has been retired.
+    /// - `deltaNumberStatements`    — count of statements added since the
+    ///   last burst boundary; used to short-circuit no-op iterations.
+    ///
+    /// **Static hot path**
+    /// - `nameMap`                  — per-LB `NameMap` (see
+    ///   [`NameMap`](#namemap)).
+    /// - `keyArena`                 — `KeyArena` backing storage for
+    ///   `IntNormalizedKey::data` pointers in this LB.
+    ///
+    /// The default constructor produces the root sentinel (empty `exprKey`,
+    /// `parentMemory == nullptr`, `level == -1`, `isActive == true`,
+    /// `recursionCounter == 0`, all containers empty). Tests can rely on
+    /// this shape.
+    ///
+    /// @see [`NameMap`](#namemap), [`HashMemory`](#hashmemory),
+    ///      [`Mail`](#mail), [`EquivalenceClass`](#equivalenceclass).
+    /// @see The full-LB-chain trace requirement when matching a target
+    ///      LB in any debug trap (full parent walk to the root sentinel,
+    ///      never `exprKey` alone).
+    /// @see The `performElementaryLogicalStep` hashburst dump operating
+    ///      on this state is treated as sacred infrastructure: format,
+    ///      lambdas, call sites, and target-LB chain match all require
+    ///      explicit approval to change.
     struct Memory {
         std::map<std::string, Memory*> simpleMap;
         int startInt;
@@ -1210,7 +1931,7 @@ namespace gl {
 
         Mail mailIn;
         Mail mailOut;
-        InternalMail internalMailIn;   // revival inbox for integration-side rejection recovery
+        Mail internalMailIn;           // revival inbox for integration-side rejection recovery (typed Mail since 2026-05-07; D-53, renumbered from main's D-46 on merge into sandbox/incub_fix)
 
         std::set<EncodedExpression> wholeExpressions;
         std::map<std::string, std::map<std::set<std::string>, int>> eqClassSttmntIndexMapMap;
@@ -1316,6 +2037,17 @@ namespace gl {
 
 
 
+    /// @brief One dependency record — used during the static-pipeline mandatory
+    /// merge to track which auxiliary index an expression depends on.
+    ///
+    /// @details
+    /// A `DependencyItem` is one entry in `Dependencies::originalAuxyMap`.
+    /// `auxies` is the set of auxiliary indices the expression cares about;
+    /// `expr` is the raw expression text; `allLevelsInvolved` is `true` when
+    /// the dependency spans every LB level (overrides per-level filtering).
+    /// Plain value type, no ordering.
+    ///
+    /// @see [`Dependencies`](#dependencies) — owns these.
     struct DependencyItem {
         std::set<int> auxies;
         std::string expr;
@@ -1336,6 +2068,26 @@ namespace gl {
         }
     };
 
+    /// @brief Bidirectional auxiliary-index ↔ original-expression map plus
+    /// per-original induction-variable bookkeeping.
+    ///
+    /// @details
+    /// Used by the static-pipeline mandatory merge and by induction-block
+    /// expansion. The two maps are kept synchronized by the producer:
+    ///
+    /// - `auxyOriginalMap`               — auxiliary index → original index.
+    /// - `originalAuxyMap`               — original index → `DependencyItem`
+    ///   (carries the auxiliary-index set, the expression text, and the
+    ///   all-levels flag).
+    /// - `originalInductionVariableMap`  — original index → `(induction_var,
+    ///   typing_set)` pair. Populated only for induction-target originals.
+    /// - `auxyIndex`, `originalIndex`    — running counters; the producer
+    ///   bumps these on every fresh insertion to keep the indices stable.
+    ///
+    /// @see [`DependencyItem`](#dependencyitem) — value type of `originalAuxyMap`.
+    /// @see [I-18](../../docs/30_invariants.md#i-18) — induction scheduled on
+    ///      a bound variable must first prove `(in[n, N])`. The typing set
+    ///      lives in `originalInductionVariableMap`'s second tuple slot.
     struct Dependencies {
         std::map<int, int> auxyOriginalMap;
         std::map<int, DependencyItem> originalAuxyMap;
@@ -1364,6 +2116,24 @@ namespace gl {
         }
     };
 
+    /// @brief One *variant* — a paired pair-of-normalized-keys + value text
+    /// + mapping-items, used during equivalence-class application to
+    /// dedupe rewrite emissions.
+    ///
+    /// @details
+    /// When `applyEquivalenceClass` rewrites an expression, it produces a
+    /// `(normalizedIgnoredKey, normalizedNotIgnoredKey, valueVariant,
+    /// mappingItems)` tuple. The first two keys distinguish two normalization
+    /// modes (with and without ignoring `u_`-prefixed args); the value text
+    /// is the rewritten head; `mappingItems` carries the substitution edges
+    /// the rewrite performed.
+    ///
+    /// `operator<` is lexicographic over all four fields so the variant fits
+    /// directly into `std::set<VariantItem>` for dedupe.
+    ///
+    /// @see [I-30](../../docs/30_invariants.md#i-30),
+    ///      [I-34](../../docs/30_invariants.md#i-34) — invariants on the
+    ///      `applyEquivalenceClass` path that emits these.
     struct VariantItem {
         NormalizedKey normalizedIgnoredKey;
         NormalizedKey normalizedNotIgnoredKey;
@@ -1384,21 +2154,28 @@ namespace gl {
         }
     };
 
-    struct ContradictionItem {
-        std::string expr;
-        bool successful;
-        ContradictionItem()
-            : expr(),
-            successful(false){
-        }
-        ContradictionItem(const std::string& expr_,
-            int successful_)
-            : expr(expr_),
-            successful(successful_) {
-        }
-	};
+    // ContradictionItem moved to filter.hpp (CE-only type).
 
-    
+
+    /// @brief Aliases for the two LB-tree-shaped maps the prover passes around.
+    ///
+    /// @details
+    /// `ParentChildrenMap` maps each `Memory*` to the vector of its direct
+    /// children — used during deactivation walks and during structural
+    /// queries that need O(1) lookup of children by parent. Built once
+    /// per iteration from the `simpleMap` edges.
+    ///
+    /// `PerCoreMailboxes` maps each `Memory*` to a vector of `Mail` slots,
+    /// one per logical core. The receiver-side hash burst reads its slot;
+    /// the sender-side `smashMail` writes into all recipients' slots in
+    /// turn. With `logicalCores == 1` the vector has length 1 and the
+    /// per-core dimension is degenerate; the typedef survives for code that
+    /// would reactivate multi-core dispatch.
+    ///
+    /// @see [I-26](../../docs/30_invariants.md#i-26) — mail-out direction.
+    /// @see [I-28](../../docs/30_invariants.md#i-28) — cross-LB writes
+    ///      forbidden during the parallel phase; `PerCoreMailboxes` is
+    ///      one of the per-thread structures that satisfies that.
     using ParentChildrenMap = std::unordered_map<Memory*, std::vector<Memory*>>;
 
     // One mailbox per logical core for each body

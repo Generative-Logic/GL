@@ -182,7 +182,7 @@
     "minLenLongKey": 5,
     "maxLenHypoKey": 2,
     "debug": false,
-    "max_origin_per_expr": 1,
+    "max_origin_per_expr": 30,
     "compressor_max_origins_per_expr": 30,
     "allow_multiplication": false,
     "max_partition_size": 1,

@@ -48,15 +48,71 @@
 #include <iostream>
 
 // ============================================================================
-// namespace ce — formerly create_expressions_shim.hpp
+// namespace ce — *create_expressions* helpers (formerly
+// create_expressions_shim.hpp). The compiler-side counterpart to the
+// Python create_expressions module.
+//
+// Hosts:
+//   - the language-level configuration types `CoreExpressionConfig` and
+//     `AnchorInfo`,
+//   - `loadCoreExpressionMap` / `modifyCoreExpressionMap` — JSON config
+//     loaders that produce the per-anchor `coreExpressionMap` consumed by
+//     `ExpressionAnalyzer`,
+//   - the parser surface (`getArgs`, `extractExpression`, `extractExpressionUniversal`,
+//     `extractExpressionFromNegation`, `cleanExpr`, `replaceKeysInString`,
+//     `joinWithComma`, `orderByPattern`),
+//   - the tree-shaped intermediate (`TreeNode1` + `nodeToStr` + `treeToExpr` +
+//     `deleteTree`),
+//   - the disintegration kernel (`disintegrateImplication`) and its companion
+//     `createReshuffledMirrored`,
+//   - utility analyzers (`KeyTrie`, `ArgumentAnalyzer`, `expressionIsSimple`,
+//     `prioritizeAnchor`, `staysOutputVariable`, `extractDifference`).
+//
+// Almost everything is `inline` so the compiler can fold the small parser
+// helpers into hot-path callers without out-of-line dispatch. The two
+// non-inline declarations (`generateAllPermutations`, `generateBinarySequencesAsLists`)
+// have bodies in compiler.cpp because they are larger and rarely inlined.
 // ============================================================================
 
 namespace ce {
 
-// Returns all unique permutations of the input, in lexicographic order.
+/// @brief All unique permutations of the integers `0..n-1`, grouped by the
+/// number of fixed points (zero-based).
+///
+/// @details
+/// Bodies in compiler.cpp. The output is `std::map<int, std::vector<std::vector<int>>>`
+/// where the integer key is the count of positions where `perm[i] == i`
+/// (the number of fixed points) and the value is the list of all
+/// permutations with that fixed-point count. Within each group permutations
+/// are emitted in lexicographic order, so iteration is deterministic.
+///
+/// Used by the conjecturer when generating renamings of placeholder
+/// variables and by the static request pipeline when enumerating
+/// arg-permutations of a key.
+///
+/// @param n Length of the permutation. `n < 0` returns an empty map; `n == 0`
+///          returns a map with the trivial empty permutation under key 0.
+/// @return Map from fixed-point count to permutation list, lexicographically
+///         ordered within each group.
+/// @see [`generateBinarySequencesAsLists`](#generatebinarysequencesaslists) —
+///      the binary-mask counterpart.
 std::map<int, std::vector<std::vector<int>>> generateAllPermutations(int n);
 
-// Binary sequences of given length (as lists of 0/1).
+/// @brief All `2^n` binary sequences of length `n`, encoded as
+/// `std::vector<int>` of 0/1 bits, MSB first.
+///
+/// @details
+/// Body in compiler.cpp. Pre-reserves `1 << n` rows; iterates `mask` from
+/// 0 to `2^n - 1`; each row is the big-endian bit list of `mask`. Used as
+/// a binary-mask generator inside `makeNormalizedKeysForAdmission` and the
+/// static-pipeline subkey enumeration.
+///
+/// @param n Sequence length. `n < 0` returns an empty vector; `n == 0`
+///          returns a vector with one empty inner vector (the unique
+///          length-0 sequence).
+/// @return Vector of `2^n` bit-pattern rows.
+/// @pre  `n` should be non-negative and small; `n > 30` will overflow
+///       memory long before the loop completes.
 std::vector<std::vector<int>> generateBinarySequencesAsLists(int n);
 
 using Mapping = std::map<int,int>;
@@ -64,6 +120,39 @@ using Mapping = std::map<int,int>;
 inline const std::filesystem::path DEFINITIONS_FOLDER =
     std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path() / "files" / "definitions";
 
+/// @brief Per-core-expression configuration record loaded from
+/// `files/config/Config<Anchor>.json`.
+///
+/// @details
+/// One `CoreExpressionConfig` describes a single named expression in the
+/// MPL — its arity, signature, definition body (inline pattern or path
+/// to a file in `files/definitions/`), and the typing-set patterns
+/// associated with each definition slot.
+///
+/// Fields:
+/// - `arity`           — declared arity. The signature must declare exactly
+///   this many positional placeholders.
+/// - `definition`      — `variant<string, filesystem::path>`. A string is
+///   treated as an inline pattern; a path is a relative reference into
+///   `files/definitions/` whose contents are read at load time.
+/// - `signature`       — the canonical string form, e.g. `(in[1,2])`.
+///   Each numeric placeholder is one positional argument.
+/// - `definitionSets`  — slot name → (typing-set pattern, mandatory flag).
+///   Used by `addStatement` and the typing-set checks.
+/// - `inputArgs`       — positional names of the operator's input
+///   arguments.
+/// - `outputArgs`      — positional names of the operator's output
+///   arguments. Most operators have arity 0 or 1 outputs; multi-output
+///   operators are not supported by the static pipeline (the
+///   `single-output-arg` assert in `makeNormalizedKeysForAdmission`
+///   guards this).
+/// - `inputIndices` / `outputIndices` — derived index arrays into the
+///   signature placeholders. Computed once at load time so hot-path
+///   consumers can avoid re-parsing.
+///
+/// @see [`AnchorInfo`](#anchorinfo) — the per-anchor view derived from
+///      the `Anchor<ID>` entry of a `CoreExpressionConfig` map.
+/// @see `loadCoreExpressionMap`, `modifyCoreExpressionMap` — JSON loaders.
 struct CoreExpressionConfig {
     int arity;
     std::variant<std::string, std::filesystem::path> definition; // inline pattern OR file path
@@ -106,6 +195,25 @@ struct CoreExpressionConfig {
 };
 
 
+/// @brief Per-anchor summary derived from a `CoreExpressionConfig` map.
+///
+/// @details
+/// `initAnchor("Peano")` constructs an `AnchorInfo` for `AnchorPeano` by
+/// looking up its `CoreExpressionConfig` and projecting:
+/// - `name`             — the full anchor key, e.g. `"AnchorPeano"`.
+/// - `arity`            — the declared arity of the anchor.
+/// - `exampleExpression` — a synthesized example, produced by
+///   `makeAnchorSignature(name, arity)`, e.g. `"(AnchorPeano[1,2,3,4])"`.
+/// - `definitionSets`   — slot name → typing-set pattern (the mandatory
+///   flag from `CoreExpressionConfig::definitionSets` is dropped here
+///   because the per-anchor consumers all treat the typing as
+///   mandatory).
+///
+/// `AnchorInfo` is the structure handed to the compiler-side init pass
+/// in `ExpressionAnalyzer`. It is built once per batch and never mutated
+/// afterwards.
+///
+/// @see `initAnchor`, `findAnchorKey`, `makeAnchorSignature`.
 struct AnchorInfo {
     std::string exampleExpression;
     int arity;
@@ -130,6 +238,20 @@ struct AnchorInfo {
     }
 };
 
+/// @brief Find the `Anchor<ID>` entry of a `coreExpressionMap`.
+///
+/// @details
+/// Walks the map in `std::map` (sorted) order and returns the first key
+/// whose prefix is `"Anchor"`. There is at most one anchor per
+/// configuration; the assumption is enforced by the `Config<ID>.json`
+/// schema (one `Anchor<ID>` block per file) but not asserted here.
+///
+/// @param coreExpressionMap Output of `loadCoreExpressionMap` /
+///                          `modifyCoreExpressionMap`.
+/// @return The full anchor key string (e.g. `"AnchorPeano"`), or empty
+///         string if no key starts with `"Anchor"` (a missing anchor
+///         tripping `initAnchor`'s assert).
+/// @see `initAnchor` — primary consumer.
 inline std::string
 findAnchorKey(const std::map<std::string, ce::CoreExpressionConfig>& coreExpressionMap)
 {
@@ -142,6 +264,15 @@ findAnchorKey(const std::map<std::string, ce::CoreExpressionConfig>& coreExpress
     return "";
 }
 
+/// @brief Synthesize the canonical example expression for an anchor name.
+///
+/// @details
+/// Produces `"(<name>[1,2,...,arity])"`. Used as the `exampleExpression`
+/// slot of `AnchorInfo`. Throws `std::invalid_argument` if `arity < 0`.
+///
+/// @param name  Anchor name (e.g. `"AnchorPeano"`).
+/// @param arity Declared arity. Must be non-negative.
+/// @return Canonical signature string.
 inline std::string makeAnchorSignature(const std::string& name, int arity)
 {
     if (arity < 0) {
@@ -165,6 +296,22 @@ inline std::string makeAnchorSignature(const std::string& name, int arity)
 }
 
 
+/// @brief Build an `AnchorInfo` for a named anchor inside a `coreExpressionMap`.
+///
+/// @details
+/// Looks up `"Anchor" + anchorID` in `coreExpressionMap` and projects the
+/// per-anchor view documented at `AnchorInfo`. Asserts via `assert(false ...)`
+/// when the key is missing — a firing assert here means the JSON config
+/// for the requested anchor is missing or has the wrong key shape.
+///
+/// @param coreExpressionMap Output of `loadCoreExpressionMap` /
+///                          `modifyCoreExpressionMap`.
+/// @param anchorID          Anchor short name without the `"Anchor"`
+///                          prefix (e.g. `"Peano"`, `"Gauss"`).
+/// @return Populated `AnchorInfo`. The `definitionSets` field carries
+///         only the patterns; the mandatory flag is dropped.
+/// @invariant [I-19](../../docs/30_invariants.md#i-19) — the missing-anchor
+///            assert is intentional; a misnamed batch trips it loud.
 inline AnchorInfo initAnchor(const std::map<std::string, ce::CoreExpressionConfig>& coreExpressionMap, const std::string& anchorID) {
 
     std::string key = "Anchor" + anchorID;
@@ -190,6 +337,22 @@ inline AnchorInfo initAnchor(const std::map<std::string, ce::CoreExpressionConfi
 }
 
 
+/// @brief Binary-tree intermediate used by the parser to represent an MPL
+/// expression as an explicit tree before flattening back to the canonical
+/// string form.
+///
+/// @details
+/// Each node carries a `value` (the expression name or operator), pointers
+/// to `left` / `right` children (null for leaves), and a set of bound
+/// argument names propagated upward. Used by `readTreeFromFile`,
+/// `nodeToStr`, `treeToExpr`, `disintegrateImplication`, and the
+/// `ArgumentAnalyzer` parser.
+///
+/// Lifetime is owned by the constructing function. The companion
+/// `deleteTree(node)` function recursively frees a tree built with
+/// raw `new`.
+///
+/// @see `readTreeFromFile`, `nodeToStr`, `treeToExpr`, `deleteTree`.
 struct TreeNode1 {
     std::string value;
     TreeNode1* left;
@@ -426,6 +589,34 @@ modifyCoreExpressionMap(std::string anchorID)
 }
 
 
+/// @brief Split the comma-separated argument list of a flat MPL expression.
+///
+/// @details
+/// Operates on flat canonical MPL form: `(<name>[arg1,arg2,...,argN])` where
+/// each `argI` is itself a *flat* identifier (no inner brackets). Implementation:
+/// finds the **first** `[` and the **first** `]` after it, takes the substring
+/// between them, and splits on every `,` it sees.
+///
+/// **Important.** This is *not* a bracket-balanced parse. If a nested expression
+/// containing its own `[` / `]` / `,` appears as one of the args (e.g.
+/// `(p[(q[a,b]),c])`), `getArgs` will mis-parse:
+///
+/// - `find(']', start)` returns the **inner** `]` of `(q[a,b])`, so the
+///   captured substring is `(q[a,b` (truncated).
+/// - The inner `,` between `a` and `b` is then treated as an outer-arg
+///   separator, yielding `{"(q[a", "b"}`.
+///
+/// Callers therefore must only pass flat expressions. The static request
+/// pipeline and most prover hot paths satisfy this naturally because they
+/// pre-disintegrate compound forms into atomic predicates before reaching
+/// `getArgs`. For the few callers that need a balanced parse, the canonical
+/// path goes through `parseExpr` (a real recursive descent) instead.
+///
+/// @param expr Flat canonical MPL expression text.
+/// @return Vector of argument strings in source order, possibly empty if
+///         the expression has no `[...]` block.
+/// @pre  `expr` is flat MPL (no nested `(`/`)`/`[`/`]` inside the args).
+/// @warning Nested-expression input is silently mis-parsed; see details above.
 inline std::vector<std::string> getArgs(const std::string& expr) {
     std::vector<std::string> out;
 
@@ -459,6 +650,20 @@ inline std::vector<std::string> getArgs(const std::string& expr) {
     return out;
 }
 
+/// @brief Extract the *core expression name* from a canonical MPL expression.
+///
+/// @details
+/// Strips the leading `(` and reads the name up to the first `[`. For
+/// `(=[a,b])` returns `"="`; for `(in2[x,y,z])` returns `"in2"`; for
+/// `(AnchorPeano[N,...])` returns `"AnchorPeano"`. Companion functions
+/// `extractExpressionUniversal` (handles both negated and non-negated
+/// forms) and `extractExpressionFromNegation` (specifically for
+/// `!(<...>)` shape) cover the negation cases.
+///
+/// @param s Canonical MPL expression text. Must NOT be a negated form;
+///          for that use `extractExpressionUniversal` or
+///          `extractExpressionFromNegation`.
+/// @return Expression name (no enclosing parens or brackets).
 inline std::string extractExpression(const std::string& s) {
     std::size_t index = s.find('[');
     if (index != std::string::npos) {
@@ -476,6 +681,17 @@ inline std::string extractExpression(const std::string& s) {
     return std::string();
 }
 
+/// @brief Extract the core expression name from a possibly-negated form.
+///
+/// @details
+/// Handles both `(p[...])` and `!(p[...])` — chooses the right
+/// extractor (`extractExpression` or `extractExpressionFromNegation`)
+/// based on the leading character. Returns the name only; the negation
+/// flag is implicit in the input string and not propagated.
+///
+/// @param s Canonical MPL expression text, possibly negated.
+/// @return Core expression name (no negation prefix, no parens, no
+///         brackets).
 inline std::string extractExpressionUniversal(const std::string& s) {
     std::size_t index = s.find('[');
     if (index != std::string::npos) {
@@ -489,6 +705,16 @@ inline std::string extractExpressionUniversal(const std::string& s) {
     return std::string();
 }
 
+/// @brief Extract the core expression name from a `!(p[...])` form.
+///
+/// @details
+/// Specialized for the negated shape: skips the leading `!(` and reads
+/// the name up to the first `[`. For `!(=[a,b])` returns `"="`; for
+/// `!(in[x,y])` returns `"in"`. Companion to `extractExpression`.
+///
+/// @param s Canonical negated MPL expression. Must start with `!(`.
+/// @return Core expression name (no negation prefix, no parens, no
+///         brackets).
 inline std::string extractExpressionFromNegation(const std::string& s) {
     std::size_t startIndex = s.find("!(");
     std::size_t endIndex = s.find('[');
@@ -557,6 +783,21 @@ inline std::string joinWithComma(const std::vector<std::string>& v) {
 }
 
 
+/// @brief Trie data structure used by `replaceKeysInString` for greedy
+/// longest-match key replacement.
+///
+/// @details
+/// Nodes carry transition arrays + an optional terminal index that
+/// identifies the matched key in the original key-list order. `build`
+/// constructs the trie from a vector of keys; `matchFirst` returns the
+/// longest matching key starting at `pos` in `text` (or `false` if
+/// none).
+///
+/// Tries are cached process-wide by `getCompiledMatcher` keyed on
+/// `makeCacheKey`'s joined sorted-key string, so repeated invocations
+/// with the same key set don't re-pay the construction cost.
+///
+/// @see `replaceKeysInString` — primary consumer.
 struct KeyTrie {
     struct Node {
         std::map<char, int> next;
@@ -638,6 +879,21 @@ inline const KeyTrie& getCompiledMatcher(const std::vector<std::string>& sortedK
 }
 
 
+/// @brief Multi-key substring replacement using a precomputed `KeyTrie`.
+///
+/// @details
+/// Replaces every occurrence of any key from the substitution map with
+/// its mapped value, scanning left-to-right and using `KeyTrie::matchFirst`
+/// for greedy longest-match dispatch. Cached `KeyTrie`s are kept in a
+/// process-wide map keyed on the joined sorted-key string
+/// (`makeCacheKey`), so repeated invocations with the same key set
+/// re-use the same trie — important on the static-pipeline path where
+/// per-LB caches must compile predictably.
+///
+/// @param bigString       Source text.
+/// @param replacementMap  Map from search key to replacement.
+/// @return New string with replacements applied.
+/// @see [`KeyTrie`](#keytrie), `makeCacheKey`, `getCompiledMatcher`.
 inline std::string replaceKeysInString(const std::string& bigString,
     const std::map<std::string, std::string>& replacementMap) {
     if (replacementMap.empty()) return bigString;
@@ -684,6 +940,18 @@ inline std::string replaceKeysInString(const std::string& bigString,
     return out;
 }
 
+/// @brief Strip non-canonical artifacts (whitespace, surplus parens) from
+/// an MPL expression text.
+///
+/// @details
+/// Defensive normalizer for cases where an upstream produced a
+/// non-canonical form. Canonical MPL never has whitespace; this function
+/// removes any space / tab / newline that might have leaked in, plus any
+/// extraneous outer wrapping. Used by the compressor and a few
+/// external-theorem ingest paths.
+///
+/// @param expr Possibly-non-canonical expression text.
+/// @return Canonical form.
 inline std::string cleanExpr(const std::string& expr) {
     std::string out;
     out.reserve(expr.size());
@@ -792,6 +1060,28 @@ inline std::atomic<uint64_t> g_disintCalls{0};
 inline std::atomic<uint64_t> g_disintNs{0};
 inline std::atomic<uint64_t> g_disintCacheHits{0};
 
+/// @brief Decompose an implication string into its premise / head /
+/// remaining-args triple, applying the disintegration normalization.
+///
+/// @details
+/// `disintegrateImplication` is the parser-side counterpart of the
+/// prover's `disintegrateExpr2`: it walks an implication expression and
+/// extracts the canonical chain of `(key, value, remaining_args)` triples
+/// that the prover's hash engine expects. The result is cached in a
+/// thread-local `DisintCache` keyed on the input string so repeat calls
+/// with the same expression are O(1).
+///
+/// Three thread-safe atomic counters (`g_disintCalls`, `g_disintNs`,
+/// `g_disintCacheHits`) are bumped per call for profiling. They are
+/// inspected by some run-mode summaries but never affect behaviour.
+///
+/// @return The disintegrated head expression text. Side-effect: also
+/// fills the per-thread `DisintCache::chain` with the full
+/// `(key, value, remainingArgs)` chain so subsequent callers can read
+/// it via the same accessor pattern.
+/// @pre  Input expression follows MPL grammar; nested implications are
+///       fully bracket-balanced.
+/// @see `prover.hpp::disintegrateExpr2` — runtime counterpart.
 inline std::string disintegrateImplication(
     const std::string& exprForDesintegration,
     std::vector< std::tuple<
@@ -991,6 +1281,29 @@ inline bool staysOutputVariable(const std::string& fullExpr,
     return false;
 }
 
+/// @brief Produce the *mirrored* form of an external theorem expression,
+/// keeping the anchor's role-arguments in place but permuting the
+/// non-anchor premises.
+///
+/// @details
+/// Used by the `--mirror-externals` entry-point in `main.cpp` and by the
+/// external-theorem ingest path inside `run_modes::fullRun`. Given an
+/// external theorem `expr`, the anchor name (`anchorName`), a flag
+/// indicating whether the anchor is on the left or right side of the
+/// implication, and the relevant `coreExpressionMap`, this function:
+///
+/// 1. Identifies the anchor's role arguments inside `expr`.
+/// 2. Permutes the non-anchor premises while keeping the anchor's role
+///    arguments fixed (the *mirror* operation; the canonical
+///    `mirrored from` provenance tag).
+/// 3. Returns the mirrored expression text, or empty if the input
+///    cannot be mirrored (e.g. no anchor present or anchor in a
+///    role-incompatible position).
+///
+/// The mirroring used here corresponds to the sound `reformulated from`
+/// path used for real-math output. The incubator pipeline emits a
+/// distinct `incubator back reformulation` tag for its unsound
+/// counterpart; the two must never be conflated downstream.
 inline std::string createReshuffledMirrored(const std::string& expr,
     const std::string& anchorName,
     bool anchorFirst,
@@ -1142,6 +1455,23 @@ inline std::set<std::string> extractDifference(const std::string& s) {
     return diff;
 }
 
+/// @brief True iff the given MPL expression is *not* a top-level
+/// compound (`(>...)` / `(&...)` / their negated counterparts).
+///
+/// @details
+/// Used as a fast guard in places that need to choose between scalar
+/// and structured handling. The implementation looks only at the
+/// first few characters: it returns `false` when `expr` starts with
+/// `(>`, `!(>`, `(&`, or `!(&`, and `true` otherwise. As a
+/// consequence, negated atomic predicates such as `!(p[a])` are
+/// reported as simple, even though they carry a leading `!`. Inner
+/// parentheses elsewhere in the string are NOT inspected — callers
+/// that need a deeper structural test should route through
+/// `parseExpr` and walk the resulting tree.
+///
+/// @param expr Canonical MPL expression text.
+/// @return False for top-level compound shapes; true for everything
+///         else, including negated atomics.
 inline bool expressionIsSimple(const std::string& expr) {
     if (expr.size() >= 2 && expr[0] == '(' && expr[1] == '>') {
         return false;

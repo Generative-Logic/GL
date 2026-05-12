@@ -1,5 +1,0 @@
-(existence2[1,7,3])	main	vacuous truth	!(=[2,7])	main	(=[2,7])	main	(=[7,2])	main
-!(=[2,7])	main	symmetry of inequality	!(=[7,2])	main
-!(=[7,2])	main	task formulation
-(=[2,7])	main	symmetry of equality	(=[7,2])	main
-(=[7,2])	main	recursion

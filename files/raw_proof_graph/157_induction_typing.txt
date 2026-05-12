@@ -1,4 +1,4 @@
-(in[10,1])	main	implication	(>[1,2,3](in3[1,2,3,u_4])(in[2,u_1]))	main	(in3[12,10,7,4])	main
+(in[8,1])	main	implication	(>[1,2,3](in3[1,2,3,u_4])(in[2,u_1]))	main	(in3[7,8,9,4])	main
 (>[1,2,3](in3[1,2,3,u_4])(in[2,u_1]))	main	expansion	(implication7[4,1])	main
 (implication7[4,1])	main	disintegration	(&(&(&(&(implication6[4,1])(implication7[4,1]))(implication8[4,1]))(implication9[1,1,1,4]))(implication10[1,1,4]))	main
 (&(&(&(&(implication6[4,1])(implication7[4,1]))(implication8[4,1]))(implication9[1,1,1,4]))(implication10[1,1,4]))	main	expansion	(fXYZ[4,1,1,1])	main
@@ -7,4 +7,4 @@
 (NaturalNumbers[1,2,3,4,5])	main	disintegration	(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))	main
 (&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))	main	expansion	(AnchorPeano[1,2,3,4,5,6])	main
 (AnchorPeano[1,2,3,4,5,6])	main	task formulation
-(in3[12,10,7,4])	main	task formulation
+(in3[7,8,9,4])	main	task formulation

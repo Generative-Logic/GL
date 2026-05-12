@@ -9,6 +9,10 @@
       <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
       <Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions>
     </Filter>
+    <Filter Include="Tests">
+      <UniqueIdentifier>{B41E5D29-9C4F-4F1B-9E62-1B5FAC44E4D5}</UniqueIdentifier>
+      <Extensions>cpp;hpp</Extensions>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\main.cpp">
@@ -20,14 +24,41 @@
     <ClCompile Include="src\prover.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\memory.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\filter.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="src\visualizer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\compressor.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\run_modes.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\pruner.cpp">
+    <ClCompile Include="src\conjecturer.cpp">
       <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_harness.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_memory.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_compiler.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_filter.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_compressor.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_conjecturer.cpp">
+      <Filter>Tests</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -40,7 +71,16 @@
     <ClInclude Include="src\prover.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="src\filter.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\conjecturer.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="src\parameters.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\compressor.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\run_modes.hpp">
@@ -49,8 +89,8 @@
     <ClInclude Include="src\json.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\pruner.hpp">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="src\tests\test_harness.hpp">
+      <Filter>Tests</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

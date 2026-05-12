@@ -1,0 +1,24 @@
+Package: vcpkg-cmake-config
+Version: 2024-05-23
+Architecture: x64-windows
+Multi-Arch: same
+Abi: f056f335ed3ef06f9b63c3003dd3f706b3e91e342b4e5ae860b1914285ca9526
+Status: install ok installed
+
+Package: vcpkg-cmake
+Version: 2024-04-23
+Architecture: x64-windows
+Multi-Arch: same
+Abi: fc30ec2aa6ba4b72e29cdc415423e12337a7e2f6dee9b1c970ec78f6b539ad1c
+Status: install ok installed
+
+Package: mimalloc
+Version: 2.2.3
+Port-Version: 1
+Depends: vcpkg-cmake, vcpkg-cmake-config
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 669862188e069e87f22741c0167412b5998bcbc026a1b5b7675f5b24e7a2db3f
+Description: Compact general purpose allocator with excellent performance
+Status: install ok installed
+

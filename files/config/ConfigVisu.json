@@ -334,6 +334,7 @@
 	"output_args": [],
 	"max_size_expression": 6
   },
+  "external_anchors": ["AnchorPeano", "AnchorGauss"],
   "parameters": {
    "max_number_simple_expressions": -1,
    "max_size_mapping_def_set": -1,

@@ -25,12 +25,79 @@
 #pragma once
 
 #include "memory.hpp"
+#include "filter.hpp"
 #include <fstream>
 #include <sstream>
 #include <mutex>
+#include <atomic>
+
+// DEBUG (D-44 trap): forward declaration moved into namespace gl below — see
+// after `namespace gl {` opens.
 
 namespace gl {
 
+    /// @brief The prover engine.
+    ///
+    /// @details
+    /// `ExpressionAnalyzer` is the central object of the GL pipeline. One
+    /// instance is constructed per anchor batch (`Peano`, `Gauss`,
+    /// `IncubatorPeano`, etc.); it owns the per-batch state — the LB tree
+    /// roots (`body`, `ceBody`), the per-anchor configuration
+    /// (`coreExpressionMap`, `anchorInfo`), the global theorem list
+    /// (`globalTheoremList`), the dependency tracker
+    /// (`globalDependencies`), the OR-pair tracker (`orCandidates`),
+    /// the CE-filter contradiction table (`contradictionTable`), the
+    /// per-LB mailboxes (`boxes`, `boxesCE`), and a stack of mutexes
+    /// guarding the global side-tables during the parallel hash burst.
+    ///
+    /// The class declaration lives entirely in this header (C++ requires
+    /// a single class definition); method bodies are split across four
+    /// translation units:
+    ///
+    /// - `prover.cpp`  — the bulk of the prover (kernel + helpers).
+    /// - `memory.cpp`  — hash-engine bodies that operate on the
+    ///   memory.hpp data structures.
+    /// - `filter.cpp`  — CE-filter bodies + contradiction-handler hook.
+    /// - this header   — inline methods that are short enough to inline
+    ///   into hot-path callers.
+    ///
+    /// **Lifecycle.**
+    /// The constructor (defined in `prover.cpp`) loads the per-anchor
+    /// JSON config via `ce::modifyCoreExpressionMap`, builds the
+    /// `AnchorInfo` via `ce::initAnchor`, and seeds the inline
+    /// counters (`implCounter`, `existenceCounter`, etc.) from
+    /// configured starts. Construction does NOT run the pipeline; that
+    /// is driven by `run_modes::fullRun`.
+    ///
+    /// **Mutex contract.**
+    /// During the parallel hash burst inside `proveKernel`, threads
+    /// MUST NOT write to cross-LB shared state ([I-28](../../docs/30_invariants.md#i-28)).
+    /// The mutexes (`dependenciesMutex`, `theoremListMutex`,
+    /// `inductionMemoryBlocksMutex`, `updateGlobalMutex`,
+    /// `updateGlobalDirectMutex`, `orCandidatesMutex`) gate the
+    /// post-`pool.join()` collector phase that drains the per-thread
+    /// `updateGlobalTuples` / `updateGlobalDirectTuples` queues into
+    /// the global state.
+    ///
+    /// **Reads on hot paths.**
+    /// `coreExpressionMap`, `anchorInfo`, `parameters`,
+    /// `allMappingsAna`, `allPermutationsAna`, `operators`,
+    /// `expressionsFromConfig` are all populated at construction and
+    /// read-only afterwards — accessed without locks during the
+    /// parallel phase.
+    ///
+    /// @see [`Memory`](memory.hpp#memory) — the LB type.
+    /// @see [`HashMemory`](memory.hpp#hashmemory) — per-LB rule store.
+    /// @see [`Mail`](memory.hpp#mail) — inter-LB message bag.
+    /// @see [`Dependencies`](memory.hpp#dependencies) — the
+    ///      `globalDependencies` data structure.
+    /// @see The `performElementaryLogicalStep` hashburst dump operating
+    ///      on this state is sacred infrastructure and must not be
+    ///      modified autonomously.
+    /// @see Architectural changes to prover semantics, provenance,
+    ///      scope handling, contradiction logic, equivalence-class
+    ///      application, hash-engine behavior, or the proof-graph
+    ///      contract require explicit user approval.
     struct ExpressionAnalyzer {
         ProverParameters parameters;
         Memory body;
@@ -49,20 +116,12 @@ namespace gl {
         std::vector<std::string> lastCompressionSurvivors;
         std::vector<Memory*> inductionMemoryBlocks;
 
-        // Deferred ancestor-origin queue. Filled (under mutex) by the
-        // primedForContradiction handler in addStatement when a reductio
-        // contradiction fires; the original code walked memoryBlock.parentMemory
-        // and wrote directly into every ancestor's exprOriginMap, which raced
-        // with the ancestor's own thread. Drain runs single-threaded inside
-        // proveKernel after pool.join(), in sorted order, mirroring the
-        // inductionMemoryBlocks deferred-activate pattern. See D-39.
-        struct PendingAncestorOrigin {
-            Memory* emitter;
-            ExpressionWithValidity ev;
-            std::pair<std::string, std::vector<ExpressionWithValidity>> origin;
-            int maxOrigins;
-        };
-        std::vector<PendingAncestorOrigin> pendingAncestorOrigins;
+        // pendingAncestorOrigins (D-39 deferred ancestor-origin queue) — RETIRED
+        // by D-51, 2026-05-08. The mechanism walked memoryBlock.parentMemory and
+        // wrote contradiction records into every ancestor's exprOriginMap; D-51
+        // localised the contradiction record to the __contradiction__ LB and the
+        // queue + drain loop never fired again. Struct, field, mutex, drain loop,
+        // and filter.cpp reset all removed in the cleanup commit following D-52.
 
         std::map<std::pair<int, int>, std::vector<std::vector<int> > > allMappingsAna;
         std::map<int, std::vector<std::vector<int> > > allPermutationsAna;
@@ -95,7 +154,27 @@ namespace gl {
 
         
 
-        // Cached proof stacks for theorems whose LBs were destroyed between big iterations
+        /// @brief Cache of proof stacks for theorems whose LBs were destroyed
+        /// between big iterations.
+        ///
+        /// @details
+        /// The prover tears down certain LBs (typically integration sub-blocks
+        /// or contradiction LBs) at iteration boundaries to keep memory
+        /// bounded. If a theorem proven inside a torn-down LB still needs
+        /// its proof stack to land in the proof graph, this cache holds
+        /// the stack until export.
+        ///
+        /// Three slots:
+        /// - `stack0` — direct-proof or check-zero stack (the canonical
+        ///   stack of the theorem's main proof).
+        /// - `stack1` — check_induction_condition stack (induction-only).
+        /// - `stack2` — induction-typing sub-proof `(in[indVar, anchor_args[0]])`.
+        ///   Populated in the pre-teardown cache pass; built via
+        ///   `buildStack` on the parent memoryBlock from the typing goal.
+        ///   See [`docs/induction_typing_plan.md`](../../docs/induction_typing_plan.md)
+        ///   and [I-18](../../docs/30_invariants.md#i-18).
+        ///
+        /// `cachedProofStacks` is keyed on the theorem's compiled-form text.
         struct CachedProofStack {
             std::vector<std::vector<std::string>> stack0; // direct_proof or check_zero
             std::vector<std::vector<std::string>> stack1; // check_induction_condition (induction only)
@@ -106,7 +185,25 @@ namespace gl {
         };
         std::map<std::string, CachedProofStack> cachedProofStacks;
 
-        // OR theorem tracking
+        /// @brief OR-theorem candidate — a pair of dual implications waiting
+        /// for both halves to be proved before an OR theorem can be emitted.
+        ///
+        /// @details
+        /// An OR theorem `(a ∨ b)` is canonically proved by establishing
+        /// both `!a → b` and `!b → a`. When the prover discovers either
+        /// half it records an `OrCandidate` keyed on the canonical pair
+        /// in `orCandidates`; when the second half lands, both
+        /// `existenceProved` and `companionProved` flip to `true` and
+        /// the OR theorem is emitted via `constructOrTheorem`.
+        ///
+        /// The companion mutex `orCandidatesMutex` protects writes during
+        /// the parallel hash burst so two threads concurrently proving
+        /// the two halves don't race.
+        ///
+        /// @see `checkOrCompletion` — emission trigger.
+        /// @see `constructOrTheorem` — final OR-theorem builder.
+        /// @see [`docs/20_core_concepts/07_or_branching.md`](../../docs/20_core_concepts/07_or_branching.md)
+        ///      for the full OR-branching chapter.
         struct OrCandidate {
             std::string existenceTheorem;   // !a -> b form
             std::string companionTheorem;   // !b -> a form
@@ -125,22 +222,53 @@ namespace gl {
         mutable std::mutex dependenciesMutex;  // protects globalDependencies
         mutable std::mutex theoremListMutex;   // protects globalTheoremList
         mutable std::mutex inductionMemoryBlocksMutex;   // protects globalTheoremList
-        mutable std::mutex pendingAncestorOriginsMutex;  // protects pendingAncestorOrigins
         mutable std::mutex updateGlobalMutex;
         mutable std::mutex updateGlobalDirectMutex;
 
 
+        /// @brief Construct the prover for a named anchor batch.
+        /// @details Loads `Config<anchorID>.json` via
+        /// `ce::modifyCoreExpressionMap`, builds `anchorInfo` via
+        /// `ce::initAnchor`, seeds the operator/variable counters from
+        /// `ProverParameters`, and pre-populates `coreExpressionMap`.
+        /// Body in `prover.cpp`. Construction does not run the pipeline.
+        /// @param anchorID Short anchor name (e.g. `"Peano"`, `"Gauss"`,
+        ///                 `"IncubatorPeano"`).
         ExpressionAnalyzer(std::string anchorID);
 
+        /// @brief Read the per-anchor simple-fact j-copies. Body in `filter.cpp`.
         std::vector<std::vector<std::string>> readSimpleFacts() const;
 
+        /// @brief Canonicalize an MPL expression — strip whitespace, fix
+        /// outer-paren wrapping. Body in `prover.cpp`.
         std::string smoothenExpr(const std::string& expr);
+
+        /// @brief Recursive helper for `groomExpr` — parses one subexpression
+        /// into the flat-list form. Body in `prover.cpp`.
         std::vector<std::string> groomSubexpr(const std::string& s, int side, std::size_t& index);
+
+        /// @brief Convert a tree-format MPL expression into a flat
+        /// `std::vector<std::string>` representation suitable for the hash
+        /// engine. Body in `prover.cpp`.
         std::vector<std::string> groomExpr(const std::string& treeStr);
+
+        /// @brief Find the last-removed args of an expression — those that
+        /// were quantified out by the most recent `>[...]`. Body in `prover.cpp`.
         std::vector<std::string> listLastRemovedArgs(const std::string& expr);
+
+        /// @brief Rename the last-removed args using fresh `it_<n>_lev_<k>_<id>`
+        /// names starting at `startInt`. Body in `prover.cpp`.
+        /// @return Tuple of `(renamed expression, new startInt, helper text)`.
         std::tuple<std::string, int, std::string>
             renameLastRemoved(const std::string& expr, int startInt);
+
+        /// @brief Expand a compact MPL expression into its full operator-by-
+        /// operator form. Body in `prover.cpp`.
         std::string expandExpr(const std::string& expr);
+
+        /// @brief Compute the *global key* for a memory block — the canonical
+        /// vector identifying its position in the LB tree. Used as a
+        /// `std::map` key in cross-LB tables. Body in `prover.cpp`.
         std::vector<std::string> getGlobalKey(const Memory& memoryBlock);
 
         void addToHashMemory(const std::vector<std::string>& key,
@@ -293,14 +421,16 @@ namespace gl {
             bool local,
             const std::set<int>& levels,
             const std::pair<std::string, std::vector<ExpressionWithValidity>>& origin,
-            const std::string& validityName);
+            const std::string& validityName,
+            bool allowSymmetry);
 
         void addNegatedEquality(const std::string& expr,
             Memory& memoryBlock,
             bool local,
             const std::set<int>& levels,
             const std::pair<std::string, std::vector<ExpressionWithValidity>>& origin,
-            const std::string& validityName);
+            const std::string& validityName,
+            bool allowSymmetry);
 
 
         void checkNecessityForEquality(const std::string& inputExprStr, Memory& mb, std::string validityName);
@@ -447,7 +577,15 @@ namespace gl {
             Memory& mb,
             const std::string& validityName);
 
-        void buildStack(Memory& memoryBlock,
+        // D-51: returns true if an acyclic derivation tree was emitted for
+        // `proved` from this memoryBlock's exprOriginMap. False signals to the
+        // recursive caller that this subtree could not avoid path-cycles —
+        // caller may backtrack (try a different origin for its own node).
+        // Top-level callers (directStack, checkZeroStack, ...) ignore the
+        // return; on failure the function still emits the front-origin row as
+        // a degraded fallback so the chapter has some content (verifier will
+        // flag the residual cycle).
+        bool buildStack(Memory& memoryBlock,
                 const ExpressionWithValidity& proved,
                 std::vector<std::vector<std::string>>& stack,
                 std::set<ExpressionWithValidity>& covered);
@@ -534,6 +672,53 @@ namespace gl {
                                        const std::unordered_set<std::string>& externalTheorems = {});
 
 
+        /// @brief Append an origin record into a per-(expression, validity)
+        /// vector with cap-full replacement of equality-convenience tags.
+        ///
+        /// @details
+        /// Called from every site that records why an expression was deposited
+        /// into an LB. The map's value is `std::vector<(tag, antecedents)>`;
+        /// `addOrigin` enforces:
+        ///
+        /// 1. Below the `maxOrigins` cap — append the origin if it is not
+        ///    already present (set semantics within the vector).
+        /// 2. At the cap, with the new origin already present — keep
+        ///    existing slots.
+        /// 3. At the cap, with a NEW origin and the new tag is NOT one of
+        ///    the equality-convenience tags (`equality1` / `equality2`) —
+        ///    replace any existing equality-convenience slot with the new
+        ///    origin. *Foundation displaces convenience.* This is the
+        ///    cap-full preference policy that supersedes earlier
+        ///    "first wins" semantics; see [D-49](../../docs/40_decisions.md#d-49)
+        ///    / [I-35](../../docs/30_invariants.md#i-35) (now retired
+        ///    by D-51).
+        /// 4. At the cap, with both old and new being equality-convenience
+        ///    or both being foundational — insertion-order wins (existing
+        ///    slot is kept).
+        ///
+        /// **Why the asymmetry.** Equality1/equality2 origins are
+        /// *transitive convenience records* — they document derivability
+        /// via equivalence-class substitution and are inherently
+        /// susceptible to swap/bridge cycles when the class has multiple
+        /// members. Any other origin tag (`implication`, `recursion`,
+        /// `theorem`, `expansion`, `disintegration`, `task formulation`,
+        /// `premise element`, `reformulation*`, `mirrored from`,
+        /// `vacuous truth`, `symmetry of equality/inequality`, ...) refers
+        /// to a direct deductive step that does not have this cyclic
+        /// structure. With cap = 1 in non-compressor mode the surviving
+        /// origin is determined purely by insertion order, which silently
+        /// picks cyclic equality1/equality2 records over foundational
+        /// origins; the chain walk then loops in the verifier.
+        ///
+        /// @param map         Owning origin map (typically
+        ///                    `Memory::exprOriginMap` or
+        ///                    `EquivalenceClass::equalityOriginMap`).
+        /// @param ev          `(expression, validity)` key.
+        /// @param origin      `(tag, antecedents)` record to insert.
+        /// @param maxOrigins  Cap. Caller picks
+        ///                    `parameters.compressor_max_origins_per_expr`
+        ///                    in compressor mode, otherwise
+        ///                    `parameters.max_origin_per_expr`.
         // Helper to append origins safely up to max limit
         inline void addOrigin(std::map<ExpressionWithValidity, std::vector<std::pair<std::string, std::vector<ExpressionWithValidity>>>>& map,
             const ExpressionWithValidity& ev,
@@ -541,8 +726,52 @@ namespace gl {
             int maxOrigins) const {
             auto& vec = map[ev];
             if (vec.size() < static_cast<size_t>(maxOrigins)) {
-                if (std::find(vec.begin(), vec.end(), origin) == vec.end()) vec.push_back(origin);
+                if (std::find(vec.begin(), vec.end(), origin) == vec.end()) {
+                    vec.push_back(origin);
+                }
+                return;
             }
+
+            // === Cap-full origin-preference replacement (D-49, I-35) ===
+            // vec is at maxOrigins. The legacy behavior was "first wins"
+            // (silently drop the new origin). With cap=1 in non-compressor
+            // mode the surviving origin is determined purely by insertion
+            // order, which silently picks cyclic `equality1`/`equality2`
+            // records over foundational origins (`implication`, `recursion`,
+            // `theorem`, `expansion`, ...). Both cycle members of a
+            // swap-cycle (chapter-100/101 theorem-96 Gauss fold) arrive in
+            // mailIn carrying BOTH a foundational `implication` origin AND
+            // a cyclic `equality1` origin; cap=1 + insertion-order picked
+            // the cyclic one and dropped the foundational one — chain walk
+            // then loops in the verifier.
+            //
+            // Equality1/equality2 origins are *transitive convenience
+            // records* — they document derivability via equivalence-class
+            // substitution and are inherently susceptible to swap/bridge
+            // cycles when the class has multiple members. Any other origin
+            // tag (`implication`, `recursion`, `theorem`, `expansion`,
+            // `disintegration`, `task formulation`, `premise element`,
+            // `reformulation*`, `mirrored from`, `vacuous truth`,
+            // `symmetry of equality/inequality`, ...) refers to a direct
+            // deductive step that does not have this cyclic structure.
+            //
+            // Policy: when at cap and a non-equality origin arrives, replace
+            // any equality1/equality2 slot with it. Foundation displaces
+            // convenience. Below cap and equality-vs-equality / non-equality-
+            // vs-non-equality cases keep insertion order semantics.
+            if (std::find(vec.begin(), vec.end(), origin) != vec.end()) return;
+            auto isEqualityConvenienceTag = [](const std::string& tag) {
+                return tag == "equality1" || tag == "equality2";
+            };
+            if (!isEqualityConvenienceTag(origin.first)) {
+                for (auto& slot : vec) {
+                    if (isEqualityConvenienceTag(slot.first)) {
+                        slot = origin;
+                        return;
+                    }
+                }
+            }
+            // Otherwise: existing slot wins (insertion-order tiebreak).
         }
 
 
@@ -552,10 +781,39 @@ namespace gl {
         // Static pipeline helpers (zero string operations in hot path)
         // =================================================================
 
-        /// Build IntNormalizedKey from pre-encoded IntEncodedExpr pointer array.
-        /// No nm.encode() calls — reads int16_t fields directly.
-        /// Always uses ignoreU=false semantics: all args normalized, changeable=0.
-        /// Unchangeable args are distinguished by their u_-prefixed argId.
+        /// @brief Build an `IntNormalizedKey` from a pre-encoded
+        /// `IntEncodedExpr` pointer array — no `nm.encode()` calls,
+        /// reads `int16_t` fields directly.
+        ///
+        /// @details
+        /// Hot-path key builder used by the static request pipeline.
+        /// Layout matches `IntNormalizedKey`'s documented format:
+        ///
+        ///   [expressionID] [negation] [varID, changeable] x arity
+        ///
+        /// Always uses `ignoreU=false` semantics: all args are
+        /// normalized to sequential ids in first-appearance order with
+        /// `changeable=0`. Unchangeable args are distinguished from
+        /// changeable by their `u_`-prefixed `argId` field (set in
+        /// `encodeExpression`), not by an `ignoreU` flag here.
+        ///
+        /// @param exprs        Array of `IntEncodedExpr*` to fold into the
+        ///                     key, in source order.
+        /// @param count        Length of `exprs`.
+        /// @param outBuf       Caller-owned `int16_t` buffer for the
+        ///                     key bytes. Must be at least `bufCapacity`
+        ///                     wide.
+        /// @param bufCapacity  Capacity of `outBuf`. Must be ≥ the worst-
+        ///                     case key length for `count` expressions.
+        /// @return Number of `int16_t` slots written into `outBuf`.
+        /// @pre  Each `exprs[i]` is a valid `IntEncodedExpr` minted by
+        ///       `encodeExpression`.
+        /// @post Caller wraps the returned bytes in an `IntNormalizedKey`
+        ///       — typically copying through `KeyArena::store` to
+        ///       guarantee pointer stability.
+        /// @see [`IntNormalizedKey`](memory.hpp#intnormalizedkey) — output
+        ///      type.
+        /// @see `makeIntNormalizedKey` — string-input counterpart.
         inline int16_t makeIntNormalizedKeyFromEncoded(
             const IntEncodedExpr* const* exprs, int16_t count,
             int16_t* outBuf, int16_t bufCapacity) {
@@ -856,8 +1114,7 @@ namespace gl {
             int16_t* outBuf,
             int16_t bufCapacity,
             int16_t* reverseMap,     // reverseMap[normId] = original varId
-            int16_t& numNormVars,
-            Memory* debugBody = nullptr) {
+            int16_t& numNormVars) {
 
             // Small linear map instead of 8KB memset
             int16_t varIdsL[ExecutionParameters::MAX_KEY_SLOTS];
@@ -884,46 +1141,10 @@ namespace gl {
                         ? nm.encode("u_" + arg[1])
                         : nm.encode(arg[1]);
                     if (varId >= ExecutionParameters::MAX_NAME_IDS) {
-                        auto dumpPath = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path()
-                                        / ".debug" / "name_overflow_dump.txt";
-                        std::ofstream dump(dumpPath, std::ios::trunc);
-                        dump << "=== NAME ID OVERFLOW ===\n";
-                        dump << "varId=" << varId << " MAX=" << ExecutionParameters::MAX_NAME_IDS << "\n";
-                        dump << "arg[1]=" << arg[1] << " isUnchangeable=" << isUnchangeable << "\n\n";
-
-                        dump << "=== NameMap (" << nm.idToName.size() << " entries) ===\n";
-                        for (size_t id = 0; id < nm.idToName.size(); ++id) {
-                            dump << "  [" << id << "] " << nm.idToName[id] << "\n";
-                        }
-
-                        if (debugBody) {
-                            dump << "\n=== LB Parent Chain ===\n";
-                            Memory* p = debugBody;
-                            while (p) {
-                                dump << "  " << p->exprKey << "\n";
-                                p = p->parentMemory;
-                            }
-
-                            dump << "\n=== Encoded Statements (" << debugBody->encodedStatements.size() << ") ===\n";
-                            for (const auto& stmt : debugBody->encodedStatements) {
-                                dump << "  " << stmt.original << "\t[v=" << stmt.validityName << "]\n";
-                            }
-
-                            dump << "\n=== Hash Implications (" << debugBody->overallHashMemory.originals.size() << ") ===\n";
-                            for (const auto& impl : debugBody->overallHashMemory.originals) {
-                                dump << "  ";
-                                for (size_t ii = 0; ii < impl.size(); ++ii) {
-                                    if (ii == impl.size() - 1) dump << " -> ";
-                                    else if (ii > 0) dump << " & ";
-                                    dump << impl[ii];
-                                }
-                                dump << "\n";
-                            }
-                        } else {
-                            dump << "\n(no debugBody provided)\n";
-                        }
-                        dump.close();
-                        std::cerr << "NAME ID OVERFLOW — dump written to .debug/name_overflow_dump.txt" << std::endl;
+                        std::cerr << "NAME ID OVERFLOW: varId=" << varId
+                                  << " MAX=" << ExecutionParameters::MAX_NAME_IDS
+                                  << " arg[1]=" << arg[1]
+                                  << " isUnchangeable=" << isUnchangeable << std::endl;
                     }
                     assert(varId < ExecutionParameters::MAX_NAME_IDS);
 
@@ -1476,6 +1697,14 @@ namespace gl {
                         mb.overallHashMemory.admissionMap.insert(std::make_pair(ExpressionWithValidity(removed, validityName), s));
                         mb.overallHashMemory.admissionStatusMap[ExpressionWithValidity(removed, validityName)] = partOfRecursion;
                     }
+                    // Populate vars-in-keys cache for the algebra equi-class
+                    // hook (applyEquivalenceClassToAdmissionMap short-circuits
+                    // on zero overlap).
+                    for (const std::string& a : ce::getArgs(removed)) {
+                        if (a != "marker") {
+                            mb.overallHashMemory.varsInAdmissionMapKeys.insert(a);
+                        }
+                    }
                 }
             }
         }
@@ -1602,6 +1831,23 @@ namespace gl {
         // gates — i.e., would have been admitted independently of the
         // local u_-impl (C) extension. Used in makeNormalizedKeysForAdmission
         // to fence classic per-element accept to baseline-seen keys only.
+        /// @brief Predicate: does the (key, value) pair pass the *baseline
+        /// classic* qualification gate?
+        ///
+        /// @details
+        /// Baseline-only behavior preserved by the static-pipeline migration.
+        /// Used by `makeNormalizedKeysForAdmission` to decide which subkeys
+        /// admit classic per-element gating vs the local-u path. The classic
+        /// gate fires only when the implication has at least
+        /// `minNumOperatorsKey` operators and matches the baseline qualifier
+        /// shape; the local-u gate (the `(C)` qualification) is wider but
+        /// gates differently.
+        ///
+        /// @param key                Implication's key (string form).
+        /// @param value              Head expression text.
+        /// @param minNumOperatorsKey Threshold for the operator-count gate.
+        /// @return True iff the pair matches the baseline classic shape.
+        /// @see `implicationIsQualified` — superset gate that includes (C).
         inline bool baselineClassicQualifies(const std::vector<std::string>& key,
                                              const std::string& value,
                                              int minNumOperatorsKey) const {
@@ -1621,6 +1867,26 @@ namespace gl {
             return false;
         }
 
+        /// @brief Predicate: does the (key, value) pair qualify for hash
+        /// engine installation at all?
+        ///
+        /// @details
+        /// Wider gate than `baselineClassicQualifies`. Three branches
+        /// in source comment shorthand:
+        /// - **(A)** classic single-output path,
+        /// - **(B)** classic multi-element path,
+        /// - **(C)** local-u path (admits keys with `u_`-prefixed args
+        ///   that meet the local-u criterion).
+        ///
+        /// Used by both `addToHashMemory` (Path 1, head implication LMV
+        /// inserts) and `makeNormalizedKeysForAdmission` (Path 2, marker
+        /// LMV inserts) to short-circuit before any expensive work when
+        /// the implication shape would never fire.
+        ///
+        /// @param key                Implication's key (string form).
+        /// @param value              Head expression text.
+        /// @param minNumOperatorsKey Threshold for the operator-count gate.
+        /// @return True iff the pair is admissible into hash memory.
         inline bool implicationIsQualified(const std::vector<std::string>& key, const std::string& value, int minNumOperatorsKey) {
 
 
@@ -1705,110 +1971,18 @@ namespace gl {
 
         /// Static filter: works on IntEncodedExpr*, returns passing indices.
         /// No heap allocation. outIndices must have room for count entries.
-        inline int16_t filterIntEncodedStatements(
+        /// Body lives in memory.cpp (moved in commit D of hash_move).
+        int16_t filterIntEncodedStatements(
             const IntEncodedExpr* stmts, int16_t count,
             const HashMemory& mem,
-            int16_t* outIndices, int16_t maxOut) {
-
-            int16_t buf[ExecutionParameters::MAX_KEY_SLOTS];
-            int16_t nOut = 0;
-
-            for (int16_t i = 0; i < count && nOut < maxOut; ++i) {
-                const IntEncodedExpr& s = stmts[i];
-
-                // Build single-expr IntNormalizedKey on stack
-                int16_t pos = 0;
-                buf[pos++] = s.nameId;
-                buf[pos++] = s.negation;
-                for (int16_t j = 0; j < s.arity; ++j) {
-                    buf[pos++] = s.argId[j];
-                    buf[pos++] = 0; // changeable (ignoreU=false)
-                }
-                // Normalize: sequential IDs by first appearance
-                {
-                    int16_t varMap[ExecutionParameters::MAX_KEY_SLOTS];
-                    int16_t nV = 0;
-                    int16_t nextN = 1;
-                    // Start after nameId+negation (pos 2), step by 2 (varId, changeable)
-                    for (int16_t p = 2; p < pos; p += 2) {
-                        int16_t raw = buf[p];
-                        int16_t norm = 0;
-                        for (int16_t v = 0; v < nV; ++v) {
-                            if (varMap[v * 2] == raw) { norm = varMap[v * 2 + 1]; break; }
-                        }
-                        if (norm == 0) {
-                            norm = nextN++;
-                            varMap[nV * 2] = raw;
-                            varMap[nV * 2 + 1] = norm;
-                            ++nV;
-                        }
-                        buf[p] = norm;
-                    }
-                }
-
-                IntNormalizedKey ik(1, buf, pos);
-                if (mem.normalizedEncodedSubkeys.find(ik) == mem.normalizedEncodedSubkeys.end())
-                    continue;
-                if (s.maxIteration > parameters.maxIterationNumberVariable)
-                    continue;
-
-                outIndices[nOut++] = i;
-            }
-            return nOut;
-        }
+            int16_t* outIndices, int16_t maxOut);
 
         /// CE filter: accepts statements that appear in subkeys OR full keys.
-        inline int16_t filterIntEncodedStatementsCE(
+        /// Body lives in filter.cpp (moved in commit C).
+        int16_t filterIntEncodedStatementsCE(
             const IntEncodedExpr* stmts, int16_t count,
             const HashMemory& mem,
-            int16_t* outIndices, int16_t maxOut) {
-
-            int16_t buf[ExecutionParameters::MAX_KEY_SLOTS];
-            int16_t nOut = 0;
-
-            for (int16_t i = 0; i < count && nOut < maxOut; ++i) {
-                const IntEncodedExpr& s = stmts[i];
-
-                // Build single-expr IntNormalizedKey on stack
-                int16_t pos = 0;
-                buf[pos++] = s.nameId;
-                buf[pos++] = s.negation;
-                for (int16_t j = 0; j < s.arity; ++j) {
-                    buf[pos++] = s.argId[j];
-                    buf[pos++] = 0; // changeable
-                }
-                // Normalize: sequential IDs by first appearance
-                {
-                    int16_t varMap[ExecutionParameters::MAX_KEY_SLOTS];
-                    int16_t nV = 0;
-                    int16_t nextN = 1;
-                    for (int16_t p = 2; p < pos; p += 2) {
-                        int16_t raw = buf[p];
-                        int16_t norm = 0;
-                        for (int16_t v = 0; v < nV; ++v) {
-                            if (varMap[v * 2] == raw) { norm = varMap[v * 2 + 1]; break; }
-                        }
-                        if (norm == 0) {
-                            norm = nextN++;
-                            varMap[nV * 2] = raw;
-                            varMap[nV * 2 + 1] = norm;
-                            ++nV;
-                        }
-                        buf[p] = norm;
-                    }
-                }
-
-                IntNormalizedKey ik(1, buf, pos);
-                if (mem.normalizedEncodedSubkeys.find(ik) == mem.normalizedEncodedSubkeys.end()
-                    && mem.normalizedEncodedKeys.find(ik) == mem.normalizedEncodedKeys.end())
-                    continue;
-                if (s.maxIteration > parameters.maxIterationNumberVariable)
-                    continue;
-
-                outIndices[nOut++] = i;
-            }
-            return nOut;
-        }
+            int16_t* outIndices, int16_t maxOut);
 
         inline std::pair<std::string, std::string>
             extractValues(const std::string& s,
@@ -1826,10 +2000,13 @@ namespace gl {
         inline void updateRejectedMap(const std::string& renamedExpr,
             const std::string& markedExpr,
             const std::string& expr,
+            const std::string& concreteConstituent,
+            const std::vector<std::string>& siblings,
+            const std::set<int>& levels,
             HashMemory& hashMemory,
             int iteration,
             std::string validityName) {
-            RejectedMapValue v(renamedExpr, expr, iteration);
+            RejectedMapValue v(renamedExpr, expr, iteration, concreteConstituent, siblings, levels);
             hashMemory.rejectedMap[ExpressionWithValidity(markedExpr, validityName)].insert(v);
         }
 
@@ -1876,7 +2053,7 @@ namespace gl {
             const std::set<std::string>& equalitiesForOrigin,
             Memory& mb) {
             auto emitOne = [&](const std::string& pre, const std::string& post) {
-                mb.internalMailIn.statements.insert(std::make_tuple(post, levels, validityName));
+                mb.internalMailIn.statements.insert(std::make_pair(ExpressionWithValidity(post, validityName), levels));
 
                 if (parameters.trackHistory) {
                     std::pair<std::string, std::vector<ExpressionWithValidity>> origin;
@@ -1909,6 +2086,23 @@ namespace gl {
         // No admission map consulted. Operator output slots are deliberately
         // excluded — those have a working admission path via `isAdmitted` and
         // must not be double-admitted through this rule.
+        /// @brief Pass-B single-input-operator gate.
+        ///
+        /// @details
+        /// Returns true iff the candidate operator's `inputIndices.size() == 1`
+        /// — the strict single-input-operator gate. This predicate is
+        /// **load-bearing** for the Pass-B disintegration logic per
+        /// [I-6](../../docs/30_invariants.md#i-6); widening it broke the
+        /// Gauss batch on commit `463f402` and was reverted with the
+        /// invariant added.
+        ///
+        /// @warning Per I-6, this gate must NOT be widened. Adding a
+        ///          `inputIndices.size() == 2` branch silently admits
+        ///          rules that the Gauss-batch-blow-up evidence proves
+        ///          unsafe.
+        /// @invariant [I-6](../../docs/30_invariants.md#i-6).
+        /// @see [OPEN-3 in `docs/SwDD.md`](../../docs/SwDD.md#open-questions)
+        ///      — the unresolved theoretical justification.
         inline bool isAllowedAsOperatorInput(const Memory& mb,
                                              const std::string& stmt,
                                              const std::string& var) {
@@ -1968,6 +2162,23 @@ namespace gl {
         void cleanUpOrIntegrationBranches(const std::string& orExprSig,
             Memory& memoryBlock);
 
+        /// @brief Integration-side admission check — gates whether a
+        /// compound integration body may fire from the given LB.
+        ///
+        /// @details
+        /// Walks `mb.overallHashMemory.admissionMapIntegration` for the
+        /// `(expression, validity)` pair, checks that every body element's
+        /// integration sibling list is currently satisfied, and returns
+        /// true iff the integration is admissible. Companion to `isAdmitted`
+        /// for the disintegration side; both consult `admissionStatusMap`
+        /// for the final true/false verdict and may modify it through
+        /// `admissionMapPropagate`.
+        ///
+        /// @param mb           Owning LB.
+        /// @param ev           `(expression, validity)` candidate.
+        /// @return True iff the integration body fires on this LB.
+        /// @see `isAdmitted` — disintegration-side counterpart.
+        /// @see [`HashMemory::admissionMapIntegration`](memory.hpp#hashmemory).
         inline bool isAdmittedIntegration(Memory& mb,
             const std::string& expr,
             const std::string& var,
@@ -2189,6 +2400,28 @@ namespace gl {
         }
 
 
+        /// @brief Disintegration-side admission check — gates whether a
+        /// disintegration head may fire from the given LB.
+        ///
+        /// @details
+        /// Walks `mb.overallHashMemory.admissionMap` for the
+        /// `(expression, validity)` pair, looks up the matching
+        /// `AdmissionMapValue`s, and checks each against the current
+        /// depth / secondary-iteration budget. Returns true iff at
+        /// least one admission slot is alive and all sibling premises
+        /// of that slot are present in `mb.localEncodedStatementsSet`.
+        ///
+        /// Companion to `isAdmittedIntegration` for the disintegration
+        /// path. The two share the `admissionStatusMap` cache; revival
+        /// from the rejection map (per
+        /// [I-22](../../docs/30_invariants.md#i-22)) does not clean
+        /// the admission entry.
+        ///
+        /// @param mb  Owning LB.
+        /// @param ev  `(expression, validity)` candidate.
+        /// @return True iff the disintegration head fires on this LB.
+        /// @see `isAdmittedIntegration` — integration-side counterpart.
+        /// @see [I-22](../../docs/30_invariants.md#i-22).
         inline bool isAdmitted(Memory& mb,
             const std::string& expr,
             const std::string& var,
@@ -2500,14 +2733,6 @@ namespace gl {
          * @note Asserts that any value in \p b starting with "u_" is followed by a valid integer.
          * @note Asserts that for every key in \p b mapping to a "u_" value, a corresponding key exists in \p a.
          */
-        // DEBUG: thread-local breadcrumb filled by excludeRepetitions before
-        // each createReverseUnchangeableMap call so that the failure-only
-        // assert dump inside that function can include caller context.
-        inline std::string& g_excludeRepetitionsBreadcrumb() {
-            thread_local std::string s;
-            return s;
-        }
-
         std::map<std::string, std::string> createReverseUnchangeableMap(
             const std::map<std::string, std::string>& a,
             const std::map<std::string, std::string>& b)
@@ -2541,22 +2766,7 @@ namespace gl {
                             c[b_val] = itA->second;
                         }
                         else {
-                            // DEBUG TRAP — IncubatorGauss assert investigation.
-                            {
-                                std::ofstream trap(".debug/incube_gauss_assert_trap.txt", std::ios::app);
-                                trap << "=== TRAP @ createReverseUnchangeableMap (prover.hpp) ===\n";
-                                trap << "missing key x = " << x << "\n";
-                                trap << "b[x] = " << b_val << "\n";
-                                trap << "-- map a (size=" << a.size() << ") --\n";
-                                for (const auto& kv : a) trap << "  " << kv.first << " -> " << kv.second << "\n";
-                                trap << "-- map b (size=" << b.size() << ") --\n";
-                                for (const auto& kv : b) trap << "  " << kv.first << " -> " << kv.second << "\n";
-                                trap << "-- caller breadcrumb (excludeRepetitions) --\n";
-                                trap << g_excludeRepetitionsBreadcrumb();
-                                trap << "===\n";
-                                trap.flush();
-                            }
-                            // Start strict: if 'b' has a mapping for 'x', 'a'  should too..
+                            // Strict: if 'b' has a mapping for 'x', 'a' should too.
                             assert(false && "Key found in 'b' was missing in 'a'");
                         }
                     }
@@ -2613,33 +2823,6 @@ namespace gl {
                     std::string key = "u_" + argsDefaultSignature[static_cast<std::size_t>(ind) - 1];
                     replacementMap[key] = value;
                 }
-                // DEBUG breadcrumb (force branch call site).
-                {
-                    std::ostringstream ctx;
-                    auto dumpEnc = [&](const std::string& tag, const EncodedExpression& e) {
-                        ctx << tag << ": " << e.original << " | v=" << e.validityName
-                            << " | name=" << e.name
-                            << " | neg=" << (e.negation ? "T" : "F") << "\n";
-                        for (size_t j = 0; j < e.arguments.size(); ++j) {
-                            const auto& aa = e.arguments[j];
-                            ctx << "    arg[" << j << "]:";
-                            for (size_t k = 0; k < aa.size(); ++k)
-                                ctx << " [" << k << "]=" << aa[k];
-                            ctx << "\n";
-                        }
-                    };
-                    ctx << "[FORCE BRANCH]\n";
-                    ctx << "newCoreExpressionName=" << newCoreExpressionName << " | "
-                        << "category=" << category << " | "
-                        << "force=true | defaultSignature=" << defaultSignature << "\n";
-                    ctx << "encodedTail (size=" << encodedTail.size() << "):\n";
-                    for (const auto& e : encodedTail) dumpEnc("  T", e);
-                    ctx << "encodedHead (size=" << encodedHead.size() << "):\n";
-                    for (const auto& e : encodedHead) dumpEnc("  H", e);
-                    ctx << "replacementMap (a) about to be passed:\n";
-                    for (const auto& kv : replacementMap) ctx << "  " << kv.first << " -> " << kv.second << "\n";
-                    g_excludeRepetitionsBreadcrumb() = ctx.str();
-                }
                 std::map<std::string, std::string> revUnchMap = createReverseUnchangeableMap(replacementMap, pr2.second);
 
                 std::vector<std::string> renSplitNK;
@@ -2689,35 +2872,6 @@ namespace gl {
 
                     std::pair<NormalizedKey, std::map<std::string, std::string>> attemptPr2 = makeNormalizedEncodedKey(combinedAttempt, 2);
 					std::vector<std::string> attemptSplitNK = splitNormalizedKey(attemptPr2.first.data);
-					// DEBUG TRAP — fill thread-local breadcrumb so
-					// createReverseUnchangeableMap's failure-only dump can show
-					// the offending excludeRepetitions context. Only consumed
-					// when the assert fires; no log volume on success.
-					{
-						std::ostringstream ctx;
-						auto dumpEnc = [&](const std::string& tag, const EncodedExpression& e) {
-							ctx << tag << ": " << e.original << " | v=" << e.validityName
-							    << " | name=" << e.name
-							    << " | neg=" << (e.negation ? "T" : "F") << "\n";
-							for (size_t j = 0; j < e.arguments.size(); ++j) {
-								const auto& a = e.arguments[j];
-								ctx << "    arg[" << j << "]:";
-								for (size_t k = 0; k < a.size(); ++k)
-									ctx << " [" << k << "]=" << a[k];
-								ctx << "\n";
-							}
-						};
-						ctx << "newCoreExpressionName=" << newCoreExpressionName << " | "
-						    << "category=" << category << " | "
-						    << "force=" << (force ? "true" : "false") << "\n";
-						ctx << "encodedTail (size=" << encodedTail.size() << "):\n";
-						for (const auto& e : encodedTail) dumpEnc("  T", e);
-						ctx << "encodedHead (size=" << encodedHead.size() << "):\n";
-						for (const auto& e : encodedHead) dumpEnc("  H", e);
-						ctx << "combo (size=" << combo.size() << "):\n";
-						for (const auto& e : combo) dumpEnc("  C", e);
-						g_excludeRepetitionsBreadcrumb() = ctx.str();
-					}
 					std::map<std::string, std::string> reverseUnchMap = createReverseUnchangeableMap(pr2.second, attemptPr2.second);
 					numUnchArgs = static_cast<int>(reverseUnchMap.size());
 
@@ -4196,12 +4350,55 @@ namespace gl {
                         // idToName, invalidating any reference into it.
                         std::string branchValidity = mb.nameMap.decode(branchValId);
 
-                        // Goal-expansion origin (mirrors Case A).
+                        // Goal-expansion origin (D-52, sandbox/incub_fix 2026-05-08).
+                        // The OR-integration goal `(or<N>)_integration_goal` at the
+                        // OR's parent scope is rewritten as K sub-implications
+                        // `(!D_others -> D_k)` (one per chosen branch), each at the
+                        // SAME parent scope. The sub-implication's premise is the
+                        // (left-nested) AND of negated other-disjuncts; its head is
+                        // the chosen disjunct. For K=2 (or2): premise = single
+                        // negation `!D_other`, no AND wrapper. For K>=3: AND of
+                        // negations, left-nested in the same shape that
+                        // `expandSignatureForIntegration::and` produces.
+                        //
+                        // Pre-D-52 the producer emitted a malformed history line:
+                        // KEY = bare disjunct `head` at branch validity, ORIGIN =
+                        // `expansion for integration ← (or)_integration_goal` at
+                        // parent validity. That row was rejected by the verifier
+                        // on TWO grounds — (a) namespace mismatch (line.namespace
+                        // != right_ns), and (b) bare disjunct is not the structural
+                        // expansion of `or<N>` per `_try_expand`. The new emission
+                        // fixes both: KEY and ORIGIN both at parent validity, and
+                        // LEFT side is a sub-implication shape that the verifier's
+                        // extended `_try_expand` accepts as one of K valid OR
+                        // expansions. See `docs/20_core_concepts/07_or_branching.md`
+                        // §3a `_orint_` and `docs/40_decisions.md` D-52.
                         if (parameters.trackHistory) {
+                            // Build the AND-of-negations premise for branch k.
+                            std::vector<std::string> negOthers;
+                            negOthers.reserve(renamedElements.size() - 1);
+                            for (std::size_t j = 0; j < renamedElements.size(); ++j) {
+                                if (j == k) continue;
+                                negOthers.push_back(this->negate(renamedElements[j]));
+                            }
+                            std::string premise;
+                            if (negOthers.size() == 1) {
+                                premise = negOthers[0];
+                            } else {
+                                premise = negOthers[0];
+                                for (std::size_t i = 1; i < negOthers.size(); ++i) {
+                                    premise = "(&" + premise + negOthers[i] + ")";
+                                }
+                            }
+                            // Sub-implication: `(>[]premise(head))` — empty
+                            // bound-var list since the orint branch sub-implication
+                            // doesn't introduce new quantifiers.
+                            std::string subImpl = "(>[]" + premise + head + ")";
+
                             std::pair<std::string, std::vector<ExpressionWithValidity>> originGoal;
                             originGoal.first = "expansion for integration";
                             originGoal.second.push_back(ExpressionWithValidity(cleanSignature + "_integration_goal", validityName));
-                            ExpressionWithValidity ev(head, branchValidity);
+                            ExpressionWithValidity ev(subImpl + "_integration_goal", validityName);
                             addOrigin(mb.exprOriginMap, ev, originGoal,
                                 (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
                             addOrigin(mb.mailOut.exprOriginMap, ev, originGoal,
@@ -4843,14 +5040,160 @@ namespace gl {
                 }
             }
 
-            // Returns only the "strong" variables. 
+            // Returns only the "strong" variables.
             // If all variables are weak, this returns an empty vector.
             return result;
+        }
+
+        // Per-mapping result emitted by enumerateEqClassRewrites. Holds the
+        // rewritten expression string plus the bookkeeping each caller needs:
+        //   - rewrittenExpr: wrapLeft + baseExpr + "[" + ",".join(tempList) + "]" + wrapRight
+        //   - setEqualities: justifying "(=[from,to])" strings (only populated if trackHistory)
+        //   - extraLevels  : union of clss.equalityLevelsMap[{from,to}] across substituted positions
+        //   - substMap     : from->to substitutions used by this mapping (rmi reads to propagate to siblings/compound)
+        //   - isIdentity   : true iff substMap is empty (no real substitution happened)
+        struct EqClassRewrite {
+            std::string rewrittenExpr;
+            std::set<std::string> setEqualities;
+            std::set<int> extraLevels;
+            std::map<std::string, std::string> substMap;
+            bool isIdentity;
+        };
+
+        // Shared variable-equalization core for applyEquivalenceClass and
+        // applyEquivalenceClassToRejectedMapIntegration. Encapsulates ONLY
+        // the inner mapping/substitution loop — everything else (early-exit
+        // guards, scope-direction admission, identity-skip policy, dedup,
+        // downstream emission) stays at the call site, since the two
+        // callers diverge sharply outside this loop.
+        //
+        // `eqList` is precomputed by the caller (typically via
+        // reduceEqClass on `clss.variables`). Passed in rather than
+        // recomputed because the rmi caller iterates rmi entries with the
+        // SAME class/validity — recomputing per entry would be a 10^5x
+        // regression at Gauss scale. Determinism note: `eqList` ordering
+        // must be deterministic (use std::set iteration; do NOT switch the
+        // upstream container to a hash set — mapping output and thus the
+        // proof graph become nondeterministic).
+        template <class Sink>
+        inline void enumerateEqClassRewrites(
+            const EquivalenceClass& clss,
+            const std::vector<std::string>& argsExpr,
+            const std::vector<std::string>& eqList,
+            const std::string& baseExpr,
+            const std::string& wrapLeft,
+            const std::string& wrapRight,
+            Sink&& sink)
+        {
+            // Indices of args that are in the equivalence class.
+            std::vector<int> indices;
+            indices.reserve(argsExpr.size());
+            for (std::size_t i = 0; i < argsExpr.size(); ++i) {
+                if (clss.variables.find(argsExpr[i]) != clss.variables.end()) {
+                    indices.push_back(static_cast<int>(i));
+                }
+            }
+            if (indices.empty()) return;
+            if (eqList.empty()) return;
+
+            // Look up mappings table by (|indices|, |eqList|). Both legacy
+            // callers bail on miss; preserve that.
+            const std::pair<int, int> mk(static_cast<int>(indices.size()),
+                                         static_cast<int>(eqList.size()));
+            std::map< std::pair<int, int>, std::vector<std::vector<int> > >::const_iterator mit =
+                this->allMappingsAna.find(mk);
+            if (mit == this->allMappingsAna.end()) return;
+            const std::vector<std::vector<int> >& mappings = mit->second;
+
+            for (std::size_t m = 0; m < mappings.size(); ++m) {
+                const std::vector<int>& mapping = mappings[m];
+
+                EqClassRewrite r;
+                r.isIdentity = true;
+                std::vector<std::string> tempList = argsExpr;
+
+                for (std::size_t i = 0; i < indices.size() && i < mapping.size(); ++i) {
+                    const int idxInArgs = indices[i];
+                    const int mappedIdx = mapping[i];
+                    assert(mappedIdx >= 0 && mappedIdx < static_cast<int>(eqList.size()));
+
+                    const std::string& fromVar = tempList[static_cast<std::size_t>(idxInArgs)];
+                    const std::string& toVar = eqList[static_cast<std::size_t>(mappedIdx)];
+
+                    std::set<std::string> fs;
+                    fs.insert(fromVar);
+                    fs.insert(toVar);
+
+                    if (fs.size() > 1U) {
+                        // Real substitution.
+                        r.substMap[fromVar] = toVar;
+                        r.isIdentity = false;
+                        std::map< std::set<std::string>, std::set<int> >::const_iterator itLev =
+                            clss.equalityLevelsMap.find(fs);
+                        if (itLev != clss.equalityLevelsMap.end()) {
+                            const std::set<int>& lv = itLev->second;
+                            for (std::set<int>::const_iterator lit = lv.begin(); lit != lv.end(); ++lit) {
+                                r.extraLevels.insert(*lit);
+                            }
+                        }
+                        if (parameters.trackHistory) {
+                            r.setEqualities.insert(std::string("(=[") + fromVar + "," + toVar + "])");
+                        }
+                    }
+
+                    tempList[static_cast<std::size_t>(idxInArgs)] = toVar;
+                }
+
+                // Build rewritten expression: wrapLeft + baseExpr + "[" + ",".join(tempList) + "]" + wrapRight
+                std::string joined;
+                for (std::size_t i = 0; i < tempList.size(); ++i) {
+                    if (i > 0) joined.push_back(',');
+                    joined += tempList[i];
+                }
+                r.rewrittenExpr = wrapLeft + baseExpr + "[" + joined + "]" + wrapRight;
+
+                sink(r);
+            }
         }
 
 //#pragma optimize("", off)
 
 
+        /// @brief Apply an equivalence class to rewrite expressions in an LB —
+        /// substitutes class members where eligible and emits the resulting
+        /// `equality1` / `equality2` origin records.
+        ///
+        /// @details
+        /// One of the prover's heaviest hot paths. For every expression
+        /// in the LB whose args overlap with `clss.variables`, walks the
+        /// possible substitutions and emits the rewritten expression
+        /// plus its provenance under the appropriate tag:
+        ///
+        /// - `equality1` — single-variable substitution; e.g. `(p[a])`
+        ///   becomes `(p[b])` because `a == b` in the class.
+        /// - `equality2` — cross-pair substitution; e.g. `(p[a, c])`
+        ///   becomes `(p[b, d])` because `a == b` and `c == d` are both
+        ///   in the class. Gated by [I-32](../../docs/30_invariants.md#i-32):
+        ///   emission requires an existing class/LB origin.
+        ///
+        /// `equality1` cross-substitution is gated by
+        /// [I-34](../../docs/30_invariants.md#i-34): emission requires
+        /// an existing target origin (only this site enforces that
+        /// gate; sibling rewrites in
+        /// `applyEquivalenceClassToRejectedMapIntegration` are
+        /// additive without the gate).
+        ///
+        /// @param clss   The equivalence class to apply.
+        /// @param mb     Owning LB.
+        /// @param level  LB level the rewrite applies at.
+        /// @invariant [I-32](../../docs/30_invariants.md#i-32) — cross-pair
+        ///            equality2 emission gated on existing class/LB origin.
+        /// @invariant [I-34](../../docs/30_invariants.md#i-34) —
+        ///            cross-substitution equality1 emission gated on
+        ///            existing target origin.
+        /// @see `mergeTwoEquivalenceClasses` — class merger.
+        /// @see `updateEquivalenceClasses` — top-level driver.
+        /// @see [`docs/20_core_concepts/05_equivalence_classes.md`](../../docs/20_core_concepts/05_equivalence_classes.md).
         inline void applyEquivalenceClass(const EquivalenceClass& clss,
             const EncodedExpression expr2,
             Memory& memoryBlock,
@@ -4882,22 +5225,10 @@ namespace gl {
             // Cache args once
             const std::vector<std::string> argsExpr = ce::getArgs(expr2.original);
 
-            // Indices of args that are in the equivalence class
-            std::vector<int> indices;
-            indices.reserve(argsExpr.size());
-            for (std::size_t i = 0; i < argsExpr.size(); ++i) {
-                if (clss.variables.find(argsExpr[i]) != clss.variables.end()) {
-                    indices.push_back(static_cast<int>(i));
-                }
-            }
-
-            // Reduced eq class as a list
+            // Reduced eq class (weak vars dropped). Caller owns this so
+            // the helper stays Memory-free.
             const std::set<std::string> reducedSet = this->reduceEqClass(clss.variables, memoryBlock, validityName);
-            std::vector<std::string> eqList;
-            eqList.reserve(reducedSet.size());
-            for (std::set<std::string>::const_iterator it = reducedSet.begin(); it != reducedSet.end(); ++it) {
-                eqList.push_back(*it);
-            }
+            std::vector<std::string> eqList(reducedSet.begin(), reducedSet.end());
 
             // Base expression and wrappers
             std::string baseExpr;
@@ -4916,84 +5247,37 @@ namespace gl {
                 wrapRight = ")";
             }
 
-            if (!indices.empty()) {
-                // Look up mappings by (len(indices), len(eq_list))
-                const std::pair<int, int> key(static_cast<int>(indices.size()), static_cast<int>(eqList.size()));
-                std::map< std::pair<int, int>, std::vector<std::vector<int> > >::const_iterator mit =
-                    this->allMappingsAna.find(key);
-                if (mit != this->allMappingsAna.end()) {
-                    const std::vector<std::vector<int> >& mappings = mit->second;
-
-                    for (std::size_t m = 0; m < mappings.size(); ++m) {
-                        const std::vector<int>& mapping = mappings[m];
-
-                        std::set<std::string> setEqualities;
-                        std::set<int> newLevels = levels; // copy
-
-                        // temp_list = args_expr copy
-                        std::vector<std::string> tempList = argsExpr;
-
-                        // Substitute according to mapping
-                        for (std::size_t i = 0; i < indices.size() && i < mapping.size(); ++i) {
-                            const int idxInArgs = indices[i];
-                            const int mappedIdx = mapping[i];
-                            assert(mappedIdx >= 0 && mappedIdx < static_cast<int>(eqList.size()));
-
-                            const std::string& fromVar = tempList[static_cast<std::size_t>(idxInArgs)];
-                            const std::string& toVar = eqList[static_cast<std::size_t>(mappedIdx)];
-
-                            std::set<std::string> fs;
-                            fs.insert(fromVar);
-                            fs.insert(toVar);
-
-                            if (fs.size() > 1U) {
-                                // new_levels update with equality levels map
-                                std::map< std::set<std::string>, std::set<int> >::const_iterator itLev =
-                                    clss.equalityLevelsMap.find(fs);
-                                if (itLev != clss.equalityLevelsMap.end()) {
-                                    const std::set<int>& lv = itLev->second;
-                                    for (std::set<int>::const_iterator lit = lv.begin(); lit != lv.end(); ++lit) {
-                                        newLevels.insert(*lit);
-                                    }
-                                }
-                                if (parameters.trackHistory) {
-                                    setEqualities.insert(std::string("(=[") + fromVar + "," + toVar + "])");
-                                }
-                            }
-
-                            tempList[static_cast<std::size_t>(idxInArgs)] = toVar;
-                        }
-
-                        // Build new expression: wrapLeft + baseExpr + "[" + ",".join(tempList) + "]" + wrapRight
-                        std::string joined;
-                        for (std::size_t i = 0; i < tempList.size(); ++i) {
-                            if (i > 0) joined.push_back(',');
-                            joined += tempList[i];
-                        }
-                        const std::string newExpr = wrapLeft + baseExpr + "[" + joined + "]" + wrapRight;
-						const ExpressionWithValidity newExprEnc(newExpr, expr2.validityName);
-                        exprLevelsMap[newExpr] = newLevels;
-
-                        if (parameters.trackHistory) {
-                            // Always populate. The downstream origin emission
-                            // at ~line 4930 always fires for this newExpr
-                            // (its own "if (memoryBlock.exprOriginMap.find(...) == end())"
-                            // guard is commented out to allow multi-origin
-                            // accumulation). If we skipped populate here for
-                            // the already-in-origin-map case, that emission
-                            // would produce a malformed rest=[source, ns]
-                            // equality1 origin with zero justifying equalities
-                            // appended — which check_equality1 at
-                            // verifier.py:1517 rejects for len(rest) < 4.
-                            // Fix for 2 equality1 failures exposed by
-                            // rt_conjecturer's conjecturer reshuffle.
-                            std::vector<std::string> eqs(setEqualities.begin(), setEqualities.end());
-                            std::sort(eqs.begin(), eqs.end());
-                            exprOriginMapLocal[newExpr] = eqs;
-                        }
+            // Inner mapping/substitution loop is shared with
+            // applyEquivalenceClassToRejectedMapIntegration via this helper.
+            // Sink lambda fills exprLevelsMap and exprOriginMapLocal — the
+            // downstream emission block (encodedStatements push, origin
+            // record) below consumes those.
+            this->enumerateEqClassRewrites(clss,
+                argsExpr, eqList, baseExpr, wrapLeft, wrapRight,
+                [&](const EqClassRewrite& r) {
+                    std::set<int> newLevels = levels; // copy
+                    for (std::set<int>::const_iterator lit = r.extraLevels.begin(); lit != r.extraLevels.end(); ++lit) {
+                        newLevels.insert(*lit);
                     }
-                }
-            }
+                    exprLevelsMap[r.rewrittenExpr] = newLevels;
+
+                    if (parameters.trackHistory) {
+                        // Always populate. The downstream origin emission
+                        // below always fires for this rewrittenExpr (its own
+                        // "if (memoryBlock.exprOriginMap.find(...) == end())"
+                        // guard is commented out to allow multi-origin
+                        // accumulation). If we skipped populate here for the
+                        // already-in-origin-map case, that emission would
+                        // produce a malformed rest=[source, ns] equality1
+                        // origin with zero justifying equalities appended —
+                        // which check_equality1 in verifier.py rejects for
+                        // len(rest) < 4. Fix for 2 equality1 failures
+                        // exposed by rt_conjecturer's conjecturer reshuffle.
+                        std::vector<std::string> eqs(r.setEqualities.begin(), r.setEqualities.end());
+                        std::sort(eqs.begin(), eqs.end());
+                        exprOriginMapLocal[r.rewrittenExpr] = eqs;
+                    }
+                });
 
             // new_exprs = exprLevelsMap.keys() \ memoryBlock.statementLevelsMap.keys()
             for (std::map<std::string, std::set<int> >::const_iterator it = exprLevelsMap.begin();
@@ -5032,12 +5316,6 @@ namespace gl {
 
                     // Commit to memory block
 
-                    if (appliedEnc.original == "(in3[2,2,2,4])" and memoryBlock.exprKey == "(AnchorIncubator[1,2,3,4,5,6,7,8,9,10])")
-                    {
-                        int test = 0;
-                        test++;
-                    }
-
                     memoryBlock.statementLevelsMap[appliedEnc] = lvls;
                     memoryBlock.intKnownStatements.insert(packStatementKey(
                         memoryBlock.nameMap.encode(appliedEnc.original),
@@ -5056,7 +5334,7 @@ namespace gl {
                     {
                         // Mail out statement with its levels
                         memoryBlock.mailOut.statements.insert(
-                            std::make_pair(applied, lvls)
+                            std::make_pair(ExpressionWithValidity(applied, "main"), lvls)
                         );
                     }
 
@@ -5064,8 +5342,31 @@ namespace gl {
                 }
 
                 if (parameters.trackHistory) {
-                    //if (memoryBlock.exprOriginMap.find(appliedWithValidity) == memoryBlock.exprOriginMap.end())
-                    {
+                    // Cross-substitution equality1 emission gate (I-34, D-48).
+                    // Skip pushing this equality1 record when the target
+                    // already has any origin entry in the LB-level
+                    // exprOriginMap. Mirrors I-32's cross-pair equality2 gate
+                    // structurally: equality1 origin records are
+                    // *transitive convenience records* — they document that
+                    // the rewrite is derivable through the equivalence class.
+                    // When the target is already established by another path
+                    // (mail-arrived origin, prior class application via a
+                    // different bridge, recursion, anchor, etc.), the new
+                    // record adds zero deductive content but pairs with
+                    // back-direction substitutions to form 2-cycles like
+                    // chapter-96 / chapter-97 rows 56–57 / 72–73 (theorem 96
+                    // Gauss fold induction zero-case + step). The gate
+                    // leaves the existing derivation untouched and prevents
+                    // the parallel-substitution cycle vector. The
+                    // exprOriginMapLocal populate above stays unconditional
+                    // to preserve the well-formedness of any FIRST emission
+                    // for a target (verifier check_equality1 rejects len(rest) < 4).
+                    auto alreadyHasOrigin = [&](const ExpressionWithValidity& ev) -> bool {
+                        auto it = memoryBlock.exprOriginMap.find(ev);
+                        return it != memoryBlock.exprOriginMap.end() && !it->second.empty();
+                    };
+
+                    if (!alreadyHasOrigin(appliedWithValidity)) {
                         std::pair<std::string, std::vector<ExpressionWithValidity>> origin;
                         origin.first = "equality1";
                         origin.second.push_back(ExpressionWithValidity(expr2.original, expr2.validityName));
@@ -5107,6 +5408,29 @@ namespace gl {
         // Per user spec, does NOT erase the admission-map key on match and
         // does NOT route through addExprToMemoryBlock — revival is strictly
         // via the mailIn-style channel (internalMailIn) for linearity.
+        /// @brief Apply an equivalence class to entries already sitting in
+        /// `rejectedMapIntegration`, emitting additional `equality2` records
+        /// without erasing the originals.
+        ///
+        /// @details
+        /// Companion to `applyEquivalenceClass`, but for the
+        /// rejection-buffer side of integration. Per
+        /// [I-30](../../docs/30_invariants.md#i-30), this function is
+        /// **additive only** — original rmi entries are never erased.
+        /// The class rewrite produces extra `(int_var, siblings)` records
+        /// keyed on the rewritten constituent, sitting alongside the
+        /// originals.
+        ///
+        /// Short-circuits via the `varsInRejectedMapIntegrationKeys`
+        /// cache: if no class member appears in any rmi key, this call
+        /// returns immediately without walking. That short-circuit is
+        /// what made Gauss-batch performance acceptable
+        /// (~10⁵ rmi entries × ~10⁶ class calls per iteration).
+        ///
+        /// @param clss   The equivalence class to apply.
+        /// @param mb     Owning LB.
+        /// @invariant [I-30](../../docs/30_invariants.md#i-30) — additive
+        ///            only; never erase original entries.
         inline void applyEquivalenceClassToRejectedMapIntegration(
             const EquivalenceClass& clss,
             Memory& memoryBlock,
@@ -5140,12 +5464,14 @@ namespace gl {
             if (reducedSet.empty()) return;
             std::vector<std::string> eqList(reducedSet.begin(), reducedSet.end());
 
-            // Avoid a full deep copy of rmi (values are a std::set of
-            // struct-with-vector — copy is expensive with ~10^5 entries).
-            // Instead, queue the mutations and apply at end of function.
-            std::vector<ExpressionWithValidity> toErase;
+            // Class rewrites are ADDITIVE: the original rmi entry is kept,
+            // and the rewritten key is inserted alongside (D-43, sandbox/rmi_keep).
+            // The original K1 stays available for revival via
+            // revisitRejectedIntegration2 against any future admission entry.
+            // Insertions are deferred to end-of-function to avoid mutating rmi
+            // while iterating it (values are a std::set of struct-with-vector
+            // — full deep copy expensive at ~10^5 entries).
             std::vector<std::pair<ExpressionWithValidity, RejectedMapIntegrationValue>> toInsert;
-            toErase.reserve(rmi.size() / 8 + 1);
             toInsert.reserve(rmi.size() / 8 + 1);
 
             for (const auto& rmiEntry : rmi) {
@@ -5174,25 +5500,7 @@ namespace gl {
                 if (markedKey.empty() || markedKey[0] != '(') continue;
 
                 const std::vector<std::string> keyArgs = ce::getArgs(markedKey);
-
-                // Indices of key args that are in the class.
-                std::vector<int> indices;
-                indices.reserve(keyArgs.size());
-                for (std::size_t i = 0; i < keyArgs.size(); ++i) {
-                    if (clss.variables.find(keyArgs[i]) != clss.variables.end()) {
-                        indices.push_back(static_cast<int>(i));
-                    }
-                }
-                if (indices.empty()) continue;
-
                 const std::string baseExpr = ce::extractExpression(markedKey);
-
-                // Look up mappings table — SAME key as applyEquivalenceClass.
-                const std::pair<int, int> mk(static_cast<int>(indices.size()),
-                                             static_cast<int>(eqList.size()));
-                auto mit = this->allMappingsAna.find(mk);
-                if (mit == this->allMappingsAna.end()) continue;
-                const auto& mappings = mit->second;
 
                 // Per-entry dedup across mappings: multiple mappings can
                 // collapse to the same rewritten key — track unique ones.
@@ -5203,59 +5511,30 @@ namespace gl {
                 };
                 std::map<std::string /* rewrittenMarkedKey */, RewriteInfo> uniqueRewrites;
 
-                for (const auto& mapping : mappings) {
-                    std::map<std::string, std::string> substMap;
-                    std::set<std::string> setEqualities;
-                    std::set<int> eqExtraLevels;
-                    std::vector<std::string> tempList = keyArgs;
-
-                    for (std::size_t i = 0; i < indices.size() && i < mapping.size(); ++i) {
-                        const int idxInArgs = indices[i];
-                        const int mappedIdx = mapping[i];
-                        if (mappedIdx < 0 || mappedIdx >= static_cast<int>(eqList.size())) continue;
-
-                        const std::string fromVar = tempList[static_cast<std::size_t>(idxInArgs)];
-                        const std::string toVar   = eqList[static_cast<std::size_t>(mappedIdx)];
-
-                        if (fromVar != toVar) {
-                            substMap[fromVar] = toVar;
-                            if (parameters.trackHistory) {
-                                setEqualities.insert(std::string("(=[") + fromVar + "," + toVar + "])");
-                            }
-                            std::set<std::string> fs;
-                            fs.insert(fromVar);
-                            fs.insert(toVar);
-                            auto itLev = clss.equalityLevelsMap.find(fs);
-                            if (itLev != clss.equalityLevelsMap.end()) {
-                                for (int l : itLev->second) eqExtraLevels.insert(l);
-                            }
+                // Inner mapping/substitution loop is shared with
+                // applyEquivalenceClass via this helper. Sink lambda skips
+                // identity rewrites (rmi-only optimization to avoid no-op
+                // admission probes) and de-dups mappings that collapse to
+                // the same rewritten key.
+                this->enumerateEqClassRewrites(clss,
+                    keyArgs, eqList, baseExpr, "(", ")",
+                    [&](const EqClassRewrite& r) {
+                        if (r.isIdentity) return;                       // identity mapping
+                        if (r.rewrittenExpr == markedKey) return;       // existing guard
+                        if (uniqueRewrites.find(r.rewrittenExpr) == uniqueRewrites.end()) {
+                            uniqueRewrites[r.rewrittenExpr] = { r.substMap,
+                                                                r.setEqualities,
+                                                                r.extraLevels };
                         }
-                        tempList[static_cast<std::size_t>(idxInArgs)] = toVar;
-                    }
-
-                    if (substMap.empty()) continue;  // identity mapping
-
-                    std::string joined;
-                    for (std::size_t i = 0; i < tempList.size(); ++i) {
-                        if (i > 0) joined.push_back(',');
-                        joined += tempList[i];
-                    }
-                    const std::string rewrittenMarkedKey = std::string("(") + baseExpr + "[" + joined + "])";
-                    if (rewrittenMarkedKey == markedKey) continue;
-
-                    if (uniqueRewrites.find(rewrittenMarkedKey) == uniqueRewrites.end()) {
-                        uniqueRewrites[rewrittenMarkedKey] = { std::move(substMap),
-                                                               std::move(setEqualities),
-                                                               std::move(eqExtraLevels) };
-                    }
-                }
+                    });
 
                 if (uniqueRewrites.empty()) continue;
 
-                // Queue erasure ONCE per entry (regardless of how many
-                // rewrites fire). The match-path emits; the no-match path
-                // inserts at potentially multiple new keys.
-                toErase.push_back(keyEv);
+                // The original rmi entry K1 (keyEv) is KEPT. The match-path
+                // emits revival via internalMailIn for the rewritten key K2;
+                // the no-match path inserts K2 alongside K1 in rmi. Both
+                // forms remain valid deferred-match registrations under the
+                // class's identity (D-43).
 
                 // Deposit validity for the rewritten entry/revival = deeperOf
                 // (class scope, rmi entry scope). For legacy directions
@@ -5338,8 +5617,7 @@ namespace gl {
                 }
             }
 
-            // Apply queued mutations
-            for (const auto& k : toErase) rmi.erase(k);
+            // Apply queued additive insertions (no erasure — keep-old, D-43).
             for (auto& kv : toInsert) {
                 rmi[kv.first].insert(std::move(kv.second));
                 // Maintain vars cache for the new key
@@ -5351,6 +5629,199 @@ namespace gl {
             }
         }
 
+        // Algebra equi-class hook on admissionMap. Walks admissionMap entries,
+        // rewrites each entry's marker KEY and its AdmissionMapValue contents
+        // (key + remainingArgs) via the equivalence-class substitution map,
+        // and ADDITIVELY inserts the rewrite into admissionMap. Each new key
+        // K' is followed by a revisitRejected2(K', mb, depositValidity) call
+        // that walks the (unchanged) rejectedMap for K' and revives any
+        // previously-rejected cohort.
+        //
+        // Design principles (algebra-only):
+        //   1. rejectedMap is sacred — never written by this function. Real
+        //      disintegration products with their `disintegration` origins
+        //      live there; rewriting would fabricate constituents.
+        //   2. admissionMap is metadata — keys and values carry no proof-graph
+        //      history. Rewriting them is provenance-free.
+        //   3. Keys are ADDED, not replaced. The original K stays in
+        //      admissionMap. Multiple K' rewrites coexist alongside K.
+        //   4. Arg-equalization is forbidden: rewrites that collapse two
+        //      previously-distinct arg slots into the same value are
+        //      dropped (no insert, no revisit). Preserves the positional
+        //      collision pattern of the admission key.
+        //
+        // Scope handling mirrors D-33: same-NS, class-shallower (ancestor),
+        // and class-deeper (descendant) directions all admit a rewrite. The
+        // deposit scope is `deeperOf(classScope, entryScope)`.
+        //
+        // u_-prefix note. admissionMap keys are bare-marker form (no u_).
+        // AdmissionMapValue.key elements may contain u_-prefixed args; these
+        // are naturally excluded from substitution because the equi-class
+        // substMap keys are bare variable names (u_-prefixed names are never
+        // class members). `ce::replaceKeysInString` only substitutes keys
+        // present in the substMap.
+        //
+        // Inserts (and admissionStatusMap updates + cache populates +
+        // revisitRejected2 calls) are queued and applied AFTER the outer
+        // admissionMap walk to avoid iterator invalidation. revisitRejected2's
+        // own cleanAdmissionMap may erase the newly-inserted K' if the marker
+        // sits in the operator's output slot — that erasure is permissible
+        // (it consumed the revival), and only the original K is required to
+        // be preserved by principle (3).
+        inline void applyEquivalenceClassToAdmissionMap(
+            const EquivalenceClass& clss,
+            Memory& memoryBlock,
+            const std::string& validityName) {
+
+            auto& am = memoryBlock.overallHashMemory.admissionMap;
+            if (am.empty()) return;
+
+            // Short-circuit on varsInAdmissionMapKeys overlap.
+            {
+                const auto& varsCache = memoryBlock.overallHashMemory.varsInAdmissionMapKeys;
+                bool anyOverlap = false;
+                for (const std::string& v : clss.variables) {
+                    if (varsCache.find(v) != varsCache.end()) { anyOverlap = true; break; }
+                }
+                if (!anyOverlap) return;
+            }
+
+            const std::set<std::string> reducedSet =
+                this->reduceEqClass(clss.variables, memoryBlock, validityName);
+            if (reducedSet.empty()) return;
+            std::vector<std::string> eqList(reducedSet.begin(), reducedSet.end());
+
+            // Queued post-loop application. Each entry carries the new key,
+            // the substituted AdmissionMapValue, the source admission key
+            // (for inheriting admissionStatusMap), and the deposit scope
+            // (for the revisitRejected2 call).
+            struct PendingAdmissionInsert {
+                ExpressionWithValidity newKey;
+                AdmissionMapValue newValue;
+                ExpressionWithValidity sourceKey;
+                std::string depositValidity;
+            };
+            std::vector<PendingAdmissionInsert> toInsert;
+
+            for (const auto& amEntry : am) {
+                const ExpressionWithValidity& keyEv = amEntry.first;
+                const std::set<AdmissionMapValue>& values = amEntry.second;
+
+                // Scope match: same-NS, class-shallower (ancestor of entry),
+                // or class-deeper (descendant of entry) per D-33.
+                bool scopeMatch = (keyEv.validityName == validityName);
+                if (!scopeMatch &&
+                    memoryBlock.nameMap.isStrictAncestor(validityName, keyEv.validityName)) {
+                    scopeMatch = true;  // class shallower than entry
+                }
+                if (!scopeMatch &&
+                    memoryBlock.nameMap.isStrictAncestor(keyEv.validityName, validityName)) {
+                    scopeMatch = true;  // class deeper than entry (D-33)
+                }
+                if (!scopeMatch) continue;
+
+                const std::string& markedKey = keyEv.original;
+                if (markedKey.empty() || markedKey[0] != '(') continue;
+
+                const std::vector<std::string> keyArgs = ce::getArgs(markedKey);
+                const std::string baseExpr = ce::extractExpression(markedKey);
+
+                struct RewriteInfo {
+                    std::map<std::string, std::string> substMap;
+                    std::set<int> eqExtraLevels;
+                };
+                std::map<std::string /* rewrittenMarkedKey */, RewriteInfo> uniqueRewrites;
+
+                this->enumerateEqClassRewrites(clss,
+                    keyArgs, eqList, baseExpr, "(", ")",
+                    [&](const EqClassRewrite& r) {
+                        if (r.isIdentity) return;
+                        if (r.rewrittenExpr == markedKey) return;
+
+                        // Arg-equalization filter (algebra-only invariant):
+                        // reject any rewrite that collapses two previously-
+                        // distinct arg slots into the same value.
+                        std::vector<std::string> newArgs = ce::getArgs(r.rewrittenExpr);
+                        if (newArgs.size() != keyArgs.size()) return;
+                        for (std::size_t i = 0; i < keyArgs.size(); ++i) {
+                            for (std::size_t j = i + 1; j < keyArgs.size(); ++j) {
+                                if (keyArgs[i] != keyArgs[j] && newArgs[i] == newArgs[j]) return;
+                            }
+                        }
+
+                        if (uniqueRewrites.find(r.rewrittenExpr) == uniqueRewrites.end()) {
+                            uniqueRewrites[r.rewrittenExpr] = { r.substMap, r.extraLevels };
+                        }
+                    });
+
+                if (uniqueRewrites.empty()) continue;
+
+                const std::string depositValidity =
+                    memoryBlock.nameMap.deeperOf(validityName, keyEv.validityName);
+
+                for (const auto& urEntry : uniqueRewrites) {
+                    const std::string& rewrittenMarkedKey = urEntry.first;
+                    const RewriteInfo& info = urEntry.second;
+
+                    ExpressionWithValidity newKey(rewrittenMarkedKey, depositValidity);
+
+                    // Apply substMap to each AdmissionMapValue. u_-prefixed
+                    // args inside value.key / value.remainingArgs are
+                    // naturally untouched (substMap keys are bare variable
+                    // names — u_-prefixed forms aren't class members).
+                    for (const AdmissionMapValue& v : values) {
+                        AdmissionMapValue v2;
+                        v2.key.reserve(v.key.size());
+                        for (const std::string& elem : v.key) {
+                            v2.key.push_back(ce::replaceKeysInString(elem, info.substMap));
+                        }
+                        for (const std::string& ra : v.remainingArgs) {
+                            v2.remainingArgs.insert(ce::replaceKeysInString(ra, info.substMap));
+                        }
+                        v2.standardMaxAdmissionDepth = v.standardMaxAdmissionDepth;
+                        v2.standardMaxSecondaryNumber = v.standardMaxSecondaryNumber;
+                        v2.flag = v.flag;
+
+                        PendingAdmissionInsert pi;
+                        pi.newKey          = newKey;
+                        pi.newValue        = std::move(v2);
+                        pi.sourceKey       = keyEv;
+                        pi.depositValidity = depositValidity;
+                        toInsert.push_back(std::move(pi));
+                    }
+                }
+            }
+
+            // Post-loop application — additive admissionMap inserts +
+            // status inheritance + cache populate + per-key revisitRejected2.
+            for (auto& pi : toInsert) {
+                memoryBlock.overallHashMemory.admissionMap[pi.newKey].insert(std::move(pi.newValue));
+
+                // Inherit admissionStatusMap from source key, only if K'
+                // doesn't already have a status entry — preserve existing.
+                if (memoryBlock.overallHashMemory.admissionStatusMap.find(pi.newKey)
+                    == memoryBlock.overallHashMemory.admissionStatusMap.end()) {
+                    auto itSrc = memoryBlock.overallHashMemory.admissionStatusMap.find(pi.sourceKey);
+                    const bool srcStatus = (itSrc != memoryBlock.overallHashMemory.admissionStatusMap.end())
+                        ? itSrc->second : false;
+                    memoryBlock.overallHashMemory.admissionStatusMap[pi.newKey] = srcStatus;
+                }
+
+                // Populate vars-in-keys cache for K'.
+                for (const std::string& a : ce::getArgs(pi.newKey.original)) {
+                    if (a != "marker") {
+                        memoryBlock.overallHashMemory.varsInAdmissionMapKeys.insert(a);
+                    }
+                }
+
+                // Fire revival: walk rejectedMap[K'] and mail-emit matching
+                // rejection cohorts via revisitRejected2. The bare-marker
+                // form of K' equals K' itself (admissionMap keys are already
+                // bare-marker — no u_-strip needed).
+                this->revisitRejected2(pi.newKey.original, memoryBlock, pi.depositValidity);
+            }
+        }
+
         // For a negated equality !(=[a, b]), expand through the per-arg
         // equivalence classes at the given validity:
         //   * for each c in class(a) \ {a} -> emit !(=[c, b])
@@ -5359,6 +5830,23 @@ namespace gl {
         // deposit block (localEncodedStatements{,Delta},
         // intLocalEncodedStatements{,Delta}, newStatements), matching the
         // pattern used by addStatement's main branch.
+        /// @brief Apply an equivalence class to negated-equality
+        /// expressions `!(=[a,b])`, expanding via the one-sided rule
+        /// of [I-12](../../docs/30_invariants.md#i-12).
+        ///
+        /// @details
+        /// Per I-12, `addStatement` expands `!(=[a,b])` one-sidedly via
+        /// equivalence classes; no symmetric cross-product. This
+        /// function's analogue applies that rule when an equivalence
+        /// class is applied to an existing negated-equality
+        /// statement: it picks the appropriate side of the substitution
+        /// (the deeper-scoped variable wins) and emits the rewritten
+        /// negation, never the symmetric counterpart.
+        ///
+        /// @param clss   The equivalence class to apply.
+        /// @param mb     Owning LB.
+        /// @invariant [I-12](../../docs/30_invariants.md#i-12) —
+        ///            one-sided expansion.
         inline void applyEquivalenceClassToNegatedEquality(
             const std::string& expr,
             Memory& memoryBlock,
@@ -5394,7 +5882,7 @@ namespace gl {
                 origin.second.push_back(ExpressionWithValidity(expr, validityName));
                 origin.second.push_back(ExpressionWithValidity(eqUsed, validityName));
 
-                this->addNegatedEquality(newExpr, memoryBlock, local, levels, origin, validityName);
+                this->addNegatedEquality(newExpr, memoryBlock, local, levels, origin, validityName, true);
 
                 // newStatements is the out-parameter for downstream
                 // re-iteration tracking. Gateway does not push to it.
@@ -5467,12 +5955,72 @@ namespace gl {
 
 
 
+        /// @brief Merge two equivalence classes that share at least one
+        /// variable — fold all of `classB`'s state into `classA`.
+        ///
+        /// @details
+        /// Triggered when a new equality reveals that two existing
+        /// classes are actually the same equivalence relation. Under
+        /// [I-33](../../docs/30_invariants.md#i-33):
+        /// - The merge is *cross-vN preconditional*: when the two
+        ///   classes live at different validity scopes, the merge
+        ///   direction must be ancestor-only (the deeper-scoped class
+        ///   inherits the ancestor-scoped class's content, not the
+        ///   other way around).
+        /// - The eqArgs-subset assert is *same-vN only*: the per-pair
+        ///   eqArgs must form a subset of the variable set, but only
+        ///   for classes at the same validity scope. Cross-scope
+        ///   merges may legitimately have eqArgs that go outside
+        ///   either class's variable set during the merge transient.
+        ///
+        /// Origin entries from `classB.equalityOriginMap` are appended
+        /// into `classA.equalityOriginMap` via `addOrigin`, respecting
+        /// the cap-full preference policy.
+        ///
+        /// @param classA  Target class; absorbs `classB`.
+        /// @param classB  Source class; left empty after merge.
+        /// @param mb      Owning LB.
+        /// @param level   LB level at which the merge happens.
+        /// @invariant [I-33](../../docs/30_invariants.md#i-33) —
+        ///            cross-vN preconditions.
+        /// @see [`docs/20_core_concepts/05_equivalence_classes.md`](../../docs/20_core_concepts/05_equivalence_classes.md).
         inline void mergeTwoEquivalenceClasses(EquivalenceClass& classA,
             const EquivalenceClass& classB,
             const std::set<std::string>& eqArgs,
             const std::set<int>& levels,
             Memory& memoryBlock,
-            const std::string validityName) {
+            const std::string validityName,
+            const std::string classBValidityName) {
+            // Validate classB's vN relationship with validityName (== classA's vN
+            // by construction — classA is the in-flight mergedClass at the
+            // descendant scope). Two legal configurations:
+            //   sameVN  : classB is at the same scope as classA (legacy
+            //             same-NS merge path).
+            //   crossVN : classB is at a STRICT ANCESTOR of validityName
+            //             (D-44 cross-NS extension).
+            // Descendant-direction merge (classB strictly deeper than classA)
+            // is INVALID by symmetry with D-33's class-deeper exclusion: a
+            // descendant class is invisible at the ancestor's scope and
+            // carries no information for an equality admitted there.
+            const bool sameVN = (classBValidityName == validityName);
+            if (!sameVN) {
+                const auto itAnc = memoryBlock.nameMap.stringAncestorsOf.find(validityName);
+                assert(itAnc != memoryBlock.nameMap.stringAncestorsOf.end());
+                assert(itAnc->second.find(classBValidityName) != itAnc->second.end());
+
+                // Cross-vN early exit: if the ancestor (parent) class is
+                // already a subset of the descendant (child) mergedClass,
+                // no merge action is needed. The descendant already covers
+                // every variable the ancestor would contribute. classB stays
+                // at its scope V_a per I-31; classA's origin map on V is
+                // unaffected. This case is valid in cross-vN only — same-vN
+                // with classB ⊊ classA hits the eqArgs-subset assert below
+                // when classB carries both eqArgs.
+                if (isSubsetOf(classB.variables, classA.variables)) {
+                    return;
+                }
+            }
+
             // If A ⊆ B: union and right-precedence dict union (B | A), then return.
             if (isSubsetOf(classA.variables, classB.variables)) {
                 // variables := B ∪ A
@@ -5487,7 +6035,7 @@ namespace gl {
                 std::map<std::set<std::string>, std::set<int> > newLevels = classB.equalityLevelsMap;
                 overwriteLevels(newLevels, classA.equalityLevelsMap);
                 classA.equalityLevelsMap.swap(newLevels);
-                
+
                 // equalityOriginMap := (B | A)
                 // The map now stores a vector of origins to allow multiple derivation paths
                 std::map<ExpressionWithValidity, std::vector<std::pair<std::string, std::vector<ExpressionWithValidity>>>> newOrigins = classB.equalityOriginMap;
@@ -5500,10 +6048,31 @@ namespace gl {
                 return;
             }
 
-            // assert not eq_args ⊆ classB.variables
-            assert(!isSubsetOf(eqArgs, classB.variables));
+            // Same-vN contract: eqArgs must NOT be subset of classB (otherwise
+            // classB would already represent the equality and the subset path
+            // above would have triggered, since classA's variables include
+            // eqArgs by construction at first iteration; a later iteration
+            // where classA has grown past being a subset of classB while
+            // classB still has both eqArgs is forbidden in same-NS by the
+            // overlap-iteration discipline). Cross-vN (ancestor) MAY have
+            // eqArgs ⊆ classB — the equality is established at the ancestor
+            // scope (e.g. via mail or prior derivation), and the descendant
+            // is admitting it again. The merged-pair logic below handles the
+            // multi-bridge case by picking commonArg deterministically.
+            if (sameVN) {
+                assert(!isSubsetOf(eqArgs, classB.variables));
+            }
 
-            // common_arg := ((eq_args ∩ A.variables) ∩ B.variables), must have size 1
+            // common_arg := ((eq_args ∩ A.variables) ∩ B.variables).
+            // Same-vN: must have size 1 (single bridge invariant).
+            // Cross-vN: size may be 1 or 2; size 2 occurs when the ancestor
+            // class already contains both eqArgs. Pick the lexicographically
+            // smallest as the bridge — std::set's iteration order is
+            // deterministic, so the choice is reproducible across runs. The
+            // resulting cross-pair records cover every (varA, varB) pair via
+            // that single bridge; alternative bridges would only produce
+            // parallel origin records that I-32's cross-pair gate would
+            // suppress as already-known.
             std::set<std::string> tmp;
             for (std::set<std::string>::const_iterator it = eqArgs.begin(); it != eqArgs.end(); ++it) {
                 if (classA.variables.find(*it) != classA.variables.end() &&
@@ -5511,7 +6080,11 @@ namespace gl {
                     tmp.insert(*it);
                 }
             }
-            assert(tmp.size() == 1);
+            if (sameVN) {
+                assert(tmp.size() == 1);
+            } else {
+                assert(!tmp.empty());
+            }
             const std::string commonArg = *tmp.begin();
 
             // Build merged maps (levels + optional origin history)
@@ -5584,16 +6157,45 @@ namespace gl {
                             or2.second.push_back(ExpressionWithValidity(std::string("(=[") + commonArg + "," + varA + "])", validityName));
 
 							const ExpressionWithValidity eq1Enc(eq1, validityName);
-
-                            // Check if eq1Enc exists; addOrigin handles the vector insertion and limit
-                            addOrigin(mergedOriginMap, eq1Enc, or1, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
-                            addOrigin(memoryBlock.exprOriginMap, eq1Enc, or1, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
-                            addOrigin(memoryBlock.mailOut.exprOriginMap, eq1Enc, or1, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
-
                             const ExpressionWithValidity eq2Enc(eq2, validityName);
-                            addOrigin(mergedOriginMap, eq2Enc, or2, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
-                            addOrigin(memoryBlock.exprOriginMap, eq2Enc, or2, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
-                            addOrigin(memoryBlock.mailOut.exprOriginMap, eq2Enc, or2, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
+
+                            // Cross-pair equality2 emission gate (I-32). Skip
+                            // pushing this equality2 record when the target
+                            // already has any origin in the in-flight merged
+                            // class, the absorbed class, or the LB-level
+                            // exprOriginMap (which by this point already
+                            // carries mail-arrived origins via the
+                            // bulk-merge + mail-sync at performElementaryLogicalStep).
+                            // Without the gate, multiple bridge variables
+                            // (commonArg) generating cross-pairs for the
+                            // same target produce mutually-pointing equality2
+                            // origin records — the chapter-22 / theorem-12
+                            // origin-chain-termination cycle. The gate
+                            // leaves the existing derivation untouched
+                            // (mail origin or prior class entry); the
+                            // transitive convenience-record adds zero
+                            // deductive content when the target is already
+                            // established.
+                            const int maxOrig = (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr);
+                            auto alreadyKnown = [&](const ExpressionWithValidity& enc) -> bool {
+                                if (mergedOriginMap.count(enc) > 0) return true;
+                                if (classB.equalityOriginMap.count(enc) > 0) return true;
+                                auto it = memoryBlock.exprOriginMap.find(enc);
+                                if (it != memoryBlock.exprOriginMap.end() && !it->second.empty()) return true;
+                                return false;
+                            };
+
+                            if (!alreadyKnown(eq1Enc)) {
+                                addOrigin(mergedOriginMap, eq1Enc, or1, maxOrig);
+                                addOrigin(memoryBlock.exprOriginMap, eq1Enc, or1, maxOrig);
+                                addOrigin(memoryBlock.mailOut.exprOriginMap, eq1Enc, or1, maxOrig);
+                            }
+
+                            if (!alreadyKnown(eq2Enc)) {
+                                addOrigin(mergedOriginMap, eq2Enc, or2, maxOrig);
+                                addOrigin(memoryBlock.exprOriginMap, eq2Enc, or2, maxOrig);
+                                addOrigin(memoryBlock.mailOut.exprOriginMap, eq2Enc, or2, maxOrig);
+                            }
                         }
                     }
                 }
@@ -5784,31 +6386,37 @@ namespace gl {
             for (std::size_t i = 0; i < argsList.size(); ++i) eqArgs.insert(argsList[i]);
 			const ExpressionWithValidity eqltyEnc(eqlty, validityName);
 
+#if 0
             // mirrored "(=[b,a])"
             const std::string mirrored = std::string("(=[") + argsList[1] + "," + argsList[0] + "])";
 			const ExpressionWithValidity mirroredEnc(mirrored, validityName);
+#endif
 
             // merged_class init
             EquivalenceClass mergedClass;
             mergedClass.variables = eqArgs;
             mergedClass.equalityLevelsMap[eqArgs] = levels;
             addOrigin(mergedClass.equalityOriginMap, eqltyEnc, origin, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
+#if 0
             std::pair<std::string, std::vector<ExpressionWithValidity>> mirroredOrigin;
             mirroredOrigin.first = "symmetry of equality";
             mirroredOrigin.second.push_back(ExpressionWithValidity(eqlty, validityName));
             addOrigin(mergedClass.equalityOriginMap, mirroredEnc, mirroredOrigin, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
+#endif
 
             if (parameters.trackHistory) {
 				const ExpressionWithValidity eqltyEnc(eqlty, validityName);
-                // addOrigin handles the vector push_back, duplicate checking, 
+                // addOrigin handles the vector push_back, duplicate checking,
                 // and respects parameters.compressor_max_origins_per_expr.
                 addOrigin(mb.exprOriginMap, eqltyEnc, origin, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
                 addOrigin(mb.mailOut.exprOriginMap, eqltyEnc, origin, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
+#if 0
                 const ExpressionWithValidity mirroredEnc(mirrored, validityName);
-                // addOrigin handles the vector push_back and ensures we don't 
+                // addOrigin handles the vector push_back and ensures we don't
                 // exceed parameters.compressor_max_origins_per_expr.
                 addOrigin(mb.exprOriginMap, mirroredEnc, mirroredOrigin, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
                 addOrigin(mb.mailOut.exprOriginMap, mirroredEnc, mirroredOrigin, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
+#endif
             }
 
             // Merge all eq-classes that overlap with eq_args
@@ -5823,11 +6431,46 @@ namespace gl {
                 }
 
                 if (overlaps) {
-                    this->mergeTwoEquivalenceClasses(mergedClass, eqClss, eqArgs, levels, mb, validityName);
+                    this->mergeTwoEquivalenceClasses(mergedClass, eqClss, eqArgs, levels, mb, validityName, validityName);
                     mb.eqClassSttmntIndexMapMap[validityName].erase(eqClss.variables); // pop(frozenset, None)
                 }
                 else {
                     newClasses.push_back(eqClss);
+                }
+            }
+
+            // Ancestor-scope merge (cross-NS extension, D-44 + I-31).
+            // For each strict ancestor V_a of validityName, absorb every
+            // equivalence class at V_a that overlaps eqArgs into mergedClass.
+            // The ancestor class itself stays UNCHANGED at V_a — the new
+            // equality is invisible to V_a (same-or-deeper visibility rule),
+            // so V_a's class cannot be modified. mergeTwoEquivalenceClasses
+            // takes classB by const&, so the ancestor class is read-only;
+            // no eqClassSttmntIndexMapMap[ancestorV] erase, no
+            // equivalenceClassesMap[ancestorV] write. Mirrors the additive
+            // principle established by D-33 (apply-side cross-scope) and
+            // D-43 (rmi additive rewrite).
+            {
+                auto itAnc = mb.nameMap.stringAncestorsOf.find(validityName);
+                if (itAnc != mb.nameMap.stringAncestorsOf.end()) {
+                    for (const std::string& ancestorV : itAnc->second) {
+                        auto itCls = mb.equivalenceClassesMap.find(ancestorV);
+                        if (itCls == mb.equivalenceClassesMap.end()) continue;
+                        const std::vector<EquivalenceClass>& ancClasses = itCls->second;
+                        for (std::size_t i = 0; i < ancClasses.size(); ++i) {
+                            const EquivalenceClass& ancClass = ancClasses[i];
+                            bool overlapsAnc = false;
+                            for (std::set<std::string>::const_iterator it = eqArgs.begin();
+                                 it != eqArgs.end(); ++it) {
+                                if (ancClass.variables.find(*it) != ancClass.variables.end()) {
+                                    overlapsAnc = true;
+                                    break;
+                                }
+                            }
+                            if (!overlapsAnc) continue;
+                            this->mergeTwoEquivalenceClasses(mergedClass, ancClass, eqArgs, levels, mb, validityName, ancestorV);
+                        }
+                    }
                 }
             }
 
@@ -6031,7 +6674,7 @@ namespace gl {
 
             // 1. Promote to parent scope via internalMailIn.
             memoryBlock.internalMailIn.statements.insert(
-                std::make_tuple(addExpression, addExpressionLevels, mergeParent));
+                std::make_pair(ExpressionWithValidity(addExpression, mergeParent), addExpressionLevels));
 
             // Reconstruct the full validity name for each per-branch deposit.
             // Used both for the convergence origin (D-36 spec'd row layout)
@@ -6109,7 +6752,16 @@ namespace gl {
 			ExpressionWithValidity exprWithValidity(expr, validityName);
             IntEncodedExpr ieStmt = encodeExpression(encodedExpr, memoryBlock.nameMap);
 
-            if (this->isEquality(expr)) {
+            // Gate the equality-mirror push on `local` (= status 0 or 1 in the
+            // kernel). Local additions go through addEquality(allowSymmetry=true)
+            // which registers the mirror in statementLevelsMap; the post-
+            // addStatement loop's lookup then succeeds. Non-local paths (mail-in
+            // absorb status=3) call addEquality(allowSymmetry=false) — no mirror
+            // entry exists, so pushing the mirror onto newStatements would trip
+            // the statementLevelsMap assert at prover.cpp::addExprToMemoryBlockKernel.
+            // Restores the toBeProved-discharge side-effect that 46b4ecce's
+            // unconditional `&& false` killed (cost: 366 incubator-Peano theorems).
+            if (this->isEquality(expr) && local) {
                 std::vector<std::string> args = ce::getArgs(expr);
                 assert(args.size() == 2);
                 std::string mirrored = "(=[" + args[1] + "," + args[0] + "])";
@@ -6139,12 +6791,6 @@ namespace gl {
                     }
 
                     if (!anyFilteredOut) {
-                        //in3[2,2,2,4] finder:
-                        if (expr == "(in3[2,2,2,4])" && memoryBlock.exprKey == "(AnchorIncubator[1,2,3,4,5,6,7,8,9,10])")
-                        {
-                            int test = 0;
-                            test++;
-                        }
                         memoryBlock.statementLevelsMap[encodedExpr] = levels;
                         memoryBlock.intKnownStatements.insert(packStatementKey(ieStmt.originalId, ieStmt.validityId));
 
@@ -6170,7 +6816,7 @@ namespace gl {
 							bool afm = allowedForMail(expr, memoryBlock);
                             if (validityName == "main" && afm)
                             {
-                                memoryBlock.mailOut.statements.insert(std::make_pair(expr, levels));
+                                memoryBlock.mailOut.statements.insert(std::make_pair(ExpressionWithValidity(expr, "main"), levels));
                             }
 
                             if (parameters.trackHistory) {
@@ -6214,6 +6860,12 @@ namespace gl {
                             memoryBlock.equivalenceClassesMap[validityName][i],
                             memoryBlock,
                             validityName);
+                        // Algebra equi-class hook on admissionMap (additive,
+                        // arg-equalization-filtered, rejectedMap never touched).
+                        this->applyEquivalenceClassToAdmissionMap(
+                            memoryBlock.equivalenceClassesMap[validityName][i],
+                            memoryBlock,
+                            validityName);
                     }
                     {
                         auto itAnc = memoryBlock.nameMap.stringAncestorsOf.find(validityName);
@@ -6236,6 +6888,10 @@ namespace gl {
                                         newStatements,
                                         ancestorV);
                                     this->applyEquivalenceClassToRejectedMapIntegration(
+                                        ancClasses[i],
+                                        memoryBlock,
+                                        ancestorV);
+                                    this->applyEquivalenceClassToAdmissionMap(
                                         ancClasses[i],
                                         memoryBlock,
                                         ancestorV);
@@ -6269,6 +6925,10 @@ namespace gl {
                                     newStatements,
                                     descV);
                                 this->applyEquivalenceClassToRejectedMapIntegration(
+                                    descClasses[i],
+                                    memoryBlock,
+                                    descV);
+                                this->applyEquivalenceClassToAdmissionMap(
                                     descClasses[i],
                                     memoryBlock,
                                     descV);
@@ -6347,6 +7007,7 @@ namespace gl {
                         // by varsInRejectedMapIntegrationKeys short-circuit
                         // + per-key class-member scan inside the helper.
                         this->applyEquivalenceClassToRejectedMapIntegration(eqc, memoryBlock, classValidity);
+                        this->applyEquivalenceClassToAdmissionMap(eqc, memoryBlock, classValidity);
 
                         memoryBlock.eqClassSttmntIndexMapMap[validityName][eqc.variables] =
                             static_cast<int>(memoryBlock.encodedStatements.size());

@@ -30,14 +30,26 @@
 
 namespace gl {
 
-    // ---------------------------------------------------------------
-    // Per-LB proof graph extracted after hash bursts.
-    //
-    //   graph    — for each expression, all alternative derivation paths
-    //              (each path = list of dependency expressions).
-    //   premises — expressions loaded as fuel (always alive).
-    //   head     — the proof goal of this LB.
-    // ---------------------------------------------------------------
+    /// @brief Per-LB proof graph extracted from the prover's hash bursts —
+    /// the input to the compressor's redundancy elimination pass.
+    ///
+    /// @details
+    /// One `CompressorNode` per LB the compressor wants to consider. After
+    /// the prover finishes, each LB's `exprOriginMap` is walked into a
+    /// `(expression → list of alternative dependency-lists)` shape; that
+    /// shape lives in `graph`. Premises are the expressions loaded as
+    /// fuel (always alive), `head` is the proof goal of this LB, and
+    /// `originalTheorem` carries the raw MPL text of the theorem the LB
+    /// proves.
+    ///
+    /// The compressor's redundancy pass uses `isDerivable` to test, for
+    /// each candidate "dead" theorem set, whether `head` is still
+    /// reachable from the surviving theorems + premises through the graph.
+    /// Theorems that can be killed without breaking any head's
+    /// derivability are dropped; survivors form the output set.
+    ///
+    /// @see [`Compressor`](#compressor) — owns a `std::vector<CompressorNode>`.
+    /// @see `compressor.cpp::isDerivable` — derivability oracle.
     struct CompressorNode {
         // expression -> list of alternative dep lists
         std::map<ExpressionWithValidity,
@@ -47,16 +59,41 @@ namespace gl {
         std::string originalTheorem;
     };
 
-    // ---------------------------------------------------------------
-    // Compressor — same public interface as before.
-    // ---------------------------------------------------------------
+    /// @brief Post-proof redundancy eliminator — drops theorems that are
+    /// derivable from the rest.
+    ///
+    /// @details
+    /// The compressor runs after the main prover stage on the full set of
+    /// proved theorems. For each theorem it runs the prover one more time
+    /// (Phase 1) to extract a `CompressorNode` whose graph captures every
+    /// alternative derivation path of the theorem's head. Phase 2 then
+    /// performs greedy multi-pass redundancy elimination: a theorem is
+    /// "dead" if it can be removed without breaking any other theorem's
+    /// derivability. Survivors form the output set, which becomes the
+    /// authoritative `files/theorems/proved_theorems.txt` content — the
+    /// regression-claim source of truth for the run.
+    ///
+    /// Determinism is non-negotiable: `std::stable_sort` orders the
+    /// theorem list before the elimination pass so the kill order is
+    /// reproducible across runs (see OPEN-13 in the SwDD).
+    ///
+    /// @see [`CompressorNode`](#compressornode) — per-LB graph type.
+    /// @see `docs/10_pipeline/05_compressor.md` — full pipeline-stage
+    ///      chapter.
     class Compressor {
     public:
+        /// @brief Construct a compressor over an existing
+        /// `ExpressionAnalyzer` and the full theorem list.
+        /// @param analyzer    Prover instance that provides the hash-engine
+        ///                    state for Phase 1.
+        /// @param all_theorems Full set of proved theorems (raw MPL).
         Compressor(ExpressionAnalyzer& analyzer,
                const std::vector<std::string>& all_theorems);
 
-        // Run the full compressor pipeline (Phase 1 + Phase 2).
-        // Returns the essential (surviving) theorem strings.
+        /// @brief Run Phase 1 (graph extraction) + Phase 2 (greedy
+        /// redundancy elimination).
+        /// @return The essential (surviving) theorem strings, in
+        ///         deterministic stable order.
         std::vector<std::string> run();
 
     private:
@@ -67,15 +104,27 @@ namespace gl {
         // Maps compact form back to original expanded form from globalTheoremList
         std::unordered_map<std::string, std::string> compactToExpanded;
 
-        // Phase 1 — build per-LB proof graphs via prover hash bursts.
+        /// @brief Phase 1 — extract per-LB proof graphs by running the
+        /// prover one more time and walking each LB's exprOriginMap.
+        /// @details Populates `extracted_graphs` with one
+        ///          [`CompressorNode`](#compressornode) per theorem.
         void runPhase1();
 
-        // Phase 2 — greedy elimination with multi-pass.
+        /// @brief Phase 2 — greedy multi-pass redundancy elimination.
+        /// @details Each pass walks the theorem list in stable order,
+        ///          tests each theorem for being killable (i.e. all
+        ///          heads still derivable without it), and kills
+        ///          survivors that pass. Repeats until a fixed point.
+        /// @return Surviving theorem texts.
         std::vector<std::string> runPhase2();
 
-        // Forward-reachability derivability check.
-        // Returns true iff the head of `node` is reachable from
-        // its premises + all theorems NOT in `dead_theorems`.
+        /// @brief Forward-reachability check — true iff `node.head` is
+        /// reachable from its premises + theorems NOT in `dead_theorems`
+        /// through `node.graph`.
+        /// @details Walks alternative dependency lists; a head is
+        ///          reachable if any alternative's deps are all
+        ///          reachable. Used by Phase 2 to verify that a
+        ///          candidate kill set leaves every theorem provable.
         bool isDerivable(const CompressorNode& node,
                          const std::set<std::string>& dead_theorems) const;
     };

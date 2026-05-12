@@ -630,16 +630,6 @@
     ],
     "signature": "(or0[u_1,u_2,u_3,u_4])"
   },
-  "or1": {
-    "arity": 4,
-    "category": "or",
-    "definedSet": "",
-    "elements": [
-      "(=[u_1,u_2])",
-      "(existence2[u_3,u_1,u_4])"
-    ],
-    "signature": "(or1[u_1,u_2,u_3,u_4])"
-  },
   "preorder": {
     "arity": 4,
     "category": "existence",

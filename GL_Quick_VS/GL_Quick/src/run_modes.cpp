@@ -28,6 +28,8 @@
 #include <filesystem>
 #include <fstream>
 #include <unordered_set>
+#include <set>
+#include <utility>
 #include <algorithm>
 #include <iostream>
 #include "compressor.hpp"
@@ -310,49 +312,107 @@ namespace run_modes {
                 }
             }
 
-            // Save proved theorems (essential only, excluding externals).
-            // survivorsVec already contains prior-batch survivors plus this-batch
-            // survivors; saveProvedTheoremsFiltered skips externals internally.
+            // Build survivingTheorems list (essential survivors from compression).
+            // saveProvedTheoremsFiltered will be called AFTER OR construction so
+            // we can drop OR-consumed parents in the same write.
             std::vector<std::string> survivingTheorems = survivorsVec;
             std::sort(survivingTheorems.begin(), survivingTheorems.end());
             survivingTheorems.erase(
                 std::unique(survivingTheorems.begin(), survivingTheorems.end()),
                 survivingTheorems.end());
             std::unordered_set<std::string> survivingExternalSet(survivingExternals.begin(), survivingExternals.end());
-            expressionAnalyzer.saveProvedTheoremsFiltered(survivingTheorems, survivingExternalSet);
 
-            // OR construction (after compression, before proof graph)
-            // Use orPairsFromHeadSwitch: (existence_compiled, companion_compiled)
-            // Both must be in globalTheoremList (survived compression) to construct OR
+            // OR construction (after compression, before proof graph).
+            //
+            // Two cleanups beyond the prior straight-loop:
+            //   1. De-dup A∨B vs B∨A.  orPairsFromHeadSwitch contains BOTH
+            //      (mirror1, mirror2) AND (mirror2, mirror1) because head-switch
+            //      walks every theorem with a negated premise.  Constructing
+            //      both produces or<N> and or<N+1> for the same logical OR with
+            //      disjuncts in opposite order — pre-fix this is exactly the
+            //      or0/or1 duplication on Peano.  Canonicalize each pair as
+            //      (min, max) and skip already-seen disjunct-sets.
+            //   2. Remove parent theorems on OR creation.  Once or<N> is
+            //      registered, the K mutual-exclusion implications recovered
+            //      via OR-disintegration produce both mirrors as derived
+            //      results.  The standalone parent theorems then shadow the
+            //      OR — same procedure as the compressor's redundancy removal,
+            //      done manually here at OR-construction time so it lands in
+            //      the same emit pass rather than racing the compressor.
+            //
+            // Per D-55.
+            std::vector<std::string> orTheorems;
+            std::set<std::string> consumedParents;
             {
                 std::unordered_set<std::string> provedSet;
                 for (const auto& t : expressionAnalyzer.globalTheoremList)
                     provedSet.insert(std::get<0>(t));
 
-                std::vector<std::string> orTheorems;
-                for (const auto& [exist, comp] : expressionAnalyzer.orPairsFromHeadSwitch) {
-                    if (provedSet.count(exist) && provedSet.count(comp)) {
-                        std::string orThm = expressionAnalyzer.constructOrTheorem(exist, comp);
-                        if (!orThm.empty()) {
-                            expressionAnalyzer.globalTheoremList.emplace_back(orThm, "or theorem", exist, comp);
-                            expressionAnalyzer.fullTheoremList.emplace_back(orThm, "or theorem", exist, comp);
-                            orTheorems.push_back(orThm);
-                            std::cout << "OR theorem constructed: " << orThm << std::endl;
-                        }
-                    }
-                }
+                std::set<std::pair<std::string, std::string>> seenDisjunctSets;
 
-                // Append OR theorems to both proved_theorems files.
-                // proved_theorems.txt: expanded form for inter-batch communication.
-                // compiled_proved_theorems.txt: compiled form for proof graph pruning.
-                if (!orTheorems.empty()) {
-                    std::ofstream ofs(PROVED_THEOREMS_FILE, std::ios::app);
-                    std::ofstream ofsCompiled(THEOREMS_FOLDER / "compiled_proved_theorems.txt", std::ios::app);
-                    for (const auto& ot : orTheorems) {
-                        if (ofsCompiled.is_open()) ofsCompiled << ot << "\n";
-                        std::string expanded = expressionAnalyzer.expandToBaseForm(ot);
-                        ofs << expanded << "\n";
+                for (const auto& [exist, comp] : expressionAnalyzer.orPairsFromHeadSwitch) {
+                    if (!provedSet.count(exist) || !provedSet.count(comp)) continue;
+
+                    // (exist, comp) and (comp, exist) describe the same OR
+                    // (mirror reformulations of one another).  Canonicalize
+                    // by lexicographically sorting the pair and skip duplicates.
+                    auto a = std::min(exist, comp);
+                    auto b = std::max(exist, comp);
+                    if (!seenDisjunctSets.insert({a, b}).second) {
+                        std::cout << "OR variant skipped (duplicate disjunct-set already constructed)"
+                                  << std::endl;
+                        continue;
                     }
+
+                    std::string orThm = expressionAnalyzer.constructOrTheorem(exist, comp);
+                    if (orThm.empty()) continue;
+
+                    expressionAnalyzer.globalTheoremList.emplace_back(orThm, "or theorem", exist, comp);
+                    expressionAnalyzer.fullTheoremList.emplace_back(orThm, "or theorem", exist, comp);
+                    orTheorems.push_back(orThm);
+                    consumedParents.insert(exist);
+                    consumedParents.insert(comp);
+                    std::cout << "OR theorem constructed: " << orThm << std::endl;
+                    std::cout << "  parent removed (subsumed by OR): " << exist << std::endl;
+                    std::cout << "  parent removed (subsumed by OR): " << comp << std::endl;
+                }
+            }
+
+            // Drop OR-consumed parents from the survivors list before saving.
+            if (!consumedParents.empty()) {
+                survivingTheorems.erase(
+                    std::remove_if(survivingTheorems.begin(), survivingTheorems.end(),
+                        [&](const std::string& t) { return consumedParents.count(t) > 0; }),
+                    survivingTheorems.end());
+            }
+
+            // Save proved theorems (essential survivors minus OR-consumed parents,
+            // excluding externals).  saveProvedTheoremsFiltered truncates and
+            // rewrites both proved_theorems.txt and compiled_proved_theorems.txt.
+            expressionAnalyzer.saveProvedTheoremsFiltered(survivingTheorems, survivingExternalSet);
+
+            // Append OR theorems to both proved_theorems files.
+            // proved_theorems.txt: expanded form for inter-batch communication.
+            // compiled_proved_theorems.txt: compiled form for proof graph pruning.
+            if (!orTheorems.empty()) {
+                std::ofstream ofs(PROVED_THEOREMS_FILE, std::ios::app);
+                std::ofstream ofsCompiled(THEOREMS_FOLDER / "compiled_proved_theorems.txt", std::ios::app);
+                for (const auto& ot : orTheorems) {
+                    if (ofsCompiled.is_open()) ofsCompiled << ot << "\n";
+                    std::string expanded = expressionAnalyzer.expandToBaseForm(ot);
+                    ofs << expanded << "\n";
+                }
+            }
+
+            // Append OR-consumed parents to compressed_out_theorems.txt — they
+            // are now subsumed by the OR theorem (recoverable via OR-disintegration's
+            // K mutual-exclusion implications) and treated as redundant going
+            // forward.  Same procedure the compressor applies to redundant
+            // theorems, done manually here at OR-creation time.
+            if (!consumedParents.empty()) {
+                std::ofstream ofs(THEOREMS_FOLDER / "compressed_out_theorems.txt", std::ios::app);
+                for (const auto& p : consumedParents) {
+                    ofs << p << "\n";
                 }
             }
 

@@ -1,5 +1,0 @@
-(in[v1,N])	main	disintegration	(&(&(&(&(implication20[v5,N,+,i0])(implication21[v5,N,+,v1]))(implication22[N,+,i0,v1,v5]))(in[i0,N]))(in[v1,N]))	main
-(&(&(&(&(implication20[v5,N,+,i0])(implication21[v5,N,+,v1]))(implication22[N,+,i0,v1,v5]))(in[i0,N]))(in[v1,N]))	main	expansion	(interval[N,+,i0,v1,v5])	main
-(interval[N,+,i0,v1,v5])	main	disintegration	!(>[v5](interval[N,+,i0,v1,v5])!(existence3[v5,N,i0,id,v1,v4,s,+]))	main
-!(>[v5](interval[N,+,i0,v1,v5])!(existence3[v5,N,i0,id,v1,v4,s,+]))	main	expansion	(fold[N,s,+,id,i0,v1,v4])	main
-(fold[N,s,+,id,i0,v1,v4])	main	task formulation

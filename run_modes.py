@@ -27,6 +27,7 @@ import expression_utils
 import generate_full_proof_graph
 import json
 import re
+import sys
 import time
 import shutil
 import os
@@ -40,12 +41,29 @@ from incubator_to_simple_facts import convert_incubator_theorems
 # wherever this file lives, assume the project root is its parent folder
 PROJECT_ROOT = Path(__file__).resolve().parent
 
+# Cross-platform native-binary lookup. Windows builds end with `.exe`
+# (MSBuild output); Linux/macOS builds (e.g. via the Makefile in
+# GL_Quick_VS/GL_Quick/) drop the extension. Try the platform's
+# canonical name first, then fall back to the other so a developer
+# who built one and Python is invoked from the other layout still
+# works.
+def _find_gl_quick_exe() -> Path:
+    base = PROJECT_ROOT / 'GL_Quick_VS' / 'GL_Quick'
+    if sys.platform.startswith('win'):
+        candidates = [base / 'gl_quick.exe', base / 'gl_quick']
+    else:
+        candidates = [base / 'gl_quick', base / 'gl_quick.exe']
+    for p in candidates:
+        if p.exists():
+            return p
+    raise FileNotFoundError(
+        f"Native executable not found. Looked for: "
+        + ", ".join(str(c) for c in candidates)
+    )
+
 
 def run_gl_quick(anchor_id: str = ""):
-    exe_path = PROJECT_ROOT / 'GL_Quick_VS' / 'GL_Quick' / 'gl_quick.exe'
-    if not exe_path.exists():
-        raise FileNotFoundError(f"Native executable not found at: {exe_path}")
-
+    exe_path = _find_gl_quick_exe()
     cmd = [str(exe_path)]
     if anchor_id:
         cmd.append(anchor_id)
@@ -84,10 +102,36 @@ def _merge_into_shared(tag: str) -> None:
     across batches. The shared file grows monotonically over the run; entries
     already present are not overwritten so a name allocated by an earlier
     batch keeps its original definition.
+
+    Incubator-tagged batches (``IncubatorPeano`` / ``IncubatorGauss`` /
+    ``IncubatorGauss1`` / ...) are skipped: their spontaneous compact-operator
+    allocations are batch-local and must not propagate into the shared
+    cross-batch registry. Propagating them would bump the counters and
+    operator-name set seen by the next main batch, change the names main
+    allocates, and shift theorem texts. Pre-2026-05-08 the visualizer wrote
+    incubator binaries to ``files/incubator/GL_binaries/`` (a stale folder
+    nothing here read), so the merge was a structural no-op for incubator
+    tags; once visualizer.cpp was switched to the unified path, the merge
+    must skip incubator tags explicitly to preserve identical behaviour.
+    See D-54.
     """
     bin_dir = PROJECT_ROOT / "files" / "GL_binaries"
-    per_batch = bin_dir / f"GL_binary_{tag}.json"
     shared = bin_dir / "GL_binary_shared.json"
+
+    if tag.startswith("Incubator"):
+        # Preserve the existing log line so .debug/run_*.log diffs cleanly.
+        shared_entries = {}
+        if shared.exists():
+            try:
+                with open(shared, "r", encoding="utf-8") as f:
+                    shared_entries = json.load(f) or {}
+            except (json.JSONDecodeError, OSError):
+                shared_entries = {}
+        print(f"[merge_into_shared] {tag}: +0 new entries "
+              f"(shared total: {len(shared_entries)})")
+        return
+
+    per_batch = bin_dir / f"GL_binary_{tag}.json"
     if not per_batch.exists():
         return
 
@@ -210,7 +254,7 @@ def _rebuild_compressed_externals(theorems_dir: Path):
 
     # Delegate to C++ --mirror-externals mode
     rel_dir = theorems_dir.relative_to(PROJECT_ROOT)
-    exe_path = PROJECT_ROOT / 'GL_Quick_VS' / 'GL_Quick' / 'gl_quick.exe'
+    exe_path = _find_gl_quick_exe()
     subprocess.run([str(exe_path), "--mirror-externals", str(rel_dir).replace("\\", "/")],
                    cwd=PROJECT_ROOT, check=True)
 
@@ -274,7 +318,7 @@ def _run_batch(tag: str, prev_tags: list, theorems_dir: Path = None,
     # B. Create Expressions (C++ conjecturer)
     start_time = time.time()
     print(f"Conjecture creation started for {tag}.")
-    exe_path = PROJECT_ROOT / 'GL_Quick_VS' / 'GL_Quick' / 'gl_quick.exe'
+    exe_path = _find_gl_quick_exe()
     subprocess.run([str(exe_path), "--conjecture", tag], cwd=PROJECT_ROOT, check=True)
     print(f"Conjecture creation finished for {tag}.")
     end_time = time.time()
@@ -303,9 +347,9 @@ def _run_batch(tag: str, prev_tags: list, theorems_dir: Path = None,
 
 
 CLEAN_RUN = True
-RUN_INCUBATOR = True
+RUN_INCUBATOR = True  # D-49 verification: full pipe with incubator enabled, DoD = Gauss 11 + FTA-rung-1 alive
 
-RUN_MAIN_PATH = True
+RUN_MAIN_PATH = True  # fullest reproduce: 2 incub failures only emerge with main path active
 
 SIMPLE_FACTS_MAP = {}
 
@@ -318,7 +362,7 @@ def full_run():
     Main path produces proof graph theorems.
     Use --no-clean to keep previous results (e.g. run only Gauss after Peano).
     """
-    tags = ["Peano", "Gauss"]
+    tags = ["Peano", "Gauss"]  # D-51 fullest verification
 
     theorems_dir = PROJECT_ROOT / "files" / "theorems"
     incubator_theorems_dir = PROJECT_ROOT / "files" / "incubator" / "theorems"
@@ -329,7 +373,7 @@ def full_run():
     incubator_full_dir = incubator_dir / "full_proof_graph"
 
     # 1. Global Setup
-    if CLEAN_RUN:
+    if CLEAN_RUN: 
         empty_simple_facts()
         empty_raw_proof_graph()
 
@@ -429,17 +473,42 @@ def full_run():
     visu_config_path = PROJECT_ROOT / "files" / "config" / "ConfigVisu.json"
     configuration_visu = configuration_reader(visu_config_path)
 
-    # 3a. Incubator HTML (processed proof graph already built in the tag loop)
-    if RUN_INCUBATOR:
-        print("\n--- Generating Incubator Proof Graph HTML ---")
-        generate_full_proof_graph.generate_proof_graph_pages(
-            configuration_visu, proc_dir=incubator_proc_dir, out_dir=incubator_full_dir)
+    # Cross-batch HTML link plumbing: the incubator HTML can deep-link
+    # into the main pipeline's HTML (and vice versa) so an external-
+    # theorem citation in an incubator chapter opens the corresponding
+    # main-pipeline chapter in a new browser tab. Each side passes the
+    # other as a sibling_graphs entry; out_dirs are used to compute
+    # relative URLs from one HTML tree to the other.
+    main_proc_dir = PROJECT_ROOT / "files" / "processed_proof_graph"
+    main_full_dir = PROJECT_ROOT / "files" / "full_proof_graph"
 
-    # 3b. Main proof graph
+    incubator_siblings = []
+    if RUN_MAIN_PATH:
+        incubator_siblings.append({"proc_dir": main_proc_dir, "out_dir": main_full_dir})
+    main_siblings = []
+    if RUN_INCUBATOR:
+        main_siblings.append({"proc_dir": incubator_proc_dir, "out_dir": incubator_full_dir})
+
+    # 3a. Main proof graph — runs first so files/processed_proof_graph/
+    # global_theorem_list.txt exists before the incubator HTML pass
+    # (Section 3b) references it via `incubator_siblings`. Reversing the
+    # original 3a/3b order fixes a FileNotFoundError at
+    # generate_full_proof_graph.read_theorem_list when the sibling read
+    # hits a not-yet-created path on a fresh worktree.
     if RUN_MAIN_PATH:
         print("\n--- Generating Proof Graph ---")
         process_proof_graphs.create_processed_proof_graph(configuration_visu)
-        generate_full_proof_graph.generate_proof_graph_pages(configuration_visu)
+        generate_full_proof_graph.generate_proof_graph_pages(
+            configuration_visu, sibling_graphs=main_siblings)
+
+    # 3b. Incubator HTML (incubator processed proof graph already built
+    # in the tag loop; the main sibling's processed_proof_graph is now
+    # built by Section 3a above).
+    if RUN_INCUBATOR:
+        print("\n--- Generating Incubator Proof Graph HTML ---")
+        generate_full_proof_graph.generate_proof_graph_pages(
+            configuration_visu, proc_dir=incubator_proc_dir, out_dir=incubator_full_dir,
+            sibling_graphs=incubator_siblings)
 
     # 4. Verification
     all_success = 0

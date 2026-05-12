@@ -1,0 +1,1 @@
+(>[N,i0,s](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in[v1,N])(or0[N,v1,s,i0])))	main	or theorem	(>[N,i0,s](AnchorPeano[N,i0,s,+,*,i1])(>[w1](in[w1,N])(>[]!(existence2[N,w1,s])(=[w1,i0]))))	main	(>[N,i0,s](AnchorPeano[N,i0,s,+,*,i1])(>[w1](in[w1,N])(>[]!(=[w1,i0])(existence2[N,w1,s]))))	main

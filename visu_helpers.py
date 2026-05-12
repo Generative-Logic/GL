@@ -147,8 +147,16 @@ def make_readable_equality(chain: list[str]):
 
     assert left_operator and right_operator
 
-    # Integrate the equality mathematically
-    integrated_equality = fully_resolve_markers(rewrite_expression2(chain[-1]), chain[:-1])
+    # Integrate the equality mathematically. For equality heads we
+    # render the chapter-row's literal form (e.g. `0 = v4`) without
+    # walking chain[:-1] for marker resolution: the substitution
+    # otherwise collapses both sides to the same expression
+    # (`V1(v1) = V1(v1)`) when the proof concludes by equating
+    # operator outputs that share an input. The literal form is
+    # what the reader has in front of them as the row's left-hand
+    # side; surfacing it directly keeps the IMPLIES clause faithful
+    # to the actual derived fact.
+    integrated_equality = rewrite_expression2(chain[-1]).replace('marker', '')
 
     if left_operator != right_operator:
         left_idx = chain.index(left_operator)
@@ -445,7 +453,7 @@ def make_readable_title(expression: str):
     return readable
 
 def format_implication(sublist):
-    rule = make_readable(sublist[2])
+    rule = make_readable_title(sublist[2])
 
     application = ''
     if rule == sublist[2]:
@@ -455,7 +463,7 @@ def format_implication(sublist):
         temp_list.extend([copy.copy(sublist[0])])
         if "Anchor" in temp_list[0]:
             temp_list = temp_list[1:]
-        application = make_readable_from_chain(temp_list)
+        application = make_readable_from_chain_title(temp_list)
 
     output = 'RULE:  ' + rule + ' IMPLIES:  '  + application
 

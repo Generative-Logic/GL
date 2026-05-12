@@ -33,11 +33,22 @@
 #include "run_modes.hpp"
 #include "conjecturer.hpp"
 #include "prover.hpp"
+#include "tests/test_harness.hpp"
 
 int main(int argc, char* argv[]) {
+    // Whether this invocation is the --unit-tests gate. Suppresses the
+    // mimalloc banner below so the console-summary contract documented
+    // in `docs/_meta/testing.md` ("one line on success: N/N Unit tests
+    // passed") holds. The gate still loads mimalloc via the static
+    // link; only the version printout is silenced.
+    const bool isUnitTests =
+        (argc >= 2 && std::strcmp(argv[1], "--unit-tests") == 0);
+
 #ifdef USE_MIMALLOC
     int v = mi_version();  // ensure mimalloc override DLL is loaded
-    std::cout << "mimalloc version: " << v << std::endl;
+    if (!isUnitTests) {
+        std::cout << "mimalloc version: " << v << std::endl;
+    }
 #endif
     auto start = std::chrono::high_resolution_clock::now();
 
@@ -132,6 +143,38 @@ int main(int argc, char* argv[]) {
         std::cout << "Conjecture generation runtime: "
             << std::chrono::duration<double>(end - start).count() << " seconds\n";
         return 0;
+    }
+
+    // --unit-tests: run the in-tree unit-test harness and exit. main.py
+    // invokes this before run_modes.full_run() so a regression aborts the
+    // pipeline before any pipeline work or proof run. Direct invocations
+    // such as `gl_quick.exe Peano` do NOT trigger this gate; the harness
+    // is opt-in via flag for them.
+    //
+    // Working-directory hardening: Linux/macOS users `make` from
+    // `GL_Quick_VS/GL_Quick/` and naturally invoke `./gl_quick --unit-tests`
+    // from there. The ExpressionAnalyzer constructor's config search is
+    // anchored on the current working directory; running from the build
+    // dir would fail to locate `files/config/Config*.json` and abort with
+    // a missing-anchor assert. Resolve project root from argv[0] (the
+    // binary lives at `<project>/GL_Quick_VS/GL_Quick/gl_quick(.exe)`,
+    // three parent_path() walks up to the project root) and chdir there
+    // before running tests. This matches the path resolution used by
+    // the --mirror-externals branch above.
+    if (argc >= 2 && std::strcmp(argv[1], "--unit-tests") == 0) {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        const fs::path projectRoot =
+            fs::path(argv[0]).parent_path().parent_path().parent_path();
+        if (!projectRoot.empty()) {
+            fs::current_path(projectRoot, ec);
+            if (ec) {
+                std::cerr << "[unit-tests] warning: chdir to project root '"
+                          << projectRoot.string() << "' failed: "
+                          << ec.message() << "\n";
+            }
+        }
+        return gl::tests::runAllTests();
     }
 
     // Grab anchor id if provided (e.g., "Peano" or "Gauss")

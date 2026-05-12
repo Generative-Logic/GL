@@ -1,1 +1,0 @@
-(>[i0,s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in3[v1,i1,i0,+])(in2[v1,i0,s])))	main	mirrored from	(>[i0,s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in2[v1,i0,s])(in3[v1,i1,i0,+])))	main
