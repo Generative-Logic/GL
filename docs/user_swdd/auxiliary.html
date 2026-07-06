@@ -1,0 +1,603 @@
+<!--
+Generative Logic: A deterministic reasoning and knowledge generation engine.
+Copyright (C) 2025-2026 Generative Logic UG (haftungsbeschränkt).
+Dual-licensed under the GNU Affero General Public License v3 or later
+and a commercial license — see https://generative-logic.com/license.
+
+User-oriented SwDD — Chapter 11: CE filter & compressor.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GL Prover User SwDD — 11 · CE filter &amp; compressor</title>
+<meta name="copyright" content="© 2025-2026 Generative Logic UG">
+<meta name="license" content="AGPL-3.0-or-later">
+<meta name="robots" content="noindex, nofollow, noai, noimageai">
+<link rel="stylesheet" href="assets/swdd.css">
+</head>
+<body>
+
+<nav id="side">
+  <div class="brand">GL · <span>User SwDD</span></div>
+  <div class="tag">The prover subsystem — reference concepts &amp; diagrams</div>
+  <ol>
+    <li><a href="index.html">Overview</a>
+      <ul>
+        <li><a href="index.html#what">What GL is</a></li>
+        <li><a href="index.html#pipeline">The pipeline</a></li>
+        <li><a href="index.html#deductive">Deductive neighbourhood</a></li>
+        <li><a href="index.html#artefacts">Artefacts on disk</a></li>
+        <li><a href="index.html#read">How to read this</a></li>
+        <li><a href="index.html#glossary">Quick glossary</a></li>
+        <li><a href="index.html#bounds">What is &amp; isn't in this doc</a></li>
+      </ul>
+    </li>
+    <li><a href="prover.html">The prover at a glance</a>
+      <ul>
+        <li><a href="prover.html#life">Life of a run</a></li>
+        <li><a href="prover.html#cycles">Cycles</a></li>
+        <li><a href="prover.html#enter">How a theorem enters</a></li>
+        <li><a href="prover.html#status">Status modes</a></li>
+        <li><a href="prover.html#deactivate">Deactivation cascade</a></li>
+        <li><a href="prover.html#dump">The hashburst dump</a></li>
+      </ul>
+    </li>
+    <li><a href="substrate.html">The substrate</a>
+      <ul>
+        <li><a href="substrate.html#lb">Logic blocks</a></li>
+        <li><a href="substrate.html#hash">Hash engine</a></li>
+        <li><a href="substrate.html#mail">Mail</a></li>
+        <li><a href="substrate.html#scope">Scope &amp; validity</a></li>
+        <li><a href="substrate.html#compile">Compilation</a></li>
+        <li><a href="substrate.html#delta">Delta machinery</a></li>
+        <li><a href="substrate.html#wipe">Subtree wipe</a></li>
+      </ul>
+    </li>
+    <li><a href="mechanisms.html">Proof mechanisms</a>
+      <ul>
+        <li><a href="mechanisms.html#disint">Disintegration</a></li>
+        <li><a href="mechanisms.html#admit">Admission, rejection &amp; equi-classes</a></li>
+        <li><a href="mechanisms.html#integ">Integration</a></li>
+        <li><a href="mechanisms.html#branch">Branching &amp; contradiction</a></li>
+        <li><a href="mechanisms.html#induct">Induction</a></li>
+        <li><a href="mechanisms.html#fan5">5-batch fan-out</a></li>
+        <li><a href="mechanisms.html#cascade">Pending-rejection cascade</a></li>
+      </ul>
+    </li>
+    <li><a href="parallel.html">Parallel execution</a>
+      <ul>
+        <li><a href="parallel.html#pool">The worker pool</a></li>
+        <li><a href="parallel.html#barrier">The join barrier</a></li>
+        <li><a href="parallel.html#collect">Serial collectors</a></li>
+        <li><a href="parallel.html#why">Why deferral — a race</a></li>
+        <li><a href="parallel.html#asic">The silicon mapping</a></li>
+        <li><a href="parallel.html#mailbox">Per-LB mailbox geometry</a></li>
+        <li><a href="parallel.html#cycleN">The cycle-N rule</a></li>
+      </ul>
+    </li>
+    <li><a href="memory.html">Static memory</a>
+      <ul>
+        <li><a href="memory.html#why">Why static</a></li>
+        <li><a href="memory.html#hierarchy">The memory hierarchy</a></li>
+        <li><a href="memory.html#virtual">The page tier</a></li>
+        <li><a href="memory.html#aggregate">LbMemory — the aggregate</a></li>
+        <li><a href="memory.html#deload">Deload / reload</a></li>
+        <li><a href="memory.html#scope">Scope</a></li>
+      </ul>
+    </li>
+    <li><a href="provenance.html">Provenance</a>
+      <ul>
+        <li><a href="provenance.html#record">Recording an origin</a></li>
+        <li><a href="provenance.html#local">Locality</a></li>
+        <li><a href="provenance.html#lift">The chapter walker</a></li>
+        <li><a href="provenance.html#lift-mech">Lift — soundness</a></li>
+        <li><a href="provenance.html#barrier">OR-branch barrier</a></li>
+        <li><a href="provenance.html#cycle">Path-cycle filter</a></li>
+        <li><a href="provenance.html#contraswitch">Contradiction fallback</a></li>
+        <li><a href="provenance.html#notinput">Never a proof input</a></li>
+      </ul>
+    </li>
+    <li><a href="compilation.html">Compilation &amp; names</a>
+      <ul>
+        <li><a href="compilation.html#why">Two canonical forms</a></li>
+        <li><a href="compilation.html#pre">Precompilation</a></li>
+        <li><a href="compilation.html#names">The five name families</a></li>
+        <li><a href="compilation.html#counters">Counters &amp; registry</a></li>
+        <li><a href="compilation.html#namemap">NameMap &amp; scopes</a></li>
+        <li><a href="compilation.html#encoded">EncodedExpression → IntNormalizedKey</a></li>
+        <li><a href="compilation.html#pool">The static-memory floor</a></li>
+        <li><a href="compilation.html#fail">Failure modes</a></li>
+      </ul>
+    </li>
+    <li><a href="anchors.html">Anchors &amp; types</a>
+      <ul>
+        <li><a href="anchors.html#what">What an anchor is</a></li>
+        <li><a href="anchors.html#three">The four anchors</a></li>
+        <li><a href="anchors.html#types">Slot types</a></li>
+        <li><a href="anchors.html#handling">Anchor handling</a></li>
+        <li><a href="anchors.html#copy">The <code>_copy</code> machinery</a></li>
+        <li><a href="anchors.html#tag">The proof-graph row</a></li>
+        <li><a href="anchors.html#i29">Variable-port consistency</a></li>
+        <li><a href="anchors.html#bridge">Cross-anchor bridges</a></li>
+      </ul>
+    </li>
+    <li><a href="reformulation.html">Reformulation &amp; head switch</a>
+      <ul>
+        <li><a href="reformulation.html#why">Why reformulation</a></li>
+        <li><a href="reformulation.html#switch">Head switch — the walk</a></li>
+        <li><a href="reformulation.html#sites">Two call sites</a></li>
+        <li><a href="reformulation.html#mirror">Both directions proved</a></li>
+        <li><a href="reformulation.html#back">Back-reformulation</a></li>
+        <li><a href="reformulation.html#contra">Contradiction reconstruction</a></li>
+        <li><a href="reformulation.html#orthm">OR-theorem assembly</a></li>
+        <li><a href="reformulation.html#methods">The five method tags</a></li>
+      </ul>
+    </li>
+    <li><a href="auxiliary.html" class="current">CE filter &amp; compressor</a>
+      <ul>
+        <li><a href="auxiliary.html#engine">Same engine, two modes</a></li>
+        <li><a href="auxiliary.html#ce">Counterexample filter</a></li>
+        <li><a href="auxiliary.html#j">The j-copy trick</a></li>
+        <li><a href="auxiliary.html#comp">Compressor — throwaway trees</a></li>
+        <li><a href="auxiliary.html#p1">Phase 1 — dependency graphs</a></li>
+        <li><a href="auxiliary.html#p2">Phase 2 — greedy elimination</a></li>
+        <li><a href="auxiliary.html#out">What lands on disk</a></li>
+      </ul>
+    </li>
+  </ol>
+</nav>
+
+<main>
+<h1><span class="num">11 ·</span> CE filter &amp; compressor</h1>
+<p class="lede">GL runs the same hash-engine machinery in three modes: main
+proving, counterexample filtering (before proof), and compression (after
+proof). This chapter is the two non-proving modes — what they reuse, what they
+do differently, and the budget realities (CE filtering was historically ~80% of
+a Gauss run, since collapsed — no longer a bottleneck).</p>
+
+<div class="toc">
+  <strong>On this page</strong>
+  <ol>
+    <li><a href="#engine">11.1 &nbsp;Same engine, three modes</a></li>
+    <li><a href="#ce">11.2 &nbsp;The counterexample filter</a></li>
+    <li><a href="#j">11.3 &nbsp;The j-copy trick</a></li>
+    <li><a href="#comp">11.4 &nbsp;The compressor — independent throwaway trees</a></li>
+    <li><a href="#p1">11.5 &nbsp;Compressor Phase 1 — per-theorem dependency graphs</a></li>
+    <li><a href="#p2">11.6 &nbsp;Compressor Phase 2 — greedy elimination</a></li>
+    <li><a href="#out">11.7 &nbsp;What lands on disk</a></li>
+    <li><a href="#fail">11.8 &nbsp;Failure modes</a></li>
+  </ol>
+</div>
+
+<!-- ===================== 11.1 ===================== -->
+<h2 id="engine">11.1 &nbsp;Same engine, three modes</h2>
+<p>
+The hash-engine kernel (<code>performElementaryLogicalStep</code> +
+<code>generateEncodedRequests*</code>) is a single body of code that runs in
+three modes determined by parameter flags. All three modes use the same logic-
+block tree, the same mail boundary, the same admission gate; what differs is
+what is fed in as fact, what is asked of the engine, and which iteration
+budget gates progress.
+</p>
+
+<table>
+<tr><th>Mode</th><th>Inputs</th><th>What the engine is asked</th><th>When in the pipeline</th></tr>
+<tr><td><b>main proving</b></td><td>axioms (external theorems) + CE-surviving conjectures (as goals)</td><td>“derive the head of every goal”</td><td>stage&nbsp;3 of the pipeline (the bulk of a run)</td></tr>
+<tr><td><b>CE filtering</b></td><td>a finite-size model (a fact table over 5–6 elements) + a candidate conjecture</td><td>“fire on the model; does anything contradict?”</td><td>stage&nbsp;2, before main proving</td></tr>
+<tr><td><b>compression</b></td><td>every proved theorem (as a rule) + one candidate's premises</td><td>“can the candidate's head be derived from the others?”</td><td>stage&nbsp;4, after main proving</td></tr>
+</table>
+
+<figure>
+<svg viewBox="0 0 760 230" role="img" aria-label="The hash-engine kernel reused in three modes">
+  <defs><marker id="3m-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="270" y="92" width="220" height="60" rx="10" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="380" y="116" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">performElementaryLogicalStep</text>
+  <text x="380" y="134" fill="#8B8FA5" font-size="9.5" text-anchor="middle">+ generateEncodedRequests*</text>
+
+  <path d="M280 100 L80 50"   stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#3m-ar)"/>
+  <path d="M380 92  L380 30"  stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#3m-ar)"/>
+  <path d="M482 100 L680 50"  stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#3m-ar)"/>
+
+  <rect x="14" y="14" width="146" height="46" rx="9" fill="#262938" stroke="#5DCAA5"/>
+  <text x="87" y="34" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">CE filter</text>
+  <text x="87" y="50" fill="#8B8FA5" font-size="9" text-anchor="middle">find contradiction</text>
+
+  <rect x="307" y="6" width="146" height="46" rx="9" fill="#262938" stroke="#5DCAA5"/>
+  <text x="380" y="26" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">main proving</text>
+  <text x="380" y="42" fill="#8B8FA5" font-size="9" text-anchor="middle">derive the head</text>
+
+  <rect x="600" y="14" width="146" height="46" rx="9" fill="#262938" stroke="#5DCAA5"/>
+  <text x="673" y="34" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">compressor</text>
+  <text x="673" y="50" fill="#8B8FA5" font-size="9" text-anchor="middle">test derivability</text>
+
+  <path d="M380 152 L380 178" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#3m-ar)"/>
+  <rect x="220" y="180" width="320" height="36" rx="8" fill="#1C1F2B" stroke="#3A3D4A"/>
+  <text x="380" y="202" fill="#F0E8DC" font-size="10.5" text-anchor="middle">filtered conjectures · proved theorems · compressed-out set</text>
+</svg>
+<figcaption><b>One engine, three jobs.</b> The economy here is not just code
+reuse — every optimisation that benefits the kernel benefits all three
+modes.</figcaption>
+</figure>
+
+<!-- ===================== 11.2 ===================== -->
+<h2 id="ce">11.2 &nbsp;The counterexample filter</h2>
+<p>
+The conjecturer generates tens of thousands of candidate conjectures by enumerating
+expression shapes within the deductive neighbourhood the configuration
+specifies. Most are wrong. The counterexample filter is a cheap
+<b>small-model</b> test: instantiate every candidate over a finite fact table
+covering 5–6 elements, fire the hash engine until it stabilises, and discard
+any candidate whose negation gets derived. Survivors enter the main prover.
+</p>
+
+<figure>
+<svg viewBox="0 0 760 250" role="img" aria-label="CE filter — enumerate, fire on the model, discard contradictions">
+  <defs><marker id="ce-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="22" y="40" width="180" height="84" rx="10" fill="#262938" stroke="#5DCAA5"/>
+  <text x="112" y="62" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">conjecturer output</text>
+  <text x="112" y="82" fill="#F0E8DC" font-size="10" text-anchor="middle">conjectures.txt</text>
+  <text x="112" y="102" fill="#8B8FA5" font-size="9.5" text-anchor="middle">tens of thousands</text>
+  <text x="112" y="116" fill="#8B8FA5" font-size="9.5" text-anchor="middle">most are wrong</text>
+
+  <path d="M202 82 L240 82" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ce-ar)"/>
+
+  <rect x="240" y="22" width="280" height="124" rx="10" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="380" y="44" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">CE filter — peek and prune</text>
+  <text x="380" y="64" fill="#F0E8DC" font-size="10" text-anchor="middle">▸ load simple_facts_&lt;tag&gt;_&lt;n&gt;.txt</text>
+  <text x="380" y="80" fill="#F0E8DC" font-size="10" text-anchor="middle">▸ install candidate as rule</text>
+  <text x="380" y="96" fill="#F0E8DC" font-size="10" text-anchor="middle">▸ run hash bursts on the model</text>
+  <text x="380" y="112" fill="#F0E8DC" font-size="10" text-anchor="middle">▸ if (X ∧ !X) anywhere → discard</text>
+  <text x="380" y="132" fill="#8B8FA5" font-size="9" text-anchor="middle">budget: numberIterationsConjectureFiltering</text>
+
+  <path d="M520 82 L558 82" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ce-ar)"/>
+
+  <rect x="558" y="40" width="180" height="84" rx="10" fill="#262938" stroke="#5DCAA5"/>
+  <text x="648" y="62" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">CE survivors</text>
+  <text x="648" y="82" fill="#F0E8DC" font-size="10" text-anchor="middle">filtered_conjectures.txt</text>
+  <text x="648" y="102" fill="#8B8FA5" font-size="9.5" text-anchor="middle">hundreds, not thousands</text>
+  <text x="648" y="116" fill="#8B8FA5" font-size="9.5" text-anchor="middle">into main prover</text>
+
+  <rect x="22" y="172" width="716" height="60" rx="9" fill="#1C1F2B" stroke="#3A3D4A"/>
+  <text x="380" y="194" fill="#F0E8DC" font-size="11" text-anchor="middle">Wall-clock note: CE filtering was historically ~80% of a Gauss run — since collapsed.</text>
+  <text x="380" y="212" fill="#8B8FA5" font-size="10" text-anchor="middle">It is no longer a bottleneck, and explicitly not an optimisation target.</text>
+</svg>
+<figcaption><b>The cheap test before the expensive proof.</b> A
+counterexample on five elements rules out a candidate forever; running it
+through main-prover would waste minutes.</figcaption>
+</figure>
+
+<h3>11.2.1 &nbsp;What's different from the main engine</h3>
+<p>
+The CE-mode engine is the same code with two flag changes:
+</p>
+<ul class="inv">
+<li><b>No mandatory-fact gate.</b> Main-prover request generation requires a
+known local fact to be one of the rule's matched arguments — otherwise the
+engine would enumerate the entire Cartesian product. CE mode drops that
+requirement: the model is small enough that brute enumeration is cheap, and
+the goal is to surface <i>any</i> contradiction, including ones that don't
+ride a known fact.</li>
+<li><b>Different request generator.</b> <code>generateEncodedRequestsStaticCE</code>
+fires every rule against every fact; the main pair-mode generator
+(<code>…Pairs</code>) is not used.</li>
+</ul>
+<p>
+Apart from that, the LB tree, mail boundary, scope mechanics, and admission
+gate behave identically. The interpretation of “success” is inverted: in main
+mode a derived head is good news; in CE mode a derived contradiction is good
+news (and the candidate is discarded).
+</p>
+
+<h3>11.2.2 &nbsp;One burst per candidate, a pool over a queue</h3>
+<p>
+Each candidate gets exactly <strong>one hashburst</strong>
+(<code>numberIterationsConjectureFiltering</code> is 1 in every config): the
+single burst checks whether the candidate's negation immediately contradicts the
+facts. A dedicated thread pool drains a global candidate queue — each worker
+takes the next candidate, checks it on its own throwaway copy of the fact base,
+and the instant one is refuted its burst stops early and the worker grabs the
+next. There is no batch barrier, so no core idles waiting on a slow candidate.
+The historical 80%-of-wall-clock cost (roughly halved by the pool) comes from the
+sheer candidate count, not any individual candidate's runtime.
+</p>
+
+<!-- ===================== 11.3 ===================== -->
+<h2 id="j">11.3 &nbsp;The j-copy trick</h2>
+<p>
+The fact table is not a blanket doubling of every fact. The generator always
+emits the anchor fact in both forms — the <code>i0</code>/<code>i1</code>
+constants and their <code>j0</code>/<code>j1</code> twins — and for the
+remaining facts re-emits a <code>j</code>-form copy to break repeated
+<code>i</code>-value arguments, so a rule that needs two textually-distinct
+tokens can still fire. The point is the textual distinctness, not a uniform ×2.
+Example for the Peano <code>+</code> facts:
+</p>
+<pre><code>(in3[i4,i5,i0,+])
+(in3[i4,j5,i0,+])</code></pre>
+<p>
+Both denote the same model element (the constant in slot 1 is the same number
+either way). The textual distinctness is the <i>point</i>: a hash rule that
+expects two structurally-different arguments would otherwise never fire on
+two textually-identical names, even though semantically that is exactly the
+case the rule is built for. The j-copies give the pattern matcher two
+different strings to bind, so the rule fires.
+</p>
+
+<figure>
+<svg viewBox="0 0 760 200" role="img" aria-label="The j-copy trick — same model element, two textual forms">
+  <defs><marker id="j-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="20" y="30" width="220" height="120" rx="10" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <text x="130" y="52" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">model state</text>
+  <text x="130" y="76" fill="#F0E8DC" font-size="10" text-anchor="middle">universe = {0, 1, 2, 3, 4}</text>
+  <text x="130" y="96" fill="#F0E8DC" font-size="10" text-anchor="middle">+(2, 3) = 0</text>
+  <text x="130" y="116" fill="#8B8FA5" font-size="9.5" text-anchor="middle">a single fact</text>
+
+  <path d="M240 80 L266 80" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#j-ar)"/>
+
+  <rect x="270" y="30" width="220" height="120" rx="10" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="380" y="52" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">stored twice</text>
+  <text x="380" y="76" fill="#F0E8DC" font-size="10" text-anchor="middle">(in3[i2, i3, i0, +])</text>
+  <text x="380" y="96" fill="#F0E8DC" font-size="10" text-anchor="middle">(in3[i2, j3, i0, +])</text>
+  <text x="380" y="120" fill="#8B8FA5" font-size="9.5" text-anchor="middle">same fact, two writings</text>
+
+  <path d="M490 80 L516 80" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#j-ar)"/>
+
+  <rect x="520" y="30" width="220" height="120" rx="10" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <text x="630" y="52" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">a rule that fires</text>
+  <text x="630" y="76" fill="#F0E8DC" font-size="10" text-anchor="middle">(in3[a, b, _, +]) ∧</text>
+  <text x="630" y="94" fill="#F0E8DC" font-size="10" text-anchor="middle">(in3[a, c, _, +]) ∧</text>
+  <text x="630" y="112" fill="#F0E8DC" font-size="10" text-anchor="middle">a≠c required</text>
+  <text x="630" y="132" fill="#8B8FA5" font-size="9.5" text-anchor="middle">fires on (i3, j3) — would miss without j-copy</text>
+</svg>
+<figcaption><b>Same number, two strings.</b> Without j-copies, the pattern
+matcher cannot fire rules that require two distinct argument tokens — and many
+soundness-relevant rules do.</figcaption>
+</figure>
+
+<div class="key">
+<b>Asymmetric j-copies would silently break the filter.</b> The generator
+relies on a strict symmetry: every <code>i</code>-form has a matching
+<code>j</code>-form. A future fact generator that emitted, say, <code>i0</code>
+but not <code>j0</code> would silently flip some rules from
+“fires when it should” to “never fires” — a quiet over-acceptance of
+conjectures. No fail-loud path catches this yet.
+</div>
+
+<!-- ===================== 11.4 ===================== -->
+<h2 id="comp">11.4 &nbsp;The compressor — independent throwaway trees</h2>
+<p>
+After main proving, GL holds <i>N</i> proved theorems. Many are derivable from
+each other: a commutativity step from a more general lemma, a corollary of an
+already-stated stronger fact, the reverse direction of an induction-proved fact. The
+<b>compressor</b> identifies and discards the derivable ones, leaving the
+smallest non-redundant set it can find. It does so with the same hash engine
+but in a third mode — one that uses one fresh, independent logic-block tree
+<b>per candidate</b>.
+</p>
+
+<figure>
+<svg viewBox="0 0 760 250" role="img" aria-label="Compressor — per-candidate independent LB trees">
+  <defs><marker id="cm-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="22" y="22" width="200" height="50" rx="9" fill="#262938" stroke="#5DCAA5"/>
+  <text x="122" y="46" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">N proved theorems</text>
+  <text x="122" y="62" fill="#8B8FA5" font-size="9.5" text-anchor="middle">theorems.txt</text>
+
+  <path d="M222 46 L266 46" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#cm-ar)"/>
+
+  <rect x="266" y="10" width="200" height="74" rx="10" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="366" y="32" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">Phase 1 — per theorem</text>
+  <text x="366" y="50" fill="#F0E8DC" font-size="10" text-anchor="middle">spawn a fresh LB tree</text>
+  <text x="366" y="64" fill="#F0E8DC" font-size="10" text-anchor="middle">load all OTHERS as rules</text>
+  <text x="366" y="78" fill="#8B8FA5" font-size="9" text-anchor="middle">target's head = goal</text>
+
+  <path d="M466 46 L498 46" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#cm-ar)"/>
+
+  <rect x="498" y="10" width="240" height="74" rx="10" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="618" y="32" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">CompressorNode · per theorem</text>
+  <text x="618" y="50" fill="#F0E8DC" font-size="10" text-anchor="middle">graph: derived expr → theorems</text>
+  <text x="618" y="78" fill="#8B8FA5" font-size="9" text-anchor="middle">lightweight dependency record</text>
+
+  <path d="M618 84 L618 110" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#cm-ar)"/>
+
+  <rect x="266" y="110" width="472" height="74" rx="10" fill="#262938" stroke="#B084EB"/>
+  <text x="502" y="132" fill="#B084EB" font-size="11" font-weight="bold" text-anchor="middle">Phase 2 — greedy elimination over the graph</text>
+  <text x="502" y="150" fill="#F0E8DC" font-size="10" text-anchor="middle">sort by usage ascending; remove if survivors stay derivable</text>
+  <text x="502" y="166" fill="#F0E8DC" font-size="10" text-anchor="middle">commit kept / dropped → compressed_external_theorems.txt + compressed_out_theorems.txt</text>
+
+  <text x="380" y="210" fill="#8B8FA5" font-size="11" text-anchor="middle">Throwaway trees: each Phase 1 LB-tree exists for one candidate, then is destroyed —</text>
+  <text x="380" y="226" fill="#8B8FA5" font-size="11" text-anchor="middle">no shared dependency state survives between candidates by design.</text>
+</svg>
+<figcaption><b>Two phases.</b> Phase 1 builds the dependency record one
+candidate at a time; Phase 2 decides who to keep using that record.</figcaption>
+</figure>
+
+<div class="key">
+<b>Why throwaway trees?</b> A shared dependency state across candidates would
+make the analysis order-sensitive — and the analysis already produces an
+order-sensitive result by construction (the greedy elimination is a
+heuristic). Keeping the per-candidate LB tree fresh isolates the
+order-dependence to one explicit place, the Phase 2 ordering rule.
+</div>
+
+<!-- ===================== 11.5 ===================== -->
+<h2 id="p1">11.5 &nbsp;Compressor Phase 1 — per-theorem dependency graphs</h2>
+<p>
+For each of the <i>N</i> proved theorems, the compressor spawns an
+independent logic-block tree. Into the tree:
+</p>
+<ul class="inv">
+<li>Every <i>other</i> proved theorem is installed as an implication rule —
+disintegrated through the same machinery the main prover uses, but with
+<code>compressor_mode=true</code> setting Pass&nbsp;B's gate so its
+disintegration step does not fire.</li>
+<li>The target theorem's premises are seeded as “fuel”: facts to assume.</li>
+<li>The target theorem's head is the proof goal.</li>
+</ul>
+<p>
+The kernel then runs a bounded number of hash bursts (default 15) and records
+which other theorems were cited by which derivation step. The data structure
+is one <code>CompressorNode</code> per theorem; its <code>graph</code> field
+maps each derived expression to the theorems that produced it. That graph for
+the target theorem captures exactly the question Phase 2 needs to answer: <i>“which of
+the other theorems must remain available for this theorem's head to stay
+derivable?”</i>
+</p>
+
+<h3>11.5.1 &nbsp;Why the origin-record cap is different</h3>
+<p>
+Main-mode tracks <code>max_origin_per_expr=1</code> — one origin
+chain per derived expression, the minimal evidence needed for the proof graph.
+The compressor uses <code>compressor_max_origins_per_expr=30</code>. The reason: the compressor cares about
+<i>which</i> theorems contributed to a derivation, not just <i>that</i> it
+derived. A larger cap lets Phase 2 see alternative dependency chains and
+preferentially eliminate the candidate that has the fewest unique uses across
+the corpus.
+</p>
+
+<!-- ===================== 11.6 ===================== -->
+<h2 id="p2">11.6 &nbsp;Compressor Phase 2 — greedy elimination</h2>
+<p>
+Phase 2 iterates over candidates in ascending order of usage count (least
+used first). For each candidate:
+</p>
+<ol class="walk">
+<li><b>Tentatively dead.</b> Add the candidate to the “dead” set. Do <i>not</i>
+yet rebuild the dependency graph.</li>
+<li><b>Re-test survivors.</b> For every <i>non-dead</i> theorem, ask: is its
+head still derivable from the remaining alive theorems? Use the cached
+<code>CompressorNode</code> graphs from Phase 1.</li>
+<li><b>Confirm or restore.</b> If every survivor passes, the candidate stays
+dead. If <i>any</i> survivor fails, the candidate is restored to alive — it
+was load-bearing.</li>
+</ol>
+
+<div class="key">
+<b>The survivor-only criterion is essential.</b> Including dead theorems in
+the derivability test would let two dead theorems protect each other (each is
+needed only because the other is dead). The criterion guarantees no
+mutually-protective pair survives Phase 2 by accident.
+</div>
+
+<h3>11.6.1 &nbsp;What ends up compressed out</h3>
+<table>
+<tr><th>Pattern</th><th>Typical example</th></tr>
+<tr><td>Symmetric reverse directions</td><td>If <code>(commute_a_b)</code> proves by induction and <code>(commute_b_a)</code> proves too (now a real proof, not a fabricated mirror), one is removable.</td></tr>
+<tr><td>Direct corollaries of a stronger fact</td><td>An associativity over three terms when associativity over n terms exists.</td></tr>
+<tr><td>Intermediate stations on a proof chain</td><td>If both endpoints of a chain are proved independently, the middle is derivable from them.</td></tr>
+<tr><td>OR-theorem parents</td><td>The mutex pair <code>!A→B</code> + <code>!B→A</code> is subsumed by the assembled <code>A∨B</code>.</td></tr>
+</table>
+
+<!-- ===================== 11.7 ===================== -->
+<h2 id="out">11.7 &nbsp;What lands on disk</h2>
+<p>
+Three text files carry the compressor's output. Each plays a distinct role
+for the rest of the pipeline.
+</p>
+<table>
+<tr><th>File</th><th>Contents</th><th>Read by</th></tr>
+<tr><td><code>files/theorems/theorems.txt</code></td><td>Raw MPL form of this batch's pruned essential-survivor theorems — the compressor's kept set, excluding externals and OR-consumed parents (the authoritative regression target — see Chapter&nbsp;10's note on method-tag drift).</td><td>The regression baseline; the verifier.</td></tr>
+<tr><td><code>files/theorems/compressed_external_theorems.txt</code></td><td>The compressor-kept subset, in the order Phase 2 produced them. This is the file the <i>next batch</i> loads as “external theorems”.</td><td>Next batch's main prover at startup.</td></tr>
+<tr><td><code>files/theorems/compressed_out_theorems.txt</code></td><td>The compressor-eliminated subset (the theorem strings only). Each entry is recoverable from the kept set via the verifier — they are not gone, just not first-class.</td><td>The verifier's <code>theorem goal reached</code> checker, when a kept theorem's chapter cites a compressed-out theorem.</td></tr>
+</table>
+
+<figure>
+<svg viewBox="0 0 760 200" role="img" aria-label="The three theorem files and how they feed the next batch">
+  <defs><marker id="of-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="22" y="40" width="220" height="46" rx="9" fill="#262938" stroke="#5DCAA5"/>
+  <text x="132" y="60" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">theorems.txt</text>
+  <text x="132" y="76" fill="#8B8FA5" font-size="9.5" text-anchor="middle">all proofs, raw MPL</text>
+
+  <rect x="22" y="96" width="220" height="46" rx="9" fill="#262938" stroke="#B084EB"/>
+  <text x="132" y="116" fill="#B084EB" font-size="11" font-weight="bold" text-anchor="middle">compressed_external_theorems</text>
+  <text x="132" y="132" fill="#8B8FA5" font-size="9.5" text-anchor="middle">kept subset → next batch externals</text>
+
+  <rect x="22" y="152" width="220" height="36" rx="9" fill="#262938" stroke="#EF9F27"/>
+  <text x="132" y="172" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">compressed_out_theorems</text>
+  <text x="132" y="186" fill="#8B8FA5" font-size="9.5" text-anchor="middle">eliminated; recoverable</text>
+
+  <path d="M242 63  L382 63" stroke="#5DCAA5" stroke-width="1.4" marker-end="url(#of-ar)"/>
+  <path d="M242 119 L382 119" stroke="#B084EB" stroke-width="1.4" marker-end="url(#of-ar)"/>
+  <path d="M242 168 L382 168" stroke="#EF9F27" stroke-width="1.4" marker-end="url(#of-ar)"/>
+
+  <rect x="386" y="40" width="160" height="148" rx="10" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <text x="466" y="62" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">verifier</text>
+  <text x="466" y="82" fill="#F0E8DC" font-size="10" text-anchor="middle">independent reader</text>
+  <text x="466" y="100" fill="#8B8FA5" font-size="9.5" text-anchor="middle">re-checks each emitted theorem</text>
+  <text x="466" y="116" fill="#8B8FA5" font-size="9.5" text-anchor="middle">cross-checks against</text>
+  <text x="466" y="132" fill="#8B8FA5" font-size="9.5" text-anchor="middle">compressed-out file</text>
+  <text x="466" y="152" fill="#8B8FA5" font-size="9.5" text-anchor="middle">when a chapter cites it</text>
+
+  <path d="M546 119 L592 119" stroke="#5DCAA5" stroke-width="1.4" marker-end="url(#of-ar)"/>
+
+  <rect x="594" y="96" width="148" height="46" rx="9" fill="#262938" stroke="#5DCAA5"/>
+  <text x="668" y="116" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">next batch</text>
+  <text x="668" y="132" fill="#8B8FA5" font-size="9.5" text-anchor="middle">stage 3 reads externals</text>
+</svg>
+<figcaption><b>Three files, three audiences.</b> Each one is read by a
+different downstream consumer; together they keep batches composable without
+losing the eliminated work.</figcaption>
+</figure>
+
+<!-- ===================== 11.8 ===================== -->
+<h2 id="fail">11.8 &nbsp;Failure modes</h2>
+<dl class="terms">
+<dt>“CE filter says nothing — every conjecture went through unfiltered.”</dt>
+<dd>The fact-file name lookup failed silently. The path inference takes the
+anchor name, strips <code>Anchor</code>, lowercases — so
+<code>AnchorPeano</code> → <code>peano</code>, and the loader opens
+<code>files/simple_facts/simple_facts_peano_*.txt</code>. A typo in the anchor name
+yields zero file matches and no warning. <em>Check</em>: the fact files
+actually opened in the run log.</dd>
+
+<dt>“Phase 1 of the compressor uses too much memory on Gauss.”</dt>
+<dd>Phase 1 is O(<i>N²</i>) by construction — each of <i>N</i> independent
+LB trees loads all <i>N</i> theorems as rules. At Peano/Gauss scale this is
+fine; at FTA scale (target ≈100 K theorems per run) it is not. <em>Check</em>:
+known open scaling concern; the path forward is either pool sharing or
+streaming. No fix yet.</dd>
+
+<dt>“Two runs picked different ‘minimal’ compressed sets.”</dt>
+<dd>Phase 2's greedy elimination depends on a stable tie-breaking order for
+candidates with equal usage counts. An unstable sort would surface this.
+<em>Check</em>: the compressor's sort is <code>std::stable_sort</code> — if a
+refactor replaced it with <code>std::sort</code>, the output becomes flaky.</dd>
+
+<dt>“Compressor dropped a theorem another chapter needs.”</dt>
+<dd>A surviving chapter cites the dropped theorem. <em>Check</em>: the
+verifier reads <code>compressed_out_theorems.txt</code> for citation
+resolution. The theorem isn't gone — it has moved to the recoverable file.</dd>
+
+<dt>“A CE-mode rule fires on the j-copy but never on the i-copy.”</dt>
+<dd>Almost certainly: the rule was installed with a textually-distinct
+binding requirement that holds against j-copies but not i-copies. <em>Check</em>:
+the fact table's i/j symmetry; a missing <code>j</code>-form is the usual
+culprit.</dd>
+</dl>
+
+<div class="note">
+That closes the reference. The prover's main pass, the substrate it
+runs on, the mechanisms it composes, the parallelism that scales it, the
+provenance it leaves behind, the compilation that makes it sound, the anchors
+that fix its mathematics, the reformulation that multiplies its outputs, and
+the CE-filter / compressor modes that bracket it — every architectural piece
+the prover has, in one cross-linked document.
+</div>
+
+<div class="pager">
+  <a href="reformulation.html">&larr; 10 · Reformulation &amp; head switch</a>
+  <a href="index.html">↑ Overview</a>
+</div>
+
+<div class="foot">
+<b>License.</b> Generative Logic prover reference. © 2025-2026 Generative Logic UG
+(haftungsbeschränkt). Dual-licensed under the <b>GNU Affero General Public License
+v3 or later</b> and a <b>commercial license</b>; this document and the proof
+artefacts it describes inherit the same terms — commercial terms at
+<a href="https://generative-logic.com/license">generative-logic.com/license</a>.
+</div>
+
+</main>
+</body>
+</html>

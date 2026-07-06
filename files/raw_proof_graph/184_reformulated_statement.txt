@@ -1,1 +1,0 @@
-(>[1,2,3,4](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11](interval[1,4,2,10,11])(existence4[1,4,11,9,2]))))	main	reformulated from	(>[1,2,3,4](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11,12](limitSet[1,4,11,9,12])(>[](interval[1,4,2,10,11])(interval[1,4,2,9,12])))))	main

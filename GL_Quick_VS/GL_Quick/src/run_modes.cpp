@@ -48,8 +48,8 @@ namespace run_modes {
 
     // Mutable: may be overridden by config (e.g. incubator mode)
     inline std::filesystem::path THEOREMS_FOLDER = PROJECT_ROOT / "files" / "theorems";
-    inline std::filesystem::path THEOREMS_FILE = THEOREMS_FOLDER / "theorems.txt";
-    inline std::filesystem::path PROVED_THEOREMS_FILE = THEOREMS_FOLDER / "proved_theorems.txt";
+    inline std::filesystem::path THEOREMS_FILE = THEOREMS_FOLDER / "conjectures.txt";
+    inline std::filesystem::path PROVED_THEOREMS_FILE = THEOREMS_FOLDER / "theorems.txt";
     inline std::filesystem::path COMPRESSED_EXTERNAL_THEOREMS_FILE =
         THEOREMS_FOLDER / "compressed_external_theorems.txt";
     inline std::filesystem::path BACKGROUND_PROVED_THEOREMS_FILE = PROVED_THEOREMS_FILE;
@@ -98,8 +98,8 @@ namespace run_modes {
                     if (j.contains("theorems_folder")) {
                         std::string folder = j["theorems_folder"];
                         THEOREMS_FOLDER = PROJECT_ROOT / folder;
-                        THEOREMS_FILE = THEOREMS_FOLDER / "theorems.txt";
-                        PROVED_THEOREMS_FILE = THEOREMS_FOLDER / "proved_theorems.txt";
+                        THEOREMS_FILE = THEOREMS_FOLDER / "conjectures.txt";
+                        PROVED_THEOREMS_FILE = THEOREMS_FOLDER / "theorems.txt";
                         COMPRESSED_EXTERNAL_THEOREMS_FILE = THEOREMS_FOLDER / "compressed_external_theorems.txt";
                     }
                     if (j.contains("raw_proof_graph_folder")) {
@@ -108,7 +108,7 @@ namespace run_modes {
                     }
                     if (j.contains("background_theorems_folder")) {
                         std::string bgFolder = j["background_theorems_folder"];
-                        BACKGROUND_PROVED_THEOREMS_FILE = PROJECT_ROOT / bgFolder / "proved_theorems.txt";
+                        BACKGROUND_PROVED_THEOREMS_FILE = PROJECT_ROOT / bgFolder / "theorems.txt";
                     } else {
                         BACKGROUND_PROVED_THEOREMS_FILE = PROVED_THEOREMS_FILE;
                     }
@@ -135,16 +135,6 @@ namespace run_modes {
             auto bg_set = loadLinesFromFile(BACKGROUND_PROVED_THEOREMS_FILE);
             proved_set.insert(bg_set.begin(), bg_set.end());
         }
-
-        // DEBUG FILTER disabled for hash-burst investigation: with the culprit
-        // theorem back in the broadcast pool, Gauss reverts to the failure
-        // mode and the trap in prover.hpp can capture its hash-burst output
-        // at the target LB.
-        // if (anchor_id == "Gauss") {
-        //     const std::string target =
-        //         "(>[1,3,6](AnchorPeano[1,2,3,4,5,6])!(>[7](in[7,1])!(in2[7,6,3])))";
-        //     proved_set.erase(target);
-        // }
 
         std::vector<std::string> proved_lst(proved_set.begin(), proved_set.end());
         std::sort(proved_lst.begin(), proved_lst.end());
@@ -269,10 +259,13 @@ namespace run_modes {
 
             // Generate proof graph in incubator mode too
             expressionAnalyzer.generateRawProofGraph(expressionAnalyzer.globalTheoremList, RAW_PROOF_DIR);
+            // Grid's last reader done — wipe it so the root's arena-backed
+            // encodedMaps don't outlive their arena at process teardown.
+            expressionAnalyzer.destroyGrid();
         } else {
             // ====== PHASE 2: SAVE ======
             // globalTheoremList was compressed by the run_modes.cpp invocation above.
-            // Handle external theorem pruning and save proved_theorems.txt.
+            // Handle external theorem pruning and save theorems.txt.
 
             // Full survivor set from compression: includes old proved theorems
             // (from prior batches), new theorems from this batch, and external
@@ -388,15 +381,15 @@ namespace run_modes {
 
             // Save proved theorems (essential survivors minus OR-consumed parents,
             // excluding externals).  saveProvedTheoremsFiltered truncates and
-            // rewrites both proved_theorems.txt and compiled_proved_theorems.txt.
+            // rewrites both theorems.txt and compiled_theorems.txt.
             expressionAnalyzer.saveProvedTheoremsFiltered(survivingTheorems, survivingExternalSet);
 
             // Append OR theorems to both proved_theorems files.
-            // proved_theorems.txt: expanded form for inter-batch communication.
-            // compiled_proved_theorems.txt: compiled form for proof graph pruning.
+            // theorems.txt: expanded form for inter-batch communication.
+            // compiled_theorems.txt: compiled form for proof graph pruning.
             if (!orTheorems.empty()) {
                 std::ofstream ofs(PROVED_THEOREMS_FILE, std::ios::app);
-                std::ofstream ofsCompiled(THEOREMS_FOLDER / "compiled_proved_theorems.txt", std::ios::app);
+                std::ofstream ofsCompiled(THEOREMS_FOLDER / "compiled_theorems.txt", std::ios::app);
                 for (const auto& ot : orTheorems) {
                     if (ofsCompiled.is_open()) ofsCompiled << ot << "\n";
                     std::string expanded = expressionAnalyzer.expandToBaseForm(ot);
@@ -431,8 +424,62 @@ namespace run_modes {
                 else {
                     expressionAnalyzer.generateRawProofGraph(listForGraph, RAW_PROOF_DIR);
                 }
+                // Grid's last reader done — wipe it so the root's arena-backed
+                // encodedMaps don't outlive their arena at process teardown.
+                expressionAnalyzer.destroyGrid();
             }
         }
+    }
+
+    void ceOnlyRun(const std::string& anchor_id) {
+        using namespace std;
+        namespace fs = std::filesystem;
+
+        if (!anchor_id.empty()) {
+            std::cout << "\n[ceOnlyRun] Processing Tag/Anchor: " << anchor_id << "\n";
+        }
+
+        // Same config sniff as `fullRun` to honour `theorems_folder` overrides
+        // (incubator vs main tags). Only paths matter for the CE-filter step;
+        // skipCompression / skipProofGraph are irrelevant here, but the
+        // theorems folder override IS — without it an `IncubatorPeano` tag
+        // would read main's `files/theorems/conjectures.txt` and write its
+        // filtered_conjectures.txt to main's folder.
+        {
+            auto configPath = PROJECT_ROOT / "files" / "config" / ("Config" + anchor_id + ".json");
+            if (fs::exists(configPath)) {
+                try {
+                    std::ifstream f(configPath);
+                    nlohmann::json j;
+                    f >> j;
+                    if (j.contains("theorems_folder")) {
+                        std::string folder = j["theorems_folder"];
+                        THEOREMS_FOLDER = PROJECT_ROOT / folder;
+                        THEOREMS_FILE = THEOREMS_FOLDER / "conjectures.txt";
+                        PROVED_THEOREMS_FILE = THEOREMS_FOLDER / "theorems.txt";
+                        COMPRESSED_EXTERNAL_THEOREMS_FILE = THEOREMS_FOLDER / "compressed_external_theorems.txt";
+                    }
+                } catch (...) {}
+            }
+        }
+
+        gl::ExpressionAnalyzer expressionAnalyzer(anchor_id);
+
+        if (!fs::exists(THEOREMS_FILE)) {
+            std::cerr << "[ceOnlyRun] Missing theorems file: " << THEOREMS_FILE << "\n";
+            std::cerr << "[ceOnlyRun] Run `--conjecture " << anchor_id
+                      << "` first to generate it." << std::endl;
+            return;
+        }
+
+        std::unordered_set<std::string> theorem_set = loadLinesFromFile(THEOREMS_FILE);
+        std::vector<std::string> tmp_lst(theorem_set.begin(), theorem_set.end());
+        std::sort(tmp_lst.begin(), tmp_lst.end());
+        std::cout << "[ceOnlyRun] Loaded " << tmp_lst.size()
+                  << " conjectures from " << THEOREMS_FILE << "\n";
+
+        std::vector<std::string> survivors = expressionAnalyzer.runCeFilterOnly(tmp_lst);
+        std::cout << "[ceOnlyRun] Final survivors: " << survivors.size() << "\n";
     }
 
 } // namespace run_modes

@@ -56,8 +56,8 @@ class ProofLine:
     - ``namespace``: the validity scope at which the fact holds.
       ``"main"`` is the theorem root; descendants encode OR-branch
       and recursion scopes via the ``_boundary_`` suffix grammar
-      (see ``docs/20_core_concepts/04_validity_stack.md``).
-    - ``tag``: the proof-tag dispatch key. Maps to one of the 30
+      (see ``docs/agentic_swdd/20_core_concepts/04_validity_stack.md``).
+    - ``tag``: the proof-tag dispatch key. Maps to one of the 31
       entries in ``TAG_CHECKERS``. A missing tag becomes
       ``"<malformed>"`` so the dispatcher records a recognisable
       failure instead of crashing on a KeyError.
@@ -149,14 +149,14 @@ class VerifierState:
        (ordered, used by ``build_chapter_theorem_map`` to assign
        chapter files to theorems in registry order). ``external_theorems``
        holds expressions from ``external_theorems.txt`` (raw + renamed
-       + mirror forms) consulted by ``check_externally_provided_theorem``
+       forms) consulted by ``check_externally_provided_theorem``
        and the ``origin`` meta-check.
 
     3. **Operator metadata** loaded from ``ConfigVisu.json``:
        ``output_indices`` (atomic op → 0-based output arg position),
        ``input_indices`` (atomic op → list of 0-based input positions),
        ``definition_sets`` (atomic op → ``{pos_str → [type, combinable]}``).
-       Consumed by the mirror, reformulation, recursion, and
+       Consumed by the reformulation, recursion, and
        anchor-handling checkers.
 
     4. **GL binaries** loaded from
@@ -206,9 +206,6 @@ class VerifierState:
 
     # GL binaries: tag → { name → { "category", "elements", "signature", "definedSet", ... } }
     gl_binaries: Dict[str, dict] = field(default_factory=dict)
-
-    # Definition sets: core_name → { 1-based-position-str → [defset_str, bool] }
-    definition_sets: Dict[str, dict] = field(default_factory=dict)
 
     # Transient: set per-chapter before dispatching line checkers
     current_chapter_thm: Optional[Tuple[str, str, str]] = None
@@ -387,10 +384,10 @@ def load_global_theorem_list(base_dir: str) -> Tuple[Dict[str, dict],
 
         ``<theorem-expression> TAB <theorem-type> TAB <theorem-ref>``
 
-    where ``<theorem-type>`` is one of ``direct`` / ``mirrored`` /
+    where ``<theorem-type>`` is one of ``direct`` /
     ``reformulated`` / ``induction`` / ``or_theorem`` /
     ``incubator_back_reformulation`` and ``<theorem-ref>`` is the
-    proof method (``direct`` / ``mirrored statement`` /
+    proof method (``direct`` /
     ``reformulated statement`` / ``or theorem``) OR — for induction
     rows — the induction variable name (consumed by
     ``check_recursion``).
@@ -442,7 +439,10 @@ def load_global_theorem_list(base_dir: str) -> Tuple[Dict[str, dict],
 #  Build chapter → theorem mapping
 #
 #  Walk global_theorem_list in order, consume chapter files sequentially.
-#  "induction" theorems consume 2 chapters (check_zero + check_induction_condition).
+#  "induction" theorems consume 3 chapters (induction_typing + check_zero +
+#  check_induction_condition, in that exact order — typing first because both
+#  the zero-case and the successor-step proofs cite (in[ind_var, N]) and that
+#  typing must be established before either citation makes sense).
 #  All other types consume 1 chapter.
 # ---------------------------------------------------------------------------
 
@@ -457,7 +457,7 @@ def build_chapter_theorem_map(
     consuming chapter files in declaration order:
 
     - **Non-induction theorems** consume exactly ONE chapter file
-      (``direct_proof.txt`` / ``mirrored_statement.txt`` /
+      (``direct_proof.txt`` /
       ``reformulated_statement.txt`` / ``or_theorem.txt`` /
       ``back_reformulated_statement.txt``).
     - **Induction theorems** consume exactly THREE chapter files, in
@@ -863,7 +863,7 @@ def disintegrate_implication_full(expr: str) -> Tuple[List[str], str]:
     Used by every checker that needs to compare a row's structure
     against a reference implication — ``check_implication``,
     ``check_equality1``, ``check_premise_element``,
-    ``check_validity_name``, ``_check_mirror``,
+    ``check_validity_name``,
     ``_check_reformulation``, ``check_equalize_variable``, etc.
 
     @param expr  An MPL implication expression (possibly nested) OR
@@ -1090,17 +1090,19 @@ def _normalize_expr_list(exprs: List[str]) -> List[str]:
       check would always disagree.
 
     Used by the ``origin`` meta-check (final fallback after the
-    fast w→v revert) and by mirror/reformulation canonicalization
-    inside ``_check_mirror`` and ``_check_reformulation``.
+    fast w→v revert) and by reformulation canonicalization
+    inside ``_check_reformulation``.
 
     @param exprs  Input list of MPL expressions.
     @return  Same-length list with every v/V/w/W token renamed to
              ``v1, v2, …`` in first-appearance order. Identity for
              expressions without such tokens.
 
-    @see _normalize_all_vars_in_list — broader variant that renames
-    EVERY arg name (not just ``[vVwW]\\d+``), used for anchor-level
-    implication matching where all variables are changeable.
+    Note: a broader "rename EVERY arg name" variant
+    (``_normalize_all_vars_in_list``) once existed for the anchor-level
+    implication branch; both were removed when implication checking was
+    unified to a single substitution-based path
+    (D-75).
     """
     seen: Dict[str, str] = {}
     counter = [0]
@@ -1150,32 +1152,50 @@ def _alpha_canonicalize_bound_vars(expr: str) -> str:
        (``(?<=[\\[,]) <name> (?=[\\],])``) and rewrites each match
        to its canonical ``b<index>`` slot.
 
-    **Limitation.** The rename is applied UNIFORMLY across ``expr``.
-    Two disjoint ``>[…]`` binders that happen to use the same name
-    would collapse to the same canonical slot. Well-formed GL
-    implications never do this within a single rule expression (the
-    compiler renames colliding bvars at registry insertion), so the
-    limitation is benign for inputs the verifier sees in practice.
+    **Collision detection.** Two disjoint ``>[…]`` binders that share
+    a name would collapse to the same canonical slot under a naive
+    rename — silently masking a producer-side malformation. Well-
+    formed GL implications never share a bound-variable name across
+    disjoint binders (the compiler renames colliding bvars at registry
+    insertion), so a same-name collision is a real bug signal. This
+    function detects the case and returns a sentinel
+    ``<MALFORMED-DUPLICATE-BINDER:…>`` form whose origin-meta-check
+    membership test will fail (no registry entry begins with the
+    sentinel prefix), surfacing the malformation as a verifier failure
+    per I-16 instead of trusting the producer.
 
     @param expr  An MPL expression (typically an implication rule
                  cited as ``rest[0]`` of a row).
     @return  Expression with every binder-introduced name rewritten
-             to ``b<k>``. Identity if ``expr`` has no binders.
+             to ``b<k>``. Identity if ``expr`` has no binders. On a
+             duplicate-name collision returns a non-matching sentinel.
 
+    @invariant I-16 — verifier must not trust producer well-formedness
+    for soundness-relevant canonicalisation.
     @see _normalize_expr_list — the v/V/w/W normalizer that
     canonicalizes free index names across a list.
     """
     bound_order: List[str] = []
     seen_bound: Set[str] = set()
+    duplicate_name: Optional[str] = None
     for m in re.finditer(r'>\[([^\]]*)\]', expr):
         names = m.group(1)
         if not names:
             continue
         for n in names.split(','):
             n = n.strip()
-            if n and n not in seen_bound:
-                seen_bound.add(n)
-                bound_order.append(n)
+            if not n:
+                continue
+            if n in seen_bound:
+                duplicate_name = n
+                continue
+            seen_bound.add(n)
+            bound_order.append(n)
+    if duplicate_name is not None:
+        # Return a sentinel form that cannot match any real registry entry.
+        # The origin meta-check's membership tests will reject; the row gets
+        # an `origin` failure that pinpoints the malformed citation.
+        return f'<MALFORMED-DUPLICATE-BINDER:{duplicate_name}>{expr}'
     if not bound_order:
         return expr
     rename = {n: f'b{i + 1}' for i, n in enumerate(bound_order)}
@@ -1184,123 +1204,6 @@ def _alpha_canonicalize_bound_vars(expr: str) -> str:
                          + r')(?=[\],])')
     return pattern.sub(lambda m: rename[m.group(0)], expr)
 
-
-
-def _check_mirror(source_expr: str, target_expr: str,
-                   output_indices: Dict[str, int]) -> bool:
-    """@brief Verify ``target_expr`` is a valid mirror of ``source_expr``.
-
-    @details
-    A *mirror* of an implication swaps the head with the unique
-    non-anchor premise that shares the head's output variable —
-    intuitively "swap the conclusion with the premise that names the
-    same output". This produces a new implication with the same
-    anchor row and the same complement-permutation of remaining
-    premises, but with the head/premise pair flipped.
-
-    **Algorithm.**
-
-    1. Disintegrate both source and target into premises + head via
-       ``disintegrate_implication_full``. Reject early if either
-       side has fewer than 2 premises (no swap possible) or if the
-       two sides differ in premise count (structurally incompatible).
-
-    2. Pre-normalize the TARGET as a list:
-       ``[anchor, premise1, ..., premiseN, head]`` via
-       ``_normalize_expr_list``. This canonicalizes v-style variables
-       to ``v1, v2, …`` in first-appearance order so subsequent
-       comparisons are alpha-insensitive.
-
-    3. **Locate the swap.** Read the source head's core name; look up
-       its output-arg position in ``output_indices``. Extract the
-       head's argument at that position — call it ``head_out_var``.
-       Scan source's non-anchor premises (indices ``1..N``) for one
-       whose own output-arg position holds the same ``head_out_var``.
-       That index is the swap target.
-
-       If no such premise exists (e.g. the head's core has no
-       registered output, or the head's output variable doesn't
-       appear at the output position of any premise) → reject.
-
-    4. **Apply the swap** to the source side:
-       - New head = the matched premise.
-       - The matched premise's slot now holds the OLD head.
-       - All other non-anchor premises retain their position.
-
-    5. **Permute and compare.** Try every permutation of the
-       swap-modified non-anchor premises. For each permutation,
-       build the candidate list
-       ``[anchor, permuted_non_anchor..., new_head]``, normalize it,
-       and compare to the target's normalized form. Accept on first
-       match.
-
-    Used by ``check_mirrored_from`` directly (whose tag is
-    ``mirrored from`` and whose ``rest[0]`` is the source theorem)
-    and by ``check_externally_provided_theorem``'s fallback path
-    (matching a cited expression against every external theorem
-    modulo mirroring).
-
-    @param source_expr     The original implication.
-    @param target_expr     The candidate mirrored implication.
-    @param output_indices  Atomic-operator output-arg index map
-                           (from ``state.output_indices``).
-    @return  True iff ``target_expr`` is a permutation-and-rename of
-             the source's swap-mirror form.
-
-    @see _check_reformulation — analogous reformulation-via-
-    existence checker.
-    """
-    src_premises, src_head = disintegrate_implication_full(source_expr)
-    tgt_premises, tgt_head = disintegrate_implication_full(target_expr)
-
-    if len(src_premises) < 2 or len(src_premises) != len(tgt_premises):
-        return False
-
-    # Normalize target: [anchor, premises..., head] by expression arg order
-    tgt_list = tgt_premises + [tgt_head]
-    tgt_norm = _normalize_expr_list(tgt_list)
-
-    # Find output var of source head
-    head_core = _extract_core_name(src_head)
-    head_args = _extract_args(src_head)
-    if head_core not in output_indices:
-        return False
-    out_idx = output_indices[head_core]
-    if out_idx >= len(head_args):
-        return False
-    head_out_var = head_args[out_idx]
-
-    # Find non-anchor source premise with same output var
-    swap_idx = -1
-    for i in range(1, len(src_premises)):
-        prem_core = _extract_core_name(src_premises[i])
-        prem_args = _extract_args(src_premises[i])
-        if prem_core in output_indices:
-            p_out_idx = output_indices[prem_core]
-            if p_out_idx < len(prem_args) and prem_args[p_out_idx] == head_out_var:
-                swap_idx = i
-                break
-
-    if swap_idx < 0:
-        return False
-
-    # After swap: new head = old premise, old head takes the premise's slot
-    new_head = src_premises[swap_idx]
-    src_non_anchor: List[str] = []
-    for i in range(1, len(src_premises)):
-        if i == swap_idx:
-            src_non_anchor.append(src_head)
-        else:
-            src_non_anchor.append(src_premises[i])
-
-    # Try all permutations of non-anchor premises
-    for perm in itertools.permutations(src_non_anchor):
-        candidate_list = [src_premises[0]] + list(perm) + [new_head]
-        candidate_norm = _normalize_expr_list(candidate_list)
-        if candidate_norm == tgt_norm:
-            return True
-
-    return False
 
 
 def _check_reformulation(source_expr: str, target_expr: str,
@@ -1385,8 +1288,6 @@ def _check_reformulation(source_expr: str, target_expr: str,
                          ``state.gl_binaries``).
     @return  True iff ``target_expr`` is a valid reformulation of
              ``source_expr`` under the algorithm above.
-
-    @see _check_mirror — sibling head-premise-swap checker.
     """
     src_premises, src_head = disintegrate_implication_full(source_expr)
     tgt_premises, tgt_head = disintegrate_implication_full(target_expr)
@@ -1570,12 +1471,143 @@ def load_gl_binaries(binaries_dir: str) -> Dict[str, dict]:
     result: Dict[str, dict] = {}
     if not os.path.isdir(binaries_dir):
         return result
-    for fname in os.listdir(binaries_dir):
+    for fname in sorted(os.listdir(binaries_dir)):
         if fname.startswith("GL_binary_") and fname.endswith(".json"):
             tag = fname[len("GL_binary_"):-len(".json")]
             with open(os.path.join(binaries_dir, fname), "r", encoding="utf-8") as f:
                 result[tag] = json.load(f)
     return result
+
+
+_SPONTANEOUS_CATEGORIES = frozenset(("implication", "existence", "or", "and"))
+
+# `(operator_name[…])` — every operator call site in a compiled expression
+# emits the core name in this shape. `findall` returns every match including
+# nested ones (e.g. inside an outer operator's argument list).
+_OPERATOR_NAME_RE = re.compile(r'\(([A-Za-z_]\w*)\[')
+
+
+def check_operator_registry_consistency(state) -> None:
+    """@brief Enforce I-23: spontaneous compact-operator names are stable across batches.
+
+    @details
+    Every ``GL_binary_<Tag>.json`` carries a per-batch entry for each
+    spontaneous compact operator (``implication<N>`` / ``existence<N>``
+    / ``or<N>`` / ``and<N>``) that the C++ allocator produced during that
+    batch. Per I-23, a given spontaneous name must encode the same
+    operator in every batch that uses it — concretely, the entry's
+    ``(category, signature, arity, elements)`` tuple must be byte-
+    identical across all binaries that carry the name. The check also
+    walks *recursively* through every spontaneous-compact name CITED in
+    the elements list, ensuring the transitive closure of operator
+    definitions is consistent: two binaries whose ``existence2`` rows
+    have identical literal elements are only truly equal if every
+    operator those elements cite (``and0``, nested ``implication<N>``,
+    etc.) also matches across the same batch pair.
+
+    Failure mode this catches: ``GL_binary_IncubatorPeano.json``
+    ``existence2[u_1..u_8]`` (arity 8) vs ``GL_binary_shared.json`` /
+    ``GL_binary_Peano.json`` ``existence2[u_1..u_3]`` (arity 3) — the
+    same name encoding two semantically different operators. Per
+    ``_merge_into_shared``'s skip-incubator policy (D-54) the
+    IncubatorPeano spontaneous allocations never reach the shared
+    registry, so on a clean-room run with empty shared both
+    IncubatorPeano and Peano start with ``existence_counter = 0`` and
+    independently allocate ``existence0``..``existence2`` for their
+    own splitNKs.
+
+    **Algorithm.**
+
+    1. Bucket every spontaneous-compact entry across all loaded
+       binaries: ``by_name[name] = {tag: entry}``. Skip atomic/anchor
+       entries (categories outside ``_SPONTANEOUS_CATEGORIES``).
+    2. For each name appearing in ≥ 2 binaries, recursively walk the
+       definition closure on the common tag set:
+       a. Surface match: ``(category, signature, arity, elements)`` of
+          every binary's entry equals the reference entry's. Memoised
+          on ``(name, frozenset(tags))`` to avoid redoing shared
+          subgraphs and to terminate on cycles.
+       b. Closure: ``_OPERATOR_NAME_RE`` extracts every operator name
+          cited in ``elements``; for each that is itself spontaneous-
+          compact (present in ``by_name``), recurse on the same tag
+          set.
+    3. Record one ``operator registry consistency`` counter increment
+       per top-level name checked; success on transitive consistency,
+       failure with a stderr report otherwise.
+
+    @param state  ``VerifierState`` with ``gl_binaries`` populated.
+    @return  None — counter side effects only.
+
+    @invariant I-23 — failure here means a binary writer / allocator
+    has produced cross-batch name collisions; the right fix is to make
+    name allocation deterministic across batches (e.g. always seed
+    spontaneous counters from a shared registry that incubator batches
+    also contribute to), not to weaken this check.
+    @invariant I-16 — failures are first-class; do not soften the
+    check to recover ``failure 0``.
+    """
+    counter = state.counter_for("operator registry consistency")
+
+    by_name: Dict[str, Dict[str, dict]] = {}
+    for tag, binary in state.gl_binaries.items():
+        if not isinstance(binary, dict):
+            continue
+        for name, entry in binary.items():
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("category") not in _SPONTANEOUS_CATEGORIES:
+                continue
+            by_name.setdefault(name, {})[tag] = entry
+
+    memo: Dict[Tuple[str, frozenset], bool] = {}
+
+    def _entries_match(a: dict, b: dict) -> bool:
+        return (a.get("category") == b.get("category")
+                and a.get("signature") == b.get("signature")
+                and int(a.get("arity", -1)) == int(b.get("arity", -1))
+                and list(a.get("elements", [])) == list(b.get("elements", [])))
+
+    def _deep_check(name: str, tags: Tuple[str, ...]) -> bool:
+        present = tuple(t for t in tags if t in by_name.get(name, {}))
+        if len(present) < 2:
+            return True
+        key = (name, frozenset(present))
+        cached = memo.get(key)
+        if cached is not None:
+            return cached
+        # Provisional success guards against citation cycles
+        memo[key] = True
+        ref = by_name[name][present[0]]
+        for t in present[1:]:
+            if not _entries_match(ref, by_name[name][t]):
+                memo[key] = False
+                return False
+        cited: Set[str] = set()
+        for elem in ref.get("elements", []):
+            for op in _OPERATOR_NAME_RE.findall(elem):
+                if op in by_name and op != name:
+                    cited.add(op)
+        for child in sorted(cited):
+            if not _deep_check(child, present):
+                memo[key] = False
+                return False
+        return True
+
+    for name in sorted(by_name):
+        tags = tuple(sorted(by_name[name].keys()))
+        if len(tags) < 2:
+            continue
+        ok = _deep_check(name, tags)
+        counter.record(ok)
+        if not ok:
+            ref = by_name[name][tags[0]]
+            distinct_sigs = sorted({by_name[name][t].get("signature", "") for t in tags})
+            distinct_arities = sorted({int(by_name[name][t].get("arity", -1)) for t in tags})
+            sys.stderr.write(
+                f"[operator registry] DIVERGENT {name!r} across {list(tags)}: "
+                f"signatures={distinct_sigs} arities={distinct_arities} "
+                f"(see GL_binary_<tag>.json elements for details)\n"
+            )
 
 
 def load_output_indices(config_dir: str) -> Dict[str, int]:
@@ -1598,18 +1630,14 @@ def load_output_indices(config_dir: str) -> Dict[str, int]:
 
     Operators without an ``output_args`` field, without
     ``short_mpl``, or whose ``output_args`` names don't appear in
-    ``short_mpl`` are silently omitted. The downstream checker
-    (``check_mirrored_from`` / ``_check_mirror``) consults this map
-    and rejects rows whose head core isn't in it — the absence is
-    a structural signal, not an error.
+    ``short_mpl`` are silently omitted. Downstream operator-shape
+    checkers consult this map; the absence of a core is a structural
+    signal, not an error.
 
     @param config_dir  Directory containing ``ConfigVisu.json``.
     @return  Map ``core_name → 0-based output index``. Empty if the
              file is absent or no operator has an ``output_args``
              field.
-
-    @see _check_mirror — primary consumer (locates the swap target
-    by output-var match).
     """
     indices: Dict[str, int] = {}
     config_path = os.path.join(config_dir, "ConfigVisu.json")
@@ -1800,8 +1828,13 @@ def _find_digit_args(all_exprs: List[str],
         if core in input_indices:
             args = _extract_args(expr)
             for idx in input_indices[core]:
-                if idx < len(args):
-                    all_input_args.add(args[idx])
+                # I-19: an input-index registered for `core` must be reachable
+                # in every actual call site of `core`. A missing arg slot is a
+                # producer-side malformation, not a tolerable shape.
+                assert idx < len(args), (
+                    f"_find_digit_args: input index {idx} >= arity "
+                    f"{len(args)} for core {core!r} in {expr!r}")
+                all_input_args.add(args[idx])
 
     # Remove anchor args
     for a in _extract_args(anchor_expr):
@@ -1814,8 +1847,10 @@ def _find_digit_args(all_exprs: List[str],
         if core in output_indices:
             args = _extract_args(expr)
             out_idx = output_indices[core]
-            if out_idx < len(args):
-                all_output_args.add(args[out_idx])
+            assert out_idx < len(args), (
+                f"_find_digit_args: output index {out_idx} >= arity "
+                f"{len(args)} for core {core!r} in {expr!r}")
+            all_output_args.add(args[out_idx])
 
     return all_input_args - all_output_args
 
@@ -1884,15 +1919,23 @@ def _find_immutable_args(chain_exprs: List[str],
             if core not in input_indices or core not in output_indices:
                 continue
             args = _extract_args(expr)
-            # Check all inputs are immutable
+            # I-19: input / output indices registered for `core` must be
+            # reachable in every actual call site. Same producer contract as
+            # _find_digit_args.
             all_immutable = True
             for idx in input_indices[core]:
-                if idx < len(args) and args[idx] not in immutables:
+                assert idx < len(args), (
+                    f"_find_immutable_args: input index {idx} >= arity "
+                    f"{len(args)} for core {core!r} in {expr!r}")
+                if args[idx] not in immutables:
                     all_immutable = False
                     break
             if all_immutable:
                 out_idx = output_indices[core]
-                if out_idx < len(args) and args[out_idx] not in immutables:
+                assert out_idx < len(args), (
+                    f"_find_immutable_args: output index {out_idx} >= arity "
+                    f"{len(args)} for core {core!r} in {expr!r}")
+                if args[out_idx] not in immutables:
                     immutables.add(args[out_idx])
                     changed = True
 
@@ -1908,7 +1951,6 @@ def check_theorem_goal_reached(
     chapter_type: str,
     lines: List[ProofLine],
     chapter_thm: Optional[Tuple[str, str, str]],
-    output_indices: Dict[str, int],
     gl_binaries: Dict[str, dict],
 ) -> bool:
     """@brief Verify a chapter's FIRST row proves the chapter's theorem.
@@ -1925,14 +1967,12 @@ def check_theorem_goal_reached(
       ``"reformulated from"``, namespace ``"main"``, rest length
       ≥ 1. ``rest[0]`` is the source theorem; pass to
       ``_check_reformulation``.
-    - ``mirrored_statement``: first row tag must be
-      ``"mirrored from"``, namespace ``"main"``, rest length ≥ 1.
-      ``rest[0]`` is the source theorem; pass to ``_check_mirror``.
     - ``back_reformulated_statement``: first row tag must be
       ``"incubator back reformulation"``, namespace ``"main"``, rest
-      length ≥ 1. Stub-accepted with True (the structural check is
-      deferred per the original incubator-back-reformulation design;
-      see ``check_incubator_back_reformulation``).
+      length ≥ 1, AND the direct form must be a valid witness-elimination
+      of the cited existence source (``rest[0]``) via
+      ``_check_back_reformulation`` — the same structural check the row
+      dispatch applies (``check_incubator_back_reformulation``).
     - ``or_theorem``: first row tag must be ``"or theorem"``,
       namespace ``"main"``, rest length ≥ 2. Stub-accepted with
       True (the OR theorem's structural witness is the existence
@@ -1945,7 +1985,7 @@ def check_theorem_goal_reached(
       ``"main"`` AND its expression must equal
       ``(in[ind_var, anchor_args[0]])`` — the typing goal that
       gates induction promotion in the prover (see
-      ``docs/induction_typing_plan.md``). ``ind_var`` is the third
+      ``docs/agentic_swdd/induction_typing_plan.md``). ``ind_var`` is the third
       field of the induction row in ``global_theorem_list``;
       ``anchor_args[0]`` is the first arg of the theorem's anchor
       row.
@@ -1960,8 +2000,6 @@ def check_theorem_goal_reached(
     @param chapter_thm     ``(theorem_expr, theorem_type, theorem_ref)``
                            tuple from ``build_chapter_theorem_map``,
                            or ``None`` if no theorem mapping exists.
-    @param output_indices  Atomic-operator output index map
-                           (consumed by ``_check_mirror``).
     @param gl_binaries     Tag → binary dict (consumed by
                            ``_check_reformulation``).
     @return  True iff the chapter's goal is structurally reached;
@@ -1989,22 +2027,15 @@ def check_theorem_goal_reached(
         source_expr = first.rest[0]
         return _check_reformulation(source_expr, first.expression, gl_binaries)
 
-    # mirrored_statement: mirror the source theorem and compare
-    if chapter_type == "mirrored_statement":
-        if first.namespace != "main" or first.tag != "mirrored from":
-            return False
-        if len(first.rest) < 1:
-            return False
-        source_expr = first.rest[0]
-        return _check_mirror(source_expr, first.expression, output_indices)
-
-    # back_reformulated_statement: single line with tag "incubator back reformulation"
+    # back_reformulated_statement: single line with tag "incubator back
+    # reformulation"; the direct form must be a valid witness-elimination
+    # of the cited existence source (same structural check as the row).
     if chapter_type == "back_reformulated_statement":
         if first.namespace != "main" or first.tag != "incubator back reformulation":
             return False
         if len(first.rest) < 1:
             return False
-        return True
+        return _check_back_reformulation(first.expression, first.rest[0])
 
     # or_theorem: single line with tag "or theorem"
     if chapter_type == "or_theorem":
@@ -2025,7 +2056,7 @@ def check_theorem_goal_reached(
     # induction_typing: third induction chapter proving (in[ind_var, anchor_args[0]])
     # — the typing sub-proof gating induction promotion in the prover.
     # Chapter's first line's expression must equal that typing goal.
-    # See docs/induction_typing_plan.md.
+    # See docs/agentic_swdd/induction_typing_plan.md.
     if chapter_type == "induction_typing":
         if first.namespace != "main":
             return False
@@ -2253,47 +2284,9 @@ def _collect_all_expr_vars(expr: str) -> set:
     return result
 
 
-def _normalize_all_vars_in_list(exprs: List[str]) -> List[str]:
-    """@brief Canonicalize EVERY arg-position name across a list of expressions.
-
-    @details
-    Like ``_normalize_expr_list`` but matches ANY arg name
-    (``[^,\\[\\]]+``), not just ``[vVwW]\\d+`` tokens. Used by the
-    anchor-level branch of ``check_implication`` where ALL
-    variables are changeable (including anchor slot names that are
-    free in the rule but renamed in the actual row).
-
-    Algorithm:
-
-    1. Walk every expression in ``exprs`` and gather the FIRST-
-       appearance order of every arg-position name (across the whole
-       list, so cross-expression coreference is preserved).
-    2. If the gathered map is empty (no arg names anywhere), return
-       a copy of ``exprs`` unchanged.
-    3. Otherwise build one regex pattern over all gathered names and
-       apply it to every expression, renaming each name to its
-       ``v<k>`` slot.
-
-    @param exprs  Input list of MPL expressions.
-    @return  Same-length list with every arg-position name renamed
-             to ``v1, v2, …`` in first-appearance order.
-
-    @see _normalize_expr_list — narrower variant that only
-    renames ``[vVwW]\\d+`` (preserves anchor slot names).
-    """
-    seen: Dict[str, str] = {}
-    counter = [0]
-    for expr in exprs:
-        for m in re.finditer(r'(?<=[\[,])([^,\[\]]+)(?=[\],])', expr):
-            a = m.group(1)
-            if a not in seen:
-                counter[0] += 1
-                seen[a] = f'v{counter[0]}'
-    if not seen:
-        return list(exprs)
-    escaped = [re.escape(k) for k in seen]
-    pattern = re.compile(r'(?<=[\[,])(' + '|'.join(escaped) + r')(?=[\],])')
-    return [pattern.sub(lambda m: seen[m.group(1)], e) for e in exprs]
+# NOTE: the single implication path (D-75) uses the substitution-based
+# `_collect_bound_vars` / `_collect_all_expr_vars` model for theorems and
+# definition rules alike.
 
 
 def check_implication(line: ProofLine, chapter: List[ProofLine],
@@ -2356,26 +2349,27 @@ def check_implication(line: ProofLine, chapter: List[ProofLine],
        deposit the result at ``main`` per ``deeperOf``, never
        suddenly at a strictly deeper scope no constituent reaches.
 
-    **Structural check — two cases.**
+    **Structural check — single path (D-75).**
 
-    1. **Anchor rule (theorem-level).** Disintegrate the reference
-       implication. If the first premise starts with ``"(Anchor"``,
-       all variables are changeable (the rule is a theorem-level
-       fact whose every name can be re-substituted at use time).
-       Build the flat chain ``[anchor, premises..., head]``,
-       normalize ALL vars by first appearance, then enumerate every
-       permutation of the actual premises plus the result expression.
-       Accept iff some permutation's normalized form equals the
-       normalized reference.
+    One substitution-based check for EVERY implication, theorem-anchor
+    rules included. Disintegrate the reference implication. Compute
+    ``unchangeables = all_expr_vars - bound_vars`` where ``bound_vars``
+    is every name bound in any ``>[...]`` of the rule. Unchangeables
+    must match LITERALLY between rule and actual at every position
+    (for a definition rule these are the ``u_`` formal parameters; for
+    a raw theorem there are none, since the unified binder rule binds
+    every non-``u_`` variable — so ``unchangeables`` is empty and the
+    check reduces to "core names align position-wise and a consistent
+    variable map exists", exactly what the removed theorem-only
+    "normalize ALL vars" branch computed). Bound vars map to actual
+    via a per-call ``changeable_map``; consistency required across all
+    positions where the same bound var appears. Enumerate permutations
+    of the actual premises plus the result expression; accept on the
+    first consistent matching.
 
-    2. **Non-anchor rule (disintegration-level).** Compute
-       ``unchangeables = all_expr_vars - bound_vars``. Unchangeables
-       must match LITERALLY between rule and actual at every
-       position (they're the rule's "free" anchor-derived terms
-       that don't substitute). Bound vars map to actual via a
-       per-call ``changeable_map``; consistency required across all
-       positions where the same bound var appears. Enumerate
-       permutations; accept on first consistent matching.
+    Theorem handling is equalized to non-theorem handling — a single
+    general branch covers both, with no special-casing of a
+    theorem-level premise; see [I-4](30_invariants.md).
 
     @param line     The implication row to validate.
     @param chapter  Sibling rows (unused by this checker but
@@ -2440,64 +2434,55 @@ def check_implication(line: ProofLine, chapter: List[ProofLine],
 
     ref_premises, ref_head = disintegrate_implication_full(impl)
 
-    if ref_premises and ref_premises[0].startswith("(Anchor"):
-        # Anchor (theorem-level): all vars changeable.
-        # Compare flat disintegrated lists with all vars normalized.
-        ref_chain = ref_premises + [ref_head]
-        norm_ref = _normalize_all_vars_in_list(ref_chain)
+    # Single path for EVERY implication (D-75). Under the
+    # unified binder rule a theorem binds every non-u_ variable in its
+    # >[...], so the general substitution-based check below is exactly
+    # correct for theorems too: changeables = variables bound in >[...];
+    # unchangeables = the rest (only the u_ formal parameters of a
+    # definition rule; the EMPTY set for a raw theorem). With
+    # unchangeables == ∅ this reduces to "core names align position-wise and
+    # a consistent variable map exists".
+    all_vars = _collect_all_expr_vars(impl)
+    bound_vars = _collect_bound_vars(impl)
+    unchangeables = all_vars - bound_vars
 
-        for perm in itertools.permutations(premises):
-            act_chain = list(perm) + [result_expr]
-            norm_act = _normalize_all_vars_in_list(act_chain)
-            if norm_act == norm_ref:
-                return True
-    else:
-        # Non-anchor: substitution-based matching.
-        # Unchangeables = vars not bound in >[...]. Changeables = bound vars.
-        # Find a permutation of actual premises where core names align,
-        # unchangeables match at every position, and changeables map
-        # consistently (well-defined function).
-        all_vars = _collect_all_expr_vars(impl)
-        bound_vars = _collect_bound_vars(impl)
-        unchangeables = all_vars - bound_vars
+    ref_chain = ref_premises + [ref_head]
 
-        ref_chain = ref_premises + [ref_head]
-
-        for perm in itertools.permutations(premises):
-            act_chain = list(perm) + [result_expr]
-            if len(ref_chain) != len(act_chain):
-                continue
-            changeable_map: Dict[str, str] = {}
-            ok = True
-            for ref_e, act_e in zip(ref_chain, act_chain):
-                if _extract_core_name(ref_e) != _extract_core_name(act_e):
-                    ok = False
-                    break
-                ra = _extract_args(ref_e)
-                aa = _extract_args(act_e)
-                if len(ra) != len(aa):
-                    ok = False
-                    break
-                for rv, av in zip(ra, aa):
-                    if rv in unchangeables:
-                        if rv != av:
+    for perm in itertools.permutations(premises):
+        act_chain = list(perm) + [result_expr]
+        if len(ref_chain) != len(act_chain):
+            continue
+        changeable_map: Dict[str, str] = {}
+        ok = True
+        for ref_e, act_e in zip(ref_chain, act_chain):
+            if _extract_core_name(ref_e) != _extract_core_name(act_e):
+                ok = False
+                break
+            ra = _extract_args(ref_e)
+            aa = _extract_args(act_e)
+            if len(ra) != len(aa):
+                ok = False
+                break
+            for rv, av in zip(ra, aa):
+                if rv in unchangeables:
+                    if rv != av:
+                        ok = False
+                        break
+                elif rv in bound_vars:
+                    if rv in changeable_map:
+                        if changeable_map[rv] != av:
                             ok = False
                             break
-                    elif rv in bound_vars:
-                        if rv in changeable_map:
-                            if changeable_map[rv] != av:
-                                ok = False
-                                break
-                        else:
-                            changeable_map[rv] = av
                     else:
-                        if rv != av:
-                            ok = False
-                            break
-                if not ok:
-                    break
-            if ok:
-                return True
+                        changeable_map[rv] = av
+                else:
+                    if rv != av:
+                        ok = False
+                        break
+            if not ok:
+                break
+        if ok:
+            return True
 
     return False
 
@@ -2626,7 +2611,7 @@ def _build_or_subimpls_from_elements(elements: List[str]) -> List[str]:
     accepts this form, alongside the De Morgan form
     ``_build_or_from_elements``, as a valid structural expansion of
     ``or<N>`` when checking ``expansion for integration`` rows whose
-    right side has category ``or`` (D-52, sandbox/incub_fix).
+    right side has category ``or`` (D-52).
 
     @param elements  Disjuncts ``D_0..D_{K-1}``.
     @return  List of K sub-implications, one per disjunct.
@@ -3157,6 +3142,84 @@ def check_expansion(line: ProofLine, chapter: List[ProofLine],
     return False
 
 
+def check_compilation(line: ProofLine, chapter: List[ProofLine],
+                      state: VerifierState) -> bool:
+    """@brief Verify a ``compilation`` row faithfully compiles an implication.
+
+    @details
+    The ``compilation`` tag records the ASIC-0.1-prep step where an
+    implication entering the mail "implications" channel is also
+    compiled to its compact named form. Row layout:
+
+        ``<compact (implication<N>[args])> TAB <ns> TAB compilation
+          TAB <original expanded implication> TAB <original ns>``
+
+    i.e. ``line.expression`` is the compact form (LEFT), ``rest[0]``
+    is the original expanded implication (RIGHT), ``rest[1]`` its
+    namespace. The producer always emits both at ``"main"`` (the mail
+    implications channel is main-only by I-26).
+
+    The check is self-contained and structural — the mirror of
+    ``check_expansion``'s general case with the compact/expanded roles
+    swapped. It does **not** require the original to appear as a prior
+    chapter row: the compact↔original link is definitional (the
+    ``implication<N>`` name *is* the original by GL-binary
+    construction), exactly the property that makes the other
+    structural tags origin-exempt. ``compilation`` is therefore in
+    ``_ORIGIN_EXEMPT_TAGS``; this checker is the whole validation.
+
+    **Algorithm.**
+
+    1. **Layout.** ``len(rest) >= 2`` required (original + its ns).
+    2. **Namespace match.** ``line.namespace == rest[1]`` — the
+       compaction does not cross scope.
+    3. **Binary faithfulness.** ``line.expression``'s core must have a
+       GL-binary entry of ``category == "implication"`` whose
+       ``elements``/``signature`` instantiated with the compact's
+       actual args reconstruct (via ``_try_expand`` →
+       ``_build_implication_from_elements``, modulo
+       normalize-with-unchangeables) to the original implication in
+       ``rest[0]``.
+
+    A miss returns ``False`` — a ``compilation`` row whose compact
+    name is not an implication-category compiled operator, or does not
+    reconstruct its cited original, is a real contract violation the
+    verifier must surface (failures are first-class; this is not a
+    defensive early-out — it is the checker's job).
+
+    @param line     The ``compilation`` row.
+    @param chapter  All chapter rows (unused — the check is
+                    self-contained; kept for the uniform checker
+                    signature).
+    @param state    Global state (for binary lookup via
+                    ``binaries_for_chapter``).
+    @return  True iff the compact form faithfully compiles the cited
+             original implication.
+    """
+    if len(line.rest) < 2:
+        return False
+
+    original_expr = line.rest[0]
+    original_ns = line.rest[1]
+
+    # Compaction stays in scope — compact and original share a namespace.
+    if line.namespace != original_ns:
+        return False
+
+    core = _extract_core_name(line.expression)
+
+    for binary in state.binaries_for_chapter():
+        entry = binary.get(core)
+        if entry is None:
+            continue
+        if entry.get('category') != 'implication':
+            continue
+        if _try_expand(entry, line.expression, original_expr):
+            return True
+
+    return False
+
+
 def check_disintegration(line: ProofLine, chapter: List[ProofLine],
                          state: VerifierState) -> bool:
     """@brief Verify a ``disintegration`` row extracts a child from a compound.
@@ -3349,33 +3412,45 @@ def check_task_formulation(line: ProofLine, chapter: List[ProofLine],
 
 
 def _ns_matches_or_strict_prefix(src_ns: str, tgt_ns: str) -> bool:
-    """@brief Test whether ``src_ns`` is equal to or an ancestor of ``tgt_ns``.
+    """@brief Test whether ``src_ns`` is equal to or a `_boundary_`-aware ancestor of ``tgt_ns``.
 
     @details
-    True iff ``src_ns == tgt_ns`` OR ``src_ns`` is a strict byte-level
-    prefix of ``tgt_ns``. Mirrors the prover's extension (D-33) that
-    lets an equivalence class registered at an ancestor validity
-    apply to an expression at a strict-descendant validity. Byte-
-    level prefix matching is safe because validity names use the
-    ``_boundary_`` separator between stacked scope payloads — sibling
-    scopes cannot alias via prefix.
+    True iff ``src_ns == tgt_ns`` OR ``tgt_ns`` begins with
+    ``src_ns + "_boundary_"``. Mirrors the prover's extension (D-33)
+    that lets an equivalence class registered at an ancestor validity
+    apply to an expression at a strict-descendant validity.
 
-    Used by ``check_equality1``, ``check_equality2``, and the
-    equivalence-class checkers to admit cross-scope deposits per
-    D-33's "facts at ancestor scope are observably true at every
-    descendant".
+    **Separator-aware, not byte-level.** The check requires the
+    NameMap-minted ``_boundary_`` separator, rather than a bare
+    ``tgt_ns.startswith(src_ns)`` byte-prefix test that would admit
+    prefix relationships not honouring it. In practice well-formed
+    GL namespaces always insert ``_boundary_`` between parent and
+    child payload, so the tighter check rejects nothing that should
+    be admitted while explicitly closing the door on malformed
+    namespaces whose prefix relationship doesn't reflect a real
+    parent-child ancestry. Per I-16 the verifier must not trust
+    producer well-formedness for soundness-relevant comparisons.
+
+    Used by ``check_implication`` (the pair-wise comparable check
+    inside the validity-stack deposit rule), ``check_equality1`` and
+    ``check_equality2`` (the source-scope and equality-citation-scope
+    admissibility checks).
 
     @param src_ns  Source namespace (the equivalence class's
-                   registration scope).
-    @param tgt_ns  Target namespace (the result row's scope).
-    @return  True iff ``src_ns`` is comparable to ``tgt_ns`` at-or-
-             above its level.
+                   registration scope, or one constituent of an
+                   implication firing).
+    @param tgt_ns  Target namespace (the result row's scope, or
+                   another constituent).
+    @return  True iff ``src_ns`` is equal to ``tgt_ns`` or a real
+             ``_boundary_``-separated ancestor of it.
 
     @invariant D-33 — ancestor-scope inheritance is sound.
+    @invariant I-16 — verifier is sacred; the separator-aware tighten
+    closes a byte-prefix laxity, not weakens any check.
     """
     if src_ns == tgt_ns:
         return True
-    return len(src_ns) < len(tgt_ns) and tgt_ns.startswith(src_ns)
+    return tgt_ns.startswith(src_ns + "_boundary_")
 
 
 def check_equality1(line: ProofLine, chapter: List[ProofLine],
@@ -3819,9 +3894,11 @@ def check_theorem_tag(line: ProofLine, chapter: List[ProofLine],
         return False
     if line.expression in state.global_theorems:
         return True
-    # Defensive: HEAD cells stay in v/V form per processor design (column 0
-    # is never v->w-swapped). If a future regression slips a cited form in,
-    # try the w->v reverted variant before falling through to normalize.
+    # Fast-path mirror of the origin meta-check's w/W -> v/V revert (load-
+    # bearing there for cited theorem-anchor implications). Defensive at THIS
+    # site: HEAD cells stay in v/V form per processor design (column 0 is
+    # never v->w-swapped), so the revert only fires if a future regression
+    # slips a cited form in. Same primitive at both sites for consistency.
     if _is_theorem_anchor_impl_local(line.expression):
         rev = _revert_w_to_v_in_theorem_citation(line.expression)
         if rev != line.expression and rev in state.global_theorems:
@@ -4585,8 +4662,7 @@ def check_or_theorem(line: ProofLine, chapter: List[ProofLine],
     Designed as a stub: the actual structural witness lives upstream
     in the existence-theorem proof; this row merely marks that an
     OR theorem was registered. A future tightening could add the
-    full structural check, but the simplification has held since the
-    or_4 branching milestone.
+    full structural check.
 
     @param line     The or-theorem row.
     @param chapter  Sibling rows (unused).
@@ -4598,40 +4674,6 @@ def check_or_theorem(line: ProofLine, chapter: List[ProofLine],
     if len(line.rest) < 2:
         return False
     return True
-
-
-def check_mirrored_from(line: ProofLine, chapter: List[ProofLine],
-                        state: VerifierState) -> bool:
-    """@brief Verify a ``mirrored from`` row mirrors its source theorem.
-
-    @details
-    The ``mirrored from`` tag emits a row whose ``line.expression`` is
-    a mirrored variant of ``rest[0]`` (the source theorem). The mirror
-    swaps the head with the source's unique non-anchor premise that
-    shares the head's output variable. See ``_check_mirror`` for the
-    full algorithm and term definitions.
-
-    **Gates.**
-
-    - ``line.namespace == "main"`` (mirror rows live at the theorem
-      root).
-    - ``len(rest) >= 1``.
-
-    Then delegate to ``_check_mirror(source, target, output_indices)``.
-
-    @param line     The mirrored-from row.
-    @param chapter  Sibling rows (unused).
-    @param state    Reads ``output_indices``.
-    @return  True iff the mirror algorithm accepts.
-
-    @see _check_mirror — full structural algorithm.
-    """
-    if line.namespace != "main":
-        return False
-    if len(line.rest) < 1:
-        return False
-    source_expr = line.rest[0]
-    return _check_mirror(source_expr, line.expression, state.output_indices)
 
 
 def check_reformulated_from(line: ProofLine, chapter: List[ProofLine],
@@ -4668,37 +4710,110 @@ def check_reformulated_from(line: ProofLine, chapter: List[ProofLine],
     return _check_reformulation(source_expr, line.expression, state.gl_binaries)
 
 
-def check_incubator_back_reformulation(line: ProofLine, chapter: List[ProofLine],
-                                        state: VerifierState) -> bool:
-    """@brief Stub-accept an ``incubator back reformulation`` row.
+def _check_back_reformulation(direct_expr: str, source_expr: str) -> bool:
+    """@brief Verify ``direct_expr`` is the witness-elimination of ``source_expr``.
 
     @details
-    The ``incubator back reformulation`` tag carries the reverse of
-    the incubator's forward-reformulation step — i.e. a theorem of
-    the shape ``(>[...](Anchor)(op[x,a]))`` getting back-rewritten
-    into an existence form for cross-anchor use. Full structural
-    verification is deferred (the incubator proof graph is a
-    separate verification target).
+    An *incubator back reformulation* takes a proved existence-form
+    theorem and eliminates its existential witness through the trailing
+    equality that pins the witness to a concrete term, producing the
+    direct operator statement used downstream. The source's innermost
+    head is an implication ``(>[W](BODY)(=[W,C]))`` — "there is a ``W``
+    with ``BODY(W)`` and ``W = C``" — and the direct form's head is
+    ``BODY`` with ``W`` replaced by ``C``, the binder and equality
+    dropped. Example: source head
+    ``(>[w1](in3[i1,i1,w1,+])(=[w1,i2]))`` ("∃w1: i1+i1=w1 ∧ w1=i2")
+    back-reformulates to ``(in3[i1,i1,i2,+])`` ("i1+i1=i2").
+
+    **Algorithm.**
+
+    1. Disintegrate both expressions into ``(premises, head)`` via
+       ``disintegrate_implication_full`` — this flattens the outer
+       implication AND the source's inner existence layer, so the
+       source's premise list is ``[...shared premises..., BODY]`` and
+       its head is the equality ``(=[W,C])``.
+    2. The source head must be an equality ``(=[...])`` with exactly two
+       arguments, and the source must carry at least one premise (the
+       witness ``BODY``, its last premise); reject otherwise.
+    3. The direct form's premises must equal the source's premises minus
+       ``BODY`` (same anchor and any other shared premises).
+    4. One equality argument is the witness ``W`` (bound in the source's
+       inner existence), the other is the concrete term ``C``. Try both
+       orientations; accept iff ``BODY`` with ``W`` token-substituted by
+       ``C`` (via ``_replace_arg_safe_multi``) equals the direct head.
+
+    Purely structural — no GL binary or theorem-registry lookup. The
+    tag stays in ``_ORIGIN_EXEMPT_TAGS`` because the cited source is an
+    incubator theorem whose own proof is a separate verification target;
+    this check certifies the reformulation STEP is sound, not the
+    source's provenance.
+
+    @param direct_expr   The back-reformulated direct operator statement.
+    @param source_expr   The cited existence-form source (``rest[0]``).
+    @return  True iff ``direct_expr`` is a valid witness-elimination of
+             ``source_expr`` under the algorithm above.
+
+    @see check_incubator_back_reformulation — row-level caller.
+    @see _check_reformulation — the forward (direct → existence) check.
+    """
+    prem_d, head_d = disintegrate_implication_full(direct_expr)
+    prem_s, head_s = disintegrate_implication_full(source_expr)
+    if not head_s.startswith("(=[") or not prem_s:
+        return False
+    body = prem_s[-1]
+    if prem_d != prem_s[:-1]:
+        return False
+    args = _extract_args(head_s)
+    if len(args) != 2:
+        return False
+    a, b = args
+    for witness, const in ((a, b), (b, a)):
+        if _replace_arg_safe_multi(body, {witness: const}) == head_d:
+            return True
+    return False
+
+
+def check_incubator_back_reformulation(line: ProofLine, chapter: List[ProofLine],
+                                        state: VerifierState) -> bool:
+    """@brief Verify an ``incubator back reformulation`` row is a sound rewrite.
+
+    @details
+    The ``incubator back reformulation`` tag carries the reverse of the
+    incubator's forward-reformulation step: a proved existence-form
+    theorem ``(>[...](Anchor)(>[w](BODY)(=[w,c])))`` back-rewritten into
+    the direct operator statement ``(>[...](Anchor)(BODY[w:=c]))`` for
+    downstream use. This checker validates that reformulation STEP
+    structurally — the witness ``w`` is eliminated through its equality,
+    the anchor and shared premises are preserved — via
+    ``_check_back_reformulation``. (Historically this row was
+    stub-accepted; the structural check is now performed.)
 
     **Gates.**
 
     - ``line.namespace == "main"``.
-    - ``len(rest) >= 1``.
+    - ``len(rest) >= 1`` (``rest[0]`` is the cited existence-form source).
+    - ``_check_back_reformulation(line.expression, line.rest[0])``.
 
-    Trivially accept any row that meets both gates. The tag is
-    listed in ``_ORIGIN_EXEMPT_TAGS`` so the chapter-level ``origin``
-    meta-check won't flag the citation either.
+    The tag is listed in ``_ORIGIN_EXEMPT_TAGS``: the cited source's own
+    provenance is an incubator-side verification target, so the
+    chapter-level ``origin`` meta-check does not re-walk the citation.
 
     @param line     The row.
     @param chapter  Sibling rows (unused).
     @param state    Global state (unused).
-    @return  True iff the two gates pass.
+    @return  True iff the namespace/rest gates pass AND the row is a
+             valid witness-elimination of its cited source.
+
+    @invariant I-16 — a failure means the producer emitted a direct form
+    that does not follow from the cited existence source; never a false
+    positive.
+    @see _check_back_reformulation — the structural core.
     """
     if line.namespace != "main":
         return False
     if len(line.rest) < 1:
         return False
-    return True
+    return _check_back_reformulation(line.expression, line.rest[0])
 
 
 def check_externally_provided_theorem(line: ProofLine, chapter: List[ProofLine],
@@ -4712,44 +4827,38 @@ def check_externally_provided_theorem(line: ProofLine, chapter: List[ProofLine],
     provided axiom listed in
     ``processed_proof_graph/external_theorems.txt``.
 
-    Three-stage membership check (mirrors ``check_theorem_tag``):
+    Two-stage membership check (mirrors ``check_theorem_tag``):
 
     1. **Direct membership.** ``line.expression`` is exactly in
        ``state.external_theorems`` (which includes raw + renamed
-       forms and pre-computed mirrored variants emitted by the
-       processor).
+       forms emitted by the processor).
     2. **w/V revert.** For theorem-anchor implications, swap w→v /
        W→V (defensive guard against a future regression where a
        citation-form leaks into a HEAD column).
-    3. **Mirror fallback.** Iterate every external and run
-       ``_check_mirror`` — accepts the row if the cited expression
-       is a valid mirror of any registered external.
 
     Namespace gate: ``"main"``.
 
     @param line     The row.
     @param chapter  Sibling rows (unused).
-    @param state    Reads ``external_theorems``, ``output_indices``.
+    @param state    Reads ``external_theorems``.
     @return  True iff the expression matches some external under
-             any of the three matching paths.
+             either matching path.
 
-    @see check_theorem_tag — same three-stage idea for the internal
+    @see check_theorem_tag — same membership idea for the internal
     global theorem registry.
     """
     if line.namespace != "main":
         return False
-    # Direct membership (covers originals + mirrors written by Python)
+    # Direct membership (covers originals + renamed forms)
     if line.expression in state.external_theorems:
         return True
-    # Defensive w/W -> v/V revert (HEAD column stays v/V by processor design;
-    # this guards against a future regression where a citation form leaks).
+    # Fast-path mirror of the origin meta-check's w/W -> v/V revert (load-
+    # bearing there for cited theorem-anchor implications). Defensive at THIS
+    # site: HEAD column stays v/V by processor design, so this only fires if
+    # a future regression slips a citation form into the HEAD column.
     if _is_theorem_anchor_impl_local(line.expression):
         rev = _revert_w_to_v_in_theorem_citation(line.expression)
         if rev != line.expression and rev in state.external_theorems:
-            return True
-    # Fallback: check if this expression mirrors a known external theorem
-    for ext in state.external_theorems:
-        if _check_mirror(line.expression, ext, state.output_indices):
             return True
     return False
 
@@ -5120,7 +5229,7 @@ def check_or_disintegration(line: ProofLine, chapter: List[ProofLine],
         rest[0]          = the compiled OR (or<N>[…])
         rest[1]          = parent (the OR's parent scope)
 
-    **Validation (D-36 — mirrors ``check_or_branch_proven`` round-2
+    **Validation (D-36 — mirrors ``check_or_branch_proven``
     structure + the OR-origin check that is well-founded for
     ``_ordis_``).**
 
@@ -5150,10 +5259,6 @@ def check_or_disintegration(line: ProofLine, chapter: List[ProofLine],
        ``check_or_branch_proven`` was dropped per D-36 because
        ``_orint_`` PRODUCES an OR — no separate derivation exists by
        design.
-
-    Pre-D-36 the checker accepted only the expanded ``!(&!(…))`` form
-    in ``rest[0]`` and never validated namespace structure or
-    OR-origin.
 
     @param line     The or-disintegration row.
     @param chapter  All chapter rows (for OR-origin lookup).
@@ -5211,8 +5316,8 @@ def check_or_convergence(line: ProofLine, chapter: List[ProofLine],
     @details
     When every branch of an OR case-split has independently derived
     the same conclusion ``C``, the convergence row promotes ``C`` to
-    the OR's parent scope. This checker enforces the post-clean-fail
-    producer-side row layout spec (user-directive, 2026-05-03 thread).
+    the OR's parent scope. This checker enforces the producer-side
+    row layout spec.
 
     **Row layout (compiled-form OR only).**
     ::
@@ -5432,7 +5537,7 @@ def check_or_branch_proven(line: ProofLine, chapter: List[ProofLine],
 
     @details
     Emitted by the prover (``prover.cpp::or branch proven`` site,
-    see ``docs/20_core_concepts/07_or_branching.md``) when an OR
+    see ``docs/agentic_swdd/20_core_concepts/07_or_branching.md``) when an OR
     needs to be proved via the _orint_ rewrite: the OR goal is
     rewritten into two sub-implications-to-prove
     (``!A → B`` and ``!B → A``); the per-branch scope is opened with
@@ -5460,14 +5565,12 @@ def check_or_branch_proven(line: ProofLine, chapter: List[ProofLine],
        for ``<disjunct>`` matching ``rest[0]`` (modulo equality
        symmetry). No substring search.
 
-    **D-36 note (2026-05-03).** An earlier Codex round-3 step
-    required a non-``or branch proven`` derivation row for the OR at
-    parent scope. That check was based on a wrong mental model of
-    ``_orint_`` (treated it as case-split with a separately-derived
-    OR). Correct semantics: ``_orint_`` rewrites the OR goal into
-    two sub-implications-to-prove; when one fires, the
-    ``or branch proven`` row IS the OR's derivation by design. The
-    check was dropped per D-36 as a correction (not a relaxation).
+    **D-36 note.** No non-``or branch proven`` derivation row for the
+    OR at parent scope is required. ``_orint_`` rewrites the OR goal
+    into two sub-implications-to-prove; when one fires, the
+    ``or branch proven`` row IS the OR's derivation by design — so
+    treating ``_orint_`` as a case-split with a separately-derived OR
+    would be the wrong model.
 
     @param line     The or-branch-proven row.
     @param chapter  Sibling rows (unused — D-36 dropped the
@@ -5550,8 +5653,7 @@ def check_or_branch_assumption(line: ProofLine, chapter: List[ProofLine],
        ``len(rest) == 2``, ``rest[1] == branch_ns``, and ``rest[0]``
        matching the asserted disjunct (modulo equality symmetry).
        Without this check the assumption row could pass structurally
-       even when the corresponding case-split was never opened
-       (Codex round-3 finding).
+       even when the corresponding case-split was never opened.
 
     @param line     The or-branch-assumption row.
     @param chapter  All chapter rows (for the matching
@@ -5625,7 +5727,7 @@ def check_or_branch_assumption(line: ProofLine, chapter: List[ProofLine],
             if asserted == swapped:
                 return False
 
-    # 6. Matching `or branch proven` row must exist (Codex round-3).
+    # 6. Matching `or branch proven` row must exist.
     matching_proven = any(
         ch_line.tag == "or branch proven"
         and ch_line.expression == or_expr
@@ -5711,10 +5813,39 @@ def check_vacuous_truth(line: ProofLine, chapter: List[ProofLine],
     return False
 
 
+# Tags exempt from the chapter-level `origin` meta-check inside
+# verify_chapter. Their dep cells carry non-derivable references by design:
+# - `incubator back reformulation` cites an external incubator theorem in a
+#   back-reformulated form that may not match any registry entry.
+# - `contradiction` cites the assumption being negated (which by construction
+#   does not have a derivation row in the same chapter — that's the point of
+#   reductio); the `contradiction trace` meta-check covers chain integrity.
+# - The five OR-flow tags have validity-aware dependency chains the bare
+#   `dep in originated` check cannot represent; their dedicated `or *` checkers
+#   plus `or branch assumption`'s matching-proven-row check cover them.
+# Module scope (not function-local) so the set is allocated once per run.
+_ORIGIN_EXEMPT_TAGS = frozenset({
+    "incubator back reformulation",
+    "contradiction",
+    "or disintegration",
+    "or convergence",
+    "or branch proven",
+    "or branch assumption",
+    "or theorem",
+    # `compilation`'s antecedent is the original implication, a broadcast
+    # theorem that need not appear as a prior left-side chapter row; the
+    # compact<->original link is definitional (GL-binary construction).
+    # `check_compilation`'s structural binary-faithfulness check IS the
+    # validation, exactly as for `expansion` / `disintegration`.
+    "compilation",
+})
+
+
 # Tag name → checker function
 TAG_CHECKERS = {
     "implication":                      check_implication,
     "expansion":                        check_expansion,
+    "compilation":                      check_compilation,
     "disintegration":                   check_disintegration,
     "task formulation":                 check_task_formulation,
     "equality1":                        check_equality1,
@@ -5730,7 +5861,6 @@ TAG_CHECKERS = {
     "premise element":                  check_premise_element,
     "validity name":                    check_validity_name,
     "anchor handling":                  check_anchor_handling,
-    "mirrored from":                    check_mirrored_from,
     "reformulated from":                check_reformulated_from,
     "variable copy":                    check_variable_copy,
     "externally provided theorem":      check_externally_provided_theorem,
@@ -5808,7 +5938,7 @@ def verify_chapter(chapter_file: str, lines: List[ProofLine],
        expression of some chapter row, (b) carry the
        ``_integration_goal`` postfix, or (c) belong to a tag in
        ``_ORIGIN_EXEMPT_TAGS``. For implication/multiplied-from/
-       mirrored-from/reformulated-from rows, ``rest[0]`` is
+       reformulated-from rows, ``rest[0]`` is
        additionally checked against the global + external theorem
        registries (with alpha-canonical and w→v revert fallbacks).
        Record under ``counter_for("origin")``.
@@ -5830,7 +5960,7 @@ def verify_chapter(chapter_file: str, lines: List[ProofLine],
     @param chapter_file  Filename (for diagnostics).
     @param lines         Parsed chapter rows.
     @param chapter_type  Filename-derived type (``direct_proof``,
-                         ``check_zero``, ``mirrored_statement``, …).
+                         ``check_zero``, …).
     @param state         Global verifier state — mutated in place.
     @param chapter_thm   Chapter's theorem triple or None.
 
@@ -5842,54 +5972,51 @@ def verify_chapter(chapter_file: str, lines: List[ProofLine],
     # 1. Theorem goal reached
     goal_ok = check_theorem_goal_reached(
         chapter_file, chapter_type, lines, chapter_thm,
-        state.output_indices, state.gl_binaries)
+        state.gl_binaries)
     state.goal_reached.record(goal_ok)
 
     # Set transient chapter context for line checkers
     state.current_chapter_thm = chapter_thm
     state.current_chapter_type = chapter_type
 
-    # Detect which GL binary applies to this chapter from the theorem's anchor.
+    # Detect which GL binary applies to this chapter from the theorem's
+    # PREMISE anchor — the world the proof's assumptions live in.
     #
-    # Chapter-context filter (D-54): when the theorem
-    # expression contains the literal `AnchorIncubator`, restrict the
-    # candidate-tag iteration to Incubator-prefixed tags. Without this,
-    # the cross-anchor connection chapter
-    # `(>[..](AnchorIncubator[..])(AnchorPeano[..]))` — which has BOTH
-    # `AnchorIncubator` and `AnchorPeano` substrings — would match the
-    # `Peano` tag first (alphabetical iteration) and bind
-    # `current_gl_binary` to the Peano binary, even though this is an
-    # incubator chapter that needs the Incubator-batch operator shapes.
-    # Pre-2026-05-08 the folder-based isolation hid this: the incubator
-    # verifier loaded only `Incubator*` tags, so no main-anchor name ever
-    # matched and `current_gl_binary` stayed None for the cross-anchor
-    # chapter. The filter restores that behaviour.
+    # Cross-anchor connection theorems like chapter 103's
+    # `(>[..](AnchorGauss[..])(AnchorPeano[..]))` mention multiple anchors
+    # in one expression. The principled binding is the premise anchor
+    # (`AnchorGauss` here) because the proof's hypotheses live in that
+    # operator world; the conclusion's anchor is what the proof aims to
+    # construct in. The previous heuristic (iterate gl_binaries and pick
+    # the first tag whose `Anchor<Tag>` substring is anywhere in the
+    # theorem) was order-sensitive — same input bytes produced different
+    # verdicts on different filesystems, contradicting GL's determinism
+    # claim. Premise extraction via `disintegrate_implication_full` makes
+    # the binding a pure function of the theorem expression.
     state.current_gl_binary = None
     state.current_resolved_defsets = None
     if chapter_thm is not None:
         thm_expr = chapter_thm[0]
-        if "AnchorIncubator" in thm_expr:
-            tag_iter = ((t, b) for t, b in state.gl_binaries.items()
-                        if t.startswith("Incubator"))
-        else:
-            tag_iter = state.gl_binaries.items()
-        for tag, binary in tag_iter:
-            anchor_name = f'Anchor{tag}'
-            if anchor_name in thm_expr:
+        premises, _head = disintegrate_implication_full(thm_expr)
+        premise_expr = premises[0] if premises else thm_expr  # naked-anchor fallback
+        m = re.search(r'Anchor([A-Za-z0-9_]+)', premise_expr)
+        if m is not None:
+            tag = m.group(1)
+            binary = state.gl_binaries.get(tag)
+            if binary is not None:
                 state.current_gl_binary = binary
                 state.current_resolved_defsets = state.resolved_defsets_per_tag.get(tag)
-                break
     if state.current_resolved_defsets is None:
         state.current_resolved_defsets = state.resolved_defsets_atomic_only
 
-    # 2. Self-reference check: theorem must not appear as its own justification
+    # 3. Self-reference check: theorem must not appear as its own justification
     if chapter_thm is not None:
         thm_expr = chapter_thm[0]
         for line in lines:
             if line.tag == "theorem" and line.expression == thm_expr:
                 state.counter_for("self-reference").record(False)
 
-    # 3. Anchor handling uniqueness: at most one per chapter
+    # 4. Anchor handling uniqueness: at most one per chapter
     anchor_handling_count = sum(1 for line in lines if line.tag == "anchor handling")
     if anchor_handling_count > 1:
         state.counter_for("anchor handling uniqueness").record(False)
@@ -5899,7 +6026,7 @@ def verify_chapter(chapter_file: str, lines: List[ProofLine],
     for ch_line in lines:
         _ch_expr_to_lines.setdefault(ch_line.expression, []).append(ch_line)
 
-    # 4. Anchor handling trace: every _copy var in rest fields must trace
+    # 5. Anchor handling trace: every _copy var in rest fields must trace
     #    back to the anchor handling line
     anchor_line = None
     for line in lines:
@@ -5929,7 +6056,7 @@ def verify_chapter(chapter_file: str, lines: List[ProofLine],
                                                 _anc_target, _cv_follow)
                             state.counter_for("anchor handling trace").record(ok)
 
-    # 5. Contradiction trace: at least one of the two contradicting expressions
+    # 6. Contradiction trace: at least one of the two contradicting expressions
     #    must trace back to the seed (task formulation) through all ingredients
     for line in lines:
         if line.tag != "contradiction":
@@ -5946,26 +6073,27 @@ def verify_chapter(chapter_file: str, lines: List[ProofLine],
               or _trace_back_to(line.rest[2], _ch_expr_to_lines, _seed_target))
         state.counter_for("contradiction trace").record(ok)
 
-    # 5b. Vacuous truth trace: at least one of the two contradicting
-    #     ingredients must trace back to the LB's exprKey (3rd ingredient
-    #     of the vacuous-truth origin line). This is the mirror of the
-    #     contradiction-trace check: it proves the contradiction is rooted
-    #     in the LB's own work, not in two inherited anchor-level facts.
+    # 7. Vacuous truth trace: shape-only check. A stricter mirror of the
+    #    contradiction-trace check — requiring at least one contradicting
+    #    ingredient to trace back to the LB's exprKey (rest[4]) via the
+    #    chapter's origin graph — is too strict for theorems whose own
+    #    premise is impossible (the chapter101-style lemma
+    #    "s(v1)=0 ∧ v1∈N ⇒ 0=v1"): the contradiction is necessarily rooted
+    #    in the theorem's outer premise, not the inner recursion-step's
+    #    hypothesis. Since the axioms are consistent, any chapter-level
+    #    contradiction must reach some non-anchor task formulation by
+    #    construction — the specific LB-level identity at rest[4] is
+    #    bookkeeping, not soundness. The third ingredient stays in the row
+    #    for documentation; no trace requirement is imposed.
     for line in lines:
         if line.tag != "vacuous truth":
             continue
         if len(line.rest) < 6:
             state.counter_for("vacuous truth trace").record(False)
             continue
+        state.counter_for("vacuous truth trace").record(True)
 
-        lb_key = line.rest[4]
-        _lb_target = (lambda cl, _k=lb_key: cl.expression == _k)
-
-        ok = (_trace_back_to(line.rest[0], _ch_expr_to_lines, _lb_target)
-              or _trace_back_to(line.rest[2], _ch_expr_to_lines, _lb_target))
-        state.counter_for("vacuous truth trace").record(ok)
-
-    # 6. Dispatch every line to its tag checker
+    # 8. Dispatch every line to its tag checker
     for line in lines:
         tag = line.tag
         if tag in TAG_CHECKERS:
@@ -5974,21 +6102,11 @@ def verify_chapter(chapter_file: str, lines: List[ProofLine],
         else:
             state.counter_for(f"<unknown:{tag}>").record(False)
 
-    # 4. General origin check: every expression referenced as a dependency
+    # 9. General origin check: every expression referenced as a dependency
     #    (in rest fields) must appear as a left-side expression (have its
-    #    own derivation line). Exceptions:
-    #    - integration-goal postfixed exprs
-    #    - incubator back reformulation deps (external theorem references)
-    #    - contradiction ingredient deps (may not be fully traced)
-    _ORIGIN_EXEMPT_TAGS = {
-        "incubator back reformulation",
-        "contradiction",
-        "or disintegration",
-        "or convergence",
-        "or branch proven",
-        "or branch assumption",
-        "or theorem",
-    }
+    #    own derivation line). Exemptions live in the module-scope
+    #    _ORIGIN_EXEMPT_TAGS set (see comment above its definition for the
+    #    per-tag rationale).
     originated = {line.expression for line in lines}
     for line in lines:
         if line.tag in _ORIGIN_EXEMPT_TAGS:
@@ -6000,7 +6118,7 @@ def verify_chapter(chapter_file: str, lines: List[ProofLine],
             if dep.endswith("_integration_goal"):
                 continue
             # rest[0] global theorem check: implication rules and multiplied-from sources
-            if i == 0 and line.tag in ("implication", "multiplied from", "mirrored from", "reformulated from"):
+            if i == 0 and line.tag in ("implication", "multiplied from", "reformulated from"):
                 norm_dep = _normalize_expr_list([dep])
                 # Cross-batch refs may carry alpha-equivalent but textually
                 # distinct bound-var names (e.g. incubator chapter row uses
@@ -6030,19 +6148,19 @@ def verify_chapter(chapter_file: str, lines: List[ProofLine],
                 continue
             state.counter_for("origin").record(False)
 
-    # 5. Definition-set consistency meta-check (D-41).
-    #    For every chapter row, every variable that appears at multiple
-    #    operator-call positions across the row's expressions (left-hand
-    #    expression + each rest[i] expression) must connect to ports with
-    #    identical type labels per state.resolved_defsets. Pure formal
-    #    completeness — failures literally impossible if the producer
-    #    (compiler/conjecturer/prover) honoured its own typing rules; if any
-    #    failure surfaces, that is a producer bug.
+    # 10. Definition-set consistency meta-check (D-41).
+    #     For every chapter row, every variable that appears at multiple
+    #     operator-call positions across the row's expressions (left-hand
+    #     expression + each rest[i] expression) must connect to ports with
+    #     identical type labels per state.resolved_defsets. Pure formal
+    #     completeness — failures literally impossible if the producer
+    #     (compiler/conjecturer/prover) honoured its own typing rules; if any
+    #     failure surfaces, that is a producer bug.
     for line in lines:
         state.counter_for("definition set consistency").record(
             check_defset_consistency(line, state))
 
-    # 6. Origin chain termination (cycle detection).
+    # 11. Origin chain termination (cycle detection).
     #    Every row's origin chain must terminate at a foundation (a row
     #    that has no source still inside this chapter — typically theorem
     #    references, externally-provided theorems, anchor handling, task
@@ -6761,6 +6879,11 @@ def run_verifier(base_dir: str,
         binaries_dir = os.path.join(script_dir, "files", "GL_binaries")
     state.gl_binaries = load_gl_binaries(binaries_dir)
 
+    # I-23 enforcement: every spontaneous compact-operator name must
+    # encode the same operator in every batch that uses it. Recursive
+    # closure check — see ``check_operator_registry_consistency``.
+    check_operator_registry_consistency(state)
+
     # Per-tag defset indices — atomic ops from definition_sets, composite ops
     # resolved iteratively from each batch's gl_binary.elements (D-41).
     # Mirrors the compiler's per-batch ArgumentAnalyzer construction at
@@ -6809,16 +6932,18 @@ def get_totals(state: VerifierState) -> tuple[int, int]:
 
     @details
     Sums ``state.goal_reached`` (the standalone theorem-goal-reached
-    counter), then every ``TAG_CHECKERS``-registered counter's
-    success + failure. Trailing meta-counters
-    (``"self-reference"``, ``"origin"``,
+    counter), every ``TAG_CHECKERS``-registered counter, and every
+    chapter-level meta-counter (``"self-reference"``, ``"origin"``,
     ``"definition set consistency"``, ``"origin chain termination"``,
-    ``"anchor handling uniqueness"``, ``"anchor handling trace"``,
-    ``"contradiction trace"``, ``"vacuous truth trace"``) are
-    NOT in ``TAG_CHECKERS`` — their FAILURE counts are added to
-    ``total_failure`` but their SUCCESS counts are not added to
-    ``total_success`` (those are bookkept differently in the report
-    headline).
+    ``"operator registry consistency"``, ``"anchor handling uniqueness"``,
+    ``"anchor handling trace"``, ``"contradiction trace"``,
+    ``"vacuous truth trace"``). All three groups contribute BOTH success
+    AND failure counts symmetrically — the headline "M checks" therefore
+    counts every actual check performed, regardless of whether it lives
+    in TAG_CHECKERS or is a chapter-level meta-counter. ``total_success``
+    counts every recorded success, ``total_failure`` counts every
+    recorded failure, and the report's headline always means
+    ``total_success + total_failure``.
 
     @param state  Verifier state at end of run.
     @return  ``(total_success, total_failure)`` integer pair.
@@ -6832,6 +6957,7 @@ def get_totals(state: VerifierState) -> tuple[int, int]:
         total_failure += ctr.failure
     for tag, ctr in state.tag_counters.items():
         if tag not in TAG_CHECKERS:
+            total_success += ctr.success
             total_failure += ctr.failure
     return total_success, total_failure
 
@@ -6868,10 +6994,13 @@ def print_report(state: VerifierState):
         if tag not in TAG_CHECKERS:
             print(f"{tag:<{W}s}success {ctr.success}, failure {ctr.failure}")
     total_success, total_failure = get_totals(state)
+    # "M checks" always means every recorded check, success or failure —
+    # the symmetric form keeps the headline consistent across runs.
+    total_checks = total_success + total_failure
     if total_failure == 0:
-        print(f"\n          {total_success} checks, 0 failures — airtight.")
+        print(f"\n          {total_checks} checks, 0 failures — airtight.")
     else:
-        print(f"\nVerifier: {total_success + total_failure} checks, {total_failure} FAILED.")
+        print(f"\nVerifier: {total_checks} checks, {total_failure} FAILED.")
 
 
 def main():

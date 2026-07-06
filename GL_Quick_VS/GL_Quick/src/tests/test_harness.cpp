@@ -42,6 +42,11 @@
 
 #include "test_harness.hpp"
 
+#include "../memory_infra/global_memory_manager.hpp"
+#include "../memory_infra/scratch_arena.hpp"
+#include "../parameters.hpp"
+
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <exception>
@@ -51,6 +56,7 @@
 #include <streambuf>
 #include <string>
 #include <system_error>
+#include <thread>
 
 namespace gl {
 namespace tests {
@@ -85,6 +91,58 @@ namespace tests {
     int runAllTests() {
         namespace fs = std::filesystem;
         const std::vector<TestEntry>& reg = registry();
+
+        // Statification: tests that grow `Memory`'s statified containers
+        // need the process-wide pool. Init with the ProverParameters
+        // DEFAULT triple — the sole source of truth now that the sizing is
+        // config-independent (D-139), so a test
+        // constructing an ExpressionAnalyzer (whose ctor re-inits from the
+        // same struct defaults) hits the idempotent-same-config path, never
+        // the mismatch assert.
+        {
+            const ProverParameters defaults;
+            initStaticMemory(StaticMemoryConfig{
+                defaults.static_pool_bytes,
+                defaults.static_block_bytes,
+                defaults.static_page_bytes });
+            // The persistent (second) pool backs Memory::intToBeProved; every
+            // test that constructs a Memory and inserts a goal touches it, so
+            // it must be initialized here too (PoolKind::Persistent).
+            initPersistentMemory(StaticMemoryConfig{
+                defaults.static_persistent_pool_bytes,
+                defaults.static_persistent_block_bytes,
+                defaults.static_page_bytes,
+                PoolKind::Persistent });
+            // The mail (third) pool backs the cross-LB pull-model mail log;
+            // every test that constructs an ExpressionAnalyzer touches it, so
+            // it must be initialized here too (PoolKind::Mail).
+            initMailMemory(StaticMemoryConfig{
+                defaults.static_mail_pool_bytes,
+                defaults.static_mail_block_bytes,
+                defaults.static_page_bytes,
+                PoolKind::Mail });
+            // The LB-body (fourth) pool backs the LB object store; every test
+            // that constructs an ExpressionAnalyzer touches it (its ctor inits
+            // the pool), so pre-init here too (PoolKind::Lb) to keep that ctor on
+            // the idempotent-same-config path.
+            initLbMemory(StaticMemoryConfig{
+                defaults.static_lb_pool_bytes,
+                defaults.static_lb_block_bytes,
+                defaults.static_page_bytes,
+                PoolKind::Lb });
+            // The two scratch-arena registries (string-tier + request-gen) are
+            // normally initialized by the ExpressionAnalyzer constructor; a test
+            // that never constructs one — e.g. the standalone NameMap rig, whose
+            // statified encodePush now builds its canonical scope name on the
+            // string-scratch arena — still needs them. Pre-init here with the
+            // SAME slot counts the constructor uses (logicalCores + 1 /
+            // logicalCores) so a later ExpressionAnalyzer ctor stays on the
+            // idempotent-same-shape path.
+            const unsigned logicalCores =
+                std::max(1u, std::thread::hardware_concurrency());
+            initScratchArenas(logicalCores + 1);
+            initGenScratchArenas(logicalCores);
+        }
 
         // Per-test detail goes to `.debug/unit_tests.log` so the console
         // shows only the final summary (one line on success) plus any
@@ -173,8 +231,7 @@ namespace tests {
                 return 1;
             }
 
-            // Pass: log-only. The flood used to spam stdout with every
-            // [PASS] line; the log file keeps the per-test detail
+            // Pass: log-only. The log file keeps the per-test detail
             // available for offline diff.
             if (log) {
                 log << "[PASS] " << t.suite << "." << t.name

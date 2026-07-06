@@ -45,6 +45,7 @@ from tests.test_harness import (  # noqa: E402
 )
 from verifier import (  # noqa: E402
     check_implication, check_expansion, check_disintegration,
+    check_compilation,
     check_task_formulation, check_equality1, check_equality2,
     check_symmetry_of_equality, check_symmetry_of_inequality,
     check_recursion, check_theorem_tag,
@@ -54,6 +55,9 @@ from verifier import (  # noqa: E402
     check_contradiction, check_or_disintegration,
     check_or_branch_proven, check_or_branch_assumption,
     check_vacuous_truth, check_or_theorem,
+    check_expansion_for_integration,
+    check_reformulation_for_integration_and,
+    check_premise_element, check_validity_name,
 )
 
 
@@ -74,9 +78,12 @@ def test_pos_or_theorem_minimal():
 @register
 def test_pos_incubator_back_reformulation_minimal():
     state = make_state_with_binaries(("Peano",))
+    # Direct form (in3[x,x,y,+]) is the witness-elimination of the existence
+    # source (>[w](in3[x,x,w,+])(=[w,y])): substitute the witness w := y.
     line = make_proof_line(
-        "(=[a,b])", "main", "incubator back reformulation",
-        "(some_source)", "main",
+        "(>[x,y](AnchorPeano[x,y])(in3[x,x,y,+]))", "main",
+        "incubator back reformulation",
+        "(>[x,y](AnchorPeano[x,y])(>[w](in3[x,x,w,+])(=[w,y])))", "main",
     )
     assert_pass(check_incubator_back_reformulation, line, [line], state)
 
@@ -383,6 +390,159 @@ def test_pos_disintegration_and_well_formed():
     )
     chapter = [disint, expansion]
     assert_pass(check_disintegration, disint, chapter, state)
+
+
+@register
+def test_pos_expansion_and_well_formed():
+    """A single-element AND compact expands to the bare element. Need origin
+    presence for the compact + normalize-with-unchangeables match between the
+    expanded form and the binary's reconstructed form."""
+    state = _state_with_and_test()
+    # Single-element AND collapses: _build_and_from_elements(["(in[a,N])"])
+    # returns "(in[a,N])" unchanged. So compound = "(in[a,N])".
+    compact_origin = make_proof_line(
+        "(andsimple[a])", "main", "task formulation",
+    )
+    expansion = make_proof_line(
+        "(in[a,N])", "main", "expansion",
+        "(andsimple[a])", "main",
+    )
+    chapter = [compact_origin, expansion]
+    assert_pass(check_expansion, expansion, chapter, state)
+
+
+@register
+def test_pos_compilation_well_formed():
+    """A `compilation` row whose compact (implication<N>[...]) faithfully
+    reconstructs the cited original implication via the GL binary.
+
+    Synthetic entry impltest1 := premise (in[1,u_1]), head (in[1,u_2]).
+    Compact (impltest1[a,b]) -> subst {u_1:a,u_2:b} ->
+    _build_implication_from_elements(["(in[1,a])","(in[1,b])"], {a,b})
+    == "(>[1](in[1,a])(in[1,b]))" (bound var 1 placed at its first
+    premise). rest[0] is set to exactly that, so the
+    normalize-with-unchangeables comparison inside _try_expand is an
+    identity match. Self-contained (compilation is origin-exempt) — the
+    chapter is just the row itself."""
+    state = make_state_with_binaries(("Peano",))
+    state.gl_binaries = dict(state.gl_binaries)
+    state.gl_binaries["Peano"] = dict(state.gl_binaries["Peano"])
+    state.gl_binaries["Peano"]["impltest1"] = {
+        "category": "implication",
+        "signature": "(impltest1[u_1,u_2])",
+        "elements": ["(in[1,u_1])", "(in[1,u_2])"],
+    }
+    state.current_gl_binary = state.gl_binaries["Peano"]
+    line = make_proof_line(
+        "(impltest1[a,b])", "main", "compilation",
+        "(>[1](in[1,a])(in[1,b]))", "main",
+    )
+    assert_pass(check_compilation, line, [line], state)
+
+
+# ===========================================================================
+#  Integration family (expansion + reformulation for integration)
+# ===========================================================================
+
+def _state_with_andint_two_elem() -> object:
+    """Two-element AND compact for the integration reformulation test."""
+    state = make_state_with_binaries(("Peano",))
+    state.gl_binaries = dict(state.gl_binaries)
+    state.gl_binaries["Peano"] = dict(state.gl_binaries["Peano"])
+    state.gl_binaries["Peano"]["andint1"] = {
+        "category": "and",
+        "signature": "(andint1[u_1,u_2])",
+        "elements": ["(in[u_1,N])", "(=[u_1,u_2])"],
+    }
+    state.current_gl_binary = state.gl_binaries["Peano"]
+    return state
+
+
+@register
+def test_pos_expansion_for_integration_well_formed():
+    """Integration-time expansion: no origin presence required; structural
+    match alone suffices."""
+    state = _state_with_and_test()
+    row = make_proof_line(
+        "(in[a,N])", "main", "expansion for integration",
+        "(andsimple[a])", "main",
+    )
+    assert_pass(check_expansion_for_integration, row, [row], state)
+
+
+@register
+def test_pos_reformulation_for_integration_and_well_formed():
+    """The reformulated AND chain. For elements [E1, E2] the chain is
+    (>[]E1(>[]E2 compact)) — flatten produces [E1, E2] in original order,
+    and the chain wraps each elem around the compact from inside out."""
+    state = _state_with_andint_two_elem()
+    expansion = make_proof_line(
+        "(&(in[a,N])(=[a,b]))", "main", "expansion for integration",
+        "(andint1[a,b])", "main",
+    )
+    # _flatten_and("(&(in[a,N])(=[a,b]))") = ["(in[a,N])", "(=[a,b])"].
+    # Chain: expected = compact; for elem in reversed(elements):
+    #   expected = "(>[](=[a,b])(andint1[a,b]))"     # first iter
+    #   expected = "(>[](in[a,N])(>[](=[a,b])(andint1[a,b])))"  # second
+    row = make_proof_line(
+        "(>[](in[a,N])(>[](=[a,b])(andint1[a,b])))",
+        "main", "reformulation for integration and",
+        "(&(in[a,N])(=[a,b]))", "main",
+    )
+    chapter = [row, expansion]
+    assert_pass(check_reformulation_for_integration_and, row, chapter, state)
+
+
+@register
+def test_pos_premise_element_well_formed():
+    """premise element row whose expression is one of the disintegrated
+    premises of the cited origin implication, and whose namespace ends with
+    the cleanSig boundary marker."""
+    state = make_state_with_binaries(("Peano",))
+    expansion = make_proof_line(
+        "(>[](in[a,N])(=[a,b]))", "main", "expansion for integration",
+        "(impl_compact)", "main",
+    )
+    prem = make_proof_line(
+        "(in[a,N])", "(impl_compact)", "premise element",
+        "(>[](in[a,N])(=[a,b]))", "main",
+    )
+    chapter = [expansion, prem]
+    assert_pass(check_premise_element, prem, chapter, state)
+
+
+@register
+def test_pos_validity_name_well_formed():
+    """validity name row asserts that the cited compact's head equals
+    rest[0]."""
+    state = make_state_with_binaries(("Peano",))
+    expansion = make_proof_line(
+        "(>[](in[a,N])(=[a,b]))", "main", "expansion for integration",
+        "(impl_compact)", "main",
+    )
+    val = make_proof_line(
+        "(impl_compact)", "main", "validity name",
+        "(=[a,b])", "main",
+    )
+    chapter = [expansion, val]
+    assert_pass(check_validity_name, val, chapter, state)
+
+
+@register
+def test_pos_recursion_check_induction_condition_typing_anchor():
+    """The simple branch of check_induction_condition: a (in2[*,ind_var,s])
+    typing-anchor row. The heavier reconstruction branch needs a carefully
+    chosen theorem whose digit-arg / immutable-arg analysis lines up with the
+    fixture's input_indices / output_indices; not covered here."""
+    state = make_state_with_binaries(("Peano",))
+    set_chapter_context(
+        state,
+        thm=("(>[v1](AnchorPeano[N,s,p,zero,one,two])(in[v1,N]))",
+             "induction", "v1"),
+        chapter_type="check_induction_condition",
+    )
+    line = make_proof_line("(in2[x_var,v1,s])", "main", "recursion")
+    assert_pass(check_recursion, line, [line], state)
 
 
 # ===========================================================================

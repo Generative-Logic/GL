@@ -1,36 +1,10 @@
-!(fold[N,s,+,id,i0,i1,i5])	main	contradiction	(=[i1,i5])	main	!(=[i1,i5])	main	(fold[N,s,+,id,i0,i1,i5])	main
-(=[i1,i5])	main	implication	(>[w1](in[w1,V1])(>[w1](in2[w1,w1,V2])(>[w2](in2[w1,w2,V2])(=[w1,w2]))))	main	(in2[i1,i5,V2])	main	(in2[i1,i1,V2])	main	(in[i1,V1])	main
-(>[w1](in[w1,V1])(>[w1](in2[w1,w1,V2])(>[w2](in2[w1,w2,V2])(=[w1,w2]))))	main	multiplied from	(>[w1](in[w1,V1])(>[w2](in2[w1,w2,V2])(>[w3](in2[w1,w3,V2])(=[w2,w3]))))	main
-(>[w1](in[w1,V1])(>[w2](in2[w1,w2,V2])(>[w3](in2[w1,w3,V2])(=[w2,w3]))))	main	expansion	(implication3[V1,V2])	main
-(implication3[V1,V2])	main	disintegration	(&(&(&(implication0[V2,V1])(implication1[V2,N]))(implication2[V1,N,V2]))(implication3[V1,V2]))	main
-(&(&(&(implication0[V2,V1])(implication1[V2,N]))(implication2[V1,N,V2]))(implication3[V1,V2]))	main	expansion	(fXY[V2,V1,N])	main
-(fXY[V2,V1,N])	main	disintegration	!(>[V2](fXY[V2,V1,N])!(and0[i0,id,V2,i1,i5,V1,s,+]))	main
-!(>[V2](fXY[V2,V1,N])!(and0[i0,id,V2,i1,i5,V1,s,+]))	main	expansion	(existence3[V1,N,i0,id,i1,i5,s,+])	main
-(existence3[V1,N,i0,id,i1,i5,s,+])	main	disintegration	!(>[V1](interval[N,+,i0,i1,V1])!(existence3[V1,N,i0,id,i1,i5,s,+]))	main
-!(>[V1](interval[N,+,i0,i1,V1])!(existence3[V1,N,i0,id,i1,i5,s,+]))	main	expansion	(fold[N,s,+,id,i0,i1,i5])	main
-(fold[N,s,+,id,i0,i1,i5])	main	task formulation
-(in2[i1,i5,V2])	main	disintegration	(&(&(implication25[i0,id,V2])(in2[i1,i5,V2]))(implication26[V1,s,V2,id,+]))	main
-(&(&(implication25[i0,id,V2])(in2[i1,i5,V2]))(implication26[V1,s,V2,id,+]))	main	expansion	(and0[i0,id,V2,i1,i5,V1,s,+])	main
-(and0[i0,id,V2,i1,i5,V1,s,+])	main	disintegration	!(>[V2](fXY[V2,V1,N])!(and0[i0,id,V2,i1,i5,V1,s,+]))	main
-(in2[i1,i1,V2])	main	implication	(>[w1](in[w1,V1])(>[w2](in2[w1,w2,s])(>[](in[w2,V1])(>[w1](in2[w1,w1,V2])(>[w2](in2[w2,w2,id])(>[w2](in3[w1,w2,w2,+])(in2[w2,w2,V2])))))))	main	(in2[i0,i0,V2])	main	(in2[i0,i1,s])	main	(in2[i1,i1,id])	main	(in3[i0,i1,i1,+])	main	(in[i0,V1])	main	(in[i1,V1])	main
-(>[w1](in[w1,V1])(>[w2](in2[w1,w2,s])(>[](in[w2,V1])(>[w1](in2[w1,w1,V2])(>[w2](in2[w2,w2,id])(>[w2](in3[w1,w2,w2,+])(in2[w2,w2,V2])))))))	main	multiplied from	(>[w1](in[w1,V1])(>[w2](in2[w1,w2,s])(>[](in[w2,V1])(>[w3](in2[w1,w3,V2])(>[w4](in2[w2,w4,id])(>[w5](in3[w3,w4,w5,+])(in2[w2,w5,V2])))))))	main
-(>[w1](in[w1,V1])(>[w2](in2[w1,w2,s])(>[](in[w2,V1])(>[w3](in2[w1,w3,V2])(>[w4](in2[w2,w4,id])(>[w5](in3[w3,w4,w5,+])(in2[w2,w5,V2])))))))	main	expansion	(implication26[V1,s,V2,id,+])	main
-(implication26[V1,s,V2,id,+])	main	disintegration	(&(&(implication25[i0,id,V2])(in2[i1,i5,V2]))(implication26[V1,s,V2,id,+]))	main
-(in2[i0,i0,V2])	main	implication	(>[](in2[i0,i0,id])(in2[i0,i0,V2]))	main	(in2[i0,i0,id])	main
-(>[](in2[i0,i0,id])(in2[i0,i0,V2]))	main	multiplied from	(>[w1](in2[i0,w1,id])(in2[i0,w1,V2]))	main
-(>[w1](in2[i0,w1,id])(in2[i0,w1,V2]))	main	expansion	(implication25[i0,id,V2])	main
-(implication25[i0,id,V2])	main	disintegration	(&(&(implication25[i0,id,V2])(in2[i1,i5,V2]))(implication26[V1,s,V2,id,+]))	main
-(in2[i0,i0,id])	main	implication	(>[i0,id](AnchorIncubator[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])(in2[i0,i0,id]))	main	(AnchorIncubator[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])	main
-(>[i0,id](AnchorIncubator[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])(in2[i0,i0,id]))	main	theorem
-(AnchorIncubator[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])	main	task formulation
-(in2[i0,i1,s])	main	disintegration	(&(&(&(&(&(&(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))(in2[i2,i3,s]))(in2[i3,i4,s]))(in2[i4,i5,s]))(in2[i5,i6,s]))(in2[i6,i7,s]))(in2[i7,i8,s]))	main
-(&(&(&(&(&(&(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))(in2[i2,i3,s]))(in2[i3,i4,s]))(in2[i4,i5,s]))(in2[i5,i6,s]))(in2[i6,i7,s]))(in2[i7,i8,s]))	main	expansion	(AnchorIncubator[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])	main
-(in2[i1,i1,id])	main	implication	(>[i1,id](AnchorIncubator[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])(in2[i1,i1,id]))	main	(AnchorIncubator[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])	main
-(>[i1,id](AnchorIncubator[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])(in2[i1,i1,id]))	main	theorem
-(in3[i0,i1,i1,+])	main	implication	(>[i0,+,i1](AnchorIncubator[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])(in3[i0,i1,i1,+]))	main	(AnchorIncubator[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])	main
-(in[i0,V1])	main	implication	(>[w1](in2[w1,w1,V2])(in[w1,V1]))	main	(in2[i0,i0,V2])	main
-(>[w1](in2[w1,w1,V2])(in[w1,V1]))	main	multiplied from	(>[w1,w2](in2[w1,w2,V2])(in[w1,V1]))	main
-(>[w1,w2](in2[w1,w2,V2])(in[w1,V1]))	main	expansion	(implication0[V2,V1])	main
-(implication0[V2,V1])	main	disintegration	(&(&(&(implication0[V2,V1])(implication1[V2,N]))(implication2[V1,N,V2]))(implication3[V1,V2]))	main
-(in[i1,V1])	main	implication	(>[w1,w2](in2[w1,w2,V2])(in[w1,V1]))	main	(in2[i1,i5,V2])	main
-!(=[i1,i5])	main	implication	(>[i1,i5](AnchorIncubator[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(=[i1,i5]))	main	(AnchorIncubator[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])	main
+(in[i8,N])	main	implication	(>[w1,w2](in2[w1,w2,s])(in[w2,N]))	main	(in2[i7,i8,s])	main
+(>[w1,w2](in2[w1,w2,s])(in[w2,N]))	main	expansion	(implication1[s,N])	main
+(implication1[s,N])	main	disintegration	(&(&(&(implication0[s,N])(implication1[s,N]))(implication2[N,N,s]))(implication3[N,s]))	main
+(&(&(&(implication0[s,N])(implication1[s,N]))(implication2[N,N,s]))(implication3[N,s]))	main	expansion	(fXY[s,N,N])	main
+(fXY[s,N,N])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication4[N,i0,s]))(implication5[N,s]))(fXYZ[+,N,N,N]))(implication11[N,i0,+]))(implication12[N,i0,+]))(implication13[N,s,+]))(implication14[N,s,+]))(fXYZ[*,N,N,N]))(implication15[N,i0,*]))(implication16[N,s,*,+]))(implication17[N,s,*,+]))	main
+(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication4[N,i0,s]))(implication5[N,s]))(fXYZ[+,N,N,N]))(implication11[N,i0,+]))(implication12[N,i0,+]))(implication13[N,s,+]))(implication14[N,s,+]))(fXYZ[*,N,N,N]))(implication15[N,i0,*]))(implication16[N,s,*,+]))(implication17[N,s,*,+]))	main	expansion	(NaturalNumbers[N,i0,s,+,*])	main
+(NaturalNumbers[N,i0,s,+,*])	main	disintegration	(&(&(&(&(&(&(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))(in2[i2,i3,s]))(in2[i3,i4,s]))(in2[i4,i5,s]))(in2[i5,i6,s]))(in2[i6,i7,s]))(in2[i7,i8,s]))	main
+(&(&(&(&(&(&(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))(in2[i2,i3,s]))(in2[i3,i4,s]))(in2[i4,i5,s]))(in2[i5,i6,s]))(in2[i6,i7,s]))(in2[i7,i8,s]))	main	expansion	(AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])	main
+(AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])	main	task formulation
+(in2[i7,i8,s])	main	disintegration	(&(&(&(&(&(&(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))(in2[i2,i3,s]))(in2[i3,i4,s]))(in2[i4,i5,s]))(in2[i5,i6,s]))(in2[i6,i7,s]))(in2[i7,i8,s]))	main

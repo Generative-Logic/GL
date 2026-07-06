@@ -13,6 +13,14 @@
       <UniqueIdentifier>{B41E5D29-9C4F-4F1B-9E62-1B5FAC44E4D5}</UniqueIdentifier>
       <Extensions>cpp;hpp</Extensions>
     </Filter>
+    <Filter Include="Infra">
+      <UniqueIdentifier>{7B3F2C1E-4A9D-4E5B-8C6A-1F2D3B4E5C6F}</UniqueIdentifier>
+      <Extensions>cpp;hpp</Extensions>
+    </Filter>
+    <Filter Include="Memory_Infra">
+      <UniqueIdentifier>{2E8A4D7C-91B5-4C3F-A6E8-5D0B7F3C9A21}</UniqueIdentifier>
+      <Extensions>cpp;hpp</Extensions>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\main.cpp">
@@ -42,6 +50,33 @@
     <ClCompile Include="src\conjecturer.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\infra\hashburst_dump.cpp">
+      <Filter>Infra</Filter>
+    </ClCompile>
+    <ClCompile Include="src\memory_infra\global_memory_manager.cpp">
+      <Filter>Memory_Infra</Filter>
+    </ClCompile>
+    <ClCompile Include="src\memory_infra\lb_arena.cpp">
+      <Filter>Memory_Infra</Filter>
+    </ClCompile>
+    <ClCompile Include="src\memory_infra\lb_store.cpp">
+      <Filter>Memory_Infra</Filter>
+    </ClCompile>
+    <ClCompile Include="src\memory_infra\lb_deload.cpp">
+      <Filter>Memory_Infra</Filter>
+    </ClCompile>
+    <ClCompile Include="src\memory_infra\steward.cpp">
+      <Filter>Memory_Infra</Filter>
+    </ClCompile>
+    <ClCompile Include="src\memory_infra\scratch_arena.cpp">
+      <Filter>Memory_Infra</Filter>
+    </ClCompile>
+    <ClCompile Include="src\memory_infra\sealed_pages.cpp">
+      <Filter>Memory_Infra</Filter>
+    </ClCompile>
+    <ClCompile Include="src\infra\rt_tracker.cpp">
+      <Filter>Infra</Filter>
+    </ClCompile>
     <ClCompile Include="src\tests\test_harness.cpp">
       <Filter>Tests</Filter>
     </ClCompile>
@@ -60,6 +95,57 @@
     <ClCompile Include="src\tests\test_conjecturer.cpp">
       <Filter>Tests</Filter>
     </ClCompile>
+    <ClCompile Include="src\tests\test_equi_reshuffle.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_lb_split.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_static_memory.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_lb_deload.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_steward.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_scratch_arena.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_scratch_string.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_sealed_pages.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_str_ops.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_cold_string_table.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_cold_hash_map.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_typed_cold_map.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_cold_mail.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_lb_arena.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_arena_stack.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_arena_vector.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_lb_store.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\compiler.hpp">
@@ -76,6 +162,78 @@
     </ClInclude>
     <ClInclude Include="src\conjecturer.hpp">
       <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\infra\hashburst_dump.hpp">
+      <Filter>Infra</Filter>
+    </ClInclude>
+    <ClInclude Include="src\memory_infra\dirty_state.hpp">
+      <Filter>Memory_Infra</Filter>
+    </ClInclude>
+    <ClInclude Include="src\memory_infra\global_memory_manager.hpp">
+      <Filter>Memory_Infra</Filter>
+    </ClInclude>
+    <ClInclude Include="src\memory_infra\lb_arena.hpp">
+      <Filter>Memory_Infra</Filter>
+    </ClInclude>
+    <ClInclude Include="src\memory_infra\arena_stack.hpp">
+      <Filter>Memory_Infra</Filter>
+    </ClInclude>
+    <ClInclude Include="src\memory_infra\lb_store.hpp">
+      <Filter>Memory_Infra</Filter>
+    </ClInclude>
+    <ClInclude Include="src\memory_infra\arena_vector.hpp">
+      <Filter>Memory_Infra</Filter>
+    </ClInclude>
+    <ClInclude Include="src\memory_infra\int_encoded_expr.hpp">
+      <Filter>Memory_Infra</Filter>
+    </ClInclude>
+    <ClInclude Include="src\memory_infra\lb_memory.hpp">
+      <Filter>Memory_Infra</Filter>
+    </ClInclude>
+    <ClInclude Include="src\memory_infra\scratch_arena.hpp">
+      <Filter>Memory_Infra</Filter>
+    </ClInclude>
+    <ClInclude Include="src\memory_infra\scratch_string.hpp">
+      <Filter>Memory_Infra</Filter>
+    </ClInclude>
+    <ClInclude Include="src\memory_infra\sealed_pages.hpp">
+      <Filter>Memory_Infra</Filter>
+    </ClInclude>
+    <ClInclude Include="src\memory_infra\str_ops.hpp">
+      <Filter>Memory_Infra</Filter>
+    </ClInclude>
+    <ClInclude Include="src\memory_infra\cold_hash_map.hpp">
+      <Filter>Memory_Infra</Filter>
+    </ClInclude>
+    <ClInclude Include="src\memory_infra\typed_cold_map.hpp">
+      <Filter>Memory_Infra</Filter>
+    </ClInclude>
+    <ClInclude Include="src\memory_infra\hash_memory.hpp">
+      <Filter>Memory_Infra</Filter>
+    </ClInclude>
+    <ClInclude Include="src\memory_infra\mail_types.hpp">
+      <Filter>Memory_Infra</Filter>
+    </ClInclude>
+    <ClInclude Include="src\memory_infra\cold_mail.hpp">
+      <Filter>Memory_Infra</Filter>
+    </ClInclude>
+    <ClInclude Include="src\memory_infra\paged_hash_index.hpp">
+      <Filter>Memory_Infra</Filter>
+    </ClInclude>
+    <ClInclude Include="src\memory_infra\ptr_directory.hpp">
+      <Filter>Memory_Infra</Filter>
+    </ClInclude>
+    <ClInclude Include="src\memory_infra\cold_string_table.hpp">
+      <Filter>Memory_Infra</Filter>
+    </ClInclude>
+    <ClInclude Include="src\memory_infra\lb_deload.hpp">
+      <Filter>Memory_Infra</Filter>
+    </ClInclude>
+    <ClInclude Include="src\memory_infra\steward.hpp">
+      <Filter>Memory_Infra</Filter>
+    </ClInclude>
+    <ClInclude Include="src\infra\rt_tracker.hpp">
+      <Filter>Infra</Filter>
     </ClInclude>
     <ClInclude Include="src\parameters.hpp">
       <Filter>Header Files</Filter>

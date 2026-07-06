@@ -37,7 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests.test_harness import (  # noqa: E402
     register, make_state_with_binaries, make_proof_line,
-    assert_failure, run_all_tests,
+    assert_failure, run_all_tests, set_chapter_context,
 )
 from verifier import (  # noqa: E402
     check_expansion_for_integration, check_premise_element,
@@ -763,6 +763,42 @@ def test_reformulation_for_integration_empty_arity_mismatch():
     )
     assert_failure(check_reformulation_for_integration_empty, line,
                    [expansion, line], state)
+
+
+# ===========================================================================
+#  premise-anchor chapter→binary binding (regression test)
+# ===========================================================================
+
+@register
+def test_cross_anchor_binding_picks_premise_anchor():
+    """Cross-anchor connection theorems mention multiple Anchor<Tag>
+    substrings. The principled binding is the PREMISE anchor (the world
+    the proof's assumptions live in), not whichever tag the iteration
+    happens to hit first. This test exercises a Gauss-premise / Peano-
+    conclusion theorem (the shape of chapter 103) and confirms binding
+    is independent of gl_binaries dict insertion order — the bug a
+    Linux container surfaced on 2026-05-12 where filesystem listdir
+    order swapped Gauss and Peano position."""
+    thm = (
+        "(>[N,i0,s,+,*,i1](AnchorGauss[N,i0,s,+,*,i1,i2,id])"
+        "(AnchorPeano[N,i0,s,+,*,i1]))",
+        "direct",
+        "-1",
+    )
+
+    # Natural order (sorted Gauss, IncubatorGauss, ..., Peano, shared)
+    state1 = make_state_with_binaries(("Gauss",))
+    set_chapter_context(state1, thm=thm)
+    assert state1.current_gl_binary is state1.gl_binaries["Gauss"], (
+        "premise-anchor binding picked the wrong binary on natural dict order")
+
+    # Reversed dict order — what a non-alphabetical filesystem produced
+    state2 = make_state_with_binaries(("Gauss",))
+    state2.gl_binaries = dict(reversed(list(state2.gl_binaries.items())))
+    set_chapter_context(state2, thm=thm)
+    assert state2.current_gl_binary is state2.gl_binaries["Gauss"], (
+        "premise-anchor binding must be order-independent — reversed dict "
+        "still picks Gauss (the premise anchor)")
 
 
 if __name__ == "__main__":

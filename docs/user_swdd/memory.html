@@ -1,0 +1,806 @@
+<!--
+Generative Logic: A deterministic reasoning and knowledge generation engine.
+Copyright (C) 2025-2026 Generative Logic UG (haftungsbeschränkt).
+Dual-licensed under the GNU Affero General Public License v3 or later
+and a commercial license — see https://generative-logic.com/license.
+
+User-oriented SwDD — Chapter 6: Static memory (statification).
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GL Prover User SwDD — 6 · Static memory</title>
+<meta name="copyright" content="© 2025-2026 Generative Logic UG">
+<meta name="license" content="AGPL-3.0-or-later">
+<meta name="robots" content="noindex, nofollow, noai, noimageai">
+<link rel="stylesheet" href="assets/swdd.css">
+</head>
+<body>
+
+<nav id="side">
+  <div class="brand">GL · <span>User SwDD</span></div>
+  <div class="tag">The prover subsystem — reference concepts &amp; diagrams</div>
+  <ol>
+    <li><a href="index.html">Overview</a>
+      <ul>
+        <li><a href="index.html#what">What GL is</a></li>
+        <li><a href="index.html#pipeline">The pipeline</a></li>
+        <li><a href="index.html#deductive">Deductive neighbourhood</a></li>
+        <li><a href="index.html#artefacts">Artefacts on disk</a></li>
+        <li><a href="index.html#read">How to read this</a></li>
+        <li><a href="index.html#glossary">Quick glossary</a></li>
+        <li><a href="index.html#bounds">What is &amp; isn't in this doc</a></li>
+      </ul>
+    </li>
+    <li><a href="prover.html">The prover at a glance</a>
+      <ul>
+        <li><a href="prover.html#life">Life of a run</a></li>
+        <li><a href="prover.html#cycles">Cycles</a></li>
+        <li><a href="prover.html#enter">How a theorem enters</a></li>
+        <li><a href="prover.html#status">Status modes</a></li>
+        <li><a href="prover.html#deactivate">Deactivation cascade</a></li>
+        <li><a href="prover.html#dump">The hashburst dump</a></li>
+      </ul>
+    </li>
+    <li><a href="substrate.html">The substrate</a>
+      <ul>
+        <li><a href="substrate.html#lb">Logic blocks</a></li>
+        <li><a href="substrate.html#hash">Hash engine</a></li>
+        <li><a href="substrate.html#mail">Mail</a></li>
+        <li><a href="substrate.html#scope">Scope &amp; validity</a></li>
+        <li><a href="substrate.html#compile">Compilation</a></li>
+        <li><a href="substrate.html#delta">Delta machinery</a></li>
+        <li><a href="substrate.html#wipe">Subtree wipe</a></li>
+      </ul>
+    </li>
+    <li><a href="mechanisms.html">Proof mechanisms</a>
+      <ul>
+        <li><a href="mechanisms.html#disint">Disintegration</a></li>
+        <li><a href="mechanisms.html#admit">Admission, rejection &amp; equi-classes</a></li>
+        <li><a href="mechanisms.html#integ">Integration</a></li>
+        <li><a href="mechanisms.html#branch">Branching &amp; contradiction</a></li>
+        <li><a href="mechanisms.html#induct">Induction</a></li>
+        <li><a href="mechanisms.html#fan5">5-batch fan-out</a></li>
+        <li><a href="mechanisms.html#cascade">Pending-rejection cascade</a></li>
+      </ul>
+    </li>
+    <li><a href="parallel.html">Parallel execution</a>
+      <ul>
+        <li><a href="parallel.html#pool">The worker pool</a></li>
+        <li><a href="parallel.html#barrier">The join barrier</a></li>
+        <li><a href="parallel.html#collect">Serial collectors</a></li>
+        <li><a href="parallel.html#why">Why deferral — a race</a></li>
+        <li><a href="parallel.html#asic">The silicon mapping</a></li>
+        <li><a href="parallel.html#mailbox">Per-LB mailbox geometry</a></li>
+        <li><a href="parallel.html#cycleN">The cycle-N rule</a></li>
+      </ul>
+    </li>
+    <li><a href="memory.html" class="current">Static memory</a>
+      <ul>
+        <li><a href="memory.html#why">Why static</a></li>
+        <li><a href="memory.html#hierarchy">The memory hierarchy</a></li>
+        <li><a href="memory.html#virtual">The page tier</a></li>
+        <li><a href="memory.html#aggregate">LbMemory — the aggregate</a></li>
+        <li><a href="memory.html#deload">Deload / reload</a></li>
+        <li><a href="memory.html#scope">Scope</a></li>
+        <li><a href="memory.html#strings">String statification</a></li>
+      </ul>
+    </li>
+    <li><a href="provenance.html">Provenance</a>
+      <ul>
+        <li><a href="provenance.html#record">Recording an origin</a></li>
+        <li><a href="provenance.html#local">Locality</a></li>
+        <li><a href="provenance.html#lift">The chapter walker</a></li>
+        <li><a href="provenance.html#lift-mech">Lift — soundness</a></li>
+        <li><a href="provenance.html#barrier">OR-branch barrier</a></li>
+        <li><a href="provenance.html#cycle">Path-cycle filter</a></li>
+        <li><a href="provenance.html#contraswitch">Contradiction fallback</a></li>
+        <li><a href="provenance.html#notinput">Never a proof input</a></li>
+      </ul>
+    </li>
+    <li><a href="compilation.html">Compilation &amp; names</a>
+      <ul>
+        <li><a href="compilation.html#why">Two canonical forms</a></li>
+        <li><a href="compilation.html#pre">Precompilation</a></li>
+        <li><a href="compilation.html#names">The five name families</a></li>
+        <li><a href="compilation.html#counters">Counters &amp; registry</a></li>
+        <li><a href="compilation.html#namemap">NameMap &amp; scopes</a></li>
+        <li><a href="compilation.html#encoded">EncodedExpression → IntNormalizedKey</a></li>
+        <li><a href="compilation.html#pool">The static-memory floor</a></li>
+        <li><a href="compilation.html#fail">Failure modes</a></li>
+      </ul>
+    </li>
+    <li><a href="anchors.html">Anchors &amp; types</a>
+      <ul>
+        <li><a href="anchors.html#what">What an anchor is</a></li>
+        <li><a href="anchors.html#three">The four anchors</a></li>
+        <li><a href="anchors.html#types">Slot types</a></li>
+        <li><a href="anchors.html#handling">Anchor handling</a></li>
+        <li><a href="anchors.html#copy">The <code>_copy</code> machinery</a></li>
+        <li><a href="anchors.html#tag">The proof-graph row</a></li>
+        <li><a href="anchors.html#i29">Variable-port consistency</a></li>
+        <li><a href="anchors.html#bridge">Cross-anchor bridges</a></li>
+      </ul>
+    </li>
+    <li><a href="reformulation.html">Reformulation &amp; head switch</a>
+      <ul>
+        <li><a href="reformulation.html#why">Why reformulation</a></li>
+        <li><a href="reformulation.html#switch">Head switch — the walk</a></li>
+        <li><a href="reformulation.html#sites">Two call sites</a></li>
+        <li><a href="reformulation.html#mirror">Both directions proved</a></li>
+        <li><a href="reformulation.html#back">Back-reformulation</a></li>
+        <li><a href="reformulation.html#contra">Contradiction reconstruction</a></li>
+        <li><a href="reformulation.html#orthm">OR-theorem assembly</a></li>
+        <li><a href="reformulation.html#methods">The five method tags</a></li>
+      </ul>
+    </li>
+    <li><a href="auxiliary.html">CE filter &amp; compressor</a>
+      <ul>
+        <li><a href="auxiliary.html#engine">Same engine, two modes</a></li>
+        <li><a href="auxiliary.html#ce">Counterexample filter</a></li>
+        <li><a href="auxiliary.html#j">The j-copy trick</a></li>
+        <li><a href="auxiliary.html#comp">Compressor — throwaway trees</a></li>
+        <li><a href="auxiliary.html#p1">Phase 1 — dependency graphs</a></li>
+        <li><a href="auxiliary.html#p2">Phase 2 — greedy elimination</a></li>
+        <li><a href="auxiliary.html#out">What lands on disk</a></li>
+      </ul>
+    </li>
+  </ol>
+</nav>
+
+<main>
+<h1><span class="num">6 ·</span> Static memory (statification)</h1>
+<p class="lede">How the prover's per-LB containers move off the heap and onto a
+fixed memory hierarchy: one reservation at program start, carved into blocks,
+carved into fixed-size pages that per-LB containers pack their elements into,
+addressed by virtual page ids — and streamed to SSD between iterations in a
+canonical, byte-comparable format.</p>
+
+<div class="toc">
+  <strong>On this page</strong>
+  <ol>
+    <li><a href="#why">6.1 &nbsp;Why static — the MPU path and the heap ceiling</a></li>
+    <li><a href="#hierarchy">6.2 &nbsp;The memory hierarchy — pool → blocks → pages</a></li>
+    <li><a href="#virtual">6.3 &nbsp;The page tier — virtual page ids, the determinism device</a></li>
+    <li><a href="#aggregate">6.4 &nbsp;<code>LbMemory</code> — the growable aggregate</a></li>
+    <li><a href="#deload">6.5 &nbsp;Deload / reload — the canonical SSD round-trip</a></li>
+    <li><a href="#scope">6.6 &nbsp;Scope — what is static (the campaign is complete)</a></li>
+    <li><a href="#strings">6.7 &nbsp;String statification — scratch, sealed, cold</a></li>
+  </ol>
+</div>
+
+<!-- ===================== 6.1 WHY ===================== -->
+<h2 id="why">6.1 &nbsp;Why static — the MPU path and the heap ceiling</h2>
+<p>
+The silicon correspondence in <a href="parallel.html#asic">§5.5</a> is a real
+roadmap, not decoration — and a core's on-die SRAM does not <code>malloc</code>.
+The MPU (Mathematical Processing Unit) build requires <b>all prover memory static</b>: every byte the prover
+touches must live inside a fixed reservation whose size is known before the run
+starts. Statification is the software half of that requirement, written so the
+data layout the silicon needs is already the data layout the prover runs on.
+</p>
+<p>
+There is also an immediate, non-aspirational reason: the heap ceiling. Per-LB
+containers grow with the deductive neighbourhood, and at current consumption the
+next milestones are infeasible on realistic hardware — the run drowns in
+allocation long before it drowns in inference. A fixed pool turns "the run
+slowly eats the machine" into a single, visible sizing decision.
+</p>
+<p>
+The migration was <b>tier by tier</b>: the machinery — global pool, per-LB bump
+arenas, arena containers, the deload format — is built once, and each tier
+moved one container family onto it. <b>Tier 1 migrated the statement
+registry</b>, <code>Memory::intEncodedStatements</code>
+(<a href="substrate.html#lb-inside">§3.1.2</a>); the remaining per-LB families —
+the string interners (§<a href="#strings">6.7</a>), equivalence classes, the hash
+inference engine, the goal registry, the cross-block mail log, and the logic-block
+objects themselves — followed across the campaign, which is now <b>complete</b>:
+all per-LB working memory is static (§<a href="#scope">6.6</a>).
+</p>
+
+<ul class="inv">
+<li><b>One main reservation, plus three small stand-alone pools.</b> Almost all
+statified storage comes from a single allocation made at program start — never
+freed during the run, never grown. The software model of the MPU's fixed SRAM.
+Three <em>further</em>, smaller reservations sit beside it, each with its own
+exhaustion assert and never depleting the main pool. The <b>persistent pool</b>
+backs the never-deloaded goal registry — keeping it always resident, so the
+deactivation logic can read it even when an LB's main storage has been written out
+to disk (removing a source of run-to-run nondeterminism). The <b>mail pool</b>
+backs the cross-block mail log — the record of which block sent what to whom: it
+too is never written to disk, and being stand-alone it plays no part in any
+deload decision, so the mail content never competes with the main pool. The
+<b>LB-body pool</b> holds the logic-block objects themselves — every block used to
+be a separate heap allocation; now each is placement-constructed into a fixed-size
+slot carved from this pool and never moved, so the many pointers between blocks
+stay valid for the object's whole life. It too is never written to disk, and its
+blocks return to the pool when a run's analyzer is torn down, so several analyzers
+in one process reuse it. They are the only three sanctioned extra reservations.</li>
+<li><b>No observable dependence on physical placement.</b> Which physical block a
+container's data lands in is invisible to every proof decision and every exported
+artefact — the virtual-offset arena (§<a href="#virtual">6.3</a>) is what makes
+that claim checkable.</li>
+<li><b>Exhaustion is an assert, not a fallback.</b> If the pool runs out, the run
+stops at the allocation site with a message naming the config knob. There is no
+emergency heap allocation — a silent fallback would un-prove the static claim.</li>
+</ul>
+
+<!-- ===================== 6.2 HIERARCHY ===================== -->
+<h2 id="hierarchy">6.2 &nbsp;The memory hierarchy — pool → blocks → pages</h2>
+<p>
+Three levels — pool carved into <b>blocks</b>, blocks carved into fixed-size
+<b>pages</b> — and then the per-LB containers pack their elements contiguously
+into pages drawn from the LB's arena. The sizes are fixed compile-time constants
+in <code>parameters.hpp</code> (identical for every batch, never read from a
+config); <code>isValidStaticMemoryConfig</code> asserts that the pool is a whole
+multiple of the block and the block a power of two, and
+<code>isValidStaticPageConfig</code> that the block is a whole multiple of a
+power-of-two page (so an index resolves by one shift and one mask);
+<code>initStaticMemory</code> then makes the one reservation.
+</p>
+
+<table>
+<tr><th>Level</th><th>Sizing constant (parameters.hpp)</th><th>Owner</th><th>Unit handed down</th></tr>
+<tr><td>Pool</td><td><code>static_pool_bytes</code> (8&nbsp;GiB)</td><td><code>GlobalMemoryManager</code> — one per process</td><td>block</td></tr>
+<tr><td>Block</td><td><code>static_block_bytes</code> (256&nbsp;KiB, a power of two)</td><td><code>LbArena</code> — one per LB</td><td>page</td></tr>
+<tr><td>Page</td><td><code>static_page_bytes</code> (8&nbsp;KiB, a power of two)</td><td>the paged containers, via the arena's page tier</td><td>elements (packed contiguously, addressed by page id)</td></tr>
+</table>
+
+<figure>
+<svg viewBox="0 0 760 470" role="img" aria-label="The static memory hierarchy: one pool reservation carved into blocks, blocks carved into fixed-size pages by a per-LB arena, cold containers packing their elements into pages and storing virtual page ids">
+  <defs><marker id="h-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+
+  <!-- pool -->
+  <rect x="20" y="16" width="720" height="124" rx="10" fill="#1C1F2B" stroke="#EF9F27" stroke-width="2"/>
+  <text x="380" y="38" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">GlobalMemoryManager — ONE reservation at program start (static_pool_bytes, 8 GiB)</text>
+  <text x="380" y="55" fill="#8B8FA5" font-size="9.5" text-anchor="middle">never freed, never grown — the software model of the MPU's fixed SRAM · mutex inside acquireBlock</text>
+  <g font-size="9">
+    <rect x="40"  y="68" width="60" height="34" rx="5" fill="#262938" stroke="#5DCAA5"/><text x="70"  y="88" fill="#5DCAA5" text-anchor="middle">LB A</text>
+    <rect x="108" y="68" width="60" height="34" rx="5" fill="#262938" stroke="#5DCAA5"/><text x="138" y="88" fill="#5DCAA5" text-anchor="middle">LB A</text>
+    <rect x="176" y="68" width="60" height="34" rx="5" fill="#262938" stroke="#B084EB"/><text x="206" y="88" fill="#B084EB" text-anchor="middle">LB B</text>
+    <rect x="244" y="68" width="60" height="34" rx="5" fill="#262938" stroke="#B084EB"/><text x="274" y="88" fill="#B084EB" text-anchor="middle">LB B</text>
+    <rect x="312" y="68" width="60" height="34" rx="5" fill="#262938" stroke="#E879F9"/><text x="342" y="88" fill="#E879F9" text-anchor="middle">LB C</text>
+    <rect x="380" y="68" width="60" height="34" rx="5" fill="#20232F" stroke="#3A3D4A"/><text x="410" y="88" fill="#8B8FA5" text-anchor="middle">free</text>
+    <rect x="448" y="68" width="60" height="34" rx="5" fill="#20232F" stroke="#3A3D4A"/><text x="478" y="88" fill="#8B8FA5" text-anchor="middle">free</text>
+    <rect x="516" y="68" width="60" height="34" rx="5" fill="#20232F" stroke="#3A3D4A"/><text x="546" y="88" fill="#8B8FA5" text-anchor="middle">free</text>
+    <rect x="584" y="68" width="60" height="34" rx="5" fill="#20232F" stroke="#3A3D4A"/><text x="614" y="88" fill="#8B8FA5" text-anchor="middle">free</text>
+    <rect x="652" y="68" width="60" height="34" rx="5" fill="#20232F" stroke="#3A3D4A"/><text x="682" y="88" fill="#8B8FA5" text-anchor="middle">free</text>
+  </g>
+  <text x="380" y="126" fill="#8B8FA5" font-size="9.5" text-anchor="middle">carved into fixed-size blocks (static_block_bytes, 256 KiB) — recycled blocks are re-granted before fresh ones</text>
+
+  <!-- pool -> arena -->
+  <path d="M250 140 L250 184" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#h-ar)"/>
+  <text x="160" y="166" fill="#8B8FA5" font-size="10" text-anchor="middle">acquireBlock — global mutex</text>
+  <path d="M530 184 L530 140" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#h-ar)"/>
+  <text x="630" y="166" fill="#8B8FA5" font-size="10" text-anchor="middle">releaseBlock — deload / teardown</text>
+
+  <!-- LB arena -->
+  <rect x="90" y="186" width="580" height="116" rx="10" fill="#262938" stroke="#5DCAA5" stroke-width="2"/>
+  <text x="380" y="208" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">LbArena — one per LB (this is LB A's)</text>
+  <text x="380" y="225" fill="#8B8FA5" font-size="8.5" text-anchor="middle">its granted blocks are carved into fixed-size pages — a container takes whole pages and packs its elements in them; a page id (vid) names a page</text>
+  <g font-size="8.5">
+    <rect x="120" y="236" width="156" height="34" rx="4" fill="#1C1F2B" stroke="#5DCAA5"/><text x="198" y="250" fill="#5DCAA5" text-anchor="middle">block 0</text><text x="198" y="263" fill="#8B8FA5" text-anchor="middle">32 pages × 8K</text>
+    <rect x="282" y="236" width="156" height="34" rx="4" fill="#1C1F2B" stroke="#5DCAA5"/><text x="360" y="250" fill="#5DCAA5" text-anchor="middle">block 1</text><text x="360" y="263" fill="#8B8FA5" text-anchor="middle">32 pages × 8K</text>
+    <rect x="444" y="236" width="120" height="34" rx="4" fill="#1C1F2B" stroke="#EF9F27"/><text x="504" y="250" fill="#EF9F27" text-anchor="middle">block 2</text><text x="504" y="263" fill="#8B8FA5" text-anchor="middle">▸ free pages</text>
+  </g>
+  <text x="380" y="290" fill="#8B8FA5" font-size="9.5" text-anchor="middle">a page never straddles a block — pages come from the block's free-list; when it runs dry, a fresh block → acquireBlock</text>
+
+  <!-- arena -> container -->
+  <path d="M380 302 L380 344" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#h-ar)"/>
+  <text x="505" y="326" fill="#8B8FA5" font-size="10" text-anchor="middle">allocPage() — returns a page id (vid)</text>
+
+  <!-- arena container -->
+  <rect x="90" y="346" width="580" height="86" rx="10" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="380" y="368" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">PagedVector&lt;T&gt; — the container (e.g. intEncodedStatements)</text>
+  <g font-size="8.5">
+    <rect x="150" y="380" width="34" height="24" rx="3" fill="#262938" stroke="#5DCAA5"/><text x="167" y="396" fill="#F0E8DC" text-anchor="middle">e0</text>
+    <rect x="188" y="380" width="34" height="24" rx="3" fill="#262938" stroke="#5DCAA5"/><text x="205" y="396" fill="#F0E8DC" text-anchor="middle">e1</text>
+    <rect x="226" y="380" width="34" height="24" rx="3" fill="#262938" stroke="#5DCAA5"/><text x="243" y="396" fill="#F0E8DC" text-anchor="middle">e2</text>
+    <rect x="264" y="380" width="34" height="24" rx="3" fill="#262938" stroke="#5DCAA5"/><text x="281" y="396" fill="#F0E8DC" text-anchor="middle">e3</text>
+    <text x="306" y="396" fill="#8B8FA5" text-anchor="start">… packed contiguously within a page</text>
+  </g>
+  <text x="380" y="424" fill="#8B8FA5" font-size="8.5" text-anchor="middle">a two-level page directory indexes the elements · operator[] = shift + mask → pageAt · overflowing it is a loud assert, never silent corruption</text>
+
+  <text x="380" y="458" fill="#8B8FA5" font-size="10.5" text-anchor="middle">Pool exhaustion is a loud assert naming static_pool_bytes — never a fallback heap allocation.</text>
+</svg>
+<figcaption><b>One reservation, blocks, per-LB pages.</b> The global manager
+dispenses blocks under a mutex (LBs request mid-sweep, in parallel); each LB's
+arena carves its blocks into fixed-size pages and packs every cold container's
+elements into them. The only cross-thread touch in the whole hierarchy
+is the global mutex.</figcaption>
+</figure>
+
+<p>
+The global manager re-grants recycled blocks before carving fresh ones, so the
+carve cursor doubles as a high-water mark of simultaneous demand;
+<code>blocksInUse</code> / <code>peakBlocksInUse</code> expose the sizing
+telemetry that turns the pool size from guesswork into a measured number.
+</p>
+
+<div class="key">
+<b>Exhaustion policy.</b> When <code>acquireBlock</code> finds the pool empty, the
+run <b>asserts, naming <code>static_pool_bytes</code></b> — the operator's fix is
+one <code>parameters.hpp</code> edit and a rebuild. A fallback heap allocation here would be worse than the crash:
+it would silently convert "all prover memory is static" from an invariant into a
+hope, and the MPU sizing data would be fiction.
+</div>
+
+<!-- ===================== 6.3 VIRTUAL ===================== -->
+<h2 id="virtual">6.3 &nbsp;The page tier — virtual page ids, the determinism device</h2>
+<p>
+Containers never store physical pointers. They store <b>virtual page ids</b>
+(vids) and a within-page index. The arena carves its blocks into fixed-size pages;
+<code>allocPage()</code> returns a vid naming a page, and <code>pageAt(vid)</code>
+translates it to a physical page on each use. A container splits an element index
+into <code>page = i &gt;&gt; shift</code>, <code>within = i &amp; mask</code> — one
+shift and one mask, because the page size is a power of two — then reads the slot
+inside the resolved page. The only free is <b>freePage</b> (LIFO: a freed page
+returns to the free-list, and freeing the tail rolls the page cursor back).
+Interior gaps left by other deletes are holes that the <b>in-place page
+compaction</b> (§<a href="#deload">6.5</a>) reclaims by packing the live pages onto
+the low blocks — the one operation that ever rebinds a vid to a different page.
+</p>
+
+<figure>
+<svg viewBox="0 0 760 260" role="img" aria-label="The page tier: a per-LB virtual page-id space above, the physical pages backing them at arbitrary pool positions below, pageAt translating a vid to a physical page">
+  <defs><marker id="vp-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+
+  <text x="40" y="24" fill="#EF9F27" font-size="12" font-weight="bold">virtual page-id (vid) space — per LB</text>
+  <g font-size="9.5">
+    <rect x="40"  y="34" width="150" height="34" rx="5" fill="#262938" stroke="#5DCAA5"/><text x="115" y="49" fill="#F0E8DC" text-anchor="middle">vid 0</text><text x="115" y="62" fill="#8B8FA5" text-anchor="middle">a page</text>
+    <rect x="190" y="34" width="150" height="34" rx="5" fill="#262938" stroke="#5DCAA5"/><text x="265" y="49" fill="#F0E8DC" text-anchor="middle">vid 1</text><text x="265" y="62" fill="#8B8FA5" text-anchor="middle">a page</text>
+    <rect x="340" y="34" width="150" height="34" rx="5" fill="#262938" stroke="#EF9F27"/><text x="415" y="49" fill="#EF9F27" text-anchor="middle">vid 2 ▸ newest</text><text x="415" y="62" fill="#8B8FA5" text-anchor="middle">a page</text>
+  </g>
+  <line x1="232" y1="34" x2="232" y2="72" stroke="#EF9F27" stroke-width="2"/>
+  <text x="232" y="84" fill="#EF9F27" font-size="9.5" text-anchor="middle">a vid (names a page)</text>
+
+  <!-- resolve box -->
+  <rect x="540" y="32" width="200" height="62" rx="8" fill="#1C1F2B" stroke="#8B8FA5"/>
+  <text x="640" y="48" fill="#F0E8DC" font-size="10" font-weight="bold" text-anchor="middle">pageAt(vid)</text>
+  <text x="640" y="64" fill="#8B8FA5" font-size="9" text-anchor="middle">the LB's page table:</text>
+  <text x="640" y="77" fill="#8B8FA5" font-size="9" text-anchor="middle">vid → physical page</text>
+  <text x="640" y="90" fill="#8B8FA5" font-size="9" text-anchor="middle">→ one lookup, then use</text>
+
+  <!-- bindings (arbitrary) -->
+  <path d="M115 68 L208 150" stroke="#3A3D4A" stroke-width="1.2"/>
+  <path d="M265 68 L96 150" stroke="#3A3D4A" stroke-width="1.2"/>
+  <path d="M415 68 L320 150" stroke="#3A3D4A" stroke-width="1.2"/>
+  <text x="585" y="120" fill="#8B8FA5" font-size="10" text-anchor="middle">vid → physical page is arbitrary;</text>
+  <text x="585" y="134" fill="#8B8FA5" font-size="10" text-anchor="middle">nothing observable may depend on it</text>
+
+  <text x="150" y="138" fill="#B084EB" font-size="12" font-weight="bold">physical pages — arbitrary pool positions</text>
+  <g font-size="9.5">
+    <rect x="56"  y="150" width="80" height="32" rx="5" fill="#262938" stroke="#B084EB"/><text x="96"  y="170" fill="#F0E8DC" text-anchor="middle">P7</text>
+    <rect x="168" y="150" width="80" height="32" rx="5" fill="#262938" stroke="#B084EB"/><text x="208" y="170" fill="#F0E8DC" text-anchor="middle">P2</text>
+    <rect x="280" y="150" width="80" height="32" rx="5" fill="#262938" stroke="#B084EB"/><text x="320" y="170" fill="#F0E8DC" text-anchor="middle">P9</text>
+    <rect x="392" y="150" width="80" height="32" rx="5" fill="#20232F" stroke="#3A3D4A" stroke-dasharray="4 3"/><text x="432" y="170" fill="#8B8FA5" text-anchor="middle">…</text>
+  </g>
+  <text x="380" y="206" fill="#8B8FA5" font-size="10.5" text-anchor="middle">The vid is deterministic (allocation order). The physical pages behind it</text> <text x="380" y="221" fill="#8B8FA5" font-size="10.5" text-anchor="middle">vary run to run — and may, because only logical content is observable.</text>
+  <text x="380" y="236" fill="#8B8FA5" font-size="10.5" text-anchor="middle">A deload writes the logical elements verbatim; reload rebuilds fresh pages — zero fixup.</text>
+</svg>
+<figcaption><b>One vid space above, arbitrary pages below.</b> The container
+sees a clean, stable space of page ids; which physical pages back them — and in
+what order — never shows through.</figcaption>
+</figure>
+
+<p>
+This indirection is <b>the</b> determinism device of the design. Block grant
+order under the global mutex is a race between worker threads, and a reloaded LB
+(§<a href="#deload">6.5</a>) may land in entirely different physical blocks than
+before — both are fine, because no observable behavior may depend on physical
+block identity or grant order. Everything the prover, the exporter, and the
+verifier can see is phrased in virtual page ids and logical element order.
+</p>
+
+<ul class="inv">
+<li><b>Resolve at every access.</b> <code>pageAt(vid)</code> translates a
+vid → physical page on each use and asserts residency. A resolved pointer
+must not be stored across any call that could deload or compact the LB.</li>
+<li><b>No per-LB lock.</b> Per-LB state is mutated single-threaded by the phase
+model: the parallel phase&nbsp;2 only <i>reads</i> LB statement containers; all
+mutation sites sit in phases 1 and 3. The only cross-thread touch is the global
+manager's mutex inside <code>acquireBlock</code>.</li>
+<li><b>A two-level page directory, shift-and-mask.</b> A directory of page ids
+indexes the data pages, so <code>operator[](i)</code> splits <code>i</code>
+into a page index and a within-page slot — all shift-and-mask, no division
+on the hot path — then one <code>pageAt</code>. The directory is adaptive: inline, then a
+single directory page, then — for a large container — <b>two levels</b>, so the
+index <i>itself</i> spans several pages (a root page of directory-page ids, each
+holding many data-page ids). Overflowing even two levels is a <b>loud assert naming
+the next level</b>, never a silent out-of-bounds write — the same loud-failure
+contract as pool exhaustion, and the fix for a corruption that hid for days. The
+directory lives in the arena's own pages (not the heap) and is rebuilt on reload, so its depth never
+reaches the deload image — the on-disk bytes are identical whatever the shape.</li>
+<li><b>Deliberately narrow API.</b> <code>PagedVector&lt;T&gt;</code> offers a
+<code>std::vector</code> subset — <code>push_back</code>, <code>size</code>,
+<code>operator[]</code>, index-form <code>erase</code>, <code>clear</code>,
+<code>release</code>, copy-assign — and pointedly <b>no <code>data()</code>, no
+iterators, no <code>swap</code></b>: a single contiguous <code>data()</code> is
+impossible across pages, and its absence makes the compiler enumerate every
+consumer still assuming flat storage. Element
+references are stable while the LB is resident (an element never moves under a
+growing container); they die at deload, <code>clear</code>, <code>release</code>,
+or the page compaction.</li>
+</ul>
+
+<!-- ===================== 6.4 AGGREGATE ===================== -->
+<h2 id="aggregate">6.4 &nbsp;<code>LbMemory</code> — the growable aggregate</h2>
+<p>
+Each LB owns one <code>LbMemory</code>: a struct bundling the LB's
+<code>LbArena</code> (declared first, so the arena-backed members destruct before
+the arena whose blocks back them) with every statified container, keyed against
+an <b>append-only <code>ContainerTag</code> registry</b>. The tag is the container's on-disk
+identity — tags are never renumbered, reordered, or reused.
+<code>visitContainers</code> (const and mutable overloads) enumerates the members
+in ascending tag order and is the <i>single</i> source of container enumeration:
+the deload writer, the reload reader, and every future bulk operation walk the
+same visitor.
+</p>
+<p>
+The growth contract is the point of the shape: adding a future container to the
+static regime is <b>one member + one appended tag + one line in each
+<code>visitContainers</code> overload</b>. Nothing else moves — the deload file
+format is self-describing per tag (§<a href="#deload">6.5</a>), so old machinery
+never restructures when a new container joins.
+</p>
+<p>
+<code>Memory</code> holds the aggregate as <code>lbMemory</code> plus a
+<b>reference alias</b> — <code>intEncodedStatements</code> binds to the member
+inside the aggregate — so the registry's many access sites keep their
+<code>body.intEncodedStatements</code> spelling unchanged through the migration.
+The alias carries no state of its own; its one side effect is making
+<code>Memory</code> non-whole-assignable by design — teardown swaps individual
+members, and a statified container's teardown idiom is <code>release()</code>.
+</p>
+
+<div class="key">
+<b>Why a visitor and not a serializer per container.</b> The deload format's
+stability across tiers hangs on one discipline: format knowledge lives in
+<i>one</i> place, and containers only declare themselves. A per-container
+serializer would drift; a per-container tag plus a shared element-streaming
+visitor cannot.
+</div>
+
+<!-- ===================== 6.5 DELOAD ===================== -->
+<h2 id="deload">6.5 &nbsp;Deload / reload — the canonical SSD round-trip</h2>
+<p>
+Nothing is written <b>until the pool forces it</b>, and RAM is treated as a
+<b>cache of the working set</b> — the logic blocks being processed right now plus
+the next few about to be processed. The order in which GL processes its logic
+blocks is fixed, so "the working set" is simply a sliding window over that order.
+</p>
+<p>
+The <b>steward</b> — a dedicated background thread — maintains that window in
+<b>every one of the three kernel phases</b> (they are all equivalent here; no
+phase pre-loads everything). While a phase runs, the steward watches its work
+cursor and does two things: it <b>prefetches</b> the next few LBs (reloading
+any that sit on disk) so a worker finds its LB ready, and, once memory is
+tight, it <b>drains</b> everything outside the window back to disk — biggest
+LB first. A worker that reaches an LB still on disk simply <b>loads it
+itself</b> (a one-line handshake with the steward so the two never collide) and,
+to make room, deloads the biggest out-of-window LB in exchange. An LB being
+processed is never touched, and a worker is never interrupted mid-LB. The
+kernel decides what to discharge at its single-threaded iteration barrier
+(deterministic, order-and-numbers based); the steward executes while the next
+iteration already computes.
+</p>
+<p>
+Three thresholds shape the draining (all simple fractions of the pool, easy to
+retune). Below half the pool: nothing happens — the steward is parked, no LB is
+evicted, so none ever needs reloading. Cross half: the steward wakes and does a
+<b>one-for-one exchange</b> — each LB loaded is paid for by deloading the biggest
+out-of-window LB — draining the resident set down to a <b>40% floor</b> before it
+parks again (the 50→40 gap is a hysteresis band, so it never oscillates at the
+wake mark). Past three quarters: the <b>synchronous hard water</b> — a worker that
+needs a block while the pool is this full does the swap itself rather than wait
+for the steward, which above this mark mass-evicts. The
+consequence the design leans on: a light batch whose memory stays under three
+quarters force-deloads nothing, therefore reloads nothing, therefore runs exactly
+as it did before — full speed, zero disk traffic. If the working set <i>itself</i>
+cannot fit the pool, that is a genuinely too-small pool and the run stops at a
+loud assert — never a silent stall (a dedicated stuck-detector also turns any
+unexpected worker wait longer than thirty seconds into an assert).
+</p>
+<p>
+An LB that was <b>deactivated</b> this iteration is the one special case:
+deactivation is permanent (no path ever reloads or reactivates it), so it takes
+the <b>discharge protocol</b> — its membership records are captured into tiny RAM
+sets (what the post-prove readers actually ask), its statement containers are
+emptied, and a reshuffle returns its <b>statement</b> blocks to the pool on the spot with
+<b>zero I/O</b> (the cold string tables survive for the chapter export —
+§<a href="#strings">6.7</a>). It then joins a <b>pending-discharge queue</b> whose only
+remaining job is one final near-empty record image, which the steward writes in
+the background. A run whose memory never crosses the thresholds writes
+<b>zero deload files</b>.
+</p>
+<p>
+A dump streams the aggregate's containers to <code>.deload/</code> — <b>element
+by element, in logical order, containers in tag order</b> — then returns all
+blocks to the pool and marks the LB deloaded. The byte stream is a <b>pure
+function of logical content</b>: two LBs with the same elements in the same order
+produce identical files, regardless of how their arenas were fragmented or which
+physical blocks they sat in. The dump <i>is</i> the canonical "straightening" of
+any fragmentation — and it makes deload images byte-comparable across runs and
+hosts.
+</p>
+
+<figure>
+<svg viewBox="0 0 760 170" role="img" aria-label="One kernel iteration: phase 1 reload, phase 2 read-only hashburst, phase 3 absorb, end-of-iteration deload back to SSD">
+  <defs><marker id="dt-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <g font-size="10.5">
+    <rect x="14" y="40" width="160" height="62" rx="8" fill="#262938" stroke="#5DCAA5"/>
+    <text x="94" y="62" fill="#5DCAA5" font-weight="bold" text-anchor="middle">phase 1</text>
+    <text x="94" y="78" fill="#F0E8DC" font-size="9.5" text-anchor="middle">ensureLoaded — reload</text>
+    <text x="94" y="92" fill="#8B8FA5" font-size="9" text-anchor="middle">fresh dense pages</text>
+    <path d="M174 71 L196 71" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#dt-ar)"/>
+    <rect x="196" y="40" width="160" height="62" rx="8" fill="#262938" stroke="#5DCAA5"/>
+    <text x="276" y="62" fill="#5DCAA5" font-weight="bold" text-anchor="middle">phase 2</text>
+    <text x="276" y="78" fill="#F0E8DC" font-size="9.5" text-anchor="middle">hashburst</text>
+    <text x="276" y="92" fill="#8B8FA5" font-size="9" text-anchor="middle">read-only on statements</text>
+    <path d="M356 71 L378 71" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#dt-ar)"/>
+    <rect x="378" y="40" width="160" height="62" rx="8" fill="#262938" stroke="#5DCAA5"/>
+    <text x="458" y="62" fill="#5DCAA5" font-weight="bold" text-anchor="middle">phase 3</text>
+    <text x="458" y="78" fill="#F0E8DC" font-size="9.5" text-anchor="middle">absorb / integrate</text>
+    <text x="458" y="92" fill="#8B8FA5" font-size="9" text-anchor="middle">mutations land here</text>
+    <path d="M538 71 L560 71" stroke="#EF9F27" stroke-width="1.5" marker-end="url(#dt-ar)"/>
+    <rect x="560" y="36" width="186" height="70" rx="8" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+    <text x="653" y="58" fill="#EF9F27" font-weight="bold" text-anchor="middle">iteration end</text>
+    <text x="653" y="74" fill="#F0E8DC" font-size="9.5" text-anchor="middle">deactivated → discharge +</text>
+    <text x="653" y="88" fill="#F0E8DC" font-size="9.5" text-anchor="middle">pending queue (background dump)</text>
+  </g>
+  <path d="M653 106 L653 128 L94 128 L94 106" fill="none" stroke="#8B8FA5" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#dt-ar)"/>
+  <text x="380" y="122" fill="#8B8FA5" font-size="9.5" text-anchor="middle">.deload/ files — the steward pages the working set in/out across ALL three phases; workers reload on touch</text>
+  <text x="380" y="156" fill="#8B8FA5" font-size="10" text-anchor="middle">Touching a deloaded container anywhere outside the enumerated reload points asserts.</text>
+</svg>
+<figcaption><b>RAM as a working-set cache.</b> The steward keeps only the LBs
+being processed plus the next few resident — in every phase — and pages the rest
+to disk; a worker reloads an LB on touch and deloads one in exchange. Under the
+thresholds nothing moves. Reload happens only at named touch points; cold reads
+anywhere else stop the run.</figcaption>
+</figure>
+
+<h3>6.5.1 &nbsp;The file format — self-describing, fixed-width</h3>
+<p>
+The payload splits into chunks of at most the block size — one file per repacked
+block, <code>_n_of_N</code> in the name; an empty aggregate writes one header-only
+file. Every file is self-describing: magic <code>GLDL</code>, version, the kind (base
+or tail), a <b>per-LB deload ordinal</b> (the file's identity), part
+n/N, the block byte size, a per-tag directory (tag, element size, element count),
+the <b>full LB chain verbatim</b>, then the chunk. All fields are fixed-width
+little-endian. <code>loadLbMemory</code> asserts every header field — magic,
+version, the ordinal, the <b>verbatim chain</b> (the real identity check), part
+numbering, block bytes, cross-part directory consistency, element sizes against
+the compiled-in types. A mismatch is a corrupted or foreign file, stopped at its
+origin.
+</p>
+<p>
+<b>File names.</b> LB chains contain characters that are illegal in file names
+(<code>&gt;</code>, <code>*</code>) and routinely exceed path-length limits, so a
+file cannot simply be named after its LB. Instead each LB is assigned a
+<b>deload ordinal</b> — a plain counter — and the name is
+<code>lb&lt;ordinal&gt;_&lt;n&gt;_of_&lt;N&gt;.bin</code> (tail sets add a
+<code>t&lt;k&gt;_</code> component). A counter is <i>provably</i> unique, so two
+files can never collide — unlike the hash it replaced, whose collision risk,
+though astronomically small, was real. The ordinal is assigned once and reused
+for every later dump of the same LB, so a base image and its tails share one
+identity. The full chain lives in the header verbatim, and
+<code>registry.txt</code> (one <code>ordinal&nbsp;→&nbsp;chain</code> line per LB,
+ascending) lets a human map a file back to its LB — reload never reads it, only
+the file set the LB recorded at dump time.
+</p>
+
+<h3>6.5.2 &nbsp;Reload — enumerated touch points only</h3>
+<p>
+<code>ensureLoaded</code> is a defined no-op on a resident LB; on a deloaded one
+it asserts the recorded chain still matches the LB's position in the tree, then
+rebuilds every container <b>element by element onto a fresh consecutive arena</b>
+— the reloaded LB starts at offset 0 and bumps up, regardless of the offsets it
+had before. The main reload sites are the next
+iteration's <b>phase-1 entry</b>, the <b>steward's prefetch</b> (claim-protected,
+so it never races a worker for the same LB), and the <b>post-prove readers</b> — the visualizer
+walking equality nodes, and the chapter export reloading a discharged LB read-only,
+after <code>prove()</code> returns. Any other code path
+that touches cold storage hits the residency assert — absence of a reload site is
+a bug surfaced at its origin, not a degraded read.
+</p>
+
+<div class="note">
+<b>The directory is purged at batch start only.</b>
+<code>purgeDeloadDirectory</code> runs once, before the first iteration (and
+asserts the directory name contains <code>"deload"</code> before recursively
+deleting anything). End-of-run images deliberately survive the run — the last
+iteration's deload files and <code>registry.txt</code> stay on disk as an
+inspectable record of every LB's final statified state.
+</div>
+
+<!-- ===================== 6.6 SCOPE ===================== -->
+<h2 id="scope">6.6 &nbsp;Scope — what is static (the campaign is complete)</h2>
+<p>
+Honesty about residency. The prover runs <b>barriered sweeps</b>
+(<a href="parallel.html#barrier">§5.2</a>): every active LB is touched in every
+phase of every iteration, so active LBs stay <b>resident for the whole
+iteration</b> — the deload/reload win applies to LBs that sit <i>idle across
+iterations</i>, not to the working set inside one sweep. A background custodian
+(the steward) pages idle LBs continuously, holding the resident set to the working
+set. The statification campaign is <b>closed</b>: every per-LB container family is
+static, and what remains is the accepted boundary below.
+</p>
+
+<div class="vs">
+  <div class="left">
+    <h4>Static (the whole campaign)</h4>
+    <ul>
+      <li>The statement registries — all four per-LB statement vectors,
+      element payloads packed into pages in the LB's arena, in every LB.</li>
+      <li>The full hierarchy: pool, blocks, pages, the per-LB arena, virtual
+      page ids, the in-place page compaction.</li>
+      <li>The deload/reload round-trip with the canonical byte format.</li>
+      <li>The growth contract — future containers join by tag, the format never
+      restructures (the string tables of <a href="#strings">§6.7</a> joined
+      exactly this way).</li>
+    </ul>
+  </div>
+  <div class="right">
+    <h4>Accepted boundaries</h4>
+    <ul>
+      <li>The arena's own block/page lists — once the last heap carve-out here —
+      are now pool-backed too: each is a small-buffer directory that keeps a tiny
+      arena's table inline (no pool block at all) and spills only a large one onto
+      pool blocks. So "all of the LB goes static" now holds for the per-LB arena
+      bookkeeping. What stays on the heap by design is the <i>global</i> pool's
+      recycle queue (one process-wide root that hands out the pool) and the
+      compaction's transient scratch — O(blocks), not O(payload), and outside any
+      one LB.</li>
+      <li><b>Mail content is interner-id form.</b> Inter-LB messages carry integer
+      interner ids, not <code>std::string</code>. The portability problem — a per-LB
+      id means nothing in another LB — is solved with a <b>global</b> interner:
+      cross-LB routing mail uses one process-wide id table (on the <b>mail pool</b>,
+      §<a href="#why">6.1</a>), so an id denotes the same expression at the sender and
+      at the receiver; internal same-LB mail keeps the cheaper local per-LB ids. A
+      message is minted to global ids only at the single-threaded commit seam and
+      decoded back to text at the read boundary. The storage is off-heap on the mail
+      pool, never deloaded.</li>
+      <li>Per-phase deload / per-LB pipelining — active LBs stay resident for
+      the whole iteration.</li>
+    </ul>
+  </div>
+</div>
+
+<p>
+Pool sizing follows the telemetry, not folklore: <code>peakBlocksInUse</code>
+after a representative run is the measured high-water mark. An undersized pool
+asserts loudly at the exact allocation that crossed the line (by design); an
+oversized one merely wastes commit charge until the number is dialled in.
+</p>
+
+<h2 id="strings">6.7 &nbsp;String statification — scratch, sealed, cold</h2>
+<p>
+Strings were the last large heap population inside the prover: every
+replace/parse chain in the firing check churned heap temporaries, and the
+per-LB interner backings — names, scope payloads, templates, values, origins,
+rules, LB-state — grew outside the pool's bound and outside deload. The
+strings campaign sorts every such string into one of three classes by
+<b>lifetime</b>, and each class gets memory shaped for exactly that lifetime.
+</p>
+<p>
+<b>One allocator underneath.</b> The scratch per-worker arena, the sealed-page
+handoff, and the cold per-LB store are the SAME arena
+(<code>LbArena</code>, §<a href="#hierarchy">6.2</a>) — one management code, no
+duplication. Cold per-LB content deloads and compacts; the scratch arena
+(per-worker, released back to the pool at each task's end) and the sealed pages
+(per-task, freed the moment a task's records are consumed) never do either, so a
+freshly allocated pointer stays valid until its scope ends — which is why the
+scratch and sealed views can hold raw pointers. The three classes below differ
+in <b>lifetime</b>, not in the page mechanics.
+</p>
+
+<figure>
+<svg viewBox="0 0 760 320" role="img" aria-label="The three string classes: scratch per-worker arenas for calculation temporaries, sealed handoff pages for staging records, cold per-interner tables in the LB's arena for persistent content">
+  <defs><marker id="s-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#8B8FA5"/></marker></defs>
+
+  <!-- scratch -->
+  <rect x="20" y="16" width="225" height="200" rx="10" fill="#1C2B22" stroke="#5DCAA5" stroke-width="2"/>
+  <text x="132" y="40" fill="#5DCAA5" font-size="13" font-weight="bold" text-anchor="middle">SCRATCH</text>
+  <text x="132" y="60" fill="#F0E8DC" font-size="10" text-anchor="middle">ScratchArena — one per worker slot</text>
+  <g fill="#8B8FA5" font-size="9">
+    <text x="132" y="84"  text-anchor="middle">calculation temporaries:</text>
+    <text x="132" y="98"  text-anchor="middle">replace / strip / concat chains</text>
+    <text x="132" y="120" text-anchor="middle">exact-length bump allocation</text>
+    <text x="132" y="134" text-anchor="middle">rewind mark per call window</text>
+    <text x="132" y="148" text-anchor="middle">released to the pool per worker task</text>
+    <text x="132" y="170" text-anchor="middle">escaped views assert at access</text>
+  </g>
+  <text x="132" y="200" fill="#5DCAA5" font-size="9.5" font-weight="bold" text-anchor="middle">dies with its call window</text>
+
+  <!-- sealed -->
+  <rect x="267" y="16" width="225" height="200" rx="10" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="380" y="40" fill="#EF9F27" font-size="13" font-weight="bold" text-anchor="middle">SEALED</text>
+  <text x="380" y="60" fill="#F0E8DC" font-size="10" text-anchor="middle">SealedPageSet — one per task</text>
+  <g fill="#8B8FA5" font-size="9">
+    <text x="380" y="84"  text-anchor="middle">the burst's staging records:</text>
+    <text x="380" y="98"  text-anchor="middle">firing heads, admission values</text>
+    <text x="380" y="120" text-anchor="middle">filled by the task it belongs to</text>
+    <text x="380" y="134" text-anchor="middle">sealed at task end</text>
+    <text x="380" y="148" text-anchor="middle">crosses the pool join read-only</text>
+    <text x="380" y="170" text-anchor="middle">freed in one sweep after the drain</text>
+  </g>
+  <text x="380" y="200" fill="#EF9F27" font-size="9.5" font-weight="bold" text-anchor="middle">dies after its records are consumed</text>
+
+  <!-- cold -->
+  <rect x="514" y="16" width="225" height="200" rx="10" fill="#241C2B" stroke="#B084EB" stroke-width="2"/>
+  <text x="626" y="40" fill="#B084EB" font-size="13" font-weight="bold" text-anchor="middle">COLD</text>
+  <text x="626" y="60" fill="#F0E8DC" font-size="10" text-anchor="middle">ColdStringTable — seven per LB</text>
+  <g fill="#8B8FA5" font-size="9">
+    <text x="626" y="84"  text-anchor="middle">persistent interner content:</text>
+    <text x="626" y="98"  text-anchor="middle">names · scopes · templates · values</text>
+    <text x="626" y="112" text-anchor="middle">origins · rules · LB-state</text>
+    <text x="626" y="134" text-anchor="middle">bytes in the LB's arena (paged)</text>
+    <text x="626" y="148" text-anchor="middle">ids are the stored handle everywhere</text>
+    <text x="626" y="170" text-anchor="middle">find-index rebuilt at reload, never dumped</text>
+  </g>
+  <text x="626" y="200" fill="#B084EB" font-size="9.5" font-weight="bold" text-anchor="middle">lives and deloads with the LB</text>
+
+  <!-- flows -->
+  <path d="M245 240 L267 240" stroke="#8B8FA5" stroke-width="0" fill="none"/>
+  <path d="M132 216 L132 252 L355 252" stroke="#8B8FA5" stroke-width="1.5" fill="none" marker-end="url(#s-ar)"/>
+  <text x="190" y="268" fill="#8B8FA5" font-size="9.5">a fired head escapes into its staging record</text>
+  <path d="M380 216 L380 286 L600 286" stroke="#8B8FA5" stroke-width="1.5" fill="none" marker-end="url(#s-ar)"/>
+  <text x="440" y="302" fill="#8B8FA5" font-size="9.5">the drain interns it — the id is what persists</text>
+</svg>
+<figcaption>Three lifetimes, three homes. A string is born in a worker's scratch
+arena, escapes into a sealed record if it fired, and only its interned id —
+backed by cold bytes in the LB's arena — persists. All three draw on the one
+pool; the scratch and sealed arenas are released before each barrier, so the
+steward's eviction decisions stay a pure function of LB state.</figcaption>
+</figure>
+
+<p>
+The cold tables are ordinary tagged containers of the
+<a href="#aggregate">aggregate</a> (two tags each: string lengths in id order,
+then the concatenated bytes), so the <a href="#deload">SSD round-trip</a>
+carries them with zero format changes. They <b>survive discharge</b>: a
+finished LB hands back its statement blocks but keeps its string bytes, which
+is what lets the chapter export reload a discharged LB read-only and still
+decode its full proof history. Decoded views are borrowed, never stored — the
+stored form is always the id.
+</p>
+
+<p>
+Two deliberate residuals remain. <b>Mail content</b> stays in <b>string form</b> —
+interner ids are not portable across LBs, so strings are the cross-LB common space
+— but its storage is already cold on the dedicated <b>mail pool</b>
+(§<a href="#why">6.1</a>): off-heap, never deloaded, so only the message <i>form</i>
+is residual, not its residence. The <b>LB identity skeleton</b> — the tree key, the
+routing map, the deload chain and file list — stays on the heap because it must
+remain readable while the LB itself is deloaded.
+</p>
+
+<div class="note">
+Static memory done: the <a href="#why">motivation</a>, the
+<a href="#hierarchy">hierarchy</a>, the <a href="#virtual">page tier</a>,
+the <a href="#aggregate">aggregate</a>, the <a href="#deload">SSD round-trip</a>,
+the <a href="#scope">scope boundary</a>, and the
+<a href="#strings">string classes</a>. The compilation-side static floor,
+<code>ChunkPool</code> (<a href="compilation.html#pool">§8.7</a>), predates the
+strings campaign and stays as is. Next:
+<a href="provenance.html">provenance</a>.
+</div>
+
+<div class="pager">
+  <a href="parallel.html">&larr; 5 · Parallel execution</a>
+  <a href="provenance.html">7 · Provenance &rarr;</a>
+</div>
+
+<div class="foot">
+<b>License.</b> Generative Logic prover reference. © 2025-2026 Generative Logic UG
+(haftungsbeschränkt). Dual-licensed under the <b>GNU Affero General Public License
+v3 or later</b> and a <b>commercial license</b>; this document and the proof
+artefacts it describes inherit the same terms — commercial terms at
+<a href="https://generative-logic.com/license">generative-logic.com/license</a>.
+</div>
+
+</main>
+</body>
+</html>

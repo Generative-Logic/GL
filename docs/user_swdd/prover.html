@@ -1,0 +1,665 @@
+<!--
+Generative Logic: A deterministic reasoning and knowledge generation engine.
+Copyright (C) 2025-2026 Generative Logic UG (haftungsbeschränkt).
+Dual-licensed under the GNU Affero General Public License v3 or later
+and a commercial license — see https://generative-logic.com/license.
+
+User-oriented SwDD — Chapter 2: The prover at a glance (reference-level).
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GL Prover User SwDD — 2 · The prover at a glance</title>
+<meta name="copyright" content="© 2025-2026 Generative Logic UG">
+<meta name="license" content="AGPL-3.0-or-later">
+<meta name="robots" content="noindex, nofollow, noai, noimageai">
+<link rel="stylesheet" href="assets/swdd.css">
+</head>
+<body>
+
+<nav id="side">
+  <div class="brand">GL · <span>User SwDD</span></div>
+  <div class="tag">The prover subsystem — reference concepts &amp; diagrams</div>
+  <ol>
+    <li><a href="index.html">Overview</a>
+      <ul>
+        <li><a href="index.html#what">What GL is</a></li>
+        <li><a href="index.html#pipeline">The pipeline</a></li>
+        <li><a href="index.html#deductive">Deductive neighbourhood</a></li>
+        <li><a href="index.html#artefacts">Artefacts on disk</a></li>
+        <li><a href="index.html#read">How to read this</a></li>
+        <li><a href="index.html#glossary">Quick glossary</a></li>
+        <li><a href="index.html#bounds">What is &amp; isn't in this doc</a></li>
+      </ul>
+    </li>
+    <li><a href="prover.html" class="current">The prover at a glance</a>
+      <ul>
+        <li><a href="prover.html#life">Life of a run</a></li>
+        <li><a href="prover.html#cycles">Cycles</a></li>
+        <li><a href="prover.html#enter">How a theorem enters</a></li>
+        <li><a href="prover.html#status">Status modes</a></li>
+        <li><a href="prover.html#deactivate">Deactivation cascade</a></li>
+        <li><a href="prover.html#dump">The hashburst dump</a></li>
+      </ul>
+    </li>
+    <li><a href="substrate.html">The substrate</a>
+      <ul>
+        <li><a href="substrate.html#lb">Logic blocks</a></li>
+        <li><a href="substrate.html#hash">Hash engine</a></li>
+        <li><a href="substrate.html#mail">Mail</a></li>
+        <li><a href="substrate.html#scope">Scope &amp; validity</a></li>
+        <li><a href="substrate.html#compile">Compilation</a></li>
+        <li><a href="substrate.html#delta">Delta machinery</a></li>
+        <li><a href="substrate.html#wipe">Subtree wipe</a></li>
+      </ul>
+    </li>
+    <li><a href="mechanisms.html">Proof mechanisms</a>
+      <ul>
+        <li><a href="mechanisms.html#disint">Disintegration</a></li>
+        <li><a href="mechanisms.html#admit">Admission, rejection &amp; equi-classes</a></li>
+        <li><a href="mechanisms.html#integ">Integration</a></li>
+        <li><a href="mechanisms.html#branch">Branching &amp; contradiction</a></li>
+        <li><a href="mechanisms.html#induct">Induction</a></li>
+        <li><a href="mechanisms.html#fan5">5-batch fan-out</a></li>
+        <li><a href="mechanisms.html#cascade">Pending-rejection cascade</a></li>
+      </ul>
+    </li>
+    <li><a href="parallel.html">Parallel execution</a>
+      <ul>
+        <li><a href="parallel.html#pool">The worker pool</a></li>
+        <li><a href="parallel.html#barrier">The join barrier</a></li>
+        <li><a href="parallel.html#collect">Serial collectors</a></li>
+        <li><a href="parallel.html#why">Why deferral — a race</a></li>
+        <li><a href="parallel.html#asic">The silicon mapping</a></li>
+        <li><a href="parallel.html#mailbox">Per-LB mailbox geometry</a></li>
+        <li><a href="parallel.html#cycleN">The cycle-N rule</a></li>
+      </ul>
+    </li>
+    <li><a href="memory.html">Static memory</a>
+      <ul>
+        <li><a href="memory.html#why">Why static</a></li>
+        <li><a href="memory.html#hierarchy">The memory hierarchy</a></li>
+        <li><a href="memory.html#virtual">The page tier</a></li>
+        <li><a href="memory.html#aggregate">LbMemory — the aggregate</a></li>
+        <li><a href="memory.html#deload">Deload / reload</a></li>
+        <li><a href="memory.html#scope">Scope</a></li>
+      </ul>
+    </li>
+    <li><a href="provenance.html">Provenance</a>
+      <ul>
+        <li><a href="provenance.html#record">Recording an origin</a></li>
+        <li><a href="provenance.html#local">Locality</a></li>
+        <li><a href="provenance.html#lift">The chapter walker</a></li>
+        <li><a href="provenance.html#lift-mech">Lift — soundness</a></li>
+        <li><a href="provenance.html#barrier">OR-branch barrier</a></li>
+        <li><a href="provenance.html#cycle">Path-cycle filter</a></li>
+        <li><a href="provenance.html#contraswitch">Contradiction fallback</a></li>
+        <li><a href="provenance.html#notinput">Never a proof input</a></li>
+      </ul>
+    </li>
+    <li><a href="compilation.html">Compilation &amp; names</a>
+      <ul>
+        <li><a href="compilation.html#why">Two canonical forms</a></li>
+        <li><a href="compilation.html#pre">Precompilation</a></li>
+        <li><a href="compilation.html#names">The five name families</a></li>
+        <li><a href="compilation.html#counters">Counters &amp; registry</a></li>
+        <li><a href="compilation.html#namemap">NameMap &amp; scopes</a></li>
+        <li><a href="compilation.html#encoded">EncodedExpression → IntNormalizedKey</a></li>
+        <li><a href="compilation.html#pool">The static-memory floor</a></li>
+        <li><a href="compilation.html#fail">Failure modes</a></li>
+      </ul>
+    </li>
+    <li><a href="anchors.html">Anchors &amp; types</a>
+      <ul>
+        <li><a href="anchors.html#what">What an anchor is</a></li>
+        <li><a href="anchors.html#three">The four anchors</a></li>
+        <li><a href="anchors.html#types">Slot types</a></li>
+        <li><a href="anchors.html#handling">Anchor handling</a></li>
+        <li><a href="anchors.html#copy">The <code>_copy</code> machinery</a></li>
+        <li><a href="anchors.html#tag">The proof-graph row</a></li>
+        <li><a href="anchors.html#i29">Variable-port consistency</a></li>
+        <li><a href="anchors.html#bridge">Cross-anchor bridges</a></li>
+      </ul>
+    </li>
+    <li><a href="reformulation.html">Reformulation &amp; head switch</a>
+      <ul>
+        <li><a href="reformulation.html#why">Why reformulation</a></li>
+        <li><a href="reformulation.html#switch">Head switch — the walk</a></li>
+        <li><a href="reformulation.html#sites">Two call sites</a></li>
+        <li><a href="reformulation.html#mirror">Both directions proved</a></li>
+        <li><a href="reformulation.html#back">Back-reformulation</a></li>
+        <li><a href="reformulation.html#contra">Contradiction reconstruction</a></li>
+        <li><a href="reformulation.html#orthm">OR-theorem assembly</a></li>
+        <li><a href="reformulation.html#methods">The five method tags</a></li>
+      </ul>
+    </li>
+    <li><a href="auxiliary.html">CE filter &amp; compressor</a>
+      <ul>
+        <li><a href="auxiliary.html#engine">Same engine, two modes</a></li>
+        <li><a href="auxiliary.html#ce">Counterexample filter</a></li>
+        <li><a href="auxiliary.html#j">The j-copy trick</a></li>
+        <li><a href="auxiliary.html#comp">Compressor — throwaway trees</a></li>
+        <li><a href="auxiliary.html#p1">Phase 1 — dependency graphs</a></li>
+        <li><a href="auxiliary.html#p2">Phase 2 — greedy elimination</a></li>
+        <li><a href="auxiliary.html#out">What lands on disk</a></li>
+      </ul>
+    </li>
+  </ol>
+</nav>
+
+<main>
+<h1><span class="num">2 ·</span> The prover at a glance</h1>
+<p class="lede">One run end to end: what the constructor sets up, the single prove
+pass and its cycle loop, the three load paths, and the deposit-mode selector every
+ingestion site threads.</p>
+
+<div class="toc">
+  <strong>On this page</strong>
+  <ol>
+    <li><a href="#life">2.1 &nbsp;Life of a run</a></li>
+    <li><a href="#cycles">2.2 &nbsp;Cycles</a></li>
+    <li><a href="#enter">2.3 &nbsp;How a theorem enters — and the <code>status</code> modes</a></li>
+    <li><a href="#status">2.4 &nbsp;Status modes — five readings, one register</a></li>
+    <li><a href="#deactivate">2.5 &nbsp;Deactivation — recursive vs unnecessary</a></li>
+    <li><a href="#dump">2.6 &nbsp;The diagnostic trace dump</a></li>
+  </ol>
+</div>
+
+<h2 id="life">2.1 &nbsp;Life of a run</h2>
+<p>
+The prover is one object, <code>ExpressionAnalyzer</code>. Construction only
+<i>loads</i> state — it never proves: it reads <code>Config&lt;Tag&gt;.json</code>,
+builds the core-expression map and anchor info (<code>modifyCoreExpressionMap</code>,
+<code>initAnchor</code>), precomputes the permutation/mapping caches
+(<code>allPermutationsAna</code>, <code>allMappingsAna</code>) the hot path needs,
+seeds the name counters (<code>implCounter</code>, <code>existenceCounter</code>,
+<code>andCounter</code>, <code>orCounter</code>, <code>variableCounter</code>), and
+sets <code>logicalCores = std::thread::hardware_concurrency()</code>.
+</p>
+<p>
+<code>analyzeExpressions</code> then runs the actual proof: load external theorems,
+register the CE-surviving conjectures as goals, run one proving phase — a
+warm-up <code>prove()</code> then the main <code>prove()</code>, on one grid
+with no teardown or rebuild — then walk <code>globalTheoremList</code> once more with
+<code>headSwitchOne</code> to populate <code>orPairsFromHeadSwitch</code>. After it
+returns, <code>run_modes::fullRun</code> runs the compressor (gated by
+<code>skipCompression</code>) and constructs OR theorems from the harvested pairs,
+then writes the two theorem files and the raw graph.
+</p>
+
+<figure>
+<svg viewBox="0 0 760 300" role="img" aria-label="The seven phases in the life of a prover run, with the real function names">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/>
+    </marker>
+  </defs>
+  <rect x="20" y="40" width="156" height="56" rx="9" fill="#262938" stroke="#5DCAA5"/>
+  <text x="98" y="62" fill="#5DCAA5" font-size="12.5" font-weight="bold" text-anchor="middle">constructor</text>
+  <text x="98" y="79" fill="#8B8FA5" font-size="9.5" text-anchor="middle">config · anchors · caches</text>
+  <text x="98" y="91" fill="#8B8FA5" font-size="9.5" text-anchor="middle">counters · threads (loads only)</text>
+
+  <path d="M176 68 L202 68" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ar)"/>
+  <rect x="202" y="40" width="166" height="56" rx="9" fill="#262938" stroke="#5DCAA5"/>
+  <text x="285" y="62" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">analyzeExpressions</text>
+  <text x="285" y="79" fill="#8B8FA5" font-size="9.5" text-anchor="middle">externals + conjectures</text>
+  <text x="285" y="91" fill="#8B8FA5" font-size="9.5" text-anchor="middle">+ contrapositive mirrors</text>
+
+  <path d="M368 68 L394 68" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ar)"/>
+  <rect x="394" y="36" width="170" height="64" rx="9" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="479" y="59" fill="#EF9F27" font-size="13" font-weight="bold" text-anchor="middle">one proving phase</text>
+  <text x="479" y="77" fill="#F0E8DC" font-size="9.5" text-anchor="middle">warm-up + main cycles</text>
+  <text x="479" y="90" fill="#8B8FA5" font-size="9.5" text-anchor="middle">no teardown/rebuild</text>
+
+  <path d="M564 68 L590 68" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ar)"/>
+  <rect x="590" y="40" width="150" height="56" rx="9" fill="#262938" stroke="#5DCAA5"/>
+  <text x="665" y="62" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">headSwitchOne walk</text>
+  <text x="665" y="79" fill="#8B8FA5" font-size="9.5" text-anchor="middle">→ orPairsFromHeadSwitch</text>
+  <text x="665" y="91" fill="#8B8FA5" font-size="9.5" text-anchor="middle">(post-prove pass)</text>
+
+  <path d="M665 96 L665 130 L479 130 L479 152" fill="none" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ar)"/>
+
+  <rect x="560" y="156" width="180" height="52" rx="9" fill="#262938" stroke="#5DCAA5"/>
+  <text x="650" y="178" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">compressor</text>
+  <text x="650" y="196" fill="#8B8FA5" font-size="9.5" text-anchor="middle">drop redundant (skipCompression)</text>
+
+  <path d="M560 182 L530 182" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ar)"/>
+  <rect x="368" y="156" width="182" height="52" rx="9" fill="#262938" stroke="#5DCAA5"/>
+  <text x="459" y="178" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">constructOrTheorem</text>
+  <text x="459" y="196" fill="#8B8FA5" font-size="9.5" text-anchor="middle">from exclusive pairs (run_modes)</text>
+
+  <path d="M368 182 L338 182" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ar)"/>
+  <rect x="180" y="156" width="158" height="52" rx="9" fill="#262938" stroke="#5DCAA5"/>
+  <text x="259" y="178" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">export</text>
+  <text x="259" y="196" fill="#8B8FA5" font-size="9.5" text-anchor="middle">two theorem files + raw graph</text>
+
+  <text x="380" y="246" fill="#8B8FA5" font-size="11" text-anchor="middle">Single pass: a conjecture's contrapositive mirror is folded into the pool *before* proving,</text>
+  <text x="380" y="264" fill="#8B8FA5" font-size="11" text-anchor="middle">so one sweep reaches what the deleted multi-iteration loop (bigIteration/maxBigIterations) once needed many for.</text>
+</svg>
+<figcaption><b>Seven phases.</b> Construction loads; <code>analyzeExpressions</code>
+proves once; the orchestrator compresses and constructs OR theorems after. The
+post-prove <code>headSwitchOne</code> walk is byte-identical to the pre-prove one —
+same helper, two call sites.</figcaption>
+</figure>
+
+<div class="note">
+<b>Single-pass head-switch model.</b> The prover only reasons forward, but a theorem
+and its contrapositive are equally provable. <code>headSwitchOne</code> is purely
+structural: scan the chain for the right-most <code>!</code>-premise with an empty
+inner bound-var list, swap the head with that premise's body, rebuild by string
+concatenation. Every qualifying conjecture's mirror is added <i>before</i> the prove
+pass, so the deleted <code>bigIteration</code>/<code>maxBigIterations</code> loop is
+not needed — there is exactly one grid, one pass.
+</div>
+
+<h2 id="cycles">2.2 &nbsp;Cycles</h2>
+<p>
+<code>prove(numberIterations, bodies)</code> is the outer
+loop. The counterexample filter does <i>not</i> share it: the filter runs its
+own per-conjecture pool in <code>filter.cpp</code> over
+<code>permanentBodiesCE</code> and never enters
+<code>prove()</code>/<code>proveKernel</code>. Each cycle steps every active block once — the elementary
+step, run as three barriered phase sweeps
+(<a href="parallel.html#pool">§5.1</a>) — generate hash requests
+(<code>generateEncodedRequestsStatic</code> for singletons,
+<code>…Pairs</code> for pairs, <code>…CE</code> in filter mode), match against
+<code>overallHashMemory.encodedMap</code>, fire via <code>addStatement</code>,
+push main-scope results to <code>mailOut</code> — then drains mail. The loop ends
+when a whole cycle adds nothing or the per-batch iteration cap is hit; warm-up
+cycles run first to bring rule cascades to steady state before the budgeted main
+iterations.
+</p>
+<p>
+<b>Two single-threaded drains run at the cycle boundary.</b> The first is the
+mail router (<code>mailOut</code> → recipients' <code>mailIn</code>, shown
+below). The second runs immediately after the worker <code>pool.join()</code> and
+before the router: a sorted single-threaded pass that compiles every proved
+implication queued during the cycle to its compact
+<code>(implication&lt;N&gt;[…])</code> form and deposits it into the producer's own
+<code>mailOut.statements</code> (the channel-unification half of
+<a href="substrate.html#mail-chan">§3.3.2</a>). Both drains exist for the same
+reason: the work mutates global state (compact-form name counters, recipient
+mailboxes) and must be deterministic; inline mutation from worker threads loses
+that guarantee. Receivers then absorb pre-fixpoint at the top of next cycle —
+recovered rules can fire in the same burst they were absorbed in.
+</p>
+
+<figure>
+<svg viewBox="0 0 760 300" role="img" aria-label="The cycle loop with the real step and drain functions">
+  <defs>
+    <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/>
+    </marker>
+  </defs>
+  <text x="120" y="32" fill="#8B8FA5" font-size="11" text-anchor="middle">warm-up cycles (prime cascades)</text>
+  <path d="M205 40 L250 40" stroke="#EF9F27" stroke-width="1.5" marker-end="url(#ar2)"/>
+  <text x="470" y="32" fill="#EF9F27" font-size="11" text-anchor="middle">main iterations (numberIterations budget)</text>
+
+  <rect x="250" y="74" width="262" height="64" rx="9" fill="#262938" stroke="#5DCAA5"/>
+  <text x="381" y="97" fill="#5DCAA5" font-size="12.5" font-weight="bold" text-anchor="middle">elementary step (phase 1 · 2 · 3)</text>
+  <text x="381" y="115" fill="#8B8FA5" font-size="10" text-anchor="middle">requests → encodedMap match</text>
+  <text x="381" y="129" fill="#8B8FA5" font-size="10" text-anchor="middle">→ addStatement → mailOut</text>
+
+  <path d="M512 106 L562 106 L562 200 L512 200" fill="none" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ar2)"/>
+  <text x="590" y="156" fill="#8B8FA5" font-size="10.5" text-anchor="middle" transform="rotate(90 590 156)">cycle end</text>
+
+  <rect x="250" y="170" width="262" height="60" rx="9" fill="#262938" stroke="#E879F9"/>
+  <text x="381" y="194" fill="#E879F9" font-size="12.5" font-weight="bold" text-anchor="middle">drain mail</text>
+  <text x="381" y="213" fill="#8B8FA5" font-size="10" text-anchor="middle">mailOut → recipients' mailIn</text>
+
+  <path d="M250 200 L200 200 L200 106 L250 106" fill="none" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ar2)"/>
+  <text x="172" y="156" fill="#8B8FA5" font-size="10.5" text-anchor="middle" transform="rotate(-90 172 156)">next cycle</text>
+
+  <path d="M381 230 L381 262" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ar2)"/>
+  <rect x="261" y="264" width="240" height="32" rx="8" fill="#3A2E16" stroke="#EF9F27"/>
+  <text x="381" y="285" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">stop: fixpoint, or iteration cap</text>
+</svg>
+<figcaption><b>The cycle loop.</b> Step every block, then deliver mail, repeat. The
+mail boundary is the only place a block learns another block's results — the basis
+of both determinism and the parallelism in <a href="parallel.html">Chapter&nbsp;5</a>.</figcaption>
+</figure>
+
+<h2 id="enter">2.3 &nbsp;How a theorem enters — and the <code>status</code> modes</h2>
+<p>
+A statement reaches a block through one of three load paths. Each is precompiled
+first (<code>precompileStructuralOperators</code> — <a href="substrate.html#compile">§3.5</a>;
+this is invariant <b>I-1</b>, and skipping it asserts inside disintegration), then
+funnels through <code>addTheoremToMemory</code> into <code>addToHashMemory</code>,
+the rule store.
+</p>
+<ul class="inv">
+<li><b>External theorems.</b> <code>compressed_external_theorems.txt</code> (and a
+prior batch's proved set) loaded at the top of <code>analyzeExpressions</code> →
+precompile → <code>addTheoremToMemory</code> (installed as given rules).</li>
+<li><b>Conjectures to prove.</b> Each CE survivor registered via
+<code>addTheoremToMemory(conj, body, 0, false, …)</code> — the <code>false</code>
+means “goal, not given”: premises become rules, the head becomes a
+<code>intToBeProved</code> goal.</li>
+<li><b>Broadcast / mail.</b> A peer block's main-scope result arrives on
+<code>mailIn.statements</code> and is absorbed by <code>addStatement</code>
+(re-precompiling if needed).</li>
+</ul>
+
+<figure>
+<svg viewBox="0 0 760 250" role="img" aria-label="Three load paths funnelling into addToHashMemory with its two insert sites">
+  <defs>
+    <marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/>
+    </marker>
+  </defs>
+  <rect x="20" y="22" width="200" height="44" rx="8" fill="#262938" stroke="#5DCAA5"/>
+  <text x="120" y="40" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">① external theorems</text>
+  <text x="120" y="56" fill="#8B8FA5" font-size="9.5" text-anchor="middle">prior batch / user-supplied</text>
+  <rect x="20" y="100" width="200" height="44" rx="8" fill="#262938" stroke="#5DCAA5"/>
+  <text x="120" y="118" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">② conjectures (goals)</text>
+  <text x="120" y="134" fill="#8B8FA5" font-size="9.5" text-anchor="middle">head → intToBeProved</text>
+  <rect x="20" y="178" width="200" height="44" rx="8" fill="#262938" stroke="#E879F9"/>
+  <text x="120" y="196" fill="#E879F9" font-size="12" font-weight="bold" text-anchor="middle">③ broadcast / mail</text>
+  <text x="120" y="212" fill="#8B8FA5" font-size="9.5" text-anchor="middle">peer result → addStatement</text>
+
+  <path d="M220 44  L286 44  L286 110 L316 110" fill="none" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ar3)"/>
+  <path d="M220 122 L316 122" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ar3)"/>
+  <path d="M220 200 L286 200 L286 134 L316 134" fill="none" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ar3)"/>
+
+  <rect x="316" y="98" width="176" height="48" rx="9" fill="#262938" stroke="#5DCAA5"/>
+  <text x="404" y="119" fill="#5DCAA5" font-size="11.5" font-weight="bold" text-anchor="middle">addTheoremToMemory</text>
+  <text x="404" y="136" fill="#8B8FA5" font-size="9.5" text-anchor="middle">+ createAuxyImplication</text>
+
+  <path d="M492 122 L520 122" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ar3)"/>
+  <rect x="520" y="74" width="220" height="98" rx="9" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="630" y="95" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">addToHashMemory</text>
+  <rect x="534" y="104" width="192" height="26" rx="5" fill="#20232F" stroke="#3A3D4A"/>
+  <text x="630" y="121" fill="#F0E8DC" font-size="9.5" text-anchor="middle">head-implication LMV (fires)</text>
+  <rect x="534" y="134" width="192" height="26" rx="5" fill="#20232F" stroke="#3A3D4A"/>
+  <text x="630" y="151" fill="#F0E8DC" font-size="9.5" text-anchor="middle">marker LMV (admission probe)</text>
+
+  <text x="380" y="242" fill="#8B8FA5" font-size="11" text-anchor="middle">A bare fact short-cuts via addStatement; every implication lands in encodedMap under both insert sites.</text>
+</svg>
+<figcaption><b>Three doors, one store, two insert sites.</b> <code>addToHashMemory</code>
+writes the firing rule <i>and</i> a marker template used later by the admission
+probe (<a href="substrate.html#hash">§3.2</a>).</figcaption>
+</figure>
+
+<p>
+<code>addStatement</code> is the central ingestion primitive. Given an expression,
+target block, levels, validity, and a <code>local</code> flag, it: (1) pushes the
+equality mirror <code>(=[b,a])</code> for a local <code>(=[a,b])</code> with
+<code>a≠b</code> (the mirror appearing in <code>newStatements</code> is what
+discharges a mirrored goal — <b>I-9</b>); (2) for <code>!(=[a,b])</code> emits
+one-sided sibling inequalities (<b>I-12</b>); (3) deposits into
+<code>intStatementLevelsMap</code>/<code>intKnownStatements</code>/<code>intEncodedStatements</code>;
+(4) if <code>local</code>, also the <code>intLocalEncodedStatements{,Delta}</code>
+registries and the <code>intLocalEncodedStatementsSet</code> index; (5) appends to
+<code>newStatements</code>; (6) for <code>"main"</code>
+validity, pushes to <code>mailOut.statements</code>. It returns
+<code>vector&lt;ExpressionWithValidity&gt;</code> — every deposit, including
+cross-scope ones, rides this one channel carrying its actual scope (<b>I-25</b>).
+</p>
+
+<p>
+Every deeper deposit site threads a 4th argument, <code>int status</code> — a mode
+selector. Picking the wrong one mis-routes the deposit — and an obviously-wrong
+non-compact status now trips an <code>assert</code> at the disintegration gate — so
+it is worth knowing as a reference:
+</p>
+
+<table>
+<tr><th><code>status</code></th><th>Path</th><th>Disintegrate?</th><th>Origin?</th><th>Typical caller</th></tr>
+<tr><td><b>0</b></td><td>local derivation, force-deep</td><td>yes (deep)</td><td>yes</td><td>Pass&nbsp;B deferred emissions, OR-branch seeds, CE admission</td></tr>
+<tr><td><b>1</b></td><td>local derivation, normal</td><td>yes</td><td>yes</td><td>canonical produce-and-absorb: <code>addStatement</code> main branch, fixpoint deposits, head writes, <b>integration-revival absorb</b></td></tr>
+<tr><td><b>2</b></td><td>goal / <code>intToBeProved</code> insert</td><td>no — <code>prepareIntegration</code> runs instead</td><td>yes (goal)</td><td>new head registered to prove; OR-branch head</td></tr>
+<tr><td><b>3</b></td><td>external mail absorb</td><td><b>compact implication only</b></td><td>yes (from <code>mailIn</code>)</td><td><code>mailIn</code> drain absorb — a compact <code>(implication&lt;N&gt;[…])</code> re-disintegrates to recover the rule; a plain fact is absorbed as-is</td></tr>
+<tr><td><b>4</b></td><td>fast-path fact load</td><td>no</td><td>no (levels only)</td><td>simple-facts bootstrap at grid setup</td></tr>
+</table>
+
+<div class="key">
+<b>The status question, always:</b> has whoever produced this expression already
+disintegrated it? Routing mail from a peer → <code>3</code>. This block's own body
+(equi-class rewrite, OR seed, revival absorb) → <code>1</code> (or <code>0</code> to
+force deep). A theorem to prove → <code>2</code>. Picking an obviously-wrong status
+no longer fails silently: a non-compact statement deposited under <code>3</code>
+trips an <code>assert</code> at the disintegration gate
+(<code>assert(isCompactImplication || status == 0 || status == 1)</code>).
+</div>
+
+<!-- ===================== 2.4 ===================== -->
+<h2 id="status">2.4 &nbsp;Status modes — five readings, one register</h2>
+<p>
+The five-row table in §2.3 lists the modes; this section explains each row
+with the concrete scenario it serves. The <code>status</code> argument is the
+4th parameter of <code>addExprToMemoryBlock</code>, threaded through from the
+integration absorber and the mail-absorb path. Source check: the integer values 0, 1, 2, 3, 4 are
+real branches in the code path.
+</p>
+
+<dl class="terms">
+<dt>status = 0 — local derivation, force-deep</dt>
+<dd>Used when the deposit is the result of a Pass&nbsp;B emission whose body
+needs <i>another</i> Pass&nbsp;B before downstream rules can fire. Forces deep
+disintegration. Typical callers: OR-branch seed expansion, CE admission
+revival, the integration-handshake side that wants the body re-unpacked.
+<em>Wrong here</em> = the emission lands as one piece, no sub-rules see it.</dd>
+
+<dt>status = 1 — local derivation, normal</dt>
+<dd>The canonical produce-and-absorb mode. Almost every internal write goes
+through this path: the kernel's primary <code>addStatement</code> branch, the
+integration-revival absorb at top-of-burst, head writes, fixpoint deposits
+after equi-class rewrites. Disintegration runs at the normal depth; an
+<code>exprOriginMap</code> entry is recorded.</dd>
+
+<dt>status = 2 — goal / <code>intToBeProved</code> insert</dt>
+<dd>Used <i>only</i> when the deposit is a fresh goal — a CE-surviving
+conjecture's head, an OR branch's per-disjunct head, the inner head of an
+opened hypothesis block. The disintegration path is replaced by
+<code>prepareIntegration</code> (we want this expression to fire as the
+target of a future emission, not as a premise). The origin is a special
+“goal” record so the chapter walker can recognise it as a sink.</dd>
+
+<dt>status = 3 — external mail absorb</dt>
+<dd>Mail from a peer block, and the two arrivals split. A compact implication
+<code>(implication&lt;N&gt;[…])</code> <i>does</i> re-enter
+<code>disintegrateExpr2</code> to recover the broadcast rule it carries. A plain
+mail fact is absorbed as a statement without disintegration — re-expanding a fact
+would mint fresh <code>it_</code>/<code>int_</code> names and overflow the static
+<code>MAX_NAME_IDS</code> cap. The split is enforced at the call-site gate: a
+non-compact statement reaching the disintegration path under status 3 trips
+<code>assert(isCompactImplication || status == 0 || status == 1)</code>, so the
+absorb path is no longer a silent skip. Origin is taken from the mail's
+<code>exprOriginMap</code>.</dd>
+
+<dt>status = 4 — fast-path fact load</dt>
+<dd>A statement comes in as a bare fact at grid setup (the simple-facts
+bootstrap). Nothing to disintegrate, no origin to record — just register
+the fact and the levels it lives at. Used during the CE filter's model
+load (§<a href="auxiliary.html#ce">11.2</a>).</dd>
+</dl>
+
+<figure>
+<svg viewBox="0 0 760 240" role="img" aria-label="Status modes — the routing logic, which gate is enabled for which value">
+  <defs><marker id="st-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="22" y="20" width="100" height="200" rx="9" fill="#1C1F2B" stroke="#3A3D4A"/>
+  <text x="72" y="38" fill="#F0E8DC" font-size="11" font-weight="bold" text-anchor="middle">status</text>
+  <rect x="32" y="52"  width="80" height="28" rx="5" fill="#3A2E16" stroke="#EF9F27"/><text x="72" y="71"  fill="#EF9F27" font-size="11" text-anchor="middle">0</text>
+  <rect x="32" y="84"  width="80" height="28" rx="5" fill="#3A2E16" stroke="#EF9F27"/><text x="72" y="103" fill="#EF9F27" font-size="11" text-anchor="middle">1</text>
+  <rect x="32" y="116" width="80" height="28" rx="5" fill="#262938" stroke="#B084EB"/><text x="72" y="135" fill="#B084EB" font-size="11" text-anchor="middle">2</text>
+  <rect x="32" y="148" width="80" height="28" rx="5" fill="#262938" stroke="#5DCAA5"/><text x="72" y="167" fill="#5DCAA5" font-size="11" text-anchor="middle">3</text>
+  <rect x="32" y="180" width="80" height="28" rx="5" fill="#262938" stroke="#5DCAA5"/><text x="72" y="199" fill="#5DCAA5" font-size="11" text-anchor="middle">4</text>
+
+  <g font-size="10.5">
+    <rect x="142" y="32" width="120" height="36" rx="5" fill="#262938" stroke="#3A3D4A"/><text x="202" y="50" fill="#F0E8DC" text-anchor="middle">isLocal=true</text><text x="202" y="62" fill="#8B8FA5" font-size="9" text-anchor="middle">localEnc + delta</text>
+    <rect x="282" y="32" width="120" height="36" rx="5" fill="#262938" stroke="#3A3D4A"/><text x="342" y="50" fill="#F0E8DC" text-anchor="middle">deep disintegrate</text><text x="342" y="62" fill="#8B8FA5" font-size="9" text-anchor="middle">always re-expand</text>
+    <rect x="422" y="32" width="120" height="36" rx="5" fill="#262938" stroke="#3A3D4A"/><text x="482" y="50" fill="#F0E8DC" text-anchor="middle">disintegrate</text><text x="482" y="62" fill="#8B8FA5" font-size="9" text-anchor="middle">Pass A+B</text>
+    <rect x="562" y="32" width="120" height="36" rx="5" fill="#262938" stroke="#3A3D4A"/><text x="622" y="50" fill="#F0E8DC" text-anchor="middle">writes origin</text><text x="622" y="62" fill="#8B8FA5" font-size="9" text-anchor="middle">+ mailOut?</text>
+
+    <g fill="#EF9F27"><text x="202" y="100" text-anchor="middle">✓</text><text x="342" y="100" text-anchor="middle">✓</text><text x="482" y="100" text-anchor="middle">—</text><text x="622" y="100" text-anchor="middle">✓</text></g>
+    <g fill="#EF9F27"><text x="202" y="132" text-anchor="middle">✓</text><text x="342" y="132" text-anchor="middle">—</text><text x="482" y="132" text-anchor="middle">✓</text><text x="622" y="132" text-anchor="middle">✓</text></g>
+    <g fill="#B084EB"><text x="202" y="164" text-anchor="middle">—</text><text x="342" y="164" text-anchor="middle">—</text><text x="482" y="164" text-anchor="middle">— (goal)</text><text x="622" y="164" text-anchor="middle">✓</text></g>
+    <g fill="#5DCAA5"><text x="202" y="196" text-anchor="middle">—</text><text x="342" y="196" text-anchor="middle">—</text><text x="482" y="196" text-anchor="middle">— (no!)</text><text x="622" y="196" text-anchor="middle">✓ (from mail)</text></g>
+    <g fill="#5DCAA5"><text x="202" y="216" text-anchor="middle">—</text><text x="342" y="216" text-anchor="middle">—</text><text x="482" y="216" text-anchor="middle">— (no!)</text><text x="622" y="216" text-anchor="middle">— (levels only)</text></g>
+  </g>
+</svg>
+<figcaption><b>Each status enables a different combination of gates.</b>
+Picking the wrong status quietly disables the gate the deposit needed.</figcaption>
+</figure>
+
+<!-- ===================== 2.5 ===================== -->
+<h2 id="deactivate">2.5 &nbsp;Deactivation — recursive vs unnecessary</h2>
+<p>
+A logic block stops stepping when its work is done. Two functions take an
+LB from active to inactive — they differ in scope:
+</p>
+
+<table>
+<tr><th>Function</th><th>Scope</th><th>Trigger</th></tr>
+<tr><td><code>deactivateRecursively</code></td><td>A conditional global prune: a post-order walk from the batch root (no root argument), flipping a node inactive only when all its children are already inactive, it holds no main-scope goal (<code>mainValidityCount == 0</code>), and it is not <code>primedForContradiction</code>.</td><td>End-of-batch prune; after a theorem promotes; after an OR convergence.</td></tr>
+<tr><td><code>deactivateUnnecessary</code></td><td>Targeted: only LBs tied to a specific theorem (its proof tree).</td><td>After a single theorem promotes — keeps siblings alive.</td></tr>
+</table>
+
+<figure>
+<svg viewBox="0 0 760 220" role="img" aria-label="The deactivation cascade: targeted vs recursive">
+  <defs><marker id="da-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="40" y="22" width="320" height="180" rx="10" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <text x="200" y="44" fill="#5DCAA5" font-size="11.5" font-weight="bold" text-anchor="middle">deactivateUnnecessary</text>
+  <rect x="58" y="60" width="76" height="30" rx="5" fill="#262938" stroke="#5DCAA5"/><text x="96" y="80" fill="#F0E8DC" font-size="10" text-anchor="middle">theorem A</text>
+  <rect x="148" y="60" width="76" height="30" rx="5" fill="#3A2E16" stroke="#EF9F27"/><text x="186" y="80" fill="#EF9F27" font-size="10" text-anchor="middle">theorem B ✓</text>
+  <rect x="238" y="60" width="76" height="30" rx="5" fill="#262938" stroke="#5DCAA5"/><text x="276" y="80" fill="#F0E8DC" font-size="10" text-anchor="middle">theorem C</text>
+
+  <rect x="156" y="106" width="60" height="20" rx="3" fill="#262938" stroke="#B084EB" stroke-dasharray="3 2"/><text x="186" y="120" fill="#B084EB" font-size="9" text-anchor="middle">b.hypo</text>
+  <rect x="156" y="132" width="60" height="20" rx="3" fill="#262938" stroke="#B084EB" stroke-dasharray="3 2"/><text x="186" y="146" fill="#B084EB" font-size="9" text-anchor="middle">b.ordis</text>
+  <line x1="186" y1="92" x2="186" y2="104" stroke="#5DCAA5" stroke-width="1.2"/>
+  <line x1="186" y1="126" x2="186" y2="130" stroke="#5DCAA5" stroke-width="1.2"/>
+
+  <text x="200" y="178" fill="#8B8FA5" font-size="9.5" text-anchor="middle">B's subtree (hypo, ordis) is torn down;</text>
+  <text x="200" y="192" fill="#8B8FA5" font-size="9.5" text-anchor="middle">A and C stay active</text>
+
+  <rect x="400" y="22" width="320" height="180" rx="10" fill="#1C1F2B" stroke="#EF9F27"/>
+  <text x="560" y="44" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">deactivateRecursively</text>
+  <rect x="418" y="60" width="76" height="30" rx="5" fill="#3A2E16" stroke="#EF9F27"/><text x="456" y="80" fill="#EF9F27" font-size="10" text-anchor="middle">A teardown</text>
+  <rect x="508" y="60" width="76" height="30" rx="5" fill="#3A2E16" stroke="#EF9F27"/><text x="546" y="80" fill="#EF9F27" font-size="10" text-anchor="middle">B teardown</text>
+  <rect x="598" y="60" width="76" height="30" rx="5" fill="#3A2E16" stroke="#EF9F27"/><text x="636" y="80" fill="#EF9F27" font-size="10" text-anchor="middle">C teardown</text>
+  <rect x="438" y="106" width="220" height="20" rx="3" fill="#3A2E16" stroke="#EF9F27" stroke-dasharray="3 2"/><text x="548" y="120" fill="#EF9F27" font-size="9" text-anchor="middle">… only when all children are inactive</text>
+  <text x="560" y="178" fill="#8B8FA5" font-size="9.5" text-anchor="middle">conditional prune from the batch root</text>
+  <text x="560" y="192" fill="#8B8FA5" font-size="9.5" text-anchor="middle">end-of-batch protocol</text>
+</svg>
+<figcaption><b>Targeted vs global prune.</b> Both functions preserve the proof
+graph; neither deletes data. They flip the <code>isActive</code> flag and
+release the LB from further stepping.</figcaption>
+</figure>
+
+<div class="key">
+<b>The contradiction override.</b> <code>deactivateRecursively</code> respects
+<code>primedForContradiction</code> — a branch LB about to discharge a
+contradiction (§<a href="reformulation.html#contra">10.6</a>) is exempted (its
+prune condition carries <code>!primedForContradiction</code>) for one more cycle
+so the discharge can fire. Without the exemption the branch would be torn down
+before its result reached the parent.
+</div>
+
+<h3>2.5.1 &nbsp;Bubble-up gating</h3>
+<p>
+The disable mechanism gates on the main-namescope <code>intToBeProved</code>
+only: deeper-scope residue (goals that opened under a hypothesis, OR branch,
+or integration scope) does <i>not</i> keep LBs alive once their parent's
+main-scope goal is reached. This avoids the failure mode where a long
+chain of nested hypotheticals keeps the tree alive past usefulness — and
+prevents over-tearing of LBs that only have descendant-scope work left.
+</p>
+
+<!-- ===================== 2.6 ===================== -->
+<h2 id="dump">2.6 &nbsp;The diagnostic trace dump</h2>
+<p>
+When trace dumping is armed, the file <code>.debug/hashburst_trace.txt</code>
+captures, at every cycle boundary, the complete state of one targeted LB —
+encoded statements, goals, origin records, hash rules, the admission map,
+marker rules, mail. This is the diagnostic instrument used to investigate
+how a single block's state evolves cycle by cycle: by far the highest-value
+debug artefact the prover produces. The dump format is deliberately stable
+across runs so iteration-over-iteration diffs (and the diffs between a
+working and a failing run) read cleanly.
+</p>
+
+<figure>
+<svg viewBox="0 0 510 300" role="img" aria-label="The hashburst dump structure — two call sites, ~two dozen write* sections">
+  <defs><marker id="hd-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+
+  <text x="122" y="22" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">ENTRY (top of burst)</text>
+  <text x="382" y="22" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">EXIT (end of burst)</text>
+
+  <g font-size="9.5">
+    <rect x="22"  y="36" width="200" height="20" rx="3" fill="#262938" stroke="#3A3D4A"/><text x="32" y="50" fill="#F0E8DC">writeHeader — burst#, LB ID, time</text>
+    <rect x="22"  y="58" width="200" height="20" rx="3" fill="#262938" stroke="#3A3D4A"/><text x="32" y="72" fill="#F0E8DC">writeLBChain — root → here</text>
+    <rect x="22"  y="80" width="200" height="20" rx="3" fill="#262938" stroke="#3A3D4A"/><text x="32" y="94" fill="#F0E8DC">writeEncodedStatements</text>
+    <rect x="22"  y="102" width="200" height="20" rx="3" fill="#262938" stroke="#3A3D4A"/><text x="32" y="116" fill="#F0E8DC">writeToBeProved</text>
+    <rect x="22"  y="124" width="200" height="20" rx="3" fill="#262938" stroke="#3A3D4A"/><text x="32" y="138" fill="#F0E8DC">writeExprOriginMap</text>
+    <rect x="22"  y="146" width="200" height="20" rx="3" fill="#262938" stroke="#3A3D4A"/><text x="32" y="160" fill="#F0E8DC">writeHashOriginals</text>
+    <rect x="22"  y="168" width="200" height="20" rx="3" fill="#262938" stroke="#3A3D4A"/><text x="32" y="182" fill="#F0E8DC">writeAdmissionMap</text>
+    <rect x="22"  y="190" width="200" height="20" rx="3" fill="#262938" stroke="#3A3D4A"/><text x="32" y="204" fill="#F0E8DC">writeEncodedMapMarkers</text>
+    <rect x="22"  y="212" width="200" height="20" rx="3" fill="#262938" stroke="#3A3D4A"/><text x="32" y="226" fill="#F0E8DC">writeMailIn</text>
+    <rect x="22"  y="234" width="200" height="20" rx="3" fill="#262938" stroke="#3A3D4A"/><text x="32" y="248" fill="#F0E8DC">writeCompiledExpressions</text>
+
+    <rect x="282" y="36" width="200" height="218" rx="6" fill="#1C1F2B" stroke="#5DCAA5"/>
+    <text x="382" y="56" fill="#5DCAA5" font-size="10" font-weight="bold" text-anchor="middle">same write* sections</text>
+    <text x="382" y="74" fill="#8B8FA5" text-anchor="middle">post-fire state, minus</text>
+    <text x="382" y="88" fill="#8B8FA5" text-anchor="middle">writeCompiledExpressions</text>
+    <text x="382" y="102" fill="#8B8FA5" text-anchor="middle">(first ENTRY only)</text>
+    <text x="382" y="126" fill="#F0E8DC" text-anchor="middle">use case: diff EXIT</text>
+    <text x="382" y="140" fill="#F0E8DC" text-anchor="middle">against next ENTRY</text>
+    <text x="382" y="154" fill="#F0E8DC" text-anchor="middle">to see what one cycle</text>
+    <text x="382" y="168" fill="#F0E8DC" text-anchor="middle">added — the smallest</text>
+    <text x="382" y="182" fill="#F0E8DC" text-anchor="middle">unit of attribution.</text>
+  </g>
+
+  <text x="252" y="274" fill="#8B8FA5" font-size="10" text-anchor="middle">Two call sites, ~two dozen write* sections, one file.</text>
+  <text x="252" y="289" fill="#8B8FA5" font-size="10" text-anchor="middle">Stable structure across investigations is the whole point.</text>
+</svg>
+<figcaption><b>The dump's force-multiplier.</b> Same section names, same
+order, every cycle, every investigation. A maintainer's grep / diff /
+scroll muscle memory transfers between sessions.</figcaption>
+</figure>
+
+<h3>2.6.1 &nbsp;What the targeted-LB chain match looks like</h3>
+<p>
+The dump fires only on a <i>specific</i> LB — identified by its full parent
+chain to root, never by <code>exprKey</code> alone. The match is a chain of
+equality tests on each ancestor's <code>exprKey</code>, terminated by the
+root sentinel (empty exprKey, null parent). Many LBs share the same
+innermost <code>exprKey</code> at different positions in the LB tree —
+without the full chain, they would all fire together and dump on top of one
+another.
+</p>
+
+<div class="key">
+<b>Why dump-format stability matters.</b> Multi-day investigations —
+determinism races, equality-class cycles, mail-unification regressions,
+mistagged OR re-integrations — all hinged on diffs of this output across
+cycles or across runs. The dump's <i>identity over time</i> is what makes
+it load-bearing; reformatting it for cosmetic clarity loses the diff
+muscle-memory built around it. Treat the format as a contract.
+</div>
+
+<div class="note">
+The next chapter opens the four structures every one of these steps stands on —
+the <a href="substrate.html#lb">block</a>, the
+<a href="substrate.html#hash">hash engine</a>,
+<a href="substrate.html#mail">mail</a>, <a href="substrate.html#scope">scope</a> —
+plus <a href="substrate.html#compile">compilation</a>, the canonicality precondition.
+</div>
+
+<div class="pager">
+  <a href="index.html">&larr; 1 · Overview</a>
+  <a href="substrate.html">3 · The substrate &rarr;</a>
+</div>
+
+<div class="foot">
+<b>License.</b> Generative Logic prover reference. © 2025-2026 Generative Logic UG
+(haftungsbeschränkt). Dual-licensed under the <b>GNU Affero General Public License
+v3 or later</b> and a <b>commercial license</b>; this document and the proof
+artefacts it describes inherit the same terms — commercial terms at
+<a href="https://generative-logic.com/license">generative-logic.com/license</a>.
+</div>
+
+</main>
+</body>
+</html>

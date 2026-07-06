@@ -469,14 +469,6 @@ def format_implication(sublist):
 
     return output
 
-def format_mirroring(sublist):
-    mirrored = make_readable_title(sublist[0])
-    original = make_readable_title(sublist[2])
-
-    output = mirrored + ' mirrored from ' + original
-
-    return output
-
 def format_reformulation(sublist):
     reformulated = make_readable_title(sublist[0])
     original = make_readable_title(sublist[2])

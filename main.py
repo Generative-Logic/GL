@@ -98,14 +98,14 @@ def _run_verifier_unit_test_gate():
     """Run the Python verifier-side unit-test harness; abort on any failure.
 
     Invokes ``python tests/test_harness.py`` which imports every sibling
-    ``test_verifier_<group>.py`` module and runs ~340 subtle-error tests
-    against the live ``verifier.py`` checkers (plus a handful of positive
-    sanity tests that prove the fixture rig is intact). Each failure test
+    ``test_verifier_<group>.py`` module and runs the full suite against the
+    live ``verifier.py`` checkers: mostly subtle-error tests, plus positive
+    sanity tests that prove the fixture rig is intact. Each failure test
     feeds a malformed ``ProofLine`` into the relevant ``TAG_CHECKERS`` entry
     (or ``verify_chapter`` for chapter-level meta-checks) and asserts the
     verifier reports a failure. Runtime is <5 s — comparable to the C++
-    harness — so a regression in any checker surfaces seconds into the
-    pipeline rather than after a 10–60-minute prover run.
+    harness — so a regression in any checker surfaces before any pipeline
+    work rather than after a 10–60-minute prover run.
 
     Skipped silently when ``tests/test_harness.py`` is absent (matches the
     fresh-clone fall-through used by ``_run_unit_test_gate``). Black-box:
@@ -119,6 +119,12 @@ def _run_verifier_unit_test_gate():
             file=sys.stderr,
         )
         return
+    # Flush the parent's buffered stdout/stderr before launching the harness
+    # subprocess so its output does not interleave with anything still sitting
+    # unflushed in the parent buffer (stdout is block-buffered when redirected
+    # to a file).
+    sys.stdout.flush()
+    sys.stderr.flush()
     proc = subprocess.run(
         [sys.executable, _VERIFIER_TEST_HARNESS], check=False)
     if proc.returncode != 0:
@@ -130,7 +136,29 @@ def _run_verifier_unit_test_gate():
         sys.exit(proc.returncode)
 
 
+_REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+
+def _read_version() -> str:
+    """Return the release-version string from the `VERSION` file at the repo root.
+
+    Falls back to ``unknown`` when the file is absent (out-of-tree invocation
+    or unstamped working copy).
+    """
+    path = os.path.join(_REPO_ROOT, "VERSION")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read().strip()
+            return text if text else "unknown"
+    except OSError:
+        return "unknown"
+
+
 def main():
+
+    if "--version" in sys.argv[1:]:
+        print(f"Generative Logic {_read_version()}")
+        return
 
     start_time = time.time()
 
@@ -146,16 +174,31 @@ def main():
     # following Gauss-main batch started).
     os.makedirs(".debug", exist_ok=True)
     open(".debug/hashburst_trace.txt", "w").close()
+    open(".debug/trap.log", "w").close()
 
-    # Unit-test gate. First failure aborts main.py before any pipeline
-    # work or proof run. See _run_unit_test_gate's docstring for budget.
+    # Wipe `.rt/*.log` once per main.py session so each full run starts
+    # with a clean view of the per-LB runtime-measurement table. A
+    # non-empty `.rt/` after a run is then unambiguous: every file
+    # represents a pathological LB from THIS run. The C++ side never
+    # wipes the folder; it only ever rewrites the per-LB file in place.
+    # When RT_MEASUREMENT == 0 (the default) no files are ever written
+    # and this wipe is a no-op. See `docs/_meta/rt_measurement.md`.
+    os.makedirs(".rt", exist_ok=True)
+    for _stale in os.listdir(".rt"):
+        _stale_path = os.path.join(".rt", _stale)
+        if os.path.isfile(_stale_path):
+            os.remove(_stale_path)
+
+    # C++ unit-test gate. Synthetic in-memory inputs, no real proof runs;
+    # safe to run pre-pipeline. First failure aborts main.py before any
+    # 10–60-minute proof work. See _run_unit_test_gate's docstring for budget.
     _run_unit_test_gate()
 
-    # Verifier-side Python unit-test gate. Runs the in-tree harness at
-    # tests/test_harness.py which exercises every verifier.py checker
-    # (TAG_CHECKERS + chapter-level meta-checks) with subtle-error inputs.
-    # First failure aborts main.py before any pipeline work, just like the
-    # C++ gate above.
+    # Python verifier-side unit-test gate. Runs with the C++ gate, before the
+    # pipeline: its fixtures are the frozen, test-owned tests/fixtures/ copies
+    # (independent of the live files/GL_binaries/ the pipeline regenerates), so
+    # the gate no longer waits on a populated files/GL_binaries/. First failure
+    # aborts main.py before any 10-60-minute proof work.
     _run_verifier_unit_test_gate()
 
     run_modes.full_run()

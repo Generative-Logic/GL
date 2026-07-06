@@ -1,0 +1,771 @@
+<!--
+Generative Logic: A deterministic reasoning and knowledge generation engine.
+Copyright (C) 2025-2026 Generative Logic UG (haftungsbeschränkt).
+Dual-licensed under the GNU Affero General Public License v3 or later
+and a commercial license — see https://generative-logic.com/license.
+
+User-oriented SwDD — Chapter 4: Proof mechanisms (reference-level).
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GL Prover User SwDD — 4 · Proof mechanisms</title>
+<meta name="copyright" content="© 2025-2026 Generative Logic UG">
+<meta name="license" content="AGPL-3.0-or-later">
+<meta name="robots" content="noindex, nofollow, noai, noimageai">
+<link rel="stylesheet" href="assets/swdd.css">
+</head>
+<body>
+
+<nav id="side">
+  <div class="brand">GL · <span>User SwDD</span></div>
+  <div class="tag">The prover subsystem — reference concepts &amp; diagrams</div>
+  <ol>
+    <li><a href="index.html">Overview</a>
+      <ul>
+        <li><a href="index.html#what">What GL is</a></li>
+        <li><a href="index.html#pipeline">The pipeline</a></li>
+        <li><a href="index.html#deductive">Deductive neighbourhood</a></li>
+        <li><a href="index.html#artefacts">Artefacts on disk</a></li>
+        <li><a href="index.html#read">How to read this</a></li>
+        <li><a href="index.html#glossary">Quick glossary</a></li>
+        <li><a href="index.html#bounds">What is &amp; isn't in this doc</a></li>
+      </ul>
+    </li>
+    <li><a href="prover.html">The prover at a glance</a>
+      <ul>
+        <li><a href="prover.html#life">Life of a run</a></li>
+        <li><a href="prover.html#cycles">Cycles</a></li>
+        <li><a href="prover.html#enter">How a theorem enters</a></li>
+        <li><a href="prover.html#status">Status modes</a></li>
+        <li><a href="prover.html#deactivate">Deactivation cascade</a></li>
+        <li><a href="prover.html#dump">The hashburst dump</a></li>
+      </ul>
+    </li>
+    <li><a href="substrate.html">The substrate</a>
+      <ul>
+        <li><a href="substrate.html#lb">Logic blocks</a></li>
+        <li><a href="substrate.html#hash">Hash engine</a></li>
+        <li><a href="substrate.html#mail">Mail</a></li>
+        <li><a href="substrate.html#scope">Scope &amp; validity</a></li>
+        <li><a href="substrate.html#compile">Compilation</a></li>
+        <li><a href="substrate.html#delta">Delta machinery</a></li>
+        <li><a href="substrate.html#wipe">Subtree wipe</a></li>
+      </ul>
+    </li>
+    <li><a href="mechanisms.html" class="current">Proof mechanisms</a>
+      <ul>
+        <li><a href="mechanisms.html#disint">Disintegration</a></li>
+        <li><a href="mechanisms.html#admit">Admission, rejection &amp; equi-classes</a></li>
+        <li><a href="mechanisms.html#integ">Integration</a></li>
+        <li><a href="mechanisms.html#branch">Branching &amp; contradiction</a></li>
+        <li><a href="mechanisms.html#induct">Induction</a></li>
+        <li><a href="mechanisms.html#fan5">5-batch fan-out</a></li>
+        <li><a href="mechanisms.html#cascade">Pending-rejection cascade</a></li>
+      </ul>
+    </li>
+    <li><a href="parallel.html">Parallel execution</a>
+      <ul>
+        <li><a href="parallel.html#pool">The worker pool</a></li>
+        <li><a href="parallel.html#barrier">The join barrier</a></li>
+        <li><a href="parallel.html#collect">Serial collectors</a></li>
+        <li><a href="parallel.html#why">Why deferral — a race</a></li>
+        <li><a href="parallel.html#asic">The silicon mapping</a></li>
+        <li><a href="parallel.html#mailbox">Per-LB mailbox geometry</a></li>
+        <li><a href="parallel.html#cycleN">The cycle-N rule</a></li>
+      </ul>
+    </li>
+    <li><a href="memory.html">Static memory</a>
+      <ul>
+        <li><a href="memory.html#why">Why static</a></li>
+        <li><a href="memory.html#hierarchy">The memory hierarchy</a></li>
+        <li><a href="memory.html#virtual">The page tier</a></li>
+        <li><a href="memory.html#aggregate">LbMemory — the aggregate</a></li>
+        <li><a href="memory.html#deload">Deload / reload</a></li>
+        <li><a href="memory.html#scope">Scope</a></li>
+      </ul>
+    </li>
+    <li><a href="provenance.html">Provenance</a>
+      <ul>
+        <li><a href="provenance.html#record">Recording an origin</a></li>
+        <li><a href="provenance.html#local">Locality</a></li>
+        <li><a href="provenance.html#lift">The chapter walker</a></li>
+        <li><a href="provenance.html#lift-mech">Lift — soundness</a></li>
+        <li><a href="provenance.html#barrier">OR-branch barrier</a></li>
+        <li><a href="provenance.html#cycle">Path-cycle filter</a></li>
+        <li><a href="provenance.html#contraswitch">Contradiction fallback</a></li>
+        <li><a href="provenance.html#notinput">Never a proof input</a></li>
+      </ul>
+    </li>
+    <li><a href="compilation.html">Compilation &amp; names</a>
+      <ul>
+        <li><a href="compilation.html#why">Two canonical forms</a></li>
+        <li><a href="compilation.html#pre">Precompilation</a></li>
+        <li><a href="compilation.html#names">The five name families</a></li>
+        <li><a href="compilation.html#counters">Counters &amp; registry</a></li>
+        <li><a href="compilation.html#namemap">NameMap &amp; scopes</a></li>
+        <li><a href="compilation.html#encoded">EncodedExpression → IntNormalizedKey</a></li>
+        <li><a href="compilation.html#pool">The static-memory floor</a></li>
+        <li><a href="compilation.html#fail">Failure modes</a></li>
+      </ul>
+    </li>
+    <li><a href="anchors.html">Anchors &amp; types</a>
+      <ul>
+        <li><a href="anchors.html#what">What an anchor is</a></li>
+        <li><a href="anchors.html#three">The four anchors</a></li>
+        <li><a href="anchors.html#types">Slot types</a></li>
+        <li><a href="anchors.html#handling">Anchor handling</a></li>
+        <li><a href="anchors.html#copy">The <code>_copy</code> machinery</a></li>
+        <li><a href="anchors.html#tag">The proof-graph row</a></li>
+        <li><a href="anchors.html#i29">Variable-port consistency</a></li>
+        <li><a href="anchors.html#bridge">Cross-anchor bridges</a></li>
+      </ul>
+    </li>
+    <li><a href="reformulation.html">Reformulation &amp; head switch</a>
+      <ul>
+        <li><a href="reformulation.html#why">Why reformulation</a></li>
+        <li><a href="reformulation.html#switch">Head switch — the walk</a></li>
+        <li><a href="reformulation.html#sites">Two call sites</a></li>
+        <li><a href="reformulation.html#mirror">Both directions proved</a></li>
+        <li><a href="reformulation.html#back">Back-reformulation</a></li>
+        <li><a href="reformulation.html#contra">Contradiction reconstruction</a></li>
+        <li><a href="reformulation.html#orthm">OR-theorem assembly</a></li>
+        <li><a href="reformulation.html#methods">The five method tags</a></li>
+      </ul>
+    </li>
+    <li><a href="auxiliary.html">CE filter &amp; compressor</a>
+      <ul>
+        <li><a href="auxiliary.html#engine">Same engine, two modes</a></li>
+        <li><a href="auxiliary.html#ce">Counterexample filter</a></li>
+        <li><a href="auxiliary.html#j">The j-copy trick</a></li>
+        <li><a href="auxiliary.html#comp">Compressor — throwaway trees</a></li>
+        <li><a href="auxiliary.html#p1">Phase 1 — dependency graphs</a></li>
+        <li><a href="auxiliary.html#p2">Phase 2 — greedy elimination</a></li>
+        <li><a href="auxiliary.html#out">What lands on disk</a></li>
+      </ul>
+    </li>
+  </ol>
+</nav>
+
+<main>
+<h1><span class="num">4 ·</span> Proof mechanisms</h1>
+<p class="lede">How the engine actually reasons. Five mechanisms compose on the
+substrate; §4.2 is the core, traced end to end on a real Gauss theorem.</p>
+
+<div class="toc">
+  <strong>On this page</strong>
+  <ol>
+    <li><a href="#disint">4.1 &nbsp;Disintegration</a>
+      <ol><li><a href="#disint-a">Pass A — structural</a></li><li><a href="#disint-b">Pass B — operator-aware</a></li></ol></li>
+    <li><a href="#admit">4.2 &nbsp;Admission, rejection &amp; equivalence classes</a>
+      <ol>
+        <li><a href="#admit-paths">The two admission paths</a></li>
+        <li><a href="#admit-rej">Rejected maps</a></li>
+        <li><a href="#admit-shapes">Five maps, three key shapes</a></li>
+        <li><a href="#admit-eq">Equivalence classes</a></li>
+        <li><a href="#admit-rev">The revival loop — a Gauss trace</a></li>
+      </ol>
+    </li>
+    <li><a href="#integ">4.3 &nbsp;Integration</a></li>
+    <li><a href="#branch">4.4 &nbsp;Branching &amp; contradiction</a>
+      <ol>
+        <li><a href="#branch-split">Splitting an OR</a></li>
+        <li><a href="#branch-conv">Convergence</a></li>
+        <li><a href="#branch-contra">Contradiction discharge</a></li>
+        <li><a href="#branch-thm">OR-theorem construction</a></li>
+      </ol>
+    </li>
+    <li><a href="#induct">4.5 &nbsp;Induction</a></li>
+    <li><a href="#fan5">4.6 &nbsp;The 5-batch fan-out, in depth</a></li>
+    <li><a href="#cascade">4.7 &nbsp;The pending-rejection cascade</a></li>
+  </ol>
+</div>
+
+<!-- ===================== 4.1 ===================== -->
+<h2 id="disint">4.1 &nbsp;Disintegration</h2>
+<p>Disintegration expands a compound so its pieces can fire rules. Two paths.</p>
+
+<h3 id="disint-a">4.1.1 &nbsp;Pass A — structural</h3>
+<p>
+<code>disintegrateExprCore2</code> splits an <code>and</code> / <code>existence</code>
+into its element expressions and recurses. No fresh variables, nothing to gate.
+</p>
+
+<h3 id="disint-b">4.1.2 &nbsp;Pass B — operator-aware</h3>
+<p>
+<code>disintegrateExpr2</code> mints fresh iteration variables — <code>it_…</code>
+(algebra) or <code>int_…</code> (integration) — to stand for unknowns. A fresh
+variable may not enter the result until <i>admitted</i> (§4.2). Pass&nbsp;B fires
+only when <code>!parameters.compressor_mode &amp;&amp; !parameters.ban_disintegration</code>
+(<b>I-7</b>) — the single flag also gates back-reformulation and hypothetical
+disintegration. Its freshness check rides <code>savedStartInt</code> — a counter
+that must stay monotonic; a parallel counter breaks it (<b>I-17</b>).
+</p>
+
+<figure>
+<svg viewBox="0 0 760 200" role="img" aria-label="Pass A structural vs Pass B operator-aware disintegration">
+  <defs><marker id="d-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="300" y="14" width="160" height="38" rx="8" fill="#262938" stroke="#5DCAA5"/><text x="380" y="38" fill="#F0E8DC" font-size="12" text-anchor="middle">compound arrives</text>
+  <path d="M340 52 L210 80" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#d-ar)"/>
+  <path d="M420 52 L548 80" stroke="#EF9F27" stroke-width="1.5" marker-end="url(#d-ar)"/>
+  <rect x="36" y="84" width="330" height="100" rx="9" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <text x="201" y="106" fill="#5DCAA5" font-size="12.5" font-weight="bold" text-anchor="middle">Pass A · disintegrateExprCore2</text>
+  <text x="201" y="128" fill="#F0E8DC" font-size="10.5" text-anchor="middle">split into elements, recurse</text>
+  <text x="201" y="150" fill="#8B8FA5" font-size="10" text-anchor="middle">no fresh vars — nothing to gate</text>
+  <text x="201" y="170" fill="#8B8FA5" font-size="10" text-anchor="middle">structural only</text>
+  <rect x="394" y="84" width="330" height="100" rx="9" fill="#1C1F2B" stroke="#EF9F27"/>
+  <text x="559" y="106" fill="#EF9F27" font-size="12.5" font-weight="bold" text-anchor="middle">Pass B · disintegrateExpr2</text>
+  <text x="559" y="128" fill="#F0E8DC" font-size="10.5" text-anchor="middle">mints it_ / int_ unknowns</text>
+  <text x="559" y="150" fill="#B084EB" font-size="10" text-anchor="middle">each must be admitted (§4.2)</text>
+  <text x="559" y="170" fill="#8B8FA5" font-size="10" text-anchor="middle">gated by I-7 · freshness I-17</text>
+</svg>
+<figcaption><b>Two passes.</b> Pass A unpacks structure; Pass B introduces unknowns
+that the admission gate must clear.</figcaption>
+</figure>
+
+<!-- ===================== 4.2 ===================== -->
+<h2 id="admit">4.2 &nbsp;Admission, rejection &amp; equivalence classes</h2>
+<p>
+One mechanism, three faces. Admission decides whether a fresh variable may be
+emitted; rejection parks the ones that can't yet; equivalence classes rewrite parked
+work into a form that can. The loop they form is why a single prove pass is enough.
+</p>
+
+<p>
+<b>Admission updates are drained once per burst.</b> The admission-map
+writes a hash burst produces — on the algebra side a fresh template, its
+not-yet-fired status, and the revival of any parked rejection the new template now
+admits; on the integration side the fresh integration template the burst registers —
+are buffered as they are discovered and replayed once, in that order,
+after the burst's evaluation pass, rather than mutating the admission containers
+inline during it. The pass stays free of admission-container mutation, giving the
+forthcoming static-memory (ASIC) build a single well-defined drain point. Admission
+decisions, the proved theorems, and every proof are unchanged.
+</p>
+
+<h3 id="admit-paths">4.2.1 &nbsp;The two admission paths</h3>
+<p>
+A Pass-B fire that mints a fresh variable is gated by two paths, <b>first-match-wins</b>:
+</p>
+<ul class="inv">
+<li><b>Map-based — authoritative.</b> <code>isAdmitted</code> consults
+<code>admissionMap</code> (registered consumer-side by the integration handshake,
+§4.3). The <code>int_</code> path uses <code>isAdmittedIntegration</code> vs
+<code>admissionMapIntegration</code>, then the <code>admissionSetIntegration</code>
+fallback.</li>
+<li><b>Single-input-operator standalone.</b> <code>isAllowedAsOperatorInput</code>
+admits iff the core is in <code>operators</code> <i>and</i> the operator has
+<i>exactly one</i> input arg (in practice <code>in</code>, <code>in2</code>) and the
+var sits in that slot. <b>Never widen this</b> (<b>I-6</b>). Widening to multi-input
+operators broke Gauss summation; the standalone never consults the admission map.</li>
+</ul>
+<p>
+Fail both → the variable is buffered in <code>pendingRejections</code> (algebra) /
+<code>pendingRejectionsIntegration</code> (integration). A cascade-admission loop
+retries; if it still can't admit, the rejection is committed (§4.2.2).
+</p>
+
+<h3 id="admit-rej">4.2.2 &nbsp;Rejected maps</h3>
+<p>
+A failed fresh variable is <b>never silently dropped</b> — a lost fact is unsound
+silence (<b>I-19</b>). It is committed to <code>rejectedMap</code> (algebra,
+<code>it_</code>) or <code>rejectedMapIntegration</code> (integration,
+<code>int_</code>), keyed by the <i>marked form</i> (the constituent with its output
+arg replaced by the token <code>"marker"</code>). The integration value keeps
+everything needed to replay the fire verbatim later:
+</p>
+<table>
+<tr><th><code>rejectedMapIntegration</code> entry</th><th>Holds</th></tr>
+<tr><td>key</td><td>marked form, e.g. <code>(in3[a,marker,b,4])</code> at its <code>validityName</code></td></tr>
+<tr><td><code>concreteConstituent</code></td><td>the body element with the <code>int_</code> var intact</td></tr>
+<tr><td><code>siblings</code></td><td>all other body elements of the compound (incl. <code>(in[…])</code> typing)</td></tr>
+<tr><td><code>compoundExpression</code></td><td>the originating compound — for provenance</td></tr>
+</table>
+
+<h3 id="admit-shapes">4.2.3 &nbsp;Five maps, three key shapes</h3>
+<p>
+The admission/rejection machinery spans five maps in three key shapes. They are
+<b>not</b> interchangeable — a lookup in the wrong shape silently misses, and the
+revival mechanism then “fires” but accomplishes nothing. Always transform at the
+boundary.
+</p>
+<table>
+<tr><th>Map</th><th>Key shape</th><th>Read by</th></tr>
+<tr><td><code>admissionMap</code></td><td><b><code>u_</code>-prefixed template</b> — <code>(in3[u_a,marker,u_b,u_+])</code></td><td><code>isAdmitted</code></td></tr>
+<tr><td><code>admissionMapIntegration</code></td><td><b><code>u_</code>-prefixed template</b> (same)</td><td><code>isAdmittedIntegration</code></td></tr>
+<tr><td><code>admissionSetIntegration</code></td><td><b>bare concrete, <code>repl_</code> kept</b> — <code>(in3[repl_2_0,marker,repl_2_3,4])</code></td><td>Pass&nbsp;B <code>int_</code> fallback</td></tr>
+<tr><td><code>rejectedMap</code></td><td><b>bare concrete</b> (Pass&nbsp;B marked output)</td><td><code>revisitRejected2</code></td></tr>
+<tr><td><code>rejectedMapIntegration</code></td><td><b>bare concrete</b> (same)</td><td><code>revisitRejectedIntegration2</code></td></tr>
+</table>
+<ul class="inv">
+<li><b>Bridges.</b> <code>isAdmittedIntegration</code> converts Pass&nbsp;B's bare
+marker form to <code>u_</code>-prefixed before probing the integration map.
+<code>removeUPrefixFromArguments</code> strips <code>u_</code> (keeping
+<code>repl_</code>) to cross from a template into the set / rejected side.</li>
+<li><b>Mnemonic.</b> <code>u_</code> = universal template; bare = concrete runtime
+instance. Admission MAPS store templates; the admission SET and both rejected MAPS
+store concrete instances.</li>
+</ul>
+
+<h3 id="admit-eq">4.2.4 &nbsp;Equivalence classes</h3>
+<p>
+When <code>(=[a,b])</code> is admitted, <code>a</code> and <code>b</code> join an
+<code>EquivalenceClass</code> at the current scope. The class is owned
+per-<code>validityName</code> (<code>Memory::equivalenceClassesMap</code>).
+</p>
+<table>
+<tr><th><code>EquivalenceClass</code></th><th>Holds</th></tr>
+<tr><td><code>memberIds</code></td><td>the known-equal members</td></tr>
+<tr><td><code>intEqualityLevelsMap</code></td><td>per-pair admission levels (for level gating)</td></tr>
+<tr><td><code>equalityOriginMap</code></td><td>provenance — which equalities formed the class (the merge logic's source of truth)</td></tr>
+</table>
+<ul class="inv">
+<li><b>Forming.</b> New pair → new class; one side known → extend; both known → merge.</li>
+<li><b>Mirror &amp; transitivity.</b> <code>(=[b,a])</code> emitted automatically when
+<code>a≠b</code> (<b>I-9</b>); transitivity is class membership, not a derived rule.</li>
+<li><b>Negated equality, one-sided.</b> <code>!(=[a,b])</code> expands to
+sibling inequalities on each side <i>separately</i>; the full cross-product is
+deliberately not emitted (combinatorial, no new content).</li>
+<li><b>Scoped &amp; additive.</b> A class at scope <code>S</code> is
+visible at every descendant. Cross-scope application deposits at
+<code>deeperOf(class, expr)</code> and <b>never overwrites the ancestor original</b>;
+cross-scope merge copies ancestor members in but leaves the ancestor class read-only
+(<b>I-31</b>).</li>
+</ul>
+
+<h3 id="admit-rev">4.2.5 &nbsp;The revival loop — a Gauss trace</h3>
+<p>
+A parked rejection revives two ways: an <b>equivalence-class rewrite</b>
+(<code>applyEquivalenceClassToRejectedMapIntegration</code>) turns its variables into
+a shape that now matches an admission entry, or a <b>new admission key</b> arrives
+(<code>revisitRejectedIntegration2</code>) that matches the parked key. Either way the
+rewritten constituent (plus siblings) is emitted to <code>sameIterationInternalMail</code> and
+absorbed at the <i>top</i> of the next cycle with <b>full re-expansion</b>
+(<code>status=1</code>, not the legacy mail's <code>status=3</code>). Asymmetries vs
+the algebra side: integration revival does <i>not</i> call
+<code>cleanAdmissionMap</code> (the rule stays live for future matches — <b>I-22</b>)
+and does <i>not</i> cascade through <code>addExprToMemoryBlock</code> (linear path
+only).
+</p>
+
+<figure>
+<svg viewBox="0 0 760 250" role="img" aria-label="The reject to revive loop">
+  <defs><marker id="rv-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#B084EB"/></marker></defs>
+  <rect x="300" y="18" width="160" height="44" rx="8" fill="#262938" stroke="#EF9F27"/><text x="380" y="38" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">rejectedMapIntegration</text><text x="380" y="54" fill="#8B8FA5" font-size="9.5" text-anchor="middle">parked entry</text>
+  <path d="M300 48 L150 82" stroke="#B084EB" stroke-width="1.5" marker-end="url(#rv-ar)"/>
+  <path d="M460 48 L610 82" stroke="#B084EB" stroke-width="1.5" marker-end="url(#rv-ar)"/>
+  <rect x="36" y="86" width="228" height="54" rx="8" fill="#262938" stroke="#B084EB"/><text x="150" y="107" fill="#B084EB" font-size="10.5" font-weight="bold" text-anchor="middle">equi-class rewrite</text><text x="150" y="125" fill="#8B8FA5" font-size="9" text-anchor="middle">applyEquivalenceClassTo…</text>
+  <rect x="496" y="86" width="228" height="54" rx="8" fill="#262938" stroke="#B084EB"/><text x="610" y="107" fill="#B084EB" font-size="10.5" font-weight="bold" text-anchor="middle">new admission key</text><text x="610" y="125" fill="#8B8FA5" font-size="9" text-anchor="middle">revisitRejectedIntegration2</text>
+  <path d="M150 140 L320 176" stroke="#B084EB" stroke-width="1.5" marker-end="url(#rv-ar)"/>
+  <path d="M610 140 L440 176" stroke="#B084EB" stroke-width="1.5" marker-end="url(#rv-ar)"/>
+  <rect x="270" y="178" width="220" height="46" rx="8" fill="#262938" stroke="#E879F9"/><text x="380" y="199" fill="#E879F9" font-size="10.5" font-weight="bold" text-anchor="middle">sameIterationInternalMail</text><text x="380" y="216" fill="#8B8FA5" font-size="9" text-anchor="middle">absorb top of next cycle, status=1</text>
+  <path d="M490 201 L560 201 L560 240 L380 240 L380 226" fill="none" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#rv-ar)"/>
+  <text x="635" y="205" fill="#EF9F27" font-size="10.5" font-weight="bold" text-anchor="middle">fires</text>
+</svg>
+<figcaption><b>Reject → rewrite → re-admit → fire.</b> The loop that turns “can't
+yet” into “done later”.</figcaption>
+</figure>
+
+<div class="ex">
+<span class="lab">Worked trace — a Gauss revival, end to end</span>
+<p style="margin:4px 0 0">Theorem <span class="st">sequence[1,4,2,X,Y] → sequence[1,4,2,9,11]</span>
+under <span class="st">limitSequence ∧ in2[9,12,3]</span>. Anchor mapping puts
+<span class="st">4=+</span>.</p>
+<ol>
+<li><b>Cycle N — reject.</b> A compound <span class="st">sequence[1,4,2,X,Y]</span>
+lands at <span class="st">v=main</span>. Pass&nbsp;B unfolds it and mints integration
+witness <span class="st">int_lev_2_42</span> for an inner existential. One body
+element is <span class="st">(in3[a,int_lev_2_42,b,4])</span>. Both admission probes
+miss (no template for these concrete <span class="st">a,b</span>). It's buffered;
+the cascade can't admit; committed:
+<br><span class="st">rejectedMapIntegration[(in3[a,marker,b,4])@main]</span> = { concrete
+<span class="st">(in3[a,int_lev_2_42,b,4])</span>, siblings
+<span class="st">[(in[int_lev_2_42,1])]</span>, compound
+<span class="st">sequence[1,4,2,X,Y]</span> }. Nothing visible was added — the proof
+is stuck on this rung.</li>
+<li><b>Cycle N+k — equi rewrite.</b> Another block proves
+<span class="st">(=[X,9])</span>. Class <span class="st">{X,9}</span> forms at
+<span class="st">v=main</span>. <code>applyEquivalenceClassToRejectedMapIntegration</code>
+fires: the rmi key contains <span class="st">a=X</span>; rewrite →
+<span class="st">(in3[9,marker,b,4])</span>; probe
+<span class="st">admissionMapIntegration[(in3[u_9,marker,u_b,u_4])]</span> →
+<b>MATCH</b> (an earlier compound's integration template registered it). Emit to
+<code>sameIterationInternalMail</code>: primary <span class="st">(in3[9,int_lev_2_42,b,4])</span>
+and sibling <span class="st">(in[int_lev_2_42,1])</span>, each with an
+<span class="st">equality1</span> origin <span class="st">[pre, (=[a,9])]</span>.
+Erase the rmi entry; leave the admission entry.</li>
+<li><b>Cycle N+k+1 — absorb &amp; prove.</b> Top-of-burst absorb at
+<code>status=1</code> → <code>disintegrateExpr2</code> runs, the two atoms land at
+<span class="st">v=main</span>, <code>updateAdmissionMapIntegration</code> fires on
+each, downstream integration picks them up, the enclosing
+<span class="st">sequence→sequence</span> implication's premise chain is now
+satisfied, head <span class="st">sequence[1,4,2,9,11]</span> derives and moves to
+<span class="st">theorems.txt</span>.</li>
+<li><b>What the verifier re-checks.</b> The chapter row for
+<span class="st">(in3[9,int_lev_2_42,b,4])</span> is tagged
+<span class="st">equality1</span> with source
+<span class="st">(in3[a,int_lev_2_42,b,4])</span> and equality
+<span class="st">(=[a,9])</span>: same core, arity 4, the one differing arg
+(position 0) is covered by the supplied equality → row passes
+(<a href="provenance.html">Chapter&nbsp;7</a>).</li>
+</ol>
+</div>
+
+<!-- ===================== 4.3 ===================== -->
+<h2 id="integ">4.3 &nbsp;Integration</h2>
+<p>
+Integration is disintegration run backwards: reassemble a compound from its
+constituents so the whole can be asserted as a conclusion. The two are a matched
+pair — the consumer-side output-slot registration integration performs
+(<code>updateAdmissionMap</code>) is exactly what populates the admission maps
+disintegration consults (§4.2.1). Reassembly uses
+<code>expandSignatureForIntegration</code> / <code>buildIntegrationInstruction</code>
+(both via the single binder rule, <b>I-4</b>) and is staged in a scoped child block:
+each step emits a <code>validity name</code> row (the scope it's bound to) and an
+<code>expansion for integration</code> row (the re-expansion); on completion it
+commits to the parent as one step. A staged integration that can't finish yet rides
+the same <code>sameIterationInternalMail</code> revival channel as a parked rejection. Three
+preparatory reformulation tags appear: <code>… and</code>, <code>… &gt;[bound]</code>
+(carrying the bound variable), <code>… &gt;[]</code> (witness slot already filled).
+</p>
+<figure>
+<svg viewBox="0 0 760 200" role="img" aria-label="Integration as the mirror of disintegration, staged then committed">
+  <defs><marker id="ig-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="40" y="22" width="180" height="44" rx="8" fill="#262938" stroke="#5DCAA5"/><text x="130" y="44" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">compound</text><text x="130" y="59" fill="#8B8FA5" font-size="9" text-anchor="middle">and / existence / impl</text>
+  <rect x="540" y="22" width="180" height="44" rx="8" fill="#262938" stroke="#5DCAA5"/><text x="630" y="44" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">constituents</text>
+  <path d="M222 36 L536 36" stroke="#EF9F27" stroke-width="1.6" marker-end="url(#ig-ar)"/><text x="380" y="28" fill="#EF9F27" font-size="11" text-anchor="middle">disintegration — take apart, fire pieces</text>
+  <path d="M536 56 L222 56" stroke="#B084EB" stroke-width="1.6" marker-end="url(#ig-ar)"/><text x="380" y="74" fill="#B084EB" font-size="11" text-anchor="middle">integration — reassemble, assert the whole</text>
+  <rect x="120" y="98" width="520" height="62" rx="9" fill="#1C1F2B" stroke="#B084EB"/>
+  <text x="380" y="120" fill="#B084EB" font-size="11.5" font-weight="bold" text-anchor="middle">staged in a scoped child</text>
+  <text x="380" y="140" fill="#8B8FA5" font-size="9.5" text-anchor="middle">per constituent: validity-name row + expansion-for-integration row → commit to parent as one step</text>
+  <text x="380" y="186" fill="#8B8FA5" font-size="11" text-anchor="middle">updateAdmissionMap here is what §4.2.1's admission gate reads — the two ends close each other's loop.</text>
+</svg>
+<figcaption><b>The handshake.</b> One direction fires the parts; the other rebuilds
+the whole and registers the shapes the first will be allowed to mint.</figcaption>
+</figure>
+
+<!-- ===================== 4.4 ===================== -->
+<h2 id="branch">4.4 &nbsp;Branching &amp; contradiction</h2>
+<p>
+Case analysis is the hardest thing GL does, and every FTA-ladder rung rests on it.
+An <code>or&lt;N&gt;</code> is a compiled disjunction (De Morgan:
+<code>E₁∨E₂ = !(&amp;!E₁!E₂)</code>).
+</p>
+
+<h3 id="branch-split">4.4.1 &nbsp;Splitting an OR</h3>
+<p>Splitting does two things at once:</p>
+<ul class="inv">
+<li><b>1a · K mutual-exclusion implications, at the parent scope.</b> For each
+disjunct <code>D_i</code>, the rule “if every other disjunct is false then
+<code>D_i</code>” (<code>K=2</code> collapses to <code>!A→B</code> /
+<code>!B→A</code>). <b>Unconditional</b>, and its <code>disintegration</code> origin
+is recorded <i>above</i> the admission gate so the OR stays auditable even if 1b is
+skipped.</li>
+<li><b>1b · one branch scope per disjunct.</b> <code>encodePush(…, "ordis_…")</code>,
+seeded with <code>D_i</code> asserted and the other disjuncts' negations as
+branch-local assumptions. Gated by the OR-admission check:
+<code>allowOrDisintegration</code>, fed from <code>LocalMemoryValue::productOfDisintegration</code>
+— set iff the firing rule itself is a product of disintegration (a premise carries a
+<code>u_</code> arg). Anchor-bound theorems never trigger it; this is the narrowed
+form after D-31's broad version exploded.</li>
+</ul>
+
+<figure>
+<svg viewBox="0 0 760 210" role="img" aria-label="OR split into parent-scope rules and per-branch scopes">
+  <defs><marker id="or-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="300" y="14" width="160" height="40" rx="8" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/><text x="380" y="32" fill="#EF9F27" font-size="12.5" font-weight="bold" text-anchor="middle">or&lt;N&gt; head</text><text x="380" y="47" fill="#8B8FA5" font-size="9" text-anchor="middle">D₁ ∨ … ∨ D_K</text>
+  <path d="M330 54 L190 84" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#or-ar)"/>
+  <path d="M430 54 L560 84" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#or-ar)"/>
+  <rect x="30" y="88" width="320" height="108" rx="9" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <text x="190" y="110" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">1a · K mutual-exclusion rules</text>
+  <text x="190" y="131" fill="#F0E8DC" font-size="10" text-anchor="middle">(¬D_others → D_i) at parent scope</text>
+  <text x="190" y="151" fill="#8B8FA5" font-size="9.5" text-anchor="middle">unconditional · always available</text>
+  <text x="190" y="178" fill="#EF9F27" font-size="9.5" text-anchor="middle">disintegration origin hoisted above the gate</text>
+  <rect x="410" y="88" width="320" height="108" rx="9" fill="#1C1F2B" stroke="#B084EB"/>
+  <text x="570" y="110" fill="#B084EB" font-size="12" font-weight="bold" text-anchor="middle">1b · branch scope per D_i</text>
+  <text x="570" y="131" fill="#F0E8DC" font-size="10" text-anchor="middle">D_i true, ¬D_j seeded as assumptions</text>
+  <text x="570" y="151" fill="#8B8FA5" font-size="9.5" text-anchor="middle">gated by productOfDisintegration</text>
+  <text x="570" y="178" fill="#8B8FA5" font-size="9.5" text-anchor="middle">each branch then runs on its own</text>
+</svg>
+<figcaption><b>Two things at once.</b> The parent-scope rules keep the OR auditable
+regardless; the branch scopes are where the case analysis happens.</figcaption>
+</figure>
+
+<h3 id="branch-conv">4.4.2 &nbsp;Convergence</h3>
+<p>Branches recombine in one of two shapes, detected by <code>classifyOrScope</code>:</p>
+<table>
+<tr><th><code>_orint_</code> — one branch proves</th><th><code>_ordis_</code> — all converge</th></tr>
+<tr><td>A single branch proves the goal's head. The OR is emitted at the OR's parent scope — computed by peeling the last <code>_boundary_</code> segment off the proving branch's name (not blindly <code>main</code>). The sibling branches are wiped by <code>cleanUpOrIntegrationBranches</code> (they were conditional on now-disproved assumptions).</td><td>Every branch independently reaches the same <code>C</code>. <code>ordisMerge</code> books each deposit in <code>orBookkeeping[(C, orSig)] → set&lt;branch&gt;</code>; when the count hits <code>orDisjunctCount[orSig]</code>, <code>C</code> is promoted to the parent via <code>sameIterationInternalMail</code> and only the converged copy collapsed — branches stay live for further convergences.</td></tr>
+</table>
+
+<h3 id="branch-contra">4.4.3 &nbsp;Contradiction discharge</h3>
+<p>
+If a branch's seeds are internally contradictory, it discharges by contradiction:
+reaching both <code>X</code> and <code>!X</code> lets the prover reconstruct the
+negated-head implication (stored in <code>contradictionTheoremId</code>), discharge the
+assumption, and emit the <i>original</i> conclusion into the parent scope.
+<code>primedForContradiction</code> is the flag that keeps the refuted block alive
+long enough for this. The discharge fires at most once per LB per step, gated on
+<code>isActive</code> (<b>I-78</b>). If <i>every</i> branch refutes, the parent ends up holding
+<code>¬D₁ ∧ … ∧ ¬D_K</code> (the OR itself is left unproved — no convergence fired).
+</p>
+<figure>
+<svg viewBox="0 0 760 150" role="img" aria-label="Contradiction discharge from a branch to its parent">
+  <defs><marker id="c-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="20" y="48" width="140" height="52" rx="9" fill="#262938" stroke="#B084EB"/><text x="90" y="70" fill="#B084EB" font-size="11" font-weight="bold" text-anchor="middle">branch seeds</text><text x="90" y="87" fill="#8B8FA5" font-size="9" text-anchor="middle">an assumption</text>
+  <path d="M160 74 L196 74" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#c-ar)"/>
+  <rect x="196" y="48" width="140" height="52" rx="9" fill="#262938" stroke="#EF9F27"/><text x="266" y="70" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">X and !X</text><text x="266" y="87" fill="#8B8FA5" font-size="9" text-anchor="middle">contradiction</text>
+  <path d="M336 74 L372 74" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#c-ar)"/>
+  <rect x="372" y="48" width="170" height="52" rx="9" fill="#262938" stroke="#5DCAA5"/><text x="457" y="70" fill="#5DCAA5" font-size="10.5" font-weight="bold" text-anchor="middle">contradictionTheoremId</text><text x="457" y="87" fill="#8B8FA5" font-size="9" text-anchor="middle">negated-head impl</text>
+  <path d="M542 74 L578 74" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#c-ar)"/>
+  <rect x="578" y="48" width="162" height="52" rx="9" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/><text x="659" y="70" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">conclusion</text><text x="659" y="87" fill="#8B8FA5" font-size="9" text-anchor="middle">→ parent scope</text>
+  <text x="380" y="130" fill="#8B8FA5" font-size="11" text-anchor="middle">All branches refute → parent holds ¬D₁ ∧ … ∧ ¬D_K; the OR stays unproved.</text>
+</svg>
+<figcaption><b>Discharge.</b> A self-contradictory case proves the negation of its
+own assumption and hands it up.</figcaption>
+</figure>
+
+<h3 id="branch-thm">4.4.4 &nbsp;OR-theorem construction</h3>
+<p>
+A theorem whose <i>head</i> is an OR is not proved directly. After the prove pass,
+<code>headSwitchOne</code> populates <code>orPairsFromHeadSwitch</code>;
+<code>run_modes::fullRun</code> pairs mutually-exclusive parents
+(<code>!D_a→D_b</code> with <code>!D_b→D_a</code>) and <code>constructOrTheorem</code>
+assembles the <code>or&lt;N&gt;</code> theorem. The disjunct set is canonicalised
+<code>(min,max)</code> to dedup the symmetric pair; the two parents are marked
+consumed and moved to <code>compressed_out_theorems.txt</code> — the OR subsumes
+them.
+</p>
+<figure>
+<svg viewBox="0 0 760 150" role="img" aria-label="Constructing an OR theorem from a mutually-exclusive pair">
+  <defs><marker id="ot-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="40" y="30" width="230" height="36" rx="8" fill="#262938" stroke="#5DCAA5"/><text x="155" y="53" fill="#F0E8DC" font-size="11" text-anchor="middle">parent A:  ¬D_a → D_b</text>
+  <rect x="40" y="84" width="230" height="36" rx="8" fill="#262938" stroke="#5DCAA5"/><text x="155" y="107" fill="#F0E8DC" font-size="11" text-anchor="middle">parent B:  ¬D_b → D_a</text>
+  <path d="M270 48 L322 66" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ot-ar)"/>
+  <path d="M270 102 L322 84" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ot-ar)"/>
+  <rect x="324" y="52" width="180" height="46" rx="9" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/><text x="414" y="73" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">constructOrTheorem</text><text x="414" y="90" fill="#8B8FA5" font-size="9" text-anchor="middle">head = or&lt;N&gt;[args]</text>
+  <path d="M504 75 L548 75" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ot-ar)"/>
+  <rect x="548" y="52" width="190" height="46" rx="9" fill="#262938" stroke="#5DCAA5"/><text x="643" y="73" fill="#F0E8DC" font-size="10.5" text-anchor="middle">OR kept · parents</text><text x="643" y="90" fill="#8B8FA5" font-size="9" text-anchor="middle">compressed out · dedup (D-55)</text>
+  <text x="380" y="140" fill="#8B8FA5" font-size="11" text-anchor="middle">Parents survive only as compressed-out artefacts — recoverable from the OR.</text>
+</svg>
+<figcaption><b>Constructed, not proved.</b> Assembled from the pair the prover
+already proved; the pair is then subsumed.</figcaption>
+</figure>
+
+<!-- ===================== 4.5 ===================== -->
+<h2 id="induct">4.5 &nbsp;Induction</h2>
+<p>
+Induction is scheduled on a structurally-identified <code>(1)</code>-typed bound
+variable. Three sub-goal blocks are spawned: <b>base</b>
+(<code>n := 0</code>), <b>step</b> (assume the head for <code>n</code>, prove for
+<code>s(n)</code>), and <b>typing</b> (prove <code>(in[n,N])</code> <i>first</i>,
+with <code>typingProofOnly</code> set so induction can't re-enter). The typing block
+is mandatory: without it, induction would range over all entities, not the naturals
+— unsound (<b>I-18</b>). All three must land before the theorem is promoted with
+<code>method = induction</code> (induction variable in the reference column); the
+chapter is the triad <code>check_zero</code> + <code>check_induction_condition</code>
++ <code>induction_typing</code>.
+</p>
+<figure>
+<svg viewBox="0 0 760 200" role="img" aria-label="The induction triad: base, step, typing">
+  <defs><marker id="in-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="300" y="14" width="160" height="40" rx="8" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/><text x="380" y="32" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">induction on n</text><text x="380" y="47" fill="#8B8FA5" font-size="9" text-anchor="middle">a (1)-typed bound var</text>
+  <path d="M340 54 L170 86" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#in-ar)"/>
+  <path d="M380 54 L380 86" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#in-ar)"/>
+  <path d="M420 54 L590 86" stroke="#B084EB" stroke-width="1.5" marker-end="url(#in-ar)"/>
+  <rect x="40" y="88" width="240" height="58" rx="9" fill="#262938" stroke="#5DCAA5"/><text x="160" y="111" fill="#5DCAA5" font-size="11.5" font-weight="bold" text-anchor="middle">base</text><text x="160" y="130" fill="#8B8FA5" font-size="9.5" text-anchor="middle">n := 0, prove the head</text>
+  <rect x="290" y="88" width="180" height="58" rx="9" fill="#262938" stroke="#5DCAA5"/><text x="380" y="111" fill="#5DCAA5" font-size="11.5" font-weight="bold" text-anchor="middle">step</text><text x="380" y="130" fill="#8B8FA5" font-size="9.5" text-anchor="middle">n ⇒ s(n)</text>
+  <rect x="480" y="88" width="240" height="58" rx="9" fill="#262938" stroke="#B084EB"/><text x="600" y="111" fill="#B084EB" font-size="11.5" font-weight="bold" text-anchor="middle">typing — mandatory</text><text x="600" y="130" fill="#8B8FA5" font-size="9.5" text-anchor="middle">prove (in[n,N]) first</text>
+  <text x="380" y="180" fill="#8B8FA5" font-size="11" text-anchor="middle">All three land → promote method=induction (triad chapter). Typing fails → induction rejected.</text>
+</svg>
+<figcaption><b>Three sub-goals, not two.</b> The typing sub-goal is what keeps
+induction sound over the naturals.</figcaption>
+</figure>
+
+<!-- ===================== 4.6 ===================== -->
+<h2 id="fan5">4.6 &nbsp;The 5-batch fan-out, in depth</h2>
+<p>
+Substrate §3.2.4 lists the five request-generation batches in summary. This
+section walks each one with the question it answers and the concrete pool it
+draws from. Reading this end-to-end is the single biggest win for
+understanding what one cycle actually does inside a logic block.
+</p>
+
+<table>
+<tr><th>#</th><th>Question the batch answers</th><th>Rule pool</th><th>Mandatory-fact source</th></tr>
+<tr><td>1</td><td>“Did the rules I already know fire against the facts I already know?”</td><td><code>workingMemory</code> — rules recovered from external mail this burst; emptied and refilled every burst.</td><td>This LB's full local facts (cumulative).</td></tr>
+<tr><td>2</td><td>“Did the rules I already know fire against the facts I just produced this cycle?”</td><td><code>overallHashMemory</code> — rules inherited from ancestors plus everything this LB has ever installed.</td><td><code>localEncodedStatementsDelta</code> — this cycle's new facts only.</td></tr>
+<tr><td>3</td><td>“Did any pair-shaped rule fire on a mix of my facts and mail?”</td><td>Pair-matching rules (two-premise hash chains).</td><td>Cartesian: local facts × incoming mail.</td></tr>
+<tr><td>4</td><td>“Did the rules I own (not ancestral) fire on every fact the mail brought, broadly?”</td><td>This LB's local rules (<code>localHashMemory</code>).</td><td>All mail at <code>v=main</code>, with the locality gate <i>relaxed</i> — the rule is allowed to fire even if no local fact is among the matched premises.</td></tr>
+<tr><td>5</td><td>“Did the rules I just installed this cycle fire on every visible fact, broadly?”</td><td>Fresh local rules: <code>localHashMemoryDelta</code>.</td><td>Every visible fact — full Cartesian over the cumulative local + visible-ancestor facts, again with the locality gate relaxed.</td></tr>
+</table>
+
+<figure>
+<svg viewBox="0 0 760 280" role="img" aria-label="The 5 batches as a 2-D matrix: rule-pool freshness × fact-pool freshness">
+  <defs><marker id="fn-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <text x="380" y="22" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">rule pool ↓ &nbsp;×&nbsp; fact pool →</text>
+
+  <line x1="170" y1="40" x2="170" y2="260" stroke="#3A3D4A"/>
+  <line x1="170" y1="60" x2="740" y2="60" stroke="#3A3D4A"/>
+
+  <text x="100" y="100" fill="#8B8FA5" font-size="11">working / overall</text>
+  <text x="100" y="160" fill="#8B8FA5" font-size="11">local + delta</text>
+  <text x="100" y="220" fill="#8B8FA5" font-size="11">pair matches</text>
+
+  <text x="270" y="50" fill="#8B8FA5" font-size="11" text-anchor="middle">cumulative local facts</text>
+  <text x="450" y="50" fill="#8B8FA5" font-size="11" text-anchor="middle">delta local facts</text>
+  <text x="630" y="50" fill="#8B8FA5" font-size="11" text-anchor="middle">all visible / mail</text>
+
+  <rect x="190" y="76" width="158" height="46" rx="6" fill="#262938" stroke="#5DCAA5"/>
+  <text x="269" y="98" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">1</text>
+  <text x="269" y="114" fill="#8B8FA5" font-size="9" text-anchor="middle">working × local</text>
+
+  <rect x="370" y="76" width="158" height="46" rx="6" fill="#262938" stroke="#5DCAA5"/>
+  <text x="449" y="98" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">2</text>
+  <text x="449" y="114" fill="#8B8FA5" font-size="9" text-anchor="middle">overall × delta</text>
+
+  <rect x="550" y="76" width="180" height="46" rx="6" fill="#1C1F2B" stroke="#3A3D4A"/>
+  <text x="640" y="98" fill="#8B8FA5" font-size="11" text-anchor="middle">— (no entry)</text>
+
+  <rect x="190" y="136" width="158" height="46" rx="6" fill="#1C1F2B" stroke="#3A3D4A"/>
+  <text x="269" y="158" fill="#8B8FA5" font-size="11" text-anchor="middle">— (no entry)</text>
+
+  <rect x="370" y="136" width="158" height="46" rx="6" fill="#1C1F2B" stroke="#3A3D4A"/>
+  <text x="449" y="158" fill="#8B8FA5" font-size="11" text-anchor="middle">— (no entry)</text>
+
+  <rect x="550" y="136" width="180" height="46" rx="6" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="640" y="158" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">4 &amp; 5</text>
+  <text x="640" y="174" fill="#8B8FA5" font-size="9" text-anchor="middle">broad locality gate off</text>
+
+  <rect x="190" y="196" width="540" height="46" rx="6" fill="#262938" stroke="#B084EB"/>
+  <text x="460" y="218" fill="#B084EB" font-size="12" font-weight="bold" text-anchor="middle">3 — pair matches across local × mail</text>
+  <text x="460" y="234" fill="#8B8FA5" font-size="9" text-anchor="middle">special-cased: pair-shaped rules need two premises in one fire</text>
+</svg>
+<figcaption><b>One block, five passes per cycle.</b> Batches 1–2 are tight
+(local-locality gate on); batches 4–5 are broad (gate off) so newly-mailed
+facts and freshly-installed rules can meet without waiting a cycle.</figcaption>
+</figure>
+
+<h3>4.6.1 &nbsp;Why batches 4 and 5 widen the gate</h3>
+<p>
+The locality gate — “at least one matched premise must be a fact this LB
+owns locally” — is a defence against the engine drowning in cross-product
+work. But when an ancestor scope mails in a new fact, or a freshly-installed
+local rule pairs against pre-existing inherited facts, the locality gate
+would <i>silently</i> withhold the obvious fire. Batches 4 and 5 are the
+exceptions: they relax the gate precisely once per cycle, and they cap the
+input pool to keep the relaxation cheap.
+</p>
+
+<h3>4.6.2 &nbsp;What happens if batch 5 is missing</h3>
+<p>
+A rule installed in cycle N would not see ancestor-inherited facts until
+cycle N+1 (batch 1's locality requirement misses the rule's freshness). The
+practical effect: a one-cycle delay across every rule installation. For a
+deep induction triad that installs and consumes rules in sequence, the delay
+multiplies — the run effectively becomes deeper × deeper. Batch 5 collapses
+that to one cycle.
+</p>
+
+<!-- ===================== 4.7 ===================== -->
+<h2 id="cascade">4.7 &nbsp;The pending-rejection cascade</h2>
+<p>
+A Pass-B mint that fails its admission probe is not immediately committed to
+<code>rejectedMap</code>; first the prover tries a <b>cascade</b>. The
+buffered variable is held in <code>pendingRejections</code> (or
+<code>pendingRejectionsIntegration</code> on the integration side), and the
+cascade re-runs the admission probe each time the admission map gains a new
+entry that <i>might</i> match. Only if the cascade exhausts without success
+is the rejection committed.
+</p>
+
+<figure>
+<svg viewBox="0 0 760 270" role="img" aria-label="Pending-rejection cascade — buffer, retry on new admission, commit on exhaust">
+  <defs><marker id="pr-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="22" y="22" width="160" height="44" rx="8" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="102" y="42" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">Pass B mints it_</text>
+  <text x="102" y="58" fill="#8B8FA5" font-size="9" text-anchor="middle">probe admission</text>
+
+  <path d="M182 44 L208 44" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#pr-ar)"/>
+
+  <rect x="208" y="22" width="100" height="44" rx="8" fill="#262938" stroke="#B084EB"/>
+  <text x="258" y="42" fill="#B084EB" font-size="11" font-weight="bold" text-anchor="middle">miss</text>
+  <text x="258" y="58" fill="#8B8FA5" font-size="9" text-anchor="middle">(both paths)</text>
+
+  <path d="M308 44 L334 44" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#pr-ar)"/>
+
+  <rect x="334" y="14" width="200" height="60" rx="9" fill="#1C1F2B" stroke="#B084EB"/>
+  <text x="434" y="34" fill="#B084EB" font-size="11" font-weight="bold" text-anchor="middle">pendingRejections</text>
+  <text x="434" y="50" fill="#F0E8DC" font-size="10" text-anchor="middle">buffer + key, siblings</text>
+  <text x="434" y="64" fill="#8B8FA5" font-size="9" text-anchor="middle">retry on every new admission</text>
+
+  <path d="M534 44 L560 44" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#pr-ar)"/>
+
+  <rect x="560" y="14" width="180" height="60" rx="9" fill="#262938" stroke="#5DCAA5"/>
+  <text x="650" y="34" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">cascade retry</text>
+  <text x="650" y="50" fill="#F0E8DC" font-size="10" text-anchor="middle">new admission arrived?</text>
+  <text x="650" y="64" fill="#8B8FA5" font-size="9" text-anchor="middle">re-probe each pending</text>
+
+  <path d="M650 74 L650 100" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#pr-ar)"/>
+
+  <rect x="540" y="104" width="200" height="46" rx="9" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="640" y="124" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">hit — emit, drop from buffer</text>
+  <text x="640" y="140" fill="#8B8FA5" font-size="9" text-anchor="middle">like a fresh fire</text>
+
+  <path d="M334 76 L334 168" stroke="#B084EB" stroke-width="1.4" stroke-dasharray="3 2" marker-end="url(#pr-ar)"/>
+
+  <rect x="220" y="172" width="240" height="46" rx="9" fill="#1C1F2B" stroke="#EF9F27"/>
+  <text x="340" y="192" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">cascade exhausts</text>
+  <text x="340" y="208" fill="#8B8FA5" font-size="9" text-anchor="middle">commit to rejectedMap{,Integration}</text>
+
+  <text x="380" y="252" fill="#8B8FA5" font-size="11" text-anchor="middle">The cascade is the buffer that turns "can't admit yet" into a deterministic later attempt.</text>
+  <text x="380" y="268" fill="#8B8FA5" font-size="11" text-anchor="middle">Direct commit to rejectedMap on first miss would lose admissions that arrive seconds later in the same cycle.</text>
+</svg>
+<figcaption><b>Buffer → retry → commit.</b> The cascade is what lets a single
+prove pass close iteration ladders that older versions of GL needed multiple
+big-iteration restarts to reach.</figcaption>
+</figure>
+
+<h3>4.7.1 &nbsp;Why the cascade matters for the single-pass model</h3>
+<p>
+Before the cascade existed, a Pass-B variable that couldn't admit on first
+probe was committed to <code>rejectedMap</code> immediately. If an admission
+arriving later in the <i>same cycle</i> would have admitted it, the rejection
+was wasted work — the prover would revive it via
+<code>revisitRejected2</code> only on the next cycle. The cascade collapses
+this latency: every admission arrival inside one cycle revisits the pending
+buffer, and only on cycle end (when no new admissions can arrive at the same
+LB) does the residual buffer commit to the rejected map.
+</p>
+
+<div class="key">
+<b>The interplay with the revival loop.</b> Once committed,
+<code>rejectedMap</code> is what the revival loop in §<a href="#admit-rev">4.2.5</a>
+reads. The cascade is the “try harder before committing”; the revival loop
+is the “try harder after committing.” Together they ensure no admission
+opportunity is silently lost.
+</div>
+
+<div class="note">
+Everything here ran single-threaded in the telling. Next: how the grid runs it on
+many threads, deterministically — <a href="parallel.html">parallel execution</a>.
+</div>
+
+<div class="pager">
+  <a href="substrate.html">&larr; 3 · The substrate</a>
+  <a href="parallel.html">5 · Parallel execution &rarr;</a>
+</div>
+
+<div class="foot">
+<b>License.</b> Generative Logic prover reference. © 2025-2026 Generative Logic UG
+(haftungsbeschränkt). Dual-licensed under the <b>GNU Affero General Public License
+v3 or later</b> and a <b>commercial license</b>; this document and the proof
+artefacts it describes inherit the same terms — commercial terms at
+<a href="https://generative-logic.com/license">generative-logic.com/license</a>.
+</div>
+
+</main>
+</body>
+</html>

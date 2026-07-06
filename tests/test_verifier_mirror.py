@@ -22,7 +22,7 @@
 # Contributions to this project must be made under the terms of the
 # Contributor License Agreement (CLA). See the project's CONTRIBUTING.md file.
 
-"""Failure tests for mirrored from / reformulated from / incubator back
+"""Failure tests for reformulated from / incubator back
 reformulation / externally provided theorem / variable copy / multiplied from.
 
 Each test injects exactly ONE subtle malformation. See
@@ -40,139 +40,11 @@ from tests.test_harness import (  # noqa: E402
     run_all_tests,
 )
 from verifier import (  # noqa: E402
-    check_mirrored_from, check_reformulated_from,
+    check_reformulated_from,
     check_incubator_back_reformulation,
     check_externally_provided_theorem,
     check_variable_copy, check_equalize_variable,
 )
-
-
-# ===========================================================================
-#  tag: mirrored from
-# ===========================================================================
-
-@register
-def test_mirrored_from_namespace_not_main():
-    """ns != 'main' -> reject up front."""
-    state = make_state_with_binaries(("Peano",))
-    line = make_proof_line(
-        "(in[a,N])",
-        "main_boundary_orint_X_((=[a,b]))",
-        "mirrored from",
-        "(>[v1](AnchorPeano[N,s,p,zero,one,two])(in[v1,N]))", "main",
-    )
-    assert_failure(check_mirrored_from, line, [line], state)
-
-
-@register
-def test_mirrored_from_rest_empty():
-    """rest empty -> ``len(rest) < 1`` short-circuit."""
-    state = make_state_with_binaries(("Peano",))
-    line = make_proof_line("(in[a,N])", "main", "mirrored from")
-    assert_failure(check_mirrored_from, line, [line], state)
-
-
-@register
-def test_mirrored_from_source_one_premise_only():
-    """_check_mirror requires src_premises >= 2 (need an anchor + at least
-    one non-anchor premise to identify a swap)."""
-    state = make_state_with_binaries(("Peano",))
-    line = make_proof_line(
-        "(in[a,N])", "main",
-        "mirrored from",
-        "(>[v1](AnchorPeano[N,s,p,zero,one,two]))", "main",  # anchor only
-    )
-    assert_failure(check_mirrored_from, line, [line], state)
-
-
-@register
-def test_mirrored_from_premise_count_mismatch():
-    """Source premise count != target premise count."""
-    state = make_state_with_binaries(("Peano",))
-    src = ("(>[v1,v2](AnchorPeano[N,s,p,zero,one,two])"
-           "(in[v1,N])(in[v2,N])(eq[v1,v2]))")
-    tgt = ("(>[v1](AnchorPeano[N,s,p,zero,one,two])"
-           "(in[v1,N])(eq[v1,v1]))")     # one fewer non-anchor premise
-    line = make_proof_line(tgt, "main", "mirrored from", src, "main")
-    assert_failure(check_mirrored_from, line, [line], state)
-
-
-@register
-def test_mirrored_from_source_head_core_unknown():
-    """Source head's core is not in state.output_indices -> reject."""
-    state = make_state_with_binaries(("Peano",))
-    src = ("(>[v1](AnchorPeano[N,s,p,zero,one,two])"
-           "(in[v1,N])(mysteryop[v1,v1]))")
-    tgt = ("(>[v1](AnchorPeano[N,s,p,zero,one,two])"
-           "(mysteryop[v1,v1])(in[v1,N]))")
-    line = make_proof_line(tgt, "main", "mirrored from", src, "main")
-    assert_failure(check_mirrored_from, line, [line], state)
-
-
-@register
-def test_mirrored_from_no_premise_with_matching_output_var():
-    """No non-anchor premise shares the source-head's output variable
-    -> swap_idx stays -1 -> reject."""
-    state = make_state_with_binaries(("Peano",))
-    # Pick operators known to ``output_indices`` (e.g. ``in3`` whose 3rd arg is
-    # the output). Source head has output var ``v9`` but no non-anchor
-    # premise carries ``v9`` at its output position.
-    src = ("(>[v1,v9](AnchorPeano[N,s,p,zero,one,two])"
-           "(in[v1,N])(in3[v1,v2,v9]))")
-    tgt = ("(>[v1,v9](AnchorPeano[N,s,p,zero,one,two])"
-           "(in3[v1,v2,v9])(in[v1,N]))")
-    line = make_proof_line(tgt, "main", "mirrored from", src, "main")
-    assert_failure(check_mirrored_from, line, [line], state)
-
-
-@register
-def test_mirrored_from_target_completely_unrelated():
-    """Target is an unrelated formula; permutations can't match."""
-    state = make_state_with_binaries(("Peano",))
-    src = ("(>[v1](AnchorPeano[N,s,p,zero,one,two])"
-           "(in[v1,N])(in[(s[v1]),N]))")
-    tgt = "(or2[a,b,c,d])"   # not even an implication
-    line = make_proof_line(tgt, "main", "mirrored from", src, "main")
-    assert_failure(check_mirrored_from, line, [line], state)
-
-
-@register
-def test_mirrored_from_target_arity_differs_in_head():
-    """Target head has an extra argument vs source's mirrored head."""
-    state = make_state_with_binaries(("Peano",))
-    src = ("(>[v1](AnchorPeano[N,s,p,zero,one,two])"
-           "(in[v1,N])(in[(s[v1]),N]))")
-    tgt = ("(>[v1](AnchorPeano[N,s,p,zero,one,two])"
-           "(in[(s[v1]),N])(in[v1,N,EXTRA]))")   # extra arg
-    line = make_proof_line(tgt, "main", "mirrored from", src, "main")
-    assert_failure(check_mirrored_from, line, [line], state)
-
-
-@register
-def test_mirrored_from_descendant_namespace():
-    """Result namespace is a descendant scope; mirror tag requires 'main'."""
-    state = make_state_with_binaries(("Peano",))
-    src = ("(>[v1](AnchorPeano[N,s,p,zero,one,two])"
-           "(in[v1,N])(in[(s[v1]),N]))")
-    tgt = src   # textually same; but ns is wrong
-    line = make_proof_line(
-        tgt, "main_boundary_orint_X_((=[a,b]))",
-        "mirrored from", src, "main",
-    )
-    assert_failure(check_mirrored_from, line, [line], state)
-
-
-@register
-def test_mirrored_from_target_changes_anchor_args():
-    """Target's anchor row has different anchor args than source's anchor
-    row -> after normalize they don't match."""
-    state = make_state_with_binaries(("Peano",))
-    src = ("(>[v1](AnchorPeano[N,s,p,zero,one,two])"
-           "(in[v1,N])(in[(s[v1]),N]))")
-    tgt = ("(>[v1](AnchorPeano[M,t,q,nil,uno,duo])"
-           "(in[(s[v1]),M])(in[v1,M]))")
-    line = make_proof_line(tgt, "main", "mirrored from", src, "main")
-    assert_failure(check_mirrored_from, line, [line], state)
 
 
 # ===========================================================================
@@ -386,6 +258,21 @@ def test_incubator_back_reformulation_rest_empty():
     assert_failure(check_incubator_back_reformulation, line, [line], state)
 
 
+@register
+def test_incubator_back_reformulation_wrong_rewrite():
+    # Gates pass (namespace main, rest non-empty) but the direct form
+    # eliminates the witness to the WRONG term (z, not the cited y), so the
+    # rewrite is unsound and must fail. Proves the check verifies the rewrite
+    # itself, not just the structural namespace/rest gates.
+    state = make_state_with_binaries(("Peano",))
+    line = make_proof_line(
+        "(>[x,y,z](AnchorPeano[x,y,z])(in3[x,x,z,+]))", "main",
+        "incubator back reformulation",
+        "(>[x,y,z](AnchorPeano[x,y,z])(>[w](in3[x,x,w,+])(=[w,y])))", "main",
+    )
+    assert_failure(check_incubator_back_reformulation, line, [line], state)
+
+
 # ===========================================================================
 #  tag: externally provided theorem
 # ===========================================================================
@@ -404,8 +291,7 @@ def test_externally_provided_theorem_namespace_not_main():
 
 @register
 def test_externally_provided_theorem_empty_externals():
-    """state.external_theorems empty -> direct membership fails, mirror
-    fallback finds nothing -> reject."""
+    """state.external_theorems empty -> direct membership fails -> reject."""
     state = make_state_with_binaries(("Peano",))   # no externals
     line = make_proof_line(
         "(>[v1](AnchorPeano[N,s,p,zero,one,two])(in[v1,N]))",
@@ -416,8 +302,8 @@ def test_externally_provided_theorem_empty_externals():
 
 @register
 def test_externally_provided_theorem_expr_not_in_externals():
-    """externals contains a DIFFERENT theorem; cited expression isn't a
-    mirror of it either."""
+    """externals contains a DIFFERENT theorem; the cited expression is
+    not in the external set."""
     state = make_state_with_externals(
         {"(>[v1](AnchorPeano[N,s,p,zero,one,two])(in[v1,N]))"})
     line = make_proof_line(
@@ -435,34 +321,6 @@ def test_externally_provided_theorem_descendant_scope():
         "(>[v1](AnchorPeano[N,s,p,zero,one,two])(in[v1,N]))",
         "main_boundary_recursion_((=[v1,i0]))",
         "externally provided theorem",
-    )
-    assert_failure(check_externally_provided_theorem, line, [line], state)
-
-
-@register
-def test_externally_provided_theorem_mirror_of_non_external():
-    """External has shape A; cited expr is a mirror of an UNRELATED
-    expression -> mirror loop yields no match."""
-    state = make_state_with_externals(
-        {"(>[v1](AnchorPeano[N,s,p,zero,one,two])(in[v1,N])(eq[v1,N]))"})
-    # Cited expression has nothing in common with the external.
-    line = make_proof_line(
-        "(>[w1](AnchorGauss[N,s,p,zero,one,two])(in[w1,N]))",
-        "main", "externally provided theorem",
-    )
-    assert_failure(check_externally_provided_theorem, line, [line], state)
-
-
-@register
-def test_externally_provided_theorem_partial_overlap_mirror_fails():
-    """Externals has a multi-premise theorem; cited is a single-premise
-    fragment that can't be mirrored from it."""
-    state = make_state_with_externals(
-        {"(>[v1,v2](AnchorPeano[N,s,p,zero,one,two])"
-         "(in[v1,N])(in[v2,N])(=[v1,v2]))"})
-    line = make_proof_line(
-        "(>[v1](AnchorPeano[N,s,p,zero,one,two])(in[v1,N]))",
-        "main", "externally provided theorem",
     )
     assert_failure(check_externally_provided_theorem, line, [line], state)
 

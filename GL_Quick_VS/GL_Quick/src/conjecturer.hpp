@@ -388,7 +388,7 @@ struct ExpressionDescription {
 ///      the JSON loader.
 /// @see `Conjecturer::passesInPremiseFilter` (`conjecturer.cpp`)
 ///      for the `in[...]` cnt-shape rules and the
-///      [D-23](../../docs/40_decisions.md#d-23)
+///      [D-23](../../docs/agentic_swdd/40_decisions.md#d-23)
 ///      anchor-membership-axiom rejection.
 struct ConfigurationParameters {
     /// @brief Lower bound for `nse` iteration. Setting `1` enables
@@ -443,7 +443,7 @@ struct ConfigurationParameters {
     /// JSON shape: `[a, b]`; legacy int values auto-promote to
     /// `[int, 100]`. See SwDD chapter `02_conjecturer.md` section
     /// *passesComplexityAfterExistence* and decision
-    /// [D-23](../../docs/40_decisions.md#d-23).
+    /// [D-23](../../docs/agentic_swdd/40_decisions.md#d-23).
     std::map<std::string, std::pair<int, int>> max_complexity_if_anchor_parameter_connected_after_existence;
 
     /// @brief Length cap for binary-sequence enumeration in
@@ -645,6 +645,37 @@ struct TreeGuard {
 /// @return `true` if any inner-paren leaf token occurs at least
 ///         twice; `false` otherwise.
 bool repetitionsExist(const std::string& s);
+
+/// @brief Append the reverse-direction mirror conjectures into the prove
+///        pool, de-duplicated, so each is genuinely proved.
+///
+/// @details
+/// The conjecturer computes, for every conjecture, the mirror that swaps the
+/// head with the premise sharing the head's output variable (see
+/// `Conjecturer::createReshuffledMirrored`). Those mirrors were historically
+/// written only to the archival `reshuffled_mirrored_conjectures.txt`, and the
+/// prover fabricated the reverse direction post-proof as an unproved
+/// `mirrored statement` row. This helper instead folds the mirrors into the
+/// actual prove pool (`conjectures.txt`), exactly as the OR existence/companion
+/// pairs are folded in, so each mirror passes through the counterexample
+/// filter — a false mirror is discarded there — and is proved by the normal
+/// engine. The reverse direction therefore becomes an explicit, genuine proof
+/// rather than an assertion.
+///
+/// Entries are appended in input order, skipping two defined cases that are
+/// part of the contract (not failure fallbacks): an empty string — the mirror
+/// of a conjecture whose head is symmetric collapses to nothing under I-9, a
+/// defined "no distinct reverse direction" result — and any mirror already
+/// present in `pool` (or repeated within `mirrors`). The caller sorts `pool`
+/// afterwards for deterministic output.
+///
+/// @param pool    The prove-pool conjecture list, appended to in place.
+/// @param mirrors Mirror conjectures; may contain empties and duplicates.
+/// @return Number of mirror conjectures actually appended to `pool`.
+/// @see Conjecturer::createReshuffledMirrored — produces the mirror strings.
+/// @see D-112 — the decision this helper implements.
+int mergeMirrorConjecturesIntoPool(std::vector<std::string>& pool,
+                                   const std::vector<std::string>& mirrors);
 
 /// @brief Parse a definition-set text into a tree plus the list of
 ///        argument ids it references.
@@ -953,7 +984,7 @@ namespace testing { class Friend; }  // forward declaration for the unit-test ac
 /// Two execution lanes coexist (int-path / string-path); see the
 /// SwDD chapter for the full architecture. The int-path was added
 /// during the 100x acceleration campaign
-/// ([D-20](../../docs/40_decisions.md#d-20)) and is the hot lane.
+/// ([D-20](../../docs/agentic_swdd/40_decisions.md#d-20)) and is the hot lane.
 /// The string-path is retained for final-stage structural checks
 /// (pattern matching, mirror generation, reshuffle) where the
 /// string form is unavoidable.
@@ -963,13 +994,13 @@ namespace testing { class Friend; }  // forward declaration for the unit-test ac
 /// thread pool inside `run()` and read only the immutable post-
 /// construction state.
 ///
-/// @see [`docs/10_pipeline/02_conjecturer.md`](../../docs/10_pipeline/02_conjecturer.md)
+/// @see [`docs/agentic_swdd/10_pipeline/02_conjecturer.md`](../../docs/agentic_swdd/10_pipeline/02_conjecturer.md)
 ///      — full architecture, filter-cascade details, reshuffle
 ///      pipeline, weaknesses.
-/// @see [I-8](../../docs/30_invariants.md#i-8),
-///      [I-9](../../docs/30_invariants.md#i-9),
-///      [I-10](../../docs/30_invariants.md#i-10),
-///      [I-11](../../docs/30_invariants.md#i-11) — invariants the
+/// @see [I-8](../../docs/agentic_swdd/30_invariants.md#i-8),
+///      [I-9](../../docs/agentic_swdd/30_invariants.md#i-9),
+///      [I-10](../../docs/agentic_swdd/30_invariants.md#i-10),
+///      [I-11](../../docs/agentic_swdd/30_invariants.md#i-11) — invariants the
 ///      conjecturer enforces or relies on.
 class Conjecturer {
 public:
@@ -1011,7 +1042,7 @@ public:
     explicit Conjecturer(const std::string& anchorId);
 
     /// @brief Generate conjectures for the loaded batch and write
-    ///        `theorems.txt` plus the canonical-form / mirror-form
+    ///        `conjectures.txt` plus the canonical-form / mirror-form
     ///        companion files.
     ///
     /// @details
@@ -1025,9 +1056,9 @@ public:
     /// per-expression `allow_to_constitute_existence` flags).
     /// Final write to:
     ///
-    /// - `theorems.txt` — raw survivors.
-    /// - `reshuffled_theorems.txt` — canonical-form survivors.
-    /// - `reshuffled_mirrored_theorems.txt` — mirror variants.
+    /// - `conjectures.txt` — raw survivors.
+    /// - `reshuffled_conjectures.txt` — canonical-form survivors.
+    /// - `reshuffled_mirrored_conjectures.txt` — mirror variants.
     /// - `or_pairs.txt` — OUTPUT artefact recording the
     ///   `(existence, companion)` pairs emitted this run; opened
     ///   with `std::ios::out` and overwritten each invocation. Not
@@ -1082,7 +1113,7 @@ private:
     /// @brief Adapter for shim functions that need
     ///        `ce::CoreExpressionConfig`. One entry per expression
     ///        name; populated by `buildCoreExprMapAdapter`.
-    std::map<std::string, ce::CoreExpressionConfig> coreExprMap_;
+    ce::CoreExpressionMap coreExprMap_;
 
     /// @brief Resolved project root (for theorem-file output).
     ///        Computed in the constructor from `argv[0]`.
@@ -1270,9 +1301,9 @@ private:
     ///        order.
     ///
     /// @details
-    /// Largely superseded by `reshuffle` on the `rt_conjecturer*`
-    /// branches but retained because some callers still consume
-    /// its returned `(text, defSets, renameMap)` triple directly.
+    /// Largely superseded by `reshuffle` but retained because some
+    /// callers still consume its returned `(text, defSets,
+    /// renameMap)` triple directly.
     ///
     /// @param expr Source expression.
     /// @param deep Whether to descend into nested existence heads.
@@ -1446,7 +1477,7 @@ private:
     /// `findEntryArgs2`, `getTertiaries`, `checkTertiaries`) to
     /// walk the chain and verify the ordering invariant.
     ///
-    /// @invariant [I-10](../../docs/30_invariants.md#i-10) — bound
+    /// @invariant [I-10](../../docs/agentic_swdd/30_invariants.md#i-10) — bound
     ///            variables appear left-to-right in input-arg
     ///            positions.
     bool checkInputVariablesOrder(const std::string& theorem) const;
@@ -1464,7 +1495,7 @@ private:
     /// the trivial form. See SwDD chapter `02_conjecturer.md`
     /// section *controlEquality* for the D-21 -> D-23 history.
     ///
-    /// @invariant [I-8](../../docs/30_invariants.md#i-8) — trivial
+    /// @invariant [I-8](../../docs/agentic_swdd/30_invariants.md#i-8) — trivial
     ///            equality forbidden in head; enforced via
     ///            `countArgumentsFilter`.
     bool controlEquality(const std::string& conjecture) const;
@@ -1579,8 +1610,8 @@ private:
 
     // ---- Reshuffling & mirroring ----
 
-    /// @brief Canonicalise a conjecture into its `theorems.txt` /
-    ///        `reshuffled_theorems.txt` form.
+    /// @brief Canonicalise a conjecture into its `conjectures.txt` /
+    ///        `reshuffled_conjectures.txt` form.
     ///
     /// @details
     /// Pipeline (per SwDD chapter `02_conjecturer.md` section
@@ -1613,7 +1644,7 @@ private:
     /// 0 of the result (used when the caller has not yet anchor-
     /// pinned).
     ///
-    /// @invariant [I-9](../../docs/30_invariants.md#i-9) — a
+    /// @invariant [I-9](../../docs/agentic_swdd/30_invariants.md#i-9) — a
     ///            mirror survives only if it differs from its
     ///            source after both pass through `reshuffle`.
     std::string createReshuffledMirrored(const std::string& expr, bool anchorFirst = false) const;
@@ -1725,7 +1756,7 @@ private:
     ///
     /// @details
     /// Top-of-function gate — anchor-membership-axiom rejection
-    /// ([D-23](../../docs/40_decisions.md#d-23)). Reject any
+    /// ([D-23](../../docs/agentic_swdd/40_decisions.md#d-23)). Reject any
     /// `(in[v, X])` premise (positive or negated) where BOTH `v`
     /// AND `X` are anchor-slot values, since the anchor's own
     /// axioms already entail it.
@@ -1789,7 +1820,7 @@ private:
     /// `or_pairs.txt`. The current implementation derives pairs
     /// directly from per-expression
     /// `allow_to_constitute_existence` flags. Pairs are emitted
-    /// into `theorems.txt` alongside ordinary conjectures and the
+    /// into `conjectures.txt` alongside ordinary conjectures and the
     /// prover treats them via the `or disintegration` /
     /// `or convergence` tags.
     std::vector<std::pair<std::string,std::string>> generateOrConjectures() const;

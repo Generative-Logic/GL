@@ -70,7 +70,7 @@ namespace gl {
     /// performs greedy multi-pass redundancy elimination: a theorem is
     /// "dead" if it can be removed without breaking any other theorem's
     /// derivability. Survivors form the output set, which becomes the
-    /// authoritative `files/theorems/proved_theorems.txt` content — the
+    /// authoritative `files/theorems/theorems.txt` content — the
     /// regression-claim source of truth for the run.
     ///
     /// Determinism is non-negotiable: `std::stable_sort` orders the
@@ -78,7 +78,7 @@ namespace gl {
     /// reproducible across runs (see OPEN-13 in the SwDD).
     ///
     /// @see [`CompressorNode`](#compressornode) — per-LB graph type.
-    /// @see `docs/10_pipeline/05_compressor.md` — full pipeline-stage
+    /// @see `docs/agentic_swdd/10_pipeline/05_compressor.md` — full pipeline-stage
     ///      chapter.
     class Compressor {
     public:

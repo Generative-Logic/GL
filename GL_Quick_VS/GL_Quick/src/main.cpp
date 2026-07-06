@@ -24,21 +24,44 @@
 
 #include <iostream>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <csignal>
+#include <ctime>
+#include <exception>
+#include <mutex>
 #include <string>
 #include <cstring>
 #include <fstream>
+#include <filesystem>
+#include <cassert>
+#ifdef _WIN32
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  ifndef NOMINMAX
+#    define NOMINMAX  // keep windows.h from clobbering std::min / std::max
+#  endif
+#  include <windows.h>
+#  include <crtdbg.h>
+#endif
 #ifdef USE_MIMALLOC
 #include <mimalloc.h>
 #endif
 #include "run_modes.hpp"
 #include "conjecturer.hpp"
 #include "prover.hpp"
+#include "memory_infra/global_memory_manager.hpp"
 #include "tests/test_harness.hpp"
+
+namespace {
+
+} // namespace
 
 int main(int argc, char* argv[]) {
     // Whether this invocation is the --unit-tests gate. Suppresses the
     // mimalloc banner below so the console-summary contract documented
-    // in `docs/_meta/testing.md` ("one line on success: N/N Unit tests
+    // in `docs/agentic_swdd/_meta/testing.md` ("one line on success: N/N Unit tests
     // passed") holds. The gate still loads mimalloc via the static
     // link; only the version printout is silenced.
     const bool isUnitTests =
@@ -53,9 +76,10 @@ int main(int argc, char* argv[]) {
     auto start = std::chrono::high_resolution_clock::now();
 
     // Note: .debug/hashburst_trace.txt is NOT truncated here. It is
-    // truncated inside performElementaryLogicalStep on the first burst
-    // where the target-LB guard fires (prover.cpp:2384,
-    // burstCount == 1 ? std::ios::trunc : std::ios::app). That keeps the
+    // truncated inside the ENTRY hashburst-dump trap
+    // (`hashburst_dump::dumpEntry`, reached from `performElemPhase1`) on the
+    // first ENTRY for the target LB (entryCount == 1 ? std::ios::trunc :
+    // std::ios::app). That keeps the
     // trace from being wiped by sibling gl_quick.exe invocations in the
     // same main.py session whose batches do not match the target LB —
     // e.g. the IncubatorGauss1 trace would otherwise be erased by the
@@ -64,7 +88,13 @@ int main(int argc, char* argv[]) {
     // --mirror-externals <theoremsDir>: rebuild compressed_external_theorems.txt
     if (argc >= 3 && std::strcmp(argv[1], "--mirror-externals") == 0) {
         namespace fs = std::filesystem;
-        const fs::path projectRoot = fs::path(argv[0]).parent_path().parent_path().parent_path();
+        // argv[0] may be relative (`./gl_quick`); make it absolute and
+        // lexically normalise before walking up to the project root, or the
+        // three parent_path() steps collapse a relative path to empty.
+        std::error_code argvEc;
+        const fs::path projectRoot =
+            fs::absolute(fs::path(argv[0]), argvEc).lexically_normal()
+                .parent_path().parent_path().parent_path();
         const fs::path theoremsDir = projectRoot / argv[2];
         const fs::path extPath = theoremsDir / "externally_provided_theorems.txt";
         const fs::path compPath = theoremsDir / "compressed_external_theorems.txt";
@@ -145,6 +175,20 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
+    // --ce-only <anchorId>: run only the counterexample filter on the
+    // existing conjectures.txt, write filtered_conjectures.txt, exit. No main
+    // prover, no compression, no proof graph. Fast iteration loop used to
+    // tighten the Peano CE filter — see
+    // `peano_filter_design_decisions.md` D-rtf-1.
+    if (argc >= 3 && std::strcmp(argv[1], "--ce-only") == 0) {
+        std::string anchorId = argv[2];
+        run_modes::ceOnlyRun(anchorId);
+        auto end = std::chrono::high_resolution_clock::now();
+        std::cout << "CE-only runtime: "
+            << std::chrono::duration<double>(end - start).count() << " seconds\n";
+        return 0;
+    }
+
     // --unit-tests: run the in-tree unit-test harness and exit. main.py
     // invokes this before run_modes.full_run() so a regression aborts the
     // pipeline before any pipeline work or proof run. Direct invocations
@@ -164,16 +208,19 @@ int main(int argc, char* argv[]) {
     if (argc >= 2 && std::strcmp(argv[1], "--unit-tests") == 0) {
         namespace fs = std::filesystem;
         std::error_code ec;
+        // argv[0] may be relative (`./gl_quick` when run from the build
+        // dir). Make it absolute and lexically normalise before walking up
+        // to the project root, otherwise the three parent_path() steps
+        // collapse a relative path to empty and the chdir is skipped, so the
+        // config search runs from the build dir and aborts on missing-anchor.
+        const fs::path exePath =
+            fs::absolute(fs::path(argv[0]), ec).lexically_normal();
         const fs::path projectRoot =
-            fs::path(argv[0]).parent_path().parent_path().parent_path();
-        if (!projectRoot.empty()) {
-            fs::current_path(projectRoot, ec);
-            if (ec) {
-                std::cerr << "[unit-tests] warning: chdir to project root '"
-                          << projectRoot.string() << "' failed: "
-                          << ec.message() << "\n";
-            }
-        }
+            exePath.parent_path().parent_path().parent_path();
+        assert(!projectRoot.empty()
+               && "project-root walk from argv[0] yielded an empty path");
+        fs::current_path(projectRoot, ec);
+        assert(!ec && "chdir to project root failed");
         return gl::tests::runAllTests();
     }
 
@@ -182,7 +229,7 @@ int main(int argc, char* argv[]) {
     std::string anchor_id = (argc > 1) ? std::string(argv[1]) : "Gauss";
 
     // run_modes::quickRun();
-    run_modes::fullRun(anchor_id);  // <-- pass it through
+    run_modes::fullRun(anchor_id);
 
     // Return memory to OS (mimalloc retains free pages by default)
 #ifdef USE_MIMALLOC
@@ -193,5 +240,9 @@ int main(int argc, char* argv[]) {
     const double secs = std::chrono::duration<double>(end - start).count();
     std::cout << "Runtime of the executable (counter example filter + prover): "
         << secs << " seconds" << std::endl;
+
+    // Two-level page-directory spill telemetry for this batch (observability;
+    // a forced-small-page run reports a non-zero promotion count).
+    gl::staticMemory().reportPageStats();
     return 0;
 }

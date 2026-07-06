@@ -1,0 +1,811 @@
+<!--
+Generative Logic: A deterministic reasoning and knowledge generation engine.
+Copyright (C) 2025-2026 Generative Logic UG (haftungsbeschränkt).
+Dual-licensed under the GNU Affero General Public License v3 or later
+and a commercial license — see https://generative-logic.com/license.
+
+User-oriented SwDD — Chapter 3: The substrate (reference-level).
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GL Prover User SwDD — 3 · The substrate</title>
+<meta name="copyright" content="© 2025-2026 Generative Logic UG">
+<meta name="license" content="AGPL-3.0-or-later">
+<meta name="robots" content="noindex, nofollow, noai, noimageai">
+<link rel="stylesheet" href="assets/swdd.css">
+</head>
+<body>
+
+<nav id="side">
+  <div class="brand">GL · <span>User SwDD</span></div>
+  <div class="tag">The prover subsystem — reference concepts &amp; diagrams</div>
+  <ol>
+    <li><a href="index.html">Overview</a>
+      <ul>
+        <li><a href="index.html#what">What GL is</a></li>
+        <li><a href="index.html#pipeline">The pipeline</a></li>
+        <li><a href="index.html#deductive">Deductive neighbourhood</a></li>
+        <li><a href="index.html#artefacts">Artefacts on disk</a></li>
+        <li><a href="index.html#read">How to read this</a></li>
+        <li><a href="index.html#glossary">Quick glossary</a></li>
+        <li><a href="index.html#bounds">What is &amp; isn't in this doc</a></li>
+      </ul>
+    </li>
+    <li><a href="prover.html">The prover at a glance</a>
+      <ul>
+        <li><a href="prover.html#life">Life of a run</a></li>
+        <li><a href="prover.html#cycles">Cycles</a></li>
+        <li><a href="prover.html#enter">How a theorem enters</a></li>
+        <li><a href="prover.html#status">Status modes</a></li>
+        <li><a href="prover.html#deactivate">Deactivation cascade</a></li>
+        <li><a href="prover.html#dump">The hashburst dump</a></li>
+      </ul>
+    </li>
+    <li><a href="substrate.html" class="current">The substrate</a>
+      <ul>
+        <li><a href="substrate.html#lb">Logic blocks</a></li>
+        <li><a href="substrate.html#hash">Hash engine</a></li>
+        <li><a href="substrate.html#mail">Mail</a></li>
+        <li><a href="substrate.html#scope">Scope &amp; validity</a></li>
+        <li><a href="substrate.html#compile">Compilation</a></li>
+        <li><a href="substrate.html#delta">Delta machinery</a></li>
+        <li><a href="substrate.html#wipe">Subtree wipe</a></li>
+      </ul>
+    </li>
+    <li><a href="mechanisms.html">Proof mechanisms</a>
+      <ul>
+        <li><a href="mechanisms.html#disint">Disintegration</a></li>
+        <li><a href="mechanisms.html#admit">Admission, rejection &amp; equi-classes</a></li>
+        <li><a href="mechanisms.html#integ">Integration</a></li>
+        <li><a href="mechanisms.html#branch">Branching &amp; contradiction</a></li>
+        <li><a href="mechanisms.html#induct">Induction</a></li>
+        <li><a href="mechanisms.html#fan5">5-batch fan-out</a></li>
+        <li><a href="mechanisms.html#cascade">Pending-rejection cascade</a></li>
+      </ul>
+    </li>
+    <li><a href="parallel.html">Parallel execution</a>
+      <ul>
+        <li><a href="parallel.html#pool">The worker pool</a></li>
+        <li><a href="parallel.html#barrier">The join barrier</a></li>
+        <li><a href="parallel.html#collect">Serial collectors</a></li>
+        <li><a href="parallel.html#why">Why deferral — a race</a></li>
+        <li><a href="parallel.html#asic">The silicon mapping</a></li>
+        <li><a href="parallel.html#mailbox">Per-LB mailbox geometry</a></li>
+        <li><a href="parallel.html#cycleN">The cycle-N rule</a></li>
+      </ul>
+    </li>
+    <li><a href="memory.html">Static memory</a>
+      <ul>
+        <li><a href="memory.html#why">Why static</a></li>
+        <li><a href="memory.html#hierarchy">The memory hierarchy</a></li>
+        <li><a href="memory.html#virtual">The page tier</a></li>
+        <li><a href="memory.html#aggregate">LbMemory — the aggregate</a></li>
+        <li><a href="memory.html#deload">Deload / reload</a></li>
+        <li><a href="memory.html#scope">Scope</a></li>
+      </ul>
+    </li>
+    <li><a href="provenance.html">Provenance</a>
+      <ul>
+        <li><a href="provenance.html#record">Recording an origin</a></li>
+        <li><a href="provenance.html#local">Locality</a></li>
+        <li><a href="provenance.html#lift">The chapter walker</a></li>
+        <li><a href="provenance.html#lift-mech">Lift — soundness</a></li>
+        <li><a href="provenance.html#barrier">OR-branch barrier</a></li>
+        <li><a href="provenance.html#cycle">Path-cycle filter</a></li>
+        <li><a href="provenance.html#contraswitch">Contradiction fallback</a></li>
+        <li><a href="provenance.html#notinput">Never a proof input</a></li>
+      </ul>
+    </li>
+    <li><a href="compilation.html">Compilation &amp; names</a>
+      <ul>
+        <li><a href="compilation.html#why">Two canonical forms</a></li>
+        <li><a href="compilation.html#pre">Precompilation</a></li>
+        <li><a href="compilation.html#names">The five name families</a></li>
+        <li><a href="compilation.html#counters">Counters &amp; registry</a></li>
+        <li><a href="compilation.html#namemap">NameMap &amp; scopes</a></li>
+        <li><a href="compilation.html#encoded">EncodedExpression → IntNormalizedKey</a></li>
+        <li><a href="compilation.html#pool">The static-memory floor</a></li>
+        <li><a href="compilation.html#fail">Failure modes</a></li>
+      </ul>
+    </li>
+    <li><a href="anchors.html">Anchors &amp; types</a>
+      <ul>
+        <li><a href="anchors.html#what">What an anchor is</a></li>
+        <li><a href="anchors.html#three">The four anchors</a></li>
+        <li><a href="anchors.html#types">Slot types</a></li>
+        <li><a href="anchors.html#handling">Anchor handling</a></li>
+        <li><a href="anchors.html#copy">The <code>_copy</code> machinery</a></li>
+        <li><a href="anchors.html#tag">The proof-graph row</a></li>
+        <li><a href="anchors.html#i29">Variable-port consistency</a></li>
+        <li><a href="anchors.html#bridge">Cross-anchor bridges</a></li>
+      </ul>
+    </li>
+    <li><a href="reformulation.html">Reformulation &amp; head switch</a>
+      <ul>
+        <li><a href="reformulation.html#why">Why reformulation</a></li>
+        <li><a href="reformulation.html#switch">Head switch — the walk</a></li>
+        <li><a href="reformulation.html#sites">Two call sites</a></li>
+        <li><a href="reformulation.html#mirror">Both directions proved</a></li>
+        <li><a href="reformulation.html#back">Back-reformulation</a></li>
+        <li><a href="reformulation.html#contra">Contradiction reconstruction</a></li>
+        <li><a href="reformulation.html#orthm">OR-theorem assembly</a></li>
+        <li><a href="reformulation.html#methods">The five method tags</a></li>
+      </ul>
+    </li>
+    <li><a href="auxiliary.html">CE filter &amp; compressor</a>
+      <ul>
+        <li><a href="auxiliary.html#engine">Same engine, two modes</a></li>
+        <li><a href="auxiliary.html#ce">Counterexample filter</a></li>
+        <li><a href="auxiliary.html#j">The j-copy trick</a></li>
+        <li><a href="auxiliary.html#comp">Compressor — throwaway trees</a></li>
+        <li><a href="auxiliary.html#p1">Phase 1 — dependency graphs</a></li>
+        <li><a href="auxiliary.html#p2">Phase 2 — greedy elimination</a></li>
+        <li><a href="auxiliary.html#out">What lands on disk</a></li>
+      </ul>
+    </li>
+  </ol>
+</nav>
+
+<main>
+<h1><span class="num">3 ·</span> The substrate</h1>
+<p class="lede">The five things every proof step stands on, with their real fields and
+key shapes: the logic block, the hash engine inside it, mail between blocks, the
+scope a fact is true in, and the compilation that makes hashing canonical.</p>
+
+<div class="toc">
+  <strong>On this page</strong>
+  <ol>
+    <li><a href="#lb">3.1 &nbsp;Logic blocks</a>
+      <ol><li><a href="#lb-tree">The block tree</a></li><li><a href="#lb-inside">Inside one block — the <code>Memory</code> fields</a></li><li><a href="#lb-life">Lifecycle &amp; per-core batching</a></li></ol></li>
+    <li><a href="#hash">3.2 &nbsp;Hash engine</a>
+      <ol><li><a href="#hash-idea">Inference is a memory lookup</a></li><li><a href="#hash-store">The rule store — <code>HashMemory</code> &amp; <code>LocalMemoryValue</code></a></li><li><a href="#hash-cycle">The query-fire cycle</a></li><li><a href="#hash-local">A local rule, non-local facts — the 5-batch fan-out</a></li></ol></li>
+    <li><a href="#mail">3.3 &nbsp;Mail</a>
+      <ol><li><a href="#mail-proto">The cycle-boundary protocol</a></li><li><a href="#mail-chan">The two channels</a></li><li><a href="#mail-gate">Main-only gate &amp; deferred collectors</a></li></ol></li>
+    <li><a href="#scope">3.4 &nbsp;Scope &amp; validity</a>
+      <ol><li><a href="#scope-first">First-class scope</a></li><li><a href="#scope-mint"><code>NameMap</code> &amp; minting</a></li><li><a href="#scope-stack">The stack, comparison &amp; cleanup</a></li></ol></li>
+    <li><a href="#compile">3.5 &nbsp;Compilation</a>
+      <ol><li><a href="#compile-pre">Structural-operator precompilation</a></li><li><a href="#compile-int">Integer encoding &amp; canonicality</a></li><li><a href="#compile-impl">Implication compaction</a></li></ol></li>
+    <li><a href="#delta">3.6 &nbsp;Delta machinery — what one cycle added</a></li>
+    <li><a href="#wipe">3.7 &nbsp;Subtree wipe — deferred to burst boundary</a></li>
+  </ol>
+</div>
+
+<!-- ===================== 3.1 LOGIC BLOCKS ===================== -->
+<h2 id="lb">3.1 &nbsp;Logic blocks</h2>
+<p>
+A <b>logic block</b> (LB) is the unit of execution: a self-contained hash-inference
+engine that owns all of its own state and reaches its neighbours only by mail. The
+class is <code>Memory</code>. The whole prover is a tree of these; the model is
+silicon-shaped — one block ↔ one core on the ASIC roadmap.
+</p>
+
+<h3 id="lb-tree">3.1.1 &nbsp;The block tree</h3>
+<p>
+One root, <code>body</code> (empty <code>exprKey</code>, <code>parentMemory =
+nullptr</code>). Children are created on demand, in six kinds. <code>parentMemory</code>
+walks up; child edges route down by key, held off the block in the shared,
+never-deloaded <code>SimpleMapStore</code>. Every cross-scope move follows this
+chain of explicit parent/child links — there is no global symbol table.
+</p>
+
+<figure>
+<svg viewBox="0 0 760 330" role="img" aria-label="The logic-block tree and its six child kinds">
+  <defs><marker id="t-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="305" y="18" width="150" height="44" rx="9" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="380" y="38" fill="#EF9F27" font-size="13" font-weight="bold" text-anchor="middle">body (root)</text>
+  <text x="380" y="54" fill="#8B8FA5" font-size="9.5" text-anchor="middle">exprKey="" · parent=null</text>
+  <g font-size="10.5">
+    <line x1="380" y1="62" x2="80"  y2="108" stroke="#5DCAA5" stroke-width="1.1"/>
+    <line x1="380" y1="62" x2="218" y2="108" stroke="#5DCAA5" stroke-width="1.1"/>
+    <line x1="380" y1="62" x2="356" y2="108" stroke="#5DCAA5" stroke-width="1.1"/>
+    <line x1="380" y1="62" x2="494" y2="108" stroke="#5DCAA5" stroke-width="1.1"/>
+    <line x1="380" y1="62" x2="632" y2="108" stroke="#5DCAA5" stroke-width="1.1"/>
+    <rect x="16"  y="110" width="128" height="46" rx="7" fill="#262938" stroke="#5DCAA5"/><text x="80"  y="129" fill="#F0E8DC" text-anchor="middle">target proof</text><text x="80" y="146" fill="#8B8FA5" font-size="9" text-anchor="middle">per conjecture</text>
+    <rect x="154" y="110" width="128" height="46" rx="7" fill="#262938" stroke="#B084EB"/><text x="218" y="129" fill="#F0E8DC" text-anchor="middle">hypothesis</text><text x="218" y="146" fill="#8B8FA5" font-size="9" text-anchor="middle">assumed premise</text>
+    <rect x="292" y="110" width="128" height="46" rx="7" fill="#262938" stroke="#B084EB"/><text x="356" y="129" fill="#F0E8DC" text-anchor="middle">OR branch</text><text x="356" y="146" fill="#8B8FA5" font-size="9" text-anchor="middle">per disjunct</text>
+    <rect x="430" y="110" width="128" height="46" rx="7" fill="#262938" stroke="#B084EB"/><text x="494" y="129" fill="#F0E8DC" text-anchor="middle">integration</text><text x="494" y="146" fill="#8B8FA5" font-size="9" text-anchor="middle">staging</text>
+    <rect x="568" y="110" width="128" height="46" rx="7" fill="#262938" stroke="#5DCAA5"/><text x="632" y="129" fill="#F0E8DC" text-anchor="middle">auxiliary</text><text x="632" y="146" fill="#8B8FA5" font-size="9" text-anchor="middle">induction triad</text>
+  </g>
+  <path d="M150 210 L150 184" stroke="#5DCAA5" stroke-width="1.4" marker-end="url(#t-ar)"/>
+  <text x="240" y="203" fill="#8B8FA5" font-size="11">parentMemory — walk up</text>
+  <path d="M470 184 L470 210" stroke="#5DCAA5" stroke-width="1.4" marker-end="url(#t-ar)"/>
+  <text x="556" y="203" fill="#8B8FA5" font-size="11">SimpleMapStore — route down</text>
+  <rect x="16" y="232" width="680" height="80" rx="8" fill="#20232F" stroke="#3A3D4A"/>
+  <text x="356" y="256" fill="#F0E8DC" font-size="11.5" text-anchor="middle">6th kind: compressor blocks</text>
+  <text x="356" y="277" fill="#8B8FA5" font-size="10.5" text-anchor="middle">freshly-allocated, NOT in this tree — each loads all proved theorems as rules,</text>
+  <text x="356" y="293" fill="#8B8FA5" font-size="10.5" text-anchor="middle">runs hash bursts to extract one theorem's derivation graph, then is deleted</text>
+</svg>
+<figcaption><b>One root, six child kinds.</b> Five live in the main tree for the
+whole run; compressor blocks are independent throwaway trees.</figcaption>
+</figure>
+
+<h3 id="lb-inside">3.1.2 &nbsp;Inside one block — the <code>Memory</code> fields</h3>
+<p>The load-bearing fields, grouped by what they do:</p>
+<table>
+<tr><th>Field</th><th>What it holds</th></tr>
+<tr><td><code>exprKey</code> · <code>level</code> · <code>isActive</code></td><td>the expression this block proves/stores; scope depth; whether it steps this cycle</td></tr>
+<tr><td><code>primedForContradiction</code></td><td>override that keeps a contradiction block alive past <code>deactivateRecursively</code> so its discharge can fire</td></tr>
+<tr><td><code>intToBeProved</code></td><td>goals not yet derived — packed int keys, auxy-set values; on a set-map in the never-deloaded persistent pool, so the deactivation survey reads it even while the block's main storage is on disk (<a href="memory.html">§6</a>)</td></tr>
+<tr><td><code>intKnownStatements</code></td><td>every known expression — packed int key with <code>registered</code> / <code>known</code> membership bits</td></tr>
+<tr><td><code>intEncodedStatements</code></td><td>the statement registry — int16 rows only; string form reconstructed on demand via <code>decodeExpression</code>; statified — paged storage (<a href="memory.html">§6</a>)</td></tr>
+<tr><td><code>intLocalEncodedStatements{,Delta}</code> · <code>intLocalEncodedStatementsSet</code></td><td>local-only deposits (when <code>addStatement(local=true)</code>); the <code>Set</code> is a packed-int-key O(1) view feeding the disintegration locality gate</td></tr>
+<tr><td><code>intStatementLevelsMap</code></td><td>per-expression admission ordering — packed int keys, level sets; statified onto a cold set-map (<a href="memory.html">§6</a>)</td></tr>
+<tr><td><code>overallHashMemory</code> · <code>localHashMemory{,Delta}</code></td><td>the rule index visible here (inherited+local) and the per-scope local rules / pending delta</td></tr>
+<tr><td><code>stackOfValidity</code> · <code>nameMap</code></td><td>per-scope payload metadata (paged, cold); the scope-ID encoder (§3.4)</td></tr>
+<tr><td><code>equivalenceClassesMap</code></td><td>equality classes, one per <code>validityName</code> (§4.2)</td></tr>
+<tr><td><code>mailIn</code> · <code>mailOut</code> · <code>sameIterationInternalMail</code> · <code>nextIterationInternalMail</code></td><td>routing inbox/outbox; the per-block same-step integration-revival inbox and the cross-iteration deferral inbox (§3.3). All off the heap: the routing pair on a per-block HOT arena (transient, never deloaded); the two internal channels COLD on the deloadable arena, since they must survive deload (<a href="memory.html">§6</a>)</td></tr>
+<tr><td><code>parentMemory</code> · <code>SimpleMapStore</code></td><td>up-pointer; children by interned routing key (the down-edges live off the block, in a shared never-deloaded store)</td></tr>
+<tr><td><code>exprOriginMap</code></td><td>provenance for every emission (§7)</td></tr>
+<tr><td><code>startInt</code> · <code>startIntRepl</code> · <code>startIntPi</code></td><td>the three Pass&nbsp;B freshness counters (<b>I-17</b>: each must stay monotonic on its own)</td></tr>
+<tr><td><code>orBookkeeping</code></td><td>OR-branch convergence tracking — packed <code>(exprId, sigId)</code> keys → branch-disjunct id sets</td></tr>
+</table>
+<div class="note"><b>Nothing here is shared.</b> That is the entire reason a cycle can
+run blocks on different threads with no locks (<a href="parallel.html">Chapter&nbsp;5</a>).</div>
+
+<h3 id="lb-life">3.1.3 &nbsp;Lifecycle &amp; per-core batching</h3>
+<p>
+Birth → registration into <code>permanentBodies</code> and under the parent in the
+<code>SimpleMapStore</code> → active stepping while <code>isActive</code> →
+<code>deactivateRecursively</code> when the goal proves or the scope discharges →
+teardown. Main blocks persist for the run; compressor blocks are explicitly
+<code>delete</code>d. The driver carries the grid as <code>permanentBodies</code> (all
+LBs); cross-block mail is the pull model
+(<code>MailLog</code> on the analyzer — see §3.3, the per-core <code>boxes</code> and
+the old parent→children index are deleted). The counterexample filter has the parallel
+<code>permanentBodiesCE</code> set because
+it uses a different request generator and budget.
+</p>
+<figure>
+<svg viewBox="0 0 760 130" role="img" aria-label="Block lifecycle">
+  <defs><marker id="l-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <g font-size="11.5">
+    <rect x="14"  y="40" width="110" height="42" rx="8" fill="#262938" stroke="#5DCAA5"/><text x="69"  y="65" fill="#F0E8DC" text-anchor="middle">birth</text>
+    <path d="M124 61 L150 61" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#l-ar)"/>
+    <rect x="150" y="40" width="130" height="42" rx="8" fill="#262938" stroke="#5DCAA5"/><text x="215" y="65" fill="#F0E8DC" text-anchor="middle">registration</text>
+    <path d="M280 61 L306 61" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#l-ar)"/>
+    <rect x="306" y="36" width="138" height="50" rx="8" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/><text x="375" y="56" fill="#EF9F27" font-weight="bold" text-anchor="middle">active</text><text x="375" y="73" fill="#8B8FA5" font-size="9" text-anchor="middle">steps while isActive</text>
+    <path d="M444 61 L470 61" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#l-ar)"/>
+    <rect x="470" y="40" width="148" height="42" rx="8" fill="#262938" stroke="#B084EB"/><text x="544" y="60" fill="#F0E8DC" text-anchor="middle">deactivation</text><text x="544" y="75" fill="#8B8FA5" font-size="8.5" text-anchor="middle">deactivateRecursively</text>
+    <path d="M618 61 L644 61" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#l-ar)"/>
+    <rect x="644" y="40" width="104" height="42" rx="8" fill="#262938" stroke="#5DCAA5"/><text x="696" y="65" fill="#F0E8DC" text-anchor="middle">teardown</text>
+  </g>
+  <text x="544" y="106" fill="#8B8FA5" font-size="10.5" text-anchor="middle">primedForContradiction overrides this</text>
+  <text x="696" y="106" fill="#8B8FA5" font-size="10.5" text-anchor="middle">main: persists</text>
+</svg>
+<figcaption><b>Birth to teardown.</b> The one subtlety is the contradiction
+override — keep a refuted branch alive just long enough to harvest its result.</figcaption>
+</figure>
+
+<!-- ===================== 3.2 HASH ENGINE ===================== -->
+<h2 id="hash">3.2 &nbsp;Hash engine</h2>
+
+<h3 id="hash-idea">3.2.1 &nbsp;Inference is a memory lookup</h3>
+<p>
+A traditional prover searches for a derivation. A GL block asks: <i>does any rule I
+know already fire on what I have?</i> Every implication is hashed by its premise
+pattern; a matching fact is an O(1) lookup. Correctness rests on canonicality —
+alpha-equivalent expressions must hash identically — which §3.5 guarantees.
+</p>
+
+<h3 id="hash-store">3.2.2 &nbsp;The rule store — <code>HashMemory</code> &amp; <code>LocalMemoryValue</code></h3>
+<p>
+<code>HashMemory</code>'s heart is <code>encodedMap</code>: a premise-pattern integer
+hash → a list of rule entries (<code>LocalMemoryValue</code>) sharing that pattern.
+Around it sit the admission and rejection maps (the subject of
+<a href="mechanisms.html#admit">§4.2</a>) and an owner-set existence index.
+</p>
+<table>
+<tr><th><code>HashMemory</code> field</th><th>Role · key shape</th></tr>
+<tr><td><code>encodedMap</code></td><td>the rule registry: <code>IntNormalizedKey</code> → <code>list&lt;LocalMemoryValue&gt;</code>. One key can hold several rules.</td></tr>
+<tr><td><code>admissionMap</code></td><td>algebra admission template — <b><code>u_</code>-prefixed</b>. Consulted by <code>isAdmitted</code>.</td></tr>
+<tr><td><code>admissionMapIntegration</code></td><td>integration-side template — <b><code>u_</code>-prefixed</b>. Consulted by <code>isAdmittedIntegration</code>.</td></tr>
+<tr><td><code>admissionSetIntegration</code></td><td>secondary integration admission — <b>bare concrete, <code>repl_</code> preserved</b>. Pass&nbsp;B <code>int_</code> fallback.</td></tr>
+<tr><td><code>rejectedMap</code></td><td><code>it_</code> rejections — <b>bare concrete</b>. Revived by <code>revisitRejected2</code>.</td></tr>
+<tr><td><code>rejectedMapIntegration</code></td><td><code>int_</code> rejections — <b>bare concrete</b>. Revived by <code>revisitRejectedIntegration2</code>; rewritten by the equi-class helper.</td></tr>
+<tr><td><code>varsInRejectedMapIntegrationKeys</code></td><td>monotonic cache of args appearing in any rmi key — fast class-overlap short-circuit (never shrinks).</td></tr>
+<tr><td><code>normalizedEncodedKeys</code> (+ subkey indices)</td><td>active key → owner-set of <code>(impl, scope)</code> — refcount-by-owner existence check; a key drops only when its owner-set empties.</td></tr>
+</table>
+<table>
+<tr><th><code>LocalMemoryValue</code> field</th><th>Role</th></tr>
+<tr><td><code>value</code></td><td>what to emit — the head's normalised template (head LMV) or the marker-form expression (marker LMV)</td></tr>
+<tr><td><code>levels</code></td><td><code>(statementLevel, equalityLevel)</code> at install time</td></tr>
+<tr><td><code>originalImplication</code> · <code>justification</code></td><td>full MPL + tag category for the proof graph — <i>empty on marker LMVs</i></td></tr>
+<tr><td><code>key</code> · <code>remainingArgs</code></td><td>the chain that keyed this entry; args still to bind at fire time</td></tr>
+<tr><td><code>validityName</code></td><td>the scope this rule is active in</td></tr>
+<tr><td><code>productOfDisintegration</code></td><td>true iff a premise has a <code>u_</code> arg; gates OR-disintegration. Stamped on <i>head</i> LMVs only.</td></tr>
+</table>
+<div class="note"><b>Two insert sites, one map.</b> <code>addToHashMemory</code> writes a
+<b>head-implication LMV</b> (fires when the chain hash-matches; full provenance) and,
+via <code>makeNormalizedKeysForAdmission</code>, a <b>marker LMV</b> (the premise with
+its output arg replaced by the literal <code>"marker"</code>; fires only during the
+Pass&nbsp;B <code>int_</code> admission probe; provenance fields empty). Any new LMV
+field must pick a site deliberately.</div>
+
+<h3 id="hash-cycle">3.2.3 &nbsp;The query-fire cycle</h3>
+<p>Per block, per cycle, inside the elementary step (the phase-2 hashburst):</p>
+<figure>
+<svg viewBox="0 0 760 250" role="img" aria-label="The six-step query-fire cycle with real function names">
+  <defs><marker id="q-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <g font-size="11">
+    <rect x="12" y="56" width="118" height="58" rx="8" fill="#262938" stroke="#5DCAA5"/><text x="71" y="79" fill="#5DCAA5" font-weight="bold" text-anchor="middle">1 request</text><text x="71" y="96" fill="#8B8FA5" font-size="9" text-anchor="middle">generateEncoded-</text><text x="71" y="107" fill="#8B8FA5" font-size="9" text-anchor="middle">RequestsStatic</text>
+    <path d="M130 85 L150 85" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#q-ar)"/>
+    <rect x="150" y="56" width="118" height="58" rx="8" fill="#262938" stroke="#5DCAA5"/><text x="209" y="79" fill="#5DCAA5" font-weight="bold" text-anchor="middle">2 look up</text><text x="209" y="96" fill="#8B8FA5" font-size="9" text-anchor="middle">encodedMap via</text><text x="209" y="107" fill="#8B8FA5" font-size="9" text-anchor="middle">normalizedEncodedKeys</text>
+    <path d="M268 85 L288 85" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#q-ar)"/>
+    <rect x="288" y="56" width="118" height="58" rx="8" fill="#262938" stroke="#5DCAA5"/><text x="347" y="79" fill="#5DCAA5" font-weight="bold" text-anchor="middle">3 bind</text><text x="347" y="96" fill="#8B8FA5" font-size="9" text-anchor="middle">remainingArgs over</text><text x="347" y="107" fill="#8B8FA5" font-size="9" text-anchor="middle">each LMV</text>
+    <path d="M406 85 L426 85" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#q-ar)"/>
+    <rect x="426" y="52" width="118" height="66" rx="8" fill="#262938" stroke="#B084EB"/><text x="485" y="74" fill="#B084EB" font-weight="bold" text-anchor="middle">4 admit?</text><text x="485" y="91" fill="#8B8FA5" font-size="9" text-anchor="middle">isAdmitted /</text><text x="485" y="103" fill="#8B8FA5" font-size="9" text-anchor="middle">isAllowedAsOperatorInput</text>
+    <path d="M544 85 L564 85" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#q-ar)"/>
+    <rect x="564" y="52" width="118" height="66" rx="8" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/><text x="623" y="74" fill="#EF9F27" font-weight="bold" text-anchor="middle">5 fire</text><text x="623" y="91" fill="#F0E8DC" font-size="9" text-anchor="middle">addStatement +</text><text x="623" y="103" fill="#8B8FA5" font-size="9" text-anchor="middle">exprOriginMap</text>
+    <path d="M623 118 L623 150 L385 150 L385 170" fill="none" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#q-ar)"/>
+    <rect x="285" y="172" width="200" height="50" rx="8" fill="#262938" stroke="#E879F9"/><text x="385" y="194" fill="#E879F9" font-weight="bold" text-anchor="middle">6 broadcast</text><text x="385" y="212" fill="#8B8FA5" font-size="9" text-anchor="middle">if v="main" → mailOut.statements</text>
+  </g>
+  <text x="485" y="38" fill="#8B8FA5" font-size="10.5" text-anchor="middle">step 4 fail → parked, not lost (§4.2.2)</text>
+</svg>
+<figcaption><b>Six steps, every block, every cycle.</b> Step&nbsp;4 is the
+fresh-variable gate; step&nbsp;6 is the only exit from the block.</figcaption>
+</figure>
+
+<h3 id="hash-local">3.2.4 &nbsp;A local rule, non-local facts — the 5-batch fan-out</h3>
+<p>
+A rule a block owns may fire on facts it does not own (inherited from an ancestor
+scope) — correct, not a leak. Request generation fans out over five batches pairing
+a rule pool with a mandatory-fact source; batches&nbsp;4&nbsp;and&nbsp;5 are
+deliberately <i>broad</i> so a freshly-installed rule still meets every visible fact,
+not only this cycle's.
+</p>
+<table>
+<tr><th>#</th><th>Rule pool</th><th>Mandatory facts from</th><th>Local?</th></tr>
+<tr><td>1</td><td>mail-recovered rules</td><td>this block's local facts</td><td>✓</td></tr>
+<tr><td>2</td><td>overall rules</td><td>this cycle's new local facts</td><td>✓ delta</td></tr>
+<tr><td>3</td><td>pair matches</td><td>local × mail pairs</td><td>mixed</td></tr>
+<tr><td>4</td><td>local rules</td><td><b>incoming mail (broad, v=main)</b></td><td>✗</td></tr>
+<tr><td>5</td><td>fresh local rules</td><td><b>all visible facts (broad)</b></td><td>✗</td></tr>
+</table>
+
+<!-- ===================== 3.3 MAIL ===================== -->
+<h2 id="mail">3.3 &nbsp;Mail</h2>
+
+<h3 id="mail-proto">3.3.1 &nbsp;The cycle-boundary protocol</h3>
+<p>
+Parallelism and determinism pull against each other; mail resolves it by pinning
+every inter-block observation to the cycle boundary. The carrier is the <b>pull
+model</b> (<code>MailLog</code> on the analyzer): each block stores the mail it emits
+<b>once</b> in its own append-only log, and a receiver pulls from its ancestors.
+Four phases: <b>(1)</b> cycle start — each block <b>pulls</b> the batches it has not
+yet ingested from each ancestor's log into its <code>mailIn</code> (walking its parent
+chain, advancing a per-(recipient, ancestor) cursor); <b>(2)</b> body — each main-scope
+emission pushes to <code>mailOut</code>; <b>(3)</b> cycle end — the single-threaded
+<b>commit barrier</b> appends each block's <code>mailOut</code> as one batch to its own
+log, then clears <code>mailOut</code>; <b>(4)</b> next start — the pull delivers
+(every payload arrives as a <code>statement</code> — atomic facts route to
+<code>addStatement</code> and compact implication forms <code>(implication&lt;N&gt;[…])</code>
+route to <code>addStatement</code> with <code>status=3</code>, which recovers the rule
+into hash memory without re-disintegration; origins merged; positive 2-arg equality
+origins additionally synced into the matching
+<code>EquivalenceClass.equalityOriginMap</code> so the merge logic doesn't re-derive
+them into cycles), then clears it. <b>An LB's cycle-N execution cannot depend on
+anything another LB produced in cycle N.</b> Storing each emission once — instead of
+copying it into every descendant's inbox — is the point: the per-cycle staging storage
+drops from O(descendants) to O(1) (the retired push routing <code>sendMail</code> /
+per-core <code>boxes</code> / <code>smashMail</code> is deleted).
+</p>
+
+<h3 id="mail-chan">3.3.2 &nbsp;The two channels</h3>
+<table>
+<tr><th><code>Mail</code> field</th><th>Shape</th></tr>
+<tr><td><code>statements</code></td><td><code>set&lt;pair&lt;ExpressionWithValidity, levels&gt;&gt;</code> — each carries its install scope. Atomic facts and compact-form implications <code>(implication&lt;N&gt;[…])</code> share this single payload channel.</td></tr>
+<tr><td><code>exprOriginMap</code></td><td><code>map&lt;ExpressionWithValidity, list&lt;Origin&gt;&gt;</code> — provenance to merge</td></tr>
+</table>
+<p>
+<b>One payload field, not two.</b> A previous design carried implications on a
+separate <code>Mail::implications</code> tuple channel
+(<code>set&lt;tuple&lt;chain, head, args, levels, theorem&gt;&gt;</code>) deposited inline
+at broadcast time. That channel is deleted: every implication now ships as a
+compact <code>(implication&lt;N&gt;[…])</code> statement on the same
+<code>Mail::statements</code> field as atomic facts, and the receiver's
+<code>addStatement</code> recognises the compact head and routes it back into hash
+memory under <code>status=3</code> (recover-the-rule, no re-disintegration).
+The unification removed an entire parallel mail path and one race the previous
+inline-deposit shape kept exposing — see Chapter&nbsp;3.5 §3.5.3 for the
+compilation half of the story.
+</p>
+<p>
+Every block has <code>mailIn</code>/<code>mailOut</code> (the per-block <b>staging</b>
+buffers for the pull model)
+and two internal channels — <code>sameIterationInternalMail</code> (the
+<b>integration-revival</b> / same-step channel) and <code>nextIterationInternalMail</code>
+(cross-iteration deferral), both the same struct. They differ from routing only in
+lifecycle and absorb mode:
+</p>
+<figure>
+<svg viewBox="0 0 760 250" role="img" aria-label="Routing channel versus integration-revival channel, by lifecycle">
+  <defs><marker id="m-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#E879F9"/></marker></defs>
+  <text x="200" y="26" fill="#E879F9" font-size="12.5" font-weight="bold" text-anchor="middle">pull — main-only, ancestor → descendant</text>
+  <rect x="40" y="40" width="110" height="44" rx="8" fill="#262938" stroke="#E879F9"/><text x="95" y="60" fill="#F0E8DC" font-size="10.5" text-anchor="middle">A.mailOut</text><text x="95" y="76" fill="#8B8FA5" font-size="9" text-anchor="middle">v=main only</text>
+  <path d="M150 62 L196 62" stroke="#E879F9" stroke-width="1.5" marker-end="url(#m-ar)"/>
+  <rect x="196" y="40" width="150" height="44" rx="8" fill="#262938" stroke="#5DCAA5"/><text x="271" y="60" fill="#5DCAA5" font-size="10.5" font-weight="bold" text-anchor="middle">commit + pull</text><text x="271" y="76" fill="#8B8FA5" font-size="9" text-anchor="middle">via ancestor's MailLog log</text>
+  <path d="M346 62 L392 62" stroke="#E879F9" stroke-width="1.5" marker-end="url(#m-ar)"/>
+  <rect x="392" y="40" width="120" height="44" rx="8" fill="#262938" stroke="#E879F9"/><text x="452" y="60" fill="#F0E8DC" font-size="10.5" text-anchor="middle">B.mailIn</text><text x="452" y="76" fill="#8B8FA5" font-size="9" text-anchor="middle">absorb next-cycle start</text>
+  <text x="630" y="55" fill="#8B8FA5" font-size="10" text-anchor="middle">status=3</text><text x="630" y="69" fill="#8B8FA5" font-size="10" text-anchor="middle">(no re-disintegrate)</text>
+  <line x1="40" y1="108" x2="720" y2="108" stroke="#3A3D4A" stroke-dasharray="4 3"/>
+  <text x="200" y="142" fill="#B084EB" font-size="12.5" font-weight="bold" text-anchor="middle">integration-revival — scope-aware, within a block</text>
+  <rect x="120" y="158" width="360" height="56" rx="8" fill="#262938" stroke="#B084EB"/><text x="300" y="180" fill="#B084EB" font-size="10.5" font-weight="bold" text-anchor="middle">same block — sameIterationInternalMail (no outbox)</text><text x="300" y="199" fill="#8B8FA5" font-size="9" text-anchor="middle">filled during the step by revival; full re-expansion on absorb</text>
+  <path d="M480 186 L536 186" stroke="#B084EB" stroke-width="1.5" marker-end="url(#m-ar)"/>
+  <text x="630" y="178" fill="#8B8FA5" font-size="10" text-anchor="middle">status=1</text><text x="630" y="192" fill="#8B8FA5" font-size="10" text-anchor="middle">full re-expansion</text>
+  <text x="300" y="234" fill="#8B8FA5" font-size="10" text-anchor="middle">scope-aware channel, absorbed within the block</text>
+</svg>
+<figcaption><b>Two channels, one boundary.</b> Routing: main-scope, between blocks,
+end-of-burst, no re-disintegration. Revival: scoped, within a block,
+full re-disintegration. Same struct — only lifecycle differs.</figcaption>
+</figure>
+
+<h3 id="mail-gate">3.3.3 &nbsp;Main-only gate &amp; deferred collectors</h3>
+<p>
+<code>mailOut.statements</code> is <b>main-only by contract</b> (<b>I-26</b>): a
+rule proved under a hypothesis is conditional on it; shipping it verbatim and
+reinstalling at <code>v=main</code> would drop the condition and fire unsoundly. A
+peer that needs a scoped fact re-derives it. With the implications channel deleted
+(§3.3.2) this gate now covers both atomic-fact statements and compact-form
+implications — a single rule for a single channel. <code>mailOut.exprOriginMap</code>
+is <i>not</i> gated — provenance for <i>all</i> scopes flows, so the chapter
+walker can resolve cross-LB chains.
+</p>
+<p>
+Mail routes downward (parent→children). An <b>ancestor-direction</b> write from a
+descendant cannot use it. The accepted pattern is a class-level
+<b>deferred-action collector</b>: a mutex-guarded vector on the analyzer, drained
+single-threaded after the worker join, in sorted order (<a href="parallel.html">Chapter&nbsp;5</a>).
+</p>
+<table>
+<tr><th>Collector</th><th>Producer → drain action</th></tr>
+<tr><td><code>inductionMemoryBlocks</code></td><td>recursion branch of <code>addStatement</code> → <code>activateZeroCondition</code></td></tr>
+<tr><td><code>updateGlobalTuples</code></td><td>worker <code>updateGlobal</code> calls → global theorem registry + OR-pair completion</td></tr>
+<tr><td><code>updateGlobalDirectTuples</code></td><td>worker <code>updateGlobalDirect</code> → direct-theorem emission</td></tr>
+<tr><td><code>pendingCompactionQueue</code></td><td>any worker that proves an implication → after <code>pool.join()</code>, compile it to <code>(implication&lt;N&gt;[…])</code> compact form, allocate the next global <code>N</code> single-threaded, deposit into the producer's own <code>mailOut.statements</code> for next-cycle broadcast (the channel-unification half of §3.3.2; race-prevention rationale in <a href="parallel.html">Chapter&nbsp;5</a>)</td></tr>
+</table>
+
+<!-- ===================== 3.4 SCOPE ===================== -->
+<h2 id="scope">3.4 &nbsp;Scope &amp; validity</h2>
+
+<h3 id="scope-first">3.4.1 &nbsp;First-class scope</h3>
+<p>
+“Assume P, derive Q” makes Q true only under P; a case split makes each branch's
+facts true only there; integration and induction-typing open their own contexts. So
+every statement carries a <code>validityName</code>, and escaping a fact to its
+parent is an explicit audited step. A flat “is it proved?” flag would be unsound.
+</p>
+
+<h3 id="scope-mint">3.4.2 &nbsp;<code>NameMap</code> &amp; minting</h3>
+<table>
+<tr><th><code>NameMap</code> member</th><th>Purpose</th></tr>
+<tr><td><code>encodePush(parentId, payload)</code></td><td>mint a child scope; returns a fresh <code>int16_t</code>; records its parent + own payload sub-id in <code>validityNodes</code> (O(1))</td></tr>
+<tr><td><code>encode(name)</code> / <code>decode(id)</code></td><td>string↔ID; <code>decode</code> returns an <i>owned</i> copy (always safe).</td></tr>
+<tr><td><code>decodeView(id)</code></td><td>zero-copy span over the cold bytes. <b>I-3:</b> copy before any nested mint or deload, or it dangles.</td></tr>
+<tr><td><code>validityNodes</code> · <code>verdict</code></td><td>per-scope {parent, payload} forest (paged); <code>comparable</code> / <code>deeperOf</code> walk it — no <code>pairMap</code></td></tr>
+</table>
+<p>
+The canonical name is literally <code>parent + "_boundary_" + payload</code> (<b>I-2</b>:
+non-root scopes <i>must</i> be minted via <code>encodePush</code> — raw concatenation
+orphans the scope and corrupts depth comparison). The payload <i>prefix</i> encodes
+the role, recoverable without a side table:
+</p>
+<table>
+<tr><th>Payload prefix</th><th>Role</th></tr>
+<tr><td><code>main</code></td><td>reserved root — every theorem head sits here</td></tr>
+<tr><td><code>hypo_</code></td><td>an assumed premise</td></tr>
+<tr><td><code>int_</code></td><td>reformulation-for-integration</td></tr>
+<tr><td><code>ordis_</code> / <code>orint_</code></td><td>OR branch (disintegration / re-integration)</td></tr>
+<tr><td><code>hypothetical_disintegration</code></td><td>throwaway structural probe — a hard TRIPWIRE asserts if it ever reaches the chapter walker</td></tr>
+<tr><td><code>sentinel_</code></td><td>placeholder bookkeeping scope</td></tr>
+</table>
+
+<h3 id="scope-stack">3.4.3 &nbsp;The stack, comparison &amp; cleanup</h3>
+<p>
+<code>stackOfValidity</code> is the per-block validity-id forest — the
+paged, cold <code>validityNodes</code> reached through <code>NameMap</code>
+accessors (<code>stackSize()</code> and friends), not a heap vector. A scope is
+pushed on open and popped on discharge; a new fact is tagged with the top.
+<code>comparable(a,b)</code> is true iff one is the other's ancestor;
+<code>deeperOf(a,b)</code> returns the deeper. On export the ancestor chain is
+recovered by splitting the canonical name on <code>"_boundary_"</code> (the
+delimiter check is mandatory). When an implication subproof closes,
+<code>wipeSubtree</code> physically removes all per-block state at that scope and
+below — but it is <b>queued</b> (<code>pendingWipeScopes</code>) and run at the
+burst boundary, never mid-kernel (<b>I-50</b>), so in-flight asserts don't trip.
+</p>
+<figure>
+<svg viewBox="0 0 760 210" role="img" aria-label="The validity stack and ancestor recovery from the canonical name">
+  <defs><marker id="v-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <text x="140" y="26" fill="#B084EB" font-size="12" font-weight="bold" text-anchor="middle">stackOfValidity</text>
+  <rect x="82" y="38"  width="120" height="28" rx="5" fill="#3A2E16" stroke="#EF9F27"/><text x="142" y="57" fill="#EF9F27" font-size="10.5" text-anchor="middle">ordis_(A) ◄ top</text>
+  <rect x="82" y="68"  width="120" height="28" rx="5" fill="#262938" stroke="#B084EB"/><text x="142" y="87" fill="#F0E8DC" font-size="10.5" text-anchor="middle">int_(H)</text>
+  <rect x="82" y="98"  width="120" height="28" rx="5" fill="#262938" stroke="#B084EB"/><text x="142" y="117" fill="#F0E8DC" font-size="10.5" text-anchor="middle">hypo_(P)</text>
+  <rect x="82" y="128" width="120" height="28" rx="5" fill="#262938" stroke="#5DCAA5"/><text x="142" y="147" fill="#5DCAA5" font-size="10.5" text-anchor="middle">main</text>
+  <text x="142" y="182" fill="#8B8FA5" font-size="10" text-anchor="middle">push on open · pop on discharge</text>
+  <path d="M212 100 L286 100" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#v-ar)"/>
+  <rect x="292" y="62" width="452" height="78" rx="9" fill="#262938" stroke="#5DCAA5"/>
+  <text x="518" y="84" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">the canonical name carries the whole chain</text>
+  <text x="518" y="106" fill="#F0E8DC" font-size="10" text-anchor="middle">main _boundary_ hypo_(P) _boundary_ int_(H) _boundary_ ordis_(A)</text>
+  <text x="518" y="128" fill="#8B8FA5" font-size="9.5" text-anchor="middle">split on "_boundary_" → [main, …P, …H, …A] = ancestor walk (no runtime tables exported)</text>
+</svg>
+<figcaption><b>Stack and string agree.</b> The runtime uses the stack; the exporter
+and verifier recover the same ancestry from the name — redundancy that keeps
+provenance checkable without shipping internal tables.</figcaption>
+</figure>
+
+<!-- ===================== 3.5 COMPILATION ===================== -->
+<h2 id="compile">3.5 &nbsp;Compilation</h2>
+<p>
+Compilation is the precondition that makes §3.2's lookup bet <i>correct</i>: it
+turns expressions into compact, canonical names so semantically-identical forms hash
+identically. Three facets.
+</p>
+
+<h3 id="compile-pre">3.5.1 &nbsp;Structural-operator precompilation</h3>
+<p>
+<code>precompileStructuralOperators</code> rewrites, in place and recursively, every
+<i>negated</i> structural form into its compiled name: <code>!(&amp;…)</code> →
+<code>or&lt;N&gt;</code>, <code>!(&gt;…)</code> → <code>existence&lt;N&gt;</code>. It
+compiles <b>only the negated forms</b>: a plain top-level implication
+<code>(&gt;[]()())</code> is never its input and is never compiled to
+<code>implication&lt;N&gt;</code> on a load path — <code>implication&lt;N&gt;</code> is
+allocated only for implications that appear as <i>subexpressions</i> of a compiled
+definition body (plus the mail-compaction wrapper in §3.5.3).
+</p>
+<ul class="inv">
+<li><b>I-1.</b> Every theorem-load path must call this <i>first</i>. Skip it and an
+uncompiled <code>or&lt;N&gt;</code>/<code>existence&lt;N&gt;</code> reaches the encoder
+as its raw structural operator — the index then treats two semantically-identical
+expressions as different rules. The symptom is an assert deep inside disintegration.</li>
+</ul>
+<figure>
+<svg viewBox="0 0 760 160" role="img" aria-label="Structural-operator precompilation before hashing">
+  <defs><marker id="c1-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="30" y="52" width="190" height="56" rx="9" fill="#262938" stroke="#EF9F27"/>
+  <text x="125" y="74" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">raw expression</text>
+  <text x="125" y="92" fill="#8B8FA5" font-size="10" text-anchor="middle">!(&amp;…) , !(&gt;…)</text>
+  <path d="M220 80 L268 80" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#c1-ar)"/>
+  <rect x="268" y="48" width="230" height="64" rx="9" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="383" y="71" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">precompileStructuralOperators</text>
+  <text x="383" y="89" fill="#F0E8DC" font-size="9.5" text-anchor="middle">!(&amp;…)→or&lt;N&gt; · !(&gt;…)→existence&lt;N&gt;</text>
+  <text x="383" y="103" fill="#8B8FA5" font-size="9" text-anchor="middle">negated forms only · recursive</text>
+  <path d="M498 80 L546 80" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#c1-ar)"/>
+  <rect x="546" y="52" width="190" height="56" rx="9" fill="#262938" stroke="#5DCAA5"/>
+  <text x="641" y="74" fill="#5DCAA5" font-size="11.5" font-weight="bold" text-anchor="middle">canonical name</text>
+  <text x="641" y="92" fill="#8B8FA5" font-size="10" text-anchor="middle">safe to hash</text>
+  <text x="383" y="140" fill="#8B8FA5" font-size="11" text-anchor="middle">I-1: every load path calls this FIRST — else alpha-equivalent forms hash distinctly.</text>
+</svg>
+<figcaption><b>The canonicality gate.</b> No expression reaches the hash index with
+an uncompiled structural operator in it.</figcaption>
+</figure>
+
+<h3 id="compile-int">3.5.2 &nbsp;Integer encoding &amp; canonicality</h3>
+<p>
+Past precompilation, every string expression has an <code>EncodedExpression</code>
+form (head name, top-level negation, argument list with iteration/level metadata,
+the original string for round-trip, its <code>validityName</code>).
+<code>NameMap::encode</code> collapses every name to an <code>int16_t</code>; the
+resulting <code>IntNormalizedKey</code> is a packed <code>(name_id, arg_ids…)</code>
+array — cheap to hash, fast to compare. The string form is canonical but slow; the
+integer form is the hot path. This is why §3.2's lookup is O(1) <i>and</i> correct:
+two alpha-equivalent expressions normalise to the same <code>IntNormalizedKey</code>.
+</p>
+
+<h3 id="compile-impl">3.5.3 &nbsp;Implication compaction</h3>
+<p>
+Every proved implication that needs to cross a block boundary is compiled to a
+compact <code>(implication&lt;N&gt;[args])</code> atom and deposited as a
+<code>mailOut.statements</code> element at <code>v=main</code>, with a paired
+<code>compilation</code> origin (original expanded implication as its sole
+antecedent). Compaction is now the <b>sole</b> path by which an implication
+reaches another LB: the older parallel <code>Mail::implications</code> tuple
+channel (§3.3.2) is deleted. The receiver's <code>addStatement</code> recognises
+the compact head and recovers the rule into its hash memory under
+<code>status=3</code> — no re-disintegration, just rebuild the chain hashes from
+the compact atom.
+</p>
+<ul class="inv">
+<li><b>Deferred, never inline.</b> Broadcast sites call
+<code>recordPendingCompaction</code> to enqueue; a single-threaded sorted pass
+<i>after</i> the worker join runs <code>compileImplicationToCompact</code>,
+mints <code>implication&lt;N&gt;</code> from the global counter, and performs the
+deposit. Compiling inline raced the global name counters
+(<code>implCounter</code>/<code>compiledExpressions</code>) on the parallel
+contradiction path — the cause of run-to-run <code>implication&lt;N&gt;</code> drift,
+fixed by D-76.</li>
+<li><b>Canonical reconstruction.</b> Alpha-equivalent implications collapse to
+the same <code>implication&lt;N&gt;</code> name, and the binary stores only the
+first-seen body. The <code>compilation</code> origin row's antecedent must
+therefore cite the canonical body via
+<code>reconstructImplicationFullBind(elements[:−1], elements[−1])</code>, not the
+raw expanded form the producer happened to queue — otherwise verifier
+chapter-citations would not match the binary's recorded shape (I-52).</li>
+<li><b>No defensive fallback.</b> An enqueued implication that fails to compact
+<i>asserts</i> at its origin; it never returns an empty/sentinel string. The
+prover treats every unexpected state as a bug to surface at its source, not a
+condition to paper over. The historical “an implication may not be a constituent
+of another compiled expression” invariant was retired by explicit decision —
+a nested implication is now a recursion-stop leaf, not an assert.</li>
+<li><b>Empty levels at deposit.</b> Every <code>Mail::statements</code> entry
+shipping a recovered rule deposits with an <i>empty</i> <code>std::set&lt;int&gt;</code>
+for the level set (I-51). A non-empty deposit silently breaks the
+<code>allLevelsInvolved</code> discharge gate at the receiver, suppressing the
+rule until levels overflow — a class of bug that surfaces as a contradiction-LB
+latency hang far away from the wrong deposit site.</li>
+</ul>
+
+<div class="key">
+<b>Invariant — guard at refactor time.</b> Compaction is the on-the-wire
+representation of an implication, not a separate side-effect: the compact atom
+<i>is</i> the mail payload. The hash engine on the receiving side rebuilds the
+expanded rule from that atom under <code>status=3</code> and fires from the
+recovered rule, not from the compact atom itself; treating
+<code>(implication&lt;N&gt;[…])</code> as a directly-firing premise instead of as
+a rule-recovery payload would change which derivations the prover finds, and
+break the symmetry between the producer's expanded implication and the
+receiver's recovered rule.
+</div>
+
+<figure>
+<svg viewBox="0 0 760 180" role="img" aria-label="Deferred implication compaction after the worker join">
+  <defs><marker id="c3-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="24" y="60" width="170" height="56" rx="9" fill="#262938" stroke="#EF9F27"/>
+  <text x="109" y="82" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">8 broadcast sites</text>
+  <text x="109" y="100" fill="#8B8FA5" font-size="9.5" text-anchor="middle">recordPendingCompaction</text>
+  <path d="M194 88 L230 88" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#c3-ar)"/>
+  <rect x="230" y="40" width="46" height="96" rx="8" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="253" y="92" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle" transform="rotate(-90 253 92)">join barrier</text>
+  <path d="M276 88 L312 88" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#c3-ar)"/>
+  <rect x="312" y="58" width="210" height="60" rx="9" fill="#262938" stroke="#5DCAA5"/>
+  <text x="417" y="80" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">sorted single-threaded pass</text>
+  <text x="417" y="98" fill="#8B8FA5" font-size="9.5" text-anchor="middle">compileImplicationToCompact</text>
+  <path d="M522 88 L558 88" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#c3-ar)"/>
+  <rect x="558" y="58" width="180" height="60" rx="9" fill="#262938" stroke="#E879F9"/>
+  <text x="648" y="80" fill="#E879F9" font-size="11" font-weight="bold" text-anchor="middle">(implication&lt;N&gt;[…])</text>
+  <text x="648" y="98" fill="#8B8FA5" font-size="9" text-anchor="middle">+ compilation origin, v=main</text>
+  <text x="380" y="156" fill="#8B8FA5" font-size="11" text-anchor="middle">Deferral is the determinism fix — the compile mutates global name state, so it runs after the join, sorted.</text>
+</svg>
+<figcaption><b>Compaction is deferred on purpose.</b> It is documentation prep, not
+inference — and doing it inline broke determinism.</figcaption>
+</figure>
+
+<!-- ===================== 3.6 ===================== -->
+<h2 id="delta">3.6 &nbsp;Delta machinery — what one cycle added</h2>
+<p>
+Several mechanisms need to know, at the end of a cycle, <i>what changed</i>
+during that cycle — not the cumulative state. The 5-batch fan-out
+(§<a href="#hash-local">3.2.4</a>) uses it to feed fresh local rules against
+fresh local facts; the deferred compaction queue uses it to know what
+implications need compact-form atoms; the chapter walker uses it for goal
+reachability. The mechanism is the <b>delta</b> pair: a <code>…Delta</code>
+container alongside every cumulative container, cleared at burst start,
+appended to on every emission.
+</p>
+
+<table>
+<tr><th>Cumulative</th><th>Delta — appended during the cycle, drained at end</th></tr>
+<tr><td><code>intLocalEncodedStatements</code></td><td><code>intLocalEncodedStatementsDelta</code> — feeds the locality gate inside Pass B</td></tr>
+<tr><td><code>localHashMemory</code></td><td><code>localHashMemoryDelta</code> — rules installed since burst start; the “fresh rules” pool in batch&nbsp;5</td></tr>
+<tr><td><code>exprOriginMap</code></td><td>(no explicit delta — implicit by mailOut snapshot)</td></tr>
+</table>
+
+<figure>
+<svg viewBox="0 0 760 220" role="img" aria-label="The delta machinery: every container has a Delta sibling reset at burst start">
+  <defs><marker id="dl-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="20" y="40" width="180" height="60" rx="9" fill="#262938" stroke="#5DCAA5"/>
+  <text x="110" y="62" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">burst start</text>
+  <text x="110" y="80" fill="#F0E8DC" font-size="10" text-anchor="middle">Delta.clear()</text>
+  <text x="110" y="92" fill="#8B8FA5" font-size="9" text-anchor="middle">cumulative containers untouched</text>
+
+  <path d="M200 70 L240 70" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#dl-ar)"/>
+
+  <rect x="240" y="22" width="280" height="100" rx="9" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="380" y="44" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">cycle body — every emission</text>
+  <text x="380" y="64" fill="#F0E8DC" font-size="10" text-anchor="middle">intLocalEncoded.push_back(e)</text>
+  <text x="380" y="80" fill="#F0E8DC" font-size="10" text-anchor="middle">intLocalEncodedDelta.push_back(e)</text>
+  <text x="380" y="100" fill="#8B8FA5" font-size="9" text-anchor="middle">two writes, one for total, one for delta</text>
+
+  <path d="M520 70 L560 70" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#dl-ar)"/>
+
+  <rect x="560" y="40" width="180" height="60" rx="9" fill="#262938" stroke="#5DCAA5"/>
+  <text x="650" y="62" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">cycle end</text>
+  <text x="650" y="80" fill="#F0E8DC" font-size="10" text-anchor="middle">Delta consumed</text>
+  <text x="650" y="92" fill="#8B8FA5" font-size="9" text-anchor="middle">by batch 5 of next cycle</text>
+
+  <text x="380" y="166" fill="#8B8FA5" font-size="11" text-anchor="middle">Every cycle starts with empty deltas. By cycle end the delta exactly equals "what this cycle added" —</text>
+  <text x="380" y="184" fill="#8B8FA5" font-size="11" text-anchor="middle">no scan over the cumulative container needed, no clearing logic that could miss a write.</text>
+</svg>
+<figcaption><b>Append twice, scan once.</b> The cumulative container is the
+truth; the delta is the cheap “what's new” view. Both are appended to on
+every emission; only the delta is cleared.</figcaption>
+</figure>
+
+<div class="key">
+<b>The delta is what makes the 5-batch fan-out fast.</b> Without it, every
+cycle would have to scan the full cumulative store to find “rules installed
+since last cycle” — quadratic over a long run. With it, batches 2 and 5
+walk a vector of length equal to the cycle's emissions, typically a handful
+to a few dozen entries.
+</div>
+
+<!-- ===================== 3.7 ===================== -->
+<h2 id="wipe">3.7 &nbsp;Subtree wipe — deferred to burst boundary</h2>
+<p>
+When a scope closes — a hypothesis discharged, an OR convergence completed,
+a contradiction reconstructed — every fact, rule, equivalence class, and
+origin entry tied to <i>that scope or deeper</i> must be removed from the
+LB's state. The function is <code>Memory::wipeSubtree(closedScope)</code>.
+The catch: running it <i>during</i> the cycle would invalidate iterators
+the kernel is holding (the kernel walks the local containers as it fires).
+</p>
+<p>
+The fix is queueing: every site that wants a wipe pushes the scope name
+into <code>pendingWipeScopes</code>; the burst boundary drains the queue and
+runs <code>wipeSubtree</code> once per queued entry. This is <b>I-50</b>.
+</p>
+
+<figure>
+<svg viewBox="0 0 760 230" role="img" aria-label="The wipe queue: enqueue mid-burst, drain at boundary">
+  <defs><marker id="wp-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="20" y="36" width="180" height="74" rx="9" fill="#1C1F2B" stroke="#EF9F27"/>
+  <text x="110" y="58" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">mid-burst event</text>
+  <text x="110" y="78" fill="#F0E8DC" font-size="10" text-anchor="middle">hypothesis discharges</text>
+  <text x="110" y="94" fill="#F0E8DC" font-size="10" text-anchor="middle">OR converges</text>
+
+  <path d="M200 74 L240 74" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#wp-ar)"/>
+
+  <rect x="240" y="36" width="280" height="74" rx="9" fill="#262938" stroke="#5DCAA5"/>
+  <text x="380" y="58" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">pendingWipeScopes.insert(scope)</text>
+  <text x="380" y="80" fill="#8B8FA5" font-size="9.5" text-anchor="middle">queue only — no state touched yet</text>
+  <text x="380" y="96" fill="#8B8FA5" font-size="9.5" text-anchor="middle">kernel keeps iterating safely</text>
+
+  <path d="M380 110 L380 138" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#wp-ar)"/>
+
+  <rect x="220" y="142" width="320" height="68" rx="9" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="380" y="164" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">burst boundary — drain</text>
+  <text x="380" y="184" fill="#F0E8DC" font-size="10" text-anchor="middle">for each queued scope: wipeSubtree(scope)</text>
+  <text x="380" y="202" fill="#8B8FA5" font-size="9.5" text-anchor="middle">iterators released; safe to mutate state</text>
+
+  <text x="380" y="226" fill="#8B8FA5" font-size="10" text-anchor="end">I-50: never call wipeSubtree mid-kernel.</text>
+</svg>
+<figcaption><b>Two phases.</b> The wipe is decided mid-cycle but applied at
+the boundary. The deferral is the entire reason the kernel can iterate
+local containers without iterator invalidation hazards.</figcaption>
+</figure>
+
+<div class="key">
+<b>What <code>wipeSubtree</code> actually removes.</b> Everything whose
+scope (validityName) is a descendant of the closed scope: encoded
+statements, hash rules, equivalence-class members at that scope or below,
+admission entries at that scope or below, origin entries at that scope or
+below. The data that lived under the scope is gone; data at strictly-ancestor
+scopes is untouched.
+</div>
+
+<div class="note">
+Substrate done: the <a href="#lb">block</a>, the <a href="#hash">engine</a>,
+<a href="#mail">mail</a>, <a href="#scope">scope</a>, <a href="#compile">compilation</a>,
+the <a href="#delta">delta machinery</a>, the <a href="#wipe">deferred wipe</a>.
+Next, how they combine into actual reasoning:
+<a href="mechanisms.html">proof mechanisms</a>.
+</div>
+
+<div class="pager">
+  <a href="prover.html">&larr; 2 · The prover at a glance</a>
+  <a href="mechanisms.html">4 · Proof mechanisms &rarr;</a>
+</div>
+
+<div class="foot">
+<b>License.</b> Generative Logic prover reference. © 2025-2026 Generative Logic UG
+(haftungsbeschränkt). Dual-licensed under the <b>GNU Affero General Public License
+v3 or later</b> and a <b>commercial license</b>; this document and the proof
+artefacts it describes inherit the same terms — commercial terms at
+<a href="https://generative-logic.com/license">generative-logic.com/license</a>.
+</div>
+
+</main>
+</body>
+</html>

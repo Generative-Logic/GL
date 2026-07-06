@@ -1,0 +1,1327 @@
+<!--
+Generative Logic: A deterministic reasoning and knowledge generation engine.
+Copyright (C) 2025-2026 Generative Logic UG (haftungsbeschränkt).
+Dual-licensed under the GNU Affero General Public License v3 or later
+and a commercial license — see https://generative-logic.com/license.
+
+MPU 0.1 — mapping today's Generative Logic onto silicon, with a cost estimate.
+Concept-and-cost companion for a hardware / architecture audience.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MPU 0.1 — The Mathematical Processing Unit</title>
+<meta name="copyright" content="© 2025-2026 Generative Logic UG">
+<meta name="license" content="AGPL-3.0-or-later">
+<meta name="robots" content="noindex, nofollow, noai, noimageai">
+<link rel="stylesheet" href="assets/mpu.css">
+</head>
+<body>
+
+<nav id="side">
+  <div class="brand">GL · <span>MPU 0.1</span></div>
+  <div class="tag">The Mathematical Processing Unit — architecture &amp; cost</div>
+  <ol>
+    <li class="pre"><a href="#top">Preamble — the two ceilings</a></li>
+    <li><a href="#compute">What GL computes, in HW terms</a></li>
+    <li><a href="#lb">The Logic Block = one core</a></li>
+    <li><a href="#memory">LB memory &amp; its management</a></li>
+    <li><a href="#mail">The mail system — shared-RAM pull</a></li>
+    <li><a href="#split">LB split = scaling runtime</a></li>
+    <li><a href="#floorplan">The MPU floorplan</a></li>
+    <li><a href="#cost">Cost estimation</a></li>
+    <li><a href="#verdict">The verdict</a></li>
+  </ol>
+  <div class="secnote">Appendix</div>
+  <ol style="counter-reset:none">
+    <li><a href="#constants">Price &amp; sizing constants</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<!-- ============================== PREAMBLE ============================== -->
+<section id="top">
+<div class="hero">
+  <div class="eyebrow">Generative Logic · Hardware track</div>
+  <h1>MPU 0.1 — The Mathematical Processing Unit</h1>
+  <p>Mapping <b>today's</b> Generative Logic onto silicon — what the machine
+  actually is in hardware terms, and an estimate of what it would
+  cost to build. The lineage is <b>CPU → GPU → TPU → MPU</b>: a processor whose
+  native workload is not arithmetic, not graphics, not tensors, but
+  <b>deductive inference</b>.</p>
+  <p class="stamp">Version 0.1 — a starting point to build on, not a finished part.
+  Sizing from the live prover; prices dated, refreshed only at release.</p>
+</div>
+
+<p class="lede">This is a record of where GL-on-silicon stands today, written for the
+engineer who would build it — not a pitch. Every number comes from the running system
+or is flagged as a rough, dated estimate; the problems are stated as plainly as the
+wins.</p>
+
+<h2 id="thesis" style="border-top:none;margin-top:10px">The whole argument, on one page</h2>
+
+<p>
+A proof engine has exactly two ways to run out of road. It runs out of
+<b>memory</b> — the state of a hard problem no longer fits — or it runs out of
+<b>time</b> — there are more deductions to make than one machine can make before
+you lose patience. The MPU is the claim that <b>both ceilings are now
+architectural, not fundamental</b>, because the GL prover was rebuilt into a
+shape that lifts them:
+</p>
+
+<figure>
+<svg viewBox="0 0 760 250" role="img" aria-label="The two ceilings GL hits and how the MPU lifts each: memory spills to SSD (virtually unlimited), runtime spreads across cores by LB split (virtually unlimited)">
+  <defs>
+    <marker id="p-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker>
+  </defs>
+  <!-- memory ceiling -->
+  <rect x="30" y="30" width="330" height="190" rx="12" fill="#20232F" stroke="#3A3D4A"/>
+  <text x="195" y="56" fill="#F2766B" font-size="14" font-weight="bold" text-anchor="middle">Ceiling 1 — MEMORY</text>
+  <text x="195" y="78" fill="#8B8FA5" font-size="11" text-anchor="middle">a hard problem's state stops fitting in RAM</text>
+  <rect x="70" y="96" width="250" height="34" rx="6" fill="#262938" stroke="#5DCAA5"/>
+  <text x="195" y="118" fill="#F0E8DC" font-size="11.5" text-anchor="middle">working set held in fast memory</text>
+  <path d="M195 130 L195 152" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#p-ar)"/>
+  <rect x="70" y="154" width="250" height="44" rx="6" fill="#1C1F2B" stroke="#EF9F27"/>
+  <text x="195" y="172" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">the rest spills to SSD</text>
+  <text x="195" y="188" fill="#8B8FA5" font-size="10" text-anchor="middle">virtually unlimited · pages back on demand</text>
+
+  <!-- runtime ceiling -->
+  <rect x="400" y="30" width="330" height="190" rx="12" fill="#20232F" stroke="#3A3D4A"/>
+  <text x="565" y="56" fill="#F2766B" font-size="14" font-weight="bold" text-anchor="middle">Ceiling 2 — RUNTIME</text>
+  <text x="565" y="78" fill="#8B8FA5" font-size="11" text-anchor="middle">more deductions than one core can chew</text>
+  <rect x="440" y="96" width="250" height="34" rx="6" fill="#262938" stroke="#5DCAA5"/>
+  <text x="565" y="118" fill="#F0E8DC" font-size="11.5" text-anchor="middle">one calculation, one (or few) blocks</text>
+  <path d="M565 130 L565 152" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#p-ar)"/>
+  <rect x="440" y="154" width="250" height="44" rx="6" fill="#1C1F2B" stroke="#EF9F27"/>
+  <text x="565" y="172" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">LB split across N cores</text>
+  <text x="565" y="188" fill="#8B8FA5" font-size="10" text-anchor="middle">virtually unlimited · min(work, cores)</text>
+</svg>
+<figcaption><b>Two ceilings, two levers.</b> Memory becomes an SSD-backed
+hierarchy; runtime becomes a parallel fabric. Neither lever is hypothetical —
+both already exist in the software, which is exactly why a hardware version is
+worth costing.</figcaption>
+</figure>
+
+<div class="key">
+<b>The MPU is a force multiplier, not a product on its own.</b> Put the value as:
+<div style="text-align:center;font-size:19px;margin:14px 0;color:var(--fg)">
+value &nbsp;=&nbsp; <span style="color:var(--amber)">(1 + N)</span>
+&nbsp;×&nbsp;
+<span style="color:var(--mint)">(does GL do real math?)</span>
+</div>
+GL on its own is the <b>1</b> — it runs today, without any of this. The MPU adds the
+<b>N</b>: the same engine, accelerated. So the ASIC is not make-or-break for GL; it
+takes a working engine from 1 to 1 + N. Both terms are gated by the second factor: if
+GL cannot do real mathematics the whole thing is <b>zero</b>, and the <b>Fundamental
+Theorem of Arithmetic (FTA) campaign is the test that decides it</b>. This document
+estimates N and says nothing about the second factor; that one is settled in proofs,
+not here.</div>
+
+<div class="caveat">
+<span class="lab">One commitment up front — no surprises later</span>
+<b>The cores' working memory is SRAM</b> — <b>many small macros, one per 256 KiB
+block</b> (block == SRAM). Each block has its own port, so thousands of concurrent
+accesses run at the same time and access bandwidth scales with core count. And the
+SRAM need <i>not</i> hold the whole multi-GB working set: <b>deload</b> streams blocks
+between SRAM and SSD in the background (§<a href="#memory">3</a>), so the SRAM holds
+only the resident <b>window</b> the cores are working on — drastically smaller than the
+working set, and a tunable knob. That is the whole point of building deload: decouple
+SRAM size from problem size. SSD is the bulk tier (virtually unlimited), streamed and
+prefetched — never the cores' random-access path. <b>Cheapness is not the goal; being
+alive is</b> — and a small-window all-SRAM design is alive <i>and</i> affordable.</div>
+
+<div class="win">
+<span class="lab">Why this is the right time to map it</span>
+The recently-completed statification campaign moved <b>all</b> per-block prover
+memory into <b>fixed pools with virtual-offset addressing, a working-set pager, and an
+SSD deload format that is byte-identical across runs and machines</b>. It was
+undertaken for the <b>Fundamental Theorem of Arithmetic campaign</b> — the next
+milestone — whose memory and runtime demands exceed those of prior work and require a
+bounded, fixed-size memory model. That model is, by construction, what a dedicated
+<b>GL processor</b> also requires: a memory hierarchy, single-level address
+translation (an MMU), and a cache controller. The two needs are the same steps, taken
+once and combined — the software the FTA campaign requires and the data layout silicon
+requires coincide. Since then a second campaign statified the <b>transient</b> side as
+well: every working structure inside the proof kernel — string scratch, admission and
+rejection state, equivalence-class processing, origin records, the disintegration and
+integration working forms, the mail absorb — now runs on the same virtual-offset
+substrate, and the result is <b>compiler-verified</b>: a semantic call-graph inventory
+over the built binaries shows <b>zero heap-using functions on the kernel's compute
+paths</b>. Removing the allocator traffic alone made the software ~13% faster on the
+regression workload — before any silicon. MPU 0.1 is therefore a transcription of the
+running system rather than a forward proposal: the design already runs, in software,
+on the machine you have. It is a starting point to build and iterate on, not a
+finished part.</div>
+
+<div class="toc">
+  <strong>What's in here</strong>
+  <ol>
+    <li><a href="#compute">What GL computes, in hardware terms</a> — the datapath, why determinism is a gift.</li>
+    <li><a href="#lb">The Logic Block as one core</a> — the engine, the register line, the phase machine.</li>
+    <li><a href="#memory">LB memory &amp; its management</a> — pools, the per-block MMU, the pager, SSD deload; what is &amp; isn't static yet.</li>
+    <li><a href="#mail">The mail system</a> — a pull over shared RAM; the tree is logical, not wiring.</li>
+    <li><a href="#split">LB split as the runtime lever</a> — the two ways it maps to cores.</li>
+    <li><a href="#floorplan">The whole-chip floorplan</a> — every GL concept to a hardware block.</li>
+    <li><a href="#cost">Cost estimation</a> — the two cost axes, the four volume tiers, the multiplier N.</li>
+    <li><a href="#verdict">The verdict</a> — what works, what's hard, the shrink trajectory.</li>
+  </ol>
+</div>
+</section>
+
+<!-- ============================== SECTION 1 ============================== -->
+<section id="compute">
+<h2><span class="num">1 ·</span> What GL computes, in hardware terms</h2>
+
+<p>
+Forget theorem-proving for a moment and look at the workload as a hardware
+engineer would. GL is a machine that does one thing in a tight loop: it takes
+known facts, looks up rules whose pattern they match, and writes down whatever
+those rules conclude — then repeats until nothing new appears. Crucially, the
+match step is a <b>hash lookup, not a search</b>: every rule is stored under the
+signature of the premise it needs, every fact under its own structural signature,
+so "does any rule fire on what I know?" is answered by indexing a table, not by
+exploring a tree. Inference is a <b>memory-access problem</b>.
+</p>
+
+<p>That single design choice fixes the datapath, and the datapath is friendly:</p>
+
+<div class="stats">
+  <div class="stat"><div class="big">16-bit</div><div class="lbl">symbol &amp; scope ids (the working width). 32-bit packed statement keys; 64-bit hash digests.</div></div>
+  <div class="stat"><div class="big">0</div><div class="lbl">floating-point operations on the proof path. None. (The whole prover has one FP compare, and it only picks how to split work.)</div></div>
+  <div class="stat"><div class="big">176 B</div><div class="lbl">one statement line (<code>IntEncodedExpr</code>) — a fixed, all-int16 record. The natural SRAM line / register width.</div></div>
+  <div class="stat"><div class="big">FNV-1a</div><div class="lbl">the hash — a per-byte XOR-then-multiply. A few gates, one pipelined multiplier.</div></div>
+</div>
+
+<p>
+A statement line is a fixed-capacity record: a name id, a handful of flags, and
+up to <b>16 arguments</b> (<code>MAX_ARITY</code>), each a 16-bit id — all int16,
+176 bytes, identical shape for every fact in the system. A hash key holds up to
+<b>8 sub-expressions</b> of those. There are no variable-length structures and no
+pointers in the hot record: the engine compares ids, tests set membership and
+subset, looks up a packed key, and folds an FNV-1a digest. That is the entire
+arithmetic vocabulary of the inner loop. No multiplier array, no FPU, no
+transcendental units — the silicon a TPU spends on matrix math, the MPU does not
+need at all.
+</p>
+
+<h3>Determinism is the feature, not a footnote</h3>
+<p>
+GL is <b>fully deterministic</b>: the same inputs produce byte-identical outputs
+across runs, across thread counts, and <b>across machines</b>. This is enforced
+as a project-wide doctrine — every cross-run or cross-host deviation is treated
+as a bug — and it survives all the way down to the on-disk deload images, which
+are a pure function of logical content (element order in, bytes out), with
+physical addresses and parallel scheduling order never observable.
+</p>
+
+<div class="win">
+<span class="lab">Why a hardware designer should care</span>
+Determinism without floating point removes the single hardest thing about
+parallel accelerators: <b>reproducibility</b>. There is no FP-rounding skew to
+reconcile across lanes, no run-to-run drift to chase. A result computed on one
+core, a thousand cores, or a farm of chips is <b>bit-identical</b>, so the
+external verifier can re-check any proof exactly, and a multi-chip run needs no
+consensus protocol to agree on an answer — they cannot disagree. For an ASIC this
+is worth a great deal: validation, replay, and scale-out all get simpler at once.
+</div>
+
+</section>
+
+<!-- ============================== SECTION 2 ============================== -->
+<section id="lb">
+<h2><span class="num">2 ·</span> The Logic Block = one core</h2>
+
+<p>
+The unit of execution in GL is the <b>Logic Block (LB)</b>. An LB is a
+self-contained reasoning context: it owns its own hash rules, its own known
+statements, its own scope/validity stack, its own equivalence classes and
+provenance map, and its own mailboxes. LBs never reach into each other's memory;
+the main thing that crosses between them is mail. The remaining cross-block
+effects — induction activation, deferred ancestor admissions, global-rule
+updates — travel through analyzer-level deferred-action collectors drained
+single-threaded at the cycle boundary, off the parallel hashburst rather than
+through any shared-memory access during it. <b>One LB maps to one core.</b> A GL run is a tree of LBs (a goal
+spawns sub-blocks for hypotheses, case splits, induction), and the prover sweeps
+the whole active set each cycle. <b>MPU 0.1 is built with 32 LB cores</b> — a
+one-to-one map of the 32 logical cores GL runs on today. We map what we have: the
+~1,757 active LBs of a heavy batch (IncubatorPeano1 — the booklet's own measured
+peak, appendix A; not reproduced from a committed run log) stream through those 32
+cores 32-at-a-time, just
+as they do across 32 CPU threads now, with deload (§<a href="#memory">3</a>) paging
+the rest.
+</p>
+
+<figure>
+<svg viewBox="0 0 760 380" role="img" aria-label="Block diagram of one LB mapped to a core: a control FSM running three phases, a hash-inference engine (the ALU), a register file of statement lines, the LB's container set living in the shared pools, and mail in/out ports">
+  <defs>
+    <marker id="lb-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker>
+  </defs>
+  <rect x="20" y="16" width="720" height="348" rx="12" fill="#1C1F2B" stroke="#5DCAA5" stroke-width="2"/>
+  <text x="40" y="40" fill="#5DCAA5" font-size="13" font-weight="bold">Logic Block = one core</text>
+
+  <!-- control FSM -->
+  <rect x="40" y="56" width="220" height="120" rx="9" fill="#262938" stroke="#B084EB"/>
+  <text x="150" y="78" fill="#B084EB" font-size="12" font-weight="bold" text-anchor="middle">control FSM</text>
+  <text x="150" y="95" fill="#8B8FA5" font-size="9.5" text-anchor="middle">three phases per cycle</text>
+  <rect x="56" y="104" width="188" height="20" rx="4" fill="#1C1F2B" stroke="#3A3D4A"/><text x="150" y="118" fill="#F0E8DC" font-size="9.5" text-anchor="middle">P1 · absorb mail (may discharge)</text>
+  <rect x="56" y="128" width="188" height="20" rx="4" fill="#3A2E16" stroke="#EF9F27"/><text x="150" y="142" fill="#EF9F27" font-size="9.5" text-anchor="middle">P2 · hashburst (read-only)</text>
+  <rect x="56" y="152" width="188" height="20" rx="4" fill="#1C1F2B" stroke="#3A3D4A"/><text x="150" y="166" fill="#F0E8DC" font-size="9.5" text-anchor="middle">P3 · commit · discharge · sanitize</text>
+
+  <!-- hash engine (ALU) -->
+  <rect x="280" y="56" width="220" height="120" rx="9" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="390" y="78" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">hash-inference engine</text>
+  <text x="390" y="93" fill="#8B8FA5" font-size="9.5" text-anchor="middle">the "ALU" · int16 + FNV only</text>
+  <text x="390" y="116" fill="#F0E8DC" font-size="9.5" text-anchor="middle">FNV-1a key → table lookup</text>
+  <text x="390" y="131" fill="#F0E8DC" font-size="9.5" text-anchor="middle">subset / membership compare</text>
+  <text x="390" y="146" fill="#F0E8DC" font-size="9.5" text-anchor="middle">bind args · admission gate</text>
+  <text x="390" y="161" fill="#F0E8DC" font-size="9.5" text-anchor="middle">build conclusion · emit record</text>
+
+  <!-- register file -->
+  <rect x="520" y="56" width="200" height="120" rx="9" fill="#262938" stroke="#5DCAA5"/>
+  <text x="620" y="78" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">register file</text>
+  <text x="620" y="93" fill="#8B8FA5" font-size="9.5" text-anchor="middle">known statements</text>
+  <g font-size="8">
+    <rect x="536" y="104" width="168" height="14" rx="2" fill="#1C1F2B" stroke="#3A3D4A"/><text x="620" y="114" fill="#8B8FA5" text-anchor="middle">IntEncodedExpr line · 176 B · all int16</text>
+    <rect x="536" y="120" width="168" height="14" rx="2" fill="#1C1F2B" stroke="#3A3D4A"/><text x="620" y="130" fill="#8B8FA5" text-anchor="middle">name · flags · ≤16 arg ids</text>
+    <rect x="536" y="136" width="168" height="14" rx="2" fill="#1C1F2B" stroke="#3A3D4A"/><text x="620" y="146" fill="#8B8FA5" text-anchor="middle">…</text>
+    <rect x="536" y="152" width="168" height="14" rx="2" fill="#1C1F2B" stroke="#3A3D4A"/><text x="620" y="162" fill="#8B8FA5" text-anchor="middle">fixed-width rows</text>
+  </g>
+
+  <!-- container set (in shared pools) -->
+  <rect x="40" y="196" width="680" height="96" rx="9" fill="#20232F" stroke="#5DCAA5"/>
+  <text x="380" y="216" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">the LB's container set — logically private, physically in the shared pools (§3)</text>
+  <g font-size="9">
+    <rect x="56"  y="228" width="150" height="50" rx="5" fill="#262938" stroke="#EF9F27"/><text x="131" y="248" fill="#EF9F27" text-anchor="middle">hash engine ×4</text><text x="131" y="262" fill="#8B8FA5" text-anchor="middle">rule tables + admission</text>
+    <rect x="214" y="228" width="150" height="50" rx="5" fill="#262938" stroke="#5DCAA5"/><text x="289" y="248" fill="#5DCAA5" text-anchor="middle">4 statement vectors</text><text x="289" y="262" fill="#8B8FA5" text-anchor="middle">known / local / delta / ext</text>
+    <rect x="372" y="228" width="150" height="50" rx="5" fill="#262938" stroke="#B084EB"/><text x="447" y="248" fill="#B084EB" text-anchor="middle">scope · equi-classes</text><text x="447" y="262" fill="#8B8FA5" text-anchor="middle">validity · provenance</text>
+    <rect x="530" y="228" width="174" height="50" rx="5" fill="#262938" stroke="#E879F9"/><text x="617" y="248" fill="#E879F9" text-anchor="middle">goal registry · mail</text><text x="617" y="262" fill="#8B8FA5" text-anchor="middle">to-prove · in/out · logs</text>
+  </g>
+
+  <!-- mail ports -->
+  <rect x="40" y="308" width="680" height="40" rx="9" fill="#1C1F2B" stroke="#E879F9"/>
+  <text x="380" y="332" fill="#E879F9" font-size="11" text-anchor="middle">mail ports — pull ancestors' logs from the shared mail pool (§4)</text>
+
+  <path d="M260 130 L278 130" stroke="#EF9F27" stroke-width="1.5" marker-end="url(#lb-ar)"/>
+  <path d="M500 130 L518 130" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#lb-ar)"/>
+</svg>
+<figcaption><b>One LB, one core.</b> A control FSM runs three phases per cycle;
+the hash engine is the datapath; known statements are the register file; the
+container set lives in the shared RAM pools (logically private to the LB); mail is
+pulled from ancestors' logs in the shared mail pool (§4). Every block here is a real
+software structure, named so you can grep the source.</figcaption>
+</figure>
+
+<h3>The elementary step — what the engine does each cycle</h3>
+<p>
+The engine's job is "fire every rule that can fire on what is currently known,
+once." Concretely, per cycle it <b>generates requests</b> (candidate
+premise-patterns assembled from known statements), <b>looks each up</b> in the
+rule table by its FNV key, and for every hit <b>binds</b> the rule's variables,
+checks an <b>admission gate</b>, builds the conclusion, and emits a <b>firing
+record</b>. The lookup is O(1) amortised and there is no backtracking on the step
+itself — the breadth comes from many LBs firing in the same cycle and exchanging
+results through mail at the cycle boundary. In silicon terms it is a streaming
+match-and-emit pipeline over a hash table, not a recursive search machine.
+</p>
+
+<h3>Three phases, and why the split matters for hardware</h3>
+<ul class="inv">
+<li><b>Phase 1 — absorb.</b> Pull mail from ancestors, fold it into local rules and
+facts so this cycle's request generation sees it. A goal that mail just closed can
+deactivate the block here.</li>
+<li><b>Phase 2 — hashburst.</b> The compute-heavy part, and <b>strictly read-only on
+the block.</b> It captures firings as records and mutates nothing shared. This is
+the property that lets phase 2 run on many compute units at once (§5) and is the
+hard contract behind the runtime lever.</li>
+<li><b>Phase 3 — commit.</b> Single-threaded per block. The captured firings are
+merged and applied first — concatenated and sorted into a canonical order (so the
+result is independent of how phase 2 was parallelised) in a per-block finalize the
+moment the parallel units join, at the tail of phase 2; commit proper then flushes
+mail, discharges/deactivates finished goals, sanitises, and wipes closed scopes.</li>
+</ul>
+<p>
+The read-only phase 2 is the linchpin. Because the heavy work touches no shared
+state, you can throw cores at it freely and merge deterministically afterwards —
+which is exactly what §5 turns into the runtime lever.
+</p>
+
+</section>
+
+<!-- ============================== SECTION 3 ============================== -->
+<section id="memory">
+<h2><span class="num">3 ·</span> LB memory &amp; its management</h2>
+
+<p>
+This is the part of GL that was rebuilt to be silicon-ready, so it is the part a
+hardware reader should study most. Essentially all of the prover's <b>per-LB</b> working state —
+every per-LB payload and the whole mail system — now lives inside <b>fixed
+reservations made once at start-up</b>, never grown, never freed during the run
+(the bounded exceptions are in the note below). There is no
+<code>malloc</code> in the hot path; exhaustion is a loud assert that names the
+knob to raise, never a silent fallback. Four reservations, each a candidate for a
+physical memory bank:
+</p>
+
+<table>
+<tr><th>Pool</th><th>Size (provisioned)</th><th>Block</th><th>Backs</th><th>Deloads to SSD?</th></tr>
+<tr><td><b>Main</b></td><td class="num">8 GiB</td><td class="num">256 KiB</td><td>all per-LB working containers (the bump arena)</td><td><b>yes</b></td></tr>
+<tr><td><b>Persistent</b></td><td class="num">1 GiB</td><td class="num">32 KiB</td><td>the goal registry — kept always-resident so deactivation logic can read it while a block is cold</td><td>no</td></tr>
+<tr><td><b>Mail</b></td><td class="num">2 GiB</td><td class="num">256 KiB</td><td>the cross-block mail log (who sent what to whom)</td><td>no</td></tr>
+<tr><td><b>LB-body</b></td><td class="num">2 GiB</td><td class="num">256 KiB</td><td>the block objects themselves (fixed slots, never moved)</td><td>no</td></tr>
+</table>
+
+<p>
+Total program-start reservation: <b>13 GiB</b>, fixed. These are <i>ceilings</i>,
+not consumption — the sizing knob you would tune for a real part is the
+<i>measured peak</i>, which §7 puts (from the booklet's own dated figures) at
+roughly 1 GB for the named theorem batches and ~4–5 GB for the heaviest exploration
+batch. The "provisioned vs. measured" gap
+is the whole reason the cost story has a hot tier and a cold tier.
+</p>
+
+<h3>The hierarchy is pool → block → page → per-LB arena</h3>
+
+<figure>
+<svg viewBox="0 0 760 430" role="img" aria-label="The static memory hierarchy: one pool reservation carved into 256 KiB blocks, each LB's arena carves blocks into 8 KiB pages, containers pack fixed records into pages and address them by a virtual offset resolved with one shift and one mask">
+  <defs><marker id="h2-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+
+  <rect x="20" y="14" width="720" height="96" rx="10" fill="#1C1F2B" stroke="#EF9F27" stroke-width="2"/>
+  <text x="380" y="36" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">POOL — one reservation at start-up (Main = 8 GiB = 32768 blocks)</text>
+  <text x="380" y="52" fill="#8B8FA5" font-size="9.5" text-anchor="middle">the software model of the SRAM-macro fabric — block == one 256 KiB SRAM · carved under one mutex · never grown</text>
+  <g font-size="8.5">
+    <rect x="40"  y="64" width="64" height="32" rx="4" fill="#262938" stroke="#5DCAA5"/><text x="72"  y="84" fill="#5DCAA5" text-anchor="middle">LB A</text>
+    <rect x="112" y="64" width="64" height="32" rx="4" fill="#262938" stroke="#5DCAA5"/><text x="144" y="84" fill="#5DCAA5" text-anchor="middle">LB A</text>
+    <rect x="184" y="64" width="64" height="32" rx="4" fill="#262938" stroke="#B084EB"/><text x="216" y="84" fill="#B084EB" text-anchor="middle">LB B</text>
+    <rect x="256" y="64" width="64" height="32" rx="4" fill="#262938" stroke="#E879F9"/><text x="288" y="84" fill="#E879F9" text-anchor="middle">LB C</text>
+    <rect x="328" y="64" width="64" height="32" rx="4" fill="#20232F" stroke="#3A3D4A"/><text x="360" y="84" fill="#8B8FA5" text-anchor="middle">free</text>
+    <rect x="400" y="64" width="64" height="32" rx="4" fill="#20232F" stroke="#3A3D4A"/><text x="432" y="84" fill="#8B8FA5" text-anchor="middle">free</text>
+    <rect x="472" y="64" width="64" height="32" rx="4" fill="#20232F" stroke="#3A3D4A"/><text x="504" y="84" fill="#8B8FA5" text-anchor="middle">free</text>
+    <rect x="544" y="64" width="64" height="32" rx="4" fill="#20232F" stroke="#3A3D4A"/><text x="576" y="84" fill="#8B8FA5" text-anchor="middle">free</text>
+    <rect x="616" y="64" width="104" height="32" rx="4" fill="#20232F" stroke="#3A3D4A"/><text x="668" y="84" fill="#8B8FA5" text-anchor="middle">… 256 KiB blocks</text>
+  </g>
+
+  <path d="M216 110 L216 150" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#h2-ar)"/>
+  <text x="130" y="134" fill="#8B8FA5" font-size="9.5" text-anchor="middle">acquireBlock (mutex)</text>
+
+  <rect x="80" y="152" width="600" height="96" rx="10" fill="#262938" stroke="#5DCAA5" stroke-width="2"/>
+  <text x="380" y="174" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">PER-LB ARENA — this LB's blocks, carved into 8 KiB pages</text>
+  <g font-size="8.5">
+    <rect x="104" y="186" width="150" height="40" rx="4" fill="#1C1F2B" stroke="#5DCAA5"/><text x="179" y="202" fill="#5DCAA5" text-anchor="middle">block 0</text><text x="179" y="216" fill="#8B8FA5" text-anchor="middle">32 pages × 8 KiB</text>
+    <rect x="262" y="186" width="150" height="40" rx="4" fill="#1C1F2B" stroke="#5DCAA5"/><text x="337" y="202" fill="#5DCAA5" text-anchor="middle">block 1</text><text x="337" y="216" fill="#8B8FA5" text-anchor="middle">32 pages × 8 KiB</text>
+    <rect x="420" y="186" width="150" height="40" rx="4" fill="#1C1F2B" stroke="#EF9F27"/><text x="495" y="202" fill="#EF9F27" text-anchor="middle">block 2</text><text x="495" y="216" fill="#8B8FA5" text-anchor="middle">▸ free pages</text>
+  </g>
+
+  <path d="M380 248 L380 286" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#h2-ar)"/>
+  <text x="470" y="272" fill="#8B8FA5" font-size="9.5" text-anchor="middle">allocPage → virtual offset (vid)</text>
+
+  <rect x="80" y="288" width="600" height="84" rx="10" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="380" y="310" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">CONTAINER — packs fixed records into pages, stores virtual offsets</text>
+  <g font-size="8.5">
+    <rect x="150" y="322" width="32" height="22" rx="3" fill="#262938" stroke="#5DCAA5"/><text x="166" y="337" fill="#F0E8DC" text-anchor="middle">e0</text>
+    <rect x="186" y="322" width="32" height="22" rx="3" fill="#262938" stroke="#5DCAA5"/><text x="202" y="337" fill="#F0E8DC" text-anchor="middle">e1</text>
+    <rect x="222" y="322" width="32" height="22" rx="3" fill="#262938" stroke="#5DCAA5"/><text x="238" y="337" fill="#F0E8DC" text-anchor="middle">e2</text>
+    <text x="300" y="337" fill="#8B8FA5" text-anchor="start">… packed contiguously within a page</text>
+  </g>
+  <text x="380" y="362" fill="#8B8FA5" font-size="9.5" text-anchor="middle">no physical pointers stored — only the virtual offset</text>
+
+  <!-- MMU resolve callout -->
+  <rect x="500" y="14" width="0" height="0"/>
+</svg>
+<figcaption><b>One reservation, blocks, per-LB pages.</b> A global manager hands
+out 256 KiB blocks under a mutex; each LB carves its blocks into 8 KiB pages and
+packs fixed-width records into them. The only cross-core touch in the whole
+hierarchy is that one mutex.</figcaption>
+</figure>
+
+<h3>The virtual-offset arena is a tiny per-LB MMU</h3>
+<p>
+Containers never store a physical address. They store a <b>32-bit virtual
+offset</b>, and a resolve step turns it into a pointer on every access:
+</p>
+<pre><code>physical = blocks[ offset &gt;&gt; 18 ] + ( offset &amp; 0x3FFFF )
+                       └ which SRAM macro ┘  └ address within that 256 KiB SRAM ┘</code></pre>
+<p>
+One shift, one mask, one add — because the block size is a power of two. This is
+exactly an MMU's page-table-walk collapsed to a single level, and it buys two
+things at once: <b>determinism</b> (the offset is a pure function of allocation
+order, so nothing observable depends on which physical block the data landed in)
+and <b>relocatability</b> (a block can be written to disk and reloaded anywhere
+without rewriting a single stored offset). In hardware this is a small adder and a
+register holding the block-base table — cheap, and replicated per core.
+</p>
+<p>
+<b>And in the MPU each block is one small SRAM macro</b> — block == SRAM. The resolve
+above is a (macro-select, intra-macro-address) decode. The cores random-access only
+these macros, and because each block has <b>its own port</b>, accesses to different
+blocks happen <i>at the same time</i> — that concurrency, scaling with core count, is
+the whole basis of the runtime lever (§<a href="#split">5</a>). And the SRAM holds only the resident
+<b>window</b>: the pager (below) keeps the macros the cores are working on, and
+<b>deload streams the rest from SSD</b>, so the physical SRAM is far smaller than the
+8&nbsp;GiB pool — the working set lives on SSD; the SRAM is just the hot window.
+</p>
+<p>
+<b>One core addresses many macros, and the count flexes with the problem.</b> A core's
+arena is not a single fixed SRAM — it spans <b>as many 256&nbsp;KiB macros as its LB
+currently needs</b>, and the resolve's macro-select field picks among them. Macros are
+granted on demand (<code>acquireBlock</code>) as an LB grows and returned when it
+shrinks or discharges, so a trivial LB holds one or two while a fat one (the heavy
+Gauss blocks reach ~13&nbsp;MiB ≈ <b>dozens of macros</b>) holds many. The macros are a
+shared pool the steward apportions across the 32 cores by live demand — so the
+SRAM-per-core <b>adjusts to problem complexity dynamically</b>, rather than a fixed
+per-core partition. One core handles trivial and hard problems alike; it just draws
+more macros for the hard ones.
+</p>
+
+<h3>The pager is a cache controller</h3>
+<p>
+RAM is treated as a <b>cache of the working set</b> — the blocks being processed
+now plus the next few. A background <b>steward</b> thread maintains that window
+every cycle: it prefetches the blocks about to be needed and, when memory gets
+tight, evicts the rest to SSD, biggest first. A worker that reaches a block still
+on disk loads it itself and deloads the biggest out-of-window block in exchange.
+The policy is pure watermarks on pool occupancy:
+</p>
+<ul class="inv">
+<li><b>Below 50% full</b> — the steward is parked. No eviction, so no reload. A light batch
+runs at full speed with zero disk traffic.</li>
+<li><b>Cross 50%</b> — the steward wakes (asynchronously) and drains: each reload is paid for by
+evicting the biggest out-of-window block (<b>one-for-one</b>), pulling occupancy down to a
+<b>40% floor</b> before it parks again. The 50%→40% gap is a hysteresis band, so it never
+oscillates at the wake mark.</li>
+<li><b>Above ¾ (75%)</b> — the <b>synchronous hard water</b>: a worker that needs a block while the
+pool is this full does the swap itself — load its block, evict the biggest out-of-window block —
+rather than wait for the steward, which above this mark mass-evicts.</li>
+<li><b>Working set itself won't fit</b> — that is a genuinely too-small pool, and
+the run stops at a loud assert. A 30-second stuck-detector turns any unexpected
+wait into an assert too.</li>
+</ul>
+<p>
+For the MPU this is the cache controller between the SRAM hot tier and the
+SSD cold tier. The eviction <i>timing</i> can vary with load, but — by
+construction — the <b>proof output never does</b>: what to discharge is decided at
+a single-threaded barrier from deterministic block state, and the pager only moves
+bytes, never changes them.
+</p>
+
+<h3>SSD deload / reload is the cold tier</h3>
+<p>
+When a block is evicted, its containers are streamed to a file in
+<code>.deload/</code> — element by element, in logical order — and its blocks
+return to the pool. The byte stream is a <b>pure function of logical content</b>:
+two blocks with the same contents produce identical files regardless of how
+fragmented their arenas were, so deload images are byte-comparable across runs and
+machines. The format is self-describing (a <code>GLDL</code> magic, a version, a
+per-block ordinal as the filename, a per-tag directory, the block's full identity
+chain verbatim, then fixed-width little-endian payload). Reload rebuilds the
+containers onto a fresh, compact arena and is allowed only at a handful of
+enumerated touch points; touching cold storage anywhere else is an assert, not a
+degraded read. <b>This is the lever that makes memory virtually unlimited:</b> the
+cold tier is an SSD, and an SSD is cheap and enormous.
+</p>
+
+<div class="note">
+<b>Optional, not in the current design: a DRAM L2.</b> The current design is two
+tiers — <b>SRAM (L1)</b>, the cores' working window, and <b>SSD (L3)</b>, the cold
+backing store. A <b>DRAM L2</b> could sit between them as a <i>deload-staging
+cache</i>: the steward pre-uploads the next blocks from SSD into DRAM and parks
+just-deloaded blocks there before they trickle out to SSD, hiding SSD latency on the
+streaming path. It would be <b>block-granular and off the cores' random-access
+path</b> — staging whole 256 KiB blocks as they move between SRAM and SSD, never
+serving a core's random access. A future option; MPU 0.1 is <b>SRAMs + SSD</b>.
+</div>
+
+<h3>What is <i>not</i> static — the complete accounting</h3>
+<div class="caveat">
+<span class="lab">Stated plainly</span>
+The first campaign moved all per-LB <b>persistent state — including the mail
+system</b> — into the static pools; the second statified the kernel's <b>transient
+scratch</b>: each worker's working memory is two per-worker arenas drawn from the
+same pool and released whole at the end of each task, so a core's scratch is a
+<b>fixed, enumerable SRAM budget</b>, not an open-ended allocator. <b>Mail is static:</b> the cross-block log lives on the
+dedicated mail pool, and the routing and internal mailboxes on the per-LB arenas
+(§<a href="#mail">4</a>); none of it is on the malloc heap. Within the
+block-memory subsystem, two things genuinely remain on the ordinary heap:
+<ul style="margin:8px 0 0">
+<li><b>The global pool's recycle queue</b> — one process-wide root that hands out
+blocks — and the compaction's transient scratch. O(blocks), not O(payload), and
+outside any one LB. (Each arena's own list of which blocks/pages it holds — once
+the last per-LB heap carve-out — is now pool-backed: a small-buffer directory that
+keeps a tiny arena's table inline at zero pool cost and spills only a large one
+onto pool blocks. So the per-LB arena bookkeeping is now static too.)</li>
+<li><b>Transient mail strings</b> — committed cross-block mail travels as
+<b>global mail-interner int32 ids</b> (a block's own int16 ids are not portable
+across blocks, so the global-interner id space is the cross-block common space). The
+persistent log <i>bytes</i> are static; the absorb/pull side now decodes the frozen
+blob bytes straight into the receiving block's static columns with no heap working
+form at all. What still touches the heap is the short-lived encoding at the
+single-threaded commit and load seams — a bounded, per-cycle residue off the
+parallel compute path.</li>
+</ul>
+<b>What this means for silicon.</b> The persistent state — payloads, mail, and the
+per-LB arena bookkeeping — is static, and the per-worker working scratch is itself
+drawn from the statified pool and returned per task; the only ordinary read/write
+heap a host process keeps is the global pool's recycle queue, the compaction's
+transient scratch, and a staging area for mail serialisation at the single-threaded
+seams. The heap residue is bounded and per-cycle, not
+per-LB growth — so "mail is on the heap" would be wrong; only its transient
+encoding is. (In the proof kernel — <code>performElem1/2/3</code> — the ONLY heap
+permitted is generating the <code>hashburst_trace.txt</code> debug dump, which is off
+the compute path and not silicon-mapped; the kernel's production paths are
+compiler-verified heap-free. The compiled-definition (config) layer remains the one
+data-on-heap residual — read through zero-allocation probes during the burst, and on
+silicon that layer is ROM. So the precise claim is "the kernel's compute paths are
+heap-free; the config layer is heap-resident data behind static read fences; transient
+heap encoding survives only at the single-threaded commit and load seams," not "zero
+heap process-wide.")
+</div>
+
+</section>
+
+<!-- ============================== SECTION 4 ============================== -->
+<section id="mail">
+<h2><span class="num">4 ·</span> The mail system — a pull over shared RAM (the tree is logical)</h2>
+
+<p>
+LBs do not share working memory; they exchange results through <b>mail</b> at cycle
+boundaries, and mail is, logically, a <b>tree</b>: a block reads only mail authored
+by its direct ancestors (parent, grandparent, …, root) — never a sibling, never
+upward, never an unrelated subtree. That tree is a <i>software access pattern</i>, not
+a connectivity property of the silicon: it does not make the interconnect any sparser.
+</p>
+
+<p>
+Physically, mail is <b>random-access reads into a shared log pool</b>: a receiver
+reads its ancestors' logs at arbitrary addresses, and the interconnect must be able
+to reach <i>every</i> address — because the LB tree is built at <b>run time</b>
+(blocks spawn as goals split), each log lands at an <b>unpredictable address</b>
+(blocks are granted in nondeterministic order under the pool mutex, so different LBs'
+batches interleave anywhere in the pool), and the root, as everyone's ancestor, is
+read by <i>all</i>. Connectivity cannot be narrowed to a graph that does not exist
+until run time and whose logs sit at unpredictable addresses. The tree only bounds
+<i>which</i> cells a given receiver touches, not what the hardware must address — it is
+random access either way.
+</p>
+
+<figure>
+<svg viewBox="0 0 760 330" role="img" aria-label="Mail is random-access reads into a shared log pool. Cores on the left connect through an any-to-any memory NoC to a shared mail pool on the right that holds per-LB logs at scattered addresses. A highlighted receiver reads its ancestors' logs (the root log and one parent log) at arbitrary addresses; the wiring must reach every address, and the tree only selects which logs are read.">
+  <defs><marker id="m-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#EF9F27"/></marker></defs>
+
+  <text x="380" y="22" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">Mail = random-access reads into a shared log pool</text>
+
+  <!-- cores -->
+  <text x="58" y="48" fill="#8B8FA5" font-size="10" text-anchor="middle">LB cores</text>
+  <rect x="20" y="58"  width="78" height="30" rx="6" fill="#262938" stroke="#EF9F27"/><text x="59" y="78" fill="#EF9F27" font-size="9.5" text-anchor="middle">core (here)</text>
+  <rect x="20" y="108" width="78" height="30" rx="6" fill="#262938" stroke="#5DCAA5"/><text x="59" y="128" fill="#F0E8DC" font-size="9.5" text-anchor="middle">core</text>
+  <rect x="20" y="158" width="78" height="30" rx="6" fill="#262938" stroke="#5DCAA5"/><text x="59" y="178" fill="#F0E8DC" font-size="9.5" text-anchor="middle">core</text>
+  <rect x="20" y="208" width="78" height="30" rx="6" fill="#262938" stroke="#5DCAA5"/><text x="59" y="228" fill="#F0E8DC" font-size="9.5" text-anchor="middle">core</text>
+
+  <!-- NoC switch -->
+  <rect x="150" y="58" width="64" height="180" rx="8" fill="#1C1F2B" stroke="#B084EB" stroke-width="2"/>
+  <text x="182" y="148" fill="#B084EB" font-size="10.5" text-anchor="middle" transform="rotate(-90 182 148)">memory NoC — any to any</text>
+
+  <!-- cores to NoC (all connect) -->
+  <path d="M98 73 L150 96" stroke="#3A3D4A" stroke-width="1"/>
+  <path d="M98 123 L150 118" stroke="#3A3D4A" stroke-width="1"/>
+  <path d="M98 173 L150 158" stroke="#3A3D4A" stroke-width="1"/>
+  <path d="M98 223 L150 198" stroke="#3A3D4A" stroke-width="1"/>
+
+  <!-- shared mail pool -->
+  <rect x="300" y="50" width="440" height="196" rx="10" fill="#20232F" stroke="#E879F9" stroke-width="2"/>
+  <text x="520" y="70" fill="#E879F9" font-size="10.5" font-weight="bold" text-anchor="middle">shared mail pool (RAM) — per-LB append-only logs at scattered addresses</text>
+  <rect x="330" y="86"  width="120" height="22" rx="4" fill="#3A2E16" stroke="#EF9F27"/><text x="390" y="101" fill="#EF9F27" font-size="9" text-anchor="middle">root log (hot)</text>
+  <rect x="560" y="92"  width="80" height="22" rx="4" fill="#262938" stroke="#5DCAA5"/><text x="600" y="107" fill="#8B8FA5" font-size="9" text-anchor="middle">log Q</text>
+  <rect x="430" y="132" width="120" height="22" rx="4" fill="#262938" stroke="#5DCAA5"/><text x="490" y="147" fill="#8B8FA5" font-size="9" text-anchor="middle">log P (ancestor)</text>
+  <rect x="648" y="150" width="72" height="22" rx="4" fill="#262938" stroke="#5DCAA5"/><text x="684" y="165" fill="#8B8FA5" font-size="9" text-anchor="middle">log R</text>
+  <rect x="340" y="180" width="80" height="22" rx="4" fill="#262938" stroke="#5DCAA5"/><text x="380" y="195" fill="#8B8FA5" font-size="9" text-anchor="middle">log S</text>
+  <rect x="520" y="196" width="80" height="22" rx="4" fill="#262938" stroke="#5DCAA5"/><text x="560" y="211" fill="#8B8FA5" font-size="9" text-anchor="middle">log T</text>
+
+  <!-- NoC reaches all addresses (faint) -->
+  <path d="M214 110 L330 97"  stroke="#3A3D4A" stroke-width="1"/>
+  <path d="M214 120 L560 103" stroke="#3A3D4A" stroke-width="1"/>
+  <path d="M214 140 L430 143" stroke="#3A3D4A" stroke-width="1"/>
+  <path d="M214 150 L648 161" stroke="#3A3D4A" stroke-width="1"/>
+  <path d="M214 170 L340 191" stroke="#3A3D4A" stroke-width="1"/>
+  <path d="M214 180 L520 207" stroke="#3A3D4A" stroke-width="1"/>
+
+  <!-- highlighted receiver pull: core(here) -> NoC -> root log + log P -->
+  <path d="M98 73 L150 88" stroke="#EF9F27" stroke-width="2"/>
+  <path d="M214 95 L328 97"  stroke="#EF9F27" stroke-width="2" marker-end="url(#m-ar)"/>
+  <path d="M214 105 L428 143" stroke="#EF9F27" stroke-width="2" marker-end="url(#m-ar)"/>
+
+  <text x="380" y="272" fill="#8B8FA5" font-size="10" text-anchor="middle">The receiver reads its ancestors' logs (root + parent) at ARBITRARY addresses — the wiring must reach every cell.</text>
+  <text x="380" y="290" fill="#8B8FA5" font-size="10" text-anchor="middle">The "tree" is which logs a receiver picks (software). The LB tree is built at run time and logs land at unpredictable addresses.</text>
+  <text x="380" y="308" fill="#EF9F27" font-size="10" text-anchor="middle">root log is read by EVERY core (it is everyone's ancestor) — a hotspot, not a sparse fan-in.</text>
+</svg>
+<figcaption><b>Random access into shared RAM — the tree is logical, not wiring.</b>
+Mail is a pull: each receiver reads its ancestors' logs out of one shared pool, at
+arbitrary addresses. Because the LB tree is built at run time and a log lands at an
+unpredictable address (nondeterministic grant order under the pool mutex), the
+interconnect must reach every address (an any-to-any memory NoC).
+The tree bounds <i>which</i> logs a receiver reads, not what the silicon must
+address — and the root, read by all, is a hotspot. The earlier "tree, not a
+crossbar" framing was wrong: it is random access either way.</figcaption>
+</figure>
+
+<h3>The mux is a pull over append-only logs</h3>
+<p>
+Concretely: each block writes the mail it emits <b>once</b>, into its own
+append-only log, at a single-threaded commit point each cycle. A receiver, in its
+phase 1, walks its ancestor list and <b>pulls</b> the batches it has not yet
+ingested from each ancestor's log, advancing a private per-(receiver, ancestor)
+cursor. There is no outbound copy and no shared inbox to contend on — the parallel
+readers only read frozen logs and bump their own cursor cells. That is the mux:
+<b>select-and-merge at the receiver</b> — but the selection is by <i>memory
+address</i> (which ancestor logs to read), over a shared pool the core can address
+in full.
+</p>
+
+<h3>Three mail channels — which SRAM is always-on</h3>
+<p>This split tells you exactly which memory must stay powered and resident:</p>
+<table>
+<tr><th>Channel</th><th>Home</th><th>Always-on?</th></tr>
+<tr><td>routing staging (in/out)</td><td>the mail pool</td><td><b>yes</b> — never deloaded</td></tr>
+<tr><td>cross-block log (the mux)</td><td>dedicated mail pool</td><td><b>yes</b> — never deloaded</td></tr>
+<tr><td>internal one-step channels</td><td>the block's deloadable arena</td><td>no — pages out with the block</td></tr>
+</table>
+<p>
+A mail message carries proved statements (including compact rule forms) plus
+provenance lines; on large batches provenance dominates. There is exactly
+<b>one</b> cross-block path that is not the ancestor pull — a point-to-point deposit
+addressed from the root to one tree node — and effects that travel <i>up</i> the
+tree are not mail at all (single-threaded collectors drained after the join). Net
+for the floorplan: an <b>any-to-any memory interconnect to the shared pools, plus a
+small always-on mail SRAM</b> — not a crossbar of message links, but not a sparse
+tree either. What the tree <i>does</i> buy is access <b>locality</b> (a receiver
+reads only its ancestor chain, not all <code>N</code> logs); what it does
+<b>not</b> buy is cheaper wiring. In this shared-memory model the real scaling limit
+is <b>memory bandwidth and contention on hot cells</b> (the root log, the shared
+pools), not interconnect topology — the caveat §5 and §7 carry into the runtime
+lever.
+</p>
+
+<h3>The mux, in hardware: a banked crossbar</h3>
+<p>
+That any-to-any memory access is a <b>standard banked crossbar</b> (a network-on-chip
+at larger scale): the SRAM macros are independent banks, and an N-port crossbar lets
+all 32 cores reach memory <b>in parallel as long as they hit different banks</b>; two
+cores hitting the same bank serialize — a <b>bank conflict</b>. This is not exotic — it
+is exactly how <b>GPU shared memory</b> works (32 banks; a warp's lanes run in one
+transaction unless they collide on a bank, where an <i>n</i>-way conflict serialises
+into <i>n</i>). The hot cells of §<a href="#split">5</a> (the root mail log, read by
+every block) are that bank-conflict case by another name.
+</p>
+<p>
+It exists off the shelf as IP, not a discrete chip. On the FPGA prototype you drop in a
+configurable non-blocking crossbar — e.g. <b>AMD/Xilinx LogiCORE IP AXI SmartConnect</b>
+(product guide <b>PG247</b>); for the ASIC, a mesh NoC such as <b>Arm CoreLink
+CMN-700</b> or <b>Arteris FlexNoC</b>. A fully non-blocking crossbar costs ~O(N×M)
+area — trivial at 32 ports (GPU territory); at thousands of macros you group them into
+banks or move to the NoC, which trades the guaranteed-parallel crossbar for
+near-parallel routing with occasional internal blocking.
+</p>
+
+</section>
+
+<!-- ============================== SECTION 5 ============================== -->
+<section id="split">
+<h2><span class="num">5 ·</span> LB split = scaling runtime across cores</h2>
+
+<p>
+This is the runtime lever. Before the static rebuild, a hard calculation lived
+inside a single block (or a couple) and ran at the speed of one thread — the work
+of one LB's hashburst was a sequential lump. <b>LB split</b> breaks that lump
+across cores: because phase 2 is read-only on the block (§2), the candidate-firing
+work can be partitioned, run on many compute units at once, and merged
+deterministically. A single heavy calculation is one LB, and one LB fans out to at
+most a fixed number of parts (today 100), so it spreads across <b>min(that block's
+split parts, cores available)</b>. The "virtually unlimited" headroom belongs to the
+<i>whole workload's</i> task pool — the ~10⁴–10⁵ independent phase-2 tasks available
+across all active blocks at peak (below) — not to a single block, which is bounded.
+</p>
+
+<p>The user named two ways to realise this in silicon. Both already exist in the
+software, in two different subsystems:</p>
+
+<figure>
+<svg viewBox="0 0 760 320" role="img" aria-label="Two ways to split. Left: N compute units share one LB's memory read-only, each takes a partition of the rule owners, results merge in canonical sorted order — the main prover. Right: clone the LB's facts N times, run an independent slice on each core — the counterexample filter.">
+  <defs><marker id="s-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+
+  <!-- model a -->
+  <rect x="14" y="14" width="365" height="292" rx="10" fill="#1C1F2B" stroke="#EF9F27"/>
+  <text x="196" y="34" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">(a) Shared memory, N compute units</text>
+  <text x="196" y="50" fill="#8B8FA5" font-size="9.5" text-anchor="middle">the live main-prover model</text>
+  <rect x="116" y="60" width="160" height="40" rx="6" fill="#20232F" stroke="#5DCAA5"/><text x="196" y="78" fill="#5DCAA5" font-size="10" text-anchor="middle">ONE LB's memory</text><text x="196" y="92" fill="#8B8FA5" font-size="8.5" text-anchor="middle">read-only during phase 2</text>
+  <g font-size="9">
+    <rect x="34"  y="128" width="100" height="46" rx="6" fill="#3A2E16" stroke="#EF9F27"/><text x="84"  y="148" fill="#EF9F27" text-anchor="middle">unit 0</text><text x="84" y="162" fill="#8B8FA5" text-anchor="middle">owners %N==0</text>
+    <rect x="146" y="128" width="100" height="46" rx="6" fill="#3A2E16" stroke="#EF9F27"/><text x="196" y="148" fill="#EF9F27" text-anchor="middle">unit 1</text><text x="196" y="162" fill="#8B8FA5" text-anchor="middle">owners %N==1</text>
+    <rect x="258" y="128" width="100" height="46" rx="6" fill="#3A2E16" stroke="#EF9F27"/><text x="308" y="148" fill="#EF9F27" text-anchor="middle">unit 2</text><text x="308" y="162" fill="#8B8FA5" text-anchor="middle">owners %N==2</text>
+  </g>
+  <path d="M120 100 L84 126" stroke="#5DCAA5" stroke-width="1.2" marker-end="url(#s-ar)"/>
+  <path d="M196 100 L196 126" stroke="#5DCAA5" stroke-width="1.2" marker-end="url(#s-ar)"/>
+  <path d="M272 100 L308 126" stroke="#5DCAA5" stroke-width="1.2" marker-end="url(#s-ar)"/>
+  <path d="M84 174 L180 214" stroke="#5DCAA5" stroke-width="1.2" marker-end="url(#s-ar)"/>
+  <path d="M196 174 L196 214" stroke="#5DCAA5" stroke-width="1.2" marker-end="url(#s-ar)"/>
+  <path d="M308 174 L212 214" stroke="#5DCAA5" stroke-width="1.2" marker-end="url(#s-ar)"/>
+  <rect x="96" y="216" width="200" height="44" rx="6" fill="#262938" stroke="#5DCAA5"/><text x="196" y="234" fill="#5DCAA5" font-size="10" text-anchor="middle">merge — canonical SORT</text><text x="196" y="248" fill="#8B8FA5" font-size="8.5" text-anchor="middle">result independent of N &amp; order</text>
+  <text x="196" y="286" fill="#8B8FA5" font-size="9" text-anchor="middle">"N copies of phase 2 within an LB"</text>
+  <text x="196" y="300" fill="#8B8FA5" font-size="9" text-anchor="middle">multiplies compute, shares the memory</text>
+
+  <!-- model b -->
+  <rect x="395" y="14" width="351" height="292" rx="10" fill="#1C1F2B" stroke="#B084EB"/>
+  <text x="570" y="34" fill="#B084EB" font-size="12" font-weight="bold" text-anchor="middle">(b) Clone the memory N times</text>
+  <text x="570" y="50" fill="#8B8FA5" font-size="9.5" text-anchor="middle">the live counterexample-filter model</text>
+  <rect x="490" y="60" width="160" height="40" rx="6" fill="#20232F" stroke="#B084EB"/><text x="570" y="78" fill="#B084EB" font-size="10" text-anchor="middle">facts template</text><text x="570" y="92" fill="#8B8FA5" font-size="8.5" text-anchor="middle">deep-copied per work item</text>
+  <g font-size="9">
+    <rect x="420" y="128" width="96" height="80" rx="6" fill="#262938" stroke="#B084EB"/><text x="468" y="150" fill="#B084EB" text-anchor="middle">clone → core 0</text><text x="468" y="166" fill="#8B8FA5" text-anchor="middle">own memory</text><text x="468" y="182" fill="#8B8FA5" text-anchor="middle">slice 0</text><text x="468" y="198" fill="#8B8FA5" text-anchor="middle">full CE check</text>
+    <rect x="522" y="128" width="96" height="80" rx="6" fill="#262938" stroke="#B084EB"/><text x="570" y="150" fill="#B084EB" text-anchor="middle">clone → core 1</text><text x="570" y="166" fill="#8B8FA5" text-anchor="middle">own memory</text><text x="570" y="182" fill="#8B8FA5" text-anchor="middle">slice 1</text><text x="570" y="198" fill="#8B8FA5" text-anchor="middle">full CE check</text>
+    <rect x="624" y="128" width="96" height="80" rx="6" fill="#262938" stroke="#B084EB"/><text x="672" y="150" fill="#B084EB" text-anchor="middle">clone → core 2</text><text x="672" y="166" fill="#8B8FA5" text-anchor="middle">own memory</text><text x="672" y="182" fill="#8B8FA5" text-anchor="middle">slice 2</text><text x="672" y="198" fill="#8B8FA5" text-anchor="middle">full CE check</text>
+  </g>
+  <path d="M530 100 L478 126" stroke="#B084EB" stroke-width="1.2" marker-end="url(#s-ar)"/>
+  <path d="M570 100 L570 126" stroke="#B084EB" stroke-width="1.2" marker-end="url(#s-ar)"/>
+  <path d="M610 100 L662 126" stroke="#B084EB" stroke-width="1.2" marker-end="url(#s-ar)"/>
+  <text x="570" y="240" fill="#8B8FA5" font-size="9" text-anchor="middle">each clone fully independent —</text>
+  <text x="570" y="254" fill="#8B8FA5" font-size="9" text-anchor="middle">only its own result slot is written</text>
+  <text x="570" y="286" fill="#8B8FA5" font-size="9" text-anchor="middle">"copy memory N times, distribute"</text>
+  <text x="570" y="300" fill="#8B8FA5" font-size="9" text-anchor="middle">multiplies memory and compute</text>
+</svg>
+<figcaption><b>Two splits, both real.</b> Model (a) — many read-only units over
+one shared memory, merged by a sort — is how the main prover splits one heavy
+block today. Model (b) — clone the state per core and run an independent slice —
+is how the counterexample filter parallelises across thousands of candidate
+checks. An MPU can do either or both: (a) for one giant calculation, (b) for many
+independent ones.</figcaption>
+</figure>
+
+<h3>Why the merge is a sort, and why that matters</h3>
+<p>
+In model (a) the units do not deposit their firings as they go; each writes its
+own record list, and a single-threaded per-block finalize step — the tail of
+phase 2, once the parallel units join — <b>concatenates and sorts</b> them by a
+total content key before applying. The sort is the whole trick: it makes the merged result a
+function of <i>content</i>, not of which unit found what first or how many units
+there were. So <b>2 cores and 200 cores produce byte-identical output</b> — the
+runtime lever costs you nothing in reproducibility. (And because phase 2 wrote
+nothing to the block, a split that turns out too coarse can simply be re-run finer
+with no residue to clean up.)
+</p>
+
+<h3>How much it splits, adaptively</h3>
+<p>
+A block that hits a work cap in a cycle escalates from unsplit to a fixed fan-out
+(today: 100 parts) and re-runs that cycle split; a block that never hits the cap
+stays unsplit. So the system spends parallelism where the work actually is. On the
+heaviest measured batch there are on the order of a thousand active blocks at peak,
+each potentially fanning out — i.e. <b>tens to hundreds of thousands of independent
+phase-2 tasks</b> are available at the busy moments. GL runs them across ~32 logical
+cores today, 32-at-a-time. <b>MPU 0.1 maps exactly that: 32 LB cores</b>, one per
+logical core we have. The gap between the available parallelism (~10⁴–10⁵ tasks) and
+the cores that chew it (32) is headroom for the lever — <i>more cores, later</i> — not
+something MPU 0.1 spends; MPU 0.1 is what we have now.
+</p>
+
+<div class="caveat">
+<span class="lab">What feeds the cores — and the residual ceiling</span>
+Cores are cheap; <b>feeding them</b> is the hard part. Every core does random accesses
+into the shared memory (§4), so the lever only works if the memory can serve thousands
+of those at once. That is precisely why the memory is <b>many small SRAM macros, one
+per block</b> (§<a href="#cost">7.1</a>): each block is its own port, so aggregate
+bandwidth scales with core count. The residual limit is not raw
+bandwidth but a few <b>hot cells</b> (above all the root mail log, read by every
+block) plus the serial fractions (phase 3, the per-cycle mail barrier). So scaling is
+sub-linear, but the parallel phase-2 fraction — almost all the work — is what the SRAM
+fabric is built to feed.
+</div>
+
+</section>
+
+<!-- ============================== SECTION 6 ============================== -->
+<section id="floorplan">
+<h2><span class="num">6 ·</span> The MPU floorplan</h2>
+
+<p>
+Put the pieces together and the chip draws itself. The MPU is a <b>fabric of 32 LB
+cores</b> (§2) over an <b>any-to-any memory network-on-chip</b> to the shared RAM
+pools (§4); the <b>resident window</b> of the working set lives in <b>SRAM — many
+small macros, one per block</b> (§3) — the full multi-GB working set is far larger
+and streams from SSD — with a <b>steward / cache controller</b> paging blocks between
+the SRAM fabric and an <b>SSD cold tier</b> (§3), under a thin <b>host interface</b> that loads axioms
+and streams proofs out. Split (§5) is realised by giving each core
+several phase-2 compute lanes and/or by cloning a core's state across the fabric.
+</p>
+
+<figure>
+<svg viewBox="0 0 760 420" role="img" aria-label="MPU whole-chip floorplan: a grid of 32 LB cores with phase-2 lanes, connected by an any-to-any memory NoC to a fabric of small SRAM macros, with a steward cache controller managing the SRAM fabric and an SSD cold tier, under a host interface.">
+  <defs><marker id="fp-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+
+  <rect x="16" y="14" width="728" height="392" rx="14" fill="#15171F" stroke="#5DCAA5" stroke-width="2"/>
+  <text x="40" y="38" fill="#5DCAA5" font-size="13" font-weight="bold">MPU 0.1 — floorplan</text>
+
+  <!-- host -->
+  <rect x="40" y="50" width="680" height="30" rx="7" fill="#262938" stroke="#8B8FA5"/>
+  <text x="380" y="70" fill="#F0E8DC" font-size="11" text-anchor="middle">host interface — load axioms / config · stream proofs out (PCIe / CXL)</text>
+
+  <!-- core fabric -->
+  <rect x="40" y="92" width="480" height="208" rx="10" fill="#1C1F2B" stroke="#EF9F27"/>
+  <text x="280" y="112" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">LB-core fabric — 32 cores (one per Logic Block)</text>
+  <g font-size="7.5">
+    <!-- a 3x3 sample of cores -->
+    <g>
+      <rect x="56"  y="124" width="146" height="52" rx="5" fill="#262938" stroke="#EF9F27"/>
+      <text x="92" y="138" fill="#EF9F27" text-anchor="middle">core</text>
+      <rect x="120" y="128" width="76" height="20" rx="3" fill="#1C1F2B" stroke="#5DCAA5"/><text x="158" y="142" fill="#5DCAA5" text-anchor="middle">SRAM I/O</text>
+      <rect x="60"  y="150" width="40" height="22" rx="3" fill="#3A2E16" stroke="#EF9F27"/><text x="80" y="164" fill="#EF9F27" text-anchor="middle">P2 ×k</text>
+      <rect x="104" y="150" width="42" height="22" rx="3" fill="#20232F" stroke="#B084EB"/><text x="125" y="164" fill="#B084EB" text-anchor="middle">FSM</text>
+      <rect x="150" y="150" width="46" height="22" rx="3" fill="#20232F" stroke="#5DCAA5"/><text x="173" y="164" fill="#5DCAA5" text-anchor="middle">regs</text>
+    </g>
+    <rect x="216" y="124" width="146" height="52" rx="5" fill="#262938" stroke="#EF9F27"/><text x="289" y="154" fill="#8B8FA5" text-anchor="middle">core (P2 lanes)</text>
+    <rect x="376" y="124" width="128" height="52" rx="5" fill="#262938" stroke="#EF9F27"/><text x="440" y="154" fill="#8B8FA5" text-anchor="middle">core …</text>
+    <rect x="56"  y="186" width="146" height="52" rx="5" fill="#262938" stroke="#EF9F27"/><text x="129" y="216" fill="#8B8FA5" text-anchor="middle">core …</text>
+    <rect x="216" y="186" width="146" height="52" rx="5" fill="#262938" stroke="#EF9F27"/><text x="289" y="216" fill="#8B8FA5" text-anchor="middle">core …</text>
+    <rect x="376" y="186" width="128" height="52" rx="5" fill="#262938" stroke="#EF9F27"/><text x="440" y="216" fill="#8B8FA5" text-anchor="middle">core …</text>
+    <rect x="56"  y="248" width="448" height="42" rx="5" fill="#20232F" stroke="#E879F9"/><text x="280" y="273" fill="#E879F9" text-anchor="middle" font-size="10">memory NoC (any → any) — cores ↔ shared pools; mail is a pull pattern (§4)</text>
+  </g>
+
+  <!-- steward + memory tiers -->
+  <rect x="536" y="92" width="184" height="208" rx="10" fill="#1C1F2B" stroke="#B084EB"/>
+  <text x="628" y="112" fill="#B084EB" font-size="11" font-weight="bold" text-anchor="middle">steward</text>
+  <text x="628" y="126" fill="#8B8FA5" font-size="8.5" text-anchor="middle">cache controller</text>
+  <text x="628" y="139" fill="#8B8FA5" font-size="8.5" text-anchor="middle">40/50/75% watermarks</text>
+  <rect x="552" y="150" width="152" height="80" rx="6" fill="#262938" stroke="#5DCAA5"/><text x="628" y="171" fill="#5DCAA5" font-size="9.5" text-anchor="middle">SRAM — hot tier</text><text x="628" y="187" fill="#8B8FA5" font-size="8" text-anchor="middle">the resident window</text><text x="628" y="200" fill="#8B8FA5" font-size="8" text-anchor="middle">many small macros</text><text x="628" y="213" fill="#8B8FA5" font-size="8" text-anchor="middle">block == SRAM</text>
+  <path d="M628 230 L628 244" stroke="#5DCAA5" stroke-width="1.2" marker-end="url(#fp-ar)"/>
+  <rect x="552" y="246" width="152" height="44" rx="6" fill="#262938" stroke="#E879F9"/><text x="628" y="265" fill="#E879F9" font-size="9.5" text-anchor="middle">SSD — cold tier</text><text x="628" y="279" fill="#8B8FA5" font-size="8" text-anchor="middle">deload · virtually unlimited</text>
+
+  <!-- always-on note -->
+  <rect x="40" y="312" width="680" height="78" rx="10" fill="#20232F" stroke="#3A3D4A"/>
+  <text x="380" y="332" fill="#F0E8DC" font-size="10.5" font-weight="bold" text-anchor="middle">always-on (never deloaded): goal registry · mail log · block-object store &#160;|&#160; deloadable: per-LB working containers</text>
+  <text x="380" y="352" fill="#8B8FA5" font-size="9.5" text-anchor="middle">Cores touch only SRAM (many small macros, block == SRAM). The SRAM holds the resident window; deload streams the rest from SSD.</text>
+  <text x="380" y="370" fill="#8B8FA5" font-size="9.5" text-anchor="middle">The expected GL shrink (100–1000×) cuts the macro count, shrinking the SRAM toward a single cheap die.</text>
+</svg>
+<figcaption><b>The whole chip.</b> A core fabric over an any-to-any memory NoC to
+the shared pools, a steward paging <b>two</b> tiers — the SRAM-macro fabric (hot)
+and SSD (cold). The SRAM holds only the working window — deload streams the
+rest from SSD — so it is far smaller than the working set; the shrink (§8) cuts it
+further.</figcaption>
+</figure>
+
+<h3>Every GL concept maps to a hardware block</h3>
+<p>This extends the short correspondence already in the GL user documentation:</p>
+<table class="map">
+<tr><th>GL concept</th><th>Silicon</th><th>Note</th></tr>
+<tr><td>logic block</td><td>a core</td><td>logically self-contained; peers exchange only via mail (shared pools underneath)</td></tr>
+<tr><td>hash-inference engine</td><td>match-and-emit datapath</td><td>FNV unit + int16 compare/subset; no FPU</td></tr>
+<tr><td>known statements</td><td>register file / SRAM lines</td><td>fixed 176-byte all-int16 records</td></tr>
+<tr><td>per-LB containers</td><td>blocks in the SRAM-macro fabric (block == SRAM)</td><td>virtual-offset = (macro-select, intra-macro address)</td></tr>
+<tr><td>phase-2 split parts</td><td>compute lanes per core</td><td>read-only; merged by a sort</td></tr>
+<tr><td>mail (pull from ancestors)</td><td>any-to-any memory NoC</td><td>tree = access pattern, not wiring; the root log is a hotspot</td></tr>
+<tr><td>the steward / pager</td><td>cache controller</td><td>SRAM macros ↔ SSD, watermark policy</td></tr>
+<tr><td>SSD deload format</td><td>cold-tier page format</td><td>byte-identical across runs &amp; hosts</td></tr>
+<tr><td>cycle boundary</td><td>a global barrier / clock edge</td><td>mail commits here; results merge here</td></tr>
+<tr><td>determinism doctrine</td><td>no consensus needed</td><td>chips cannot disagree on a result</td></tr>
+</table>
+
+</section>
+
+<!-- ============================== SECTION 7 ============================== -->
+<section id="cost">
+<h2><span class="num">7 ·</span> Cost estimation</h2>
+
+<p>
+Here is the money. Two ground rules first. <b>One:</b> the numbers below are
+<i>order-of-magnitude</i>, dated, and concentrated in the
+<a href="#constants">constants appendix</a> so they can be refreshed at release
+without touching the prose. <b>Two:</b> this section prices the
+<span style="color:var(--amber)">N</span> in
+<code>value = (1 + N) × (is GL real?)</code>. It does <b>not</b> argue the second factor —
+that is what the FTA campaign is for. If GL is not real math automation, every
+dollar below buys nothing. If it is, every dollar buys a multiplier.
+</p>
+
+<p>The cost has two axes and they are wildly unequal:</p>
+<ul class="inv">
+<li><b>Memory dominates.</b> GL's working set today is gigabytes (§3). Holding and
+moving that is essentially the entire cost.</li>
+<li><b>Compute is nearly free by comparison.</b> An LB core is an integer
+match-and-emit pipeline with an FNV unit and no FPU (§1–2). Cores are small; you
+can afford a great many of them.</li>
+</ul>
+
+<h3>7.1 · Memory — the cost driver: many small SRAMs</h3>
+<p>
+The measured peak working set (full pipeline) is ~1 GB for the named theorem batches
+and ~4–5 GB for the heaviest exploration batch — but that is what lives on <b>SSD</b>,
+not what must be in SRAM. The cores random-access <b>SRAM</b> only, built as <b>many
+small macros, one per 256 KiB block</b> (block == SRAM, §<a href="#memory">3</a>): each
+block is its own port, so thousands of concurrent accesses serve the 32 cores at once and
+the runtime lever holds. And the SRAM holds the resident <b>window</b> of the
+deloadable Main pool <i>plus</i> the three never-deloaded pools (the cross-block
+mail log, the block-object store, and the goal registry — fixed, always resident);
+<b>deload</b> streams the rest of the Main pool from SSD, so the SRAM is far smaller
+than the whole working set. The window is a tunable knob; the never-deloaded floor
+is not.
+</p>
+
+<figure>
+<svg viewBox="0 0 760 250" role="img" aria-label="Many small SRAM macros: a column of cores, each linked to its own 256 KiB SRAM macro over an independent port, so thousands of accesses run concurrently and bandwidth scales with core count; a core draws as many macros as its problem needs.">
+  <text x="380" y="26" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">Many small SRAM macros — block == SRAM</text>
+  <text x="380" y="44" fill="#8B8FA5" font-size="9.5" text-anchor="middle">~thousands of macros × 256 KiB · one port each · apportioned per core on demand (§3)</text>
+  <g>
+    <rect x="200" y="62"  width="120" height="22" rx="4" fill="#262938" stroke="#EF9F27"/><text x="260" y="77" fill="#EF9F27" font-size="9" text-anchor="middle">core</text>
+    <rect x="440" y="62"  width="150" height="22" rx="4" fill="#3A2E16" stroke="#5DCAA5"/><text x="515" y="77" fill="#5DCAA5" font-size="9" text-anchor="middle">SRAM 256 KiB</text>
+    <path d="M320 73 L438 73" stroke="#5DCAA5" stroke-width="1.5"/>
+    <rect x="200" y="92"  width="120" height="22" rx="4" fill="#262938" stroke="#EF9F27"/><text x="260" y="107" fill="#EF9F27" font-size="9" text-anchor="middle">core</text>
+    <rect x="440" y="92"  width="150" height="22" rx="4" fill="#3A2E16" stroke="#5DCAA5"/><text x="515" y="107" fill="#5DCAA5" font-size="9" text-anchor="middle">SRAM 256 KiB</text>
+    <path d="M320 103 L438 103" stroke="#5DCAA5" stroke-width="1.5"/>
+    <rect x="200" y="122" width="120" height="22" rx="4" fill="#262938" stroke="#EF9F27"/><text x="260" y="137" fill="#EF9F27" font-size="9" text-anchor="middle">core</text>
+    <rect x="440" y="122" width="150" height="22" rx="4" fill="#3A2E16" stroke="#5DCAA5"/><text x="515" y="137" fill="#5DCAA5" font-size="9" text-anchor="middle">SRAM 256 KiB</text>
+    <path d="M320 133 L438 133" stroke="#5DCAA5" stroke-width="1.5"/>
+    <rect x="200" y="152" width="120" height="22" rx="4" fill="#262938" stroke="#EF9F27"/><text x="260" y="167" fill="#EF9F27" font-size="9" text-anchor="middle">core</text>
+    <rect x="440" y="152" width="150" height="22" rx="4" fill="#3A2E16" stroke="#5DCAA5"/><text x="515" y="167" fill="#5DCAA5" font-size="9" text-anchor="middle">SRAM 256 KiB</text>
+    <path d="M320 163 L438 163" stroke="#5DCAA5" stroke-width="1.5"/>
+    <rect x="200" y="182" width="120" height="22" rx="4" fill="#262938" stroke="#EF9F27"/><text x="260" y="197" fill="#EF9F27" font-size="9" text-anchor="middle">core</text>
+    <rect x="440" y="182" width="150" height="22" rx="4" fill="#3A2E16" stroke="#5DCAA5"/><text x="515" y="197" fill="#5DCAA5" font-size="9" text-anchor="middle">SRAM 256 KiB</text>
+    <path d="M320 193 L438 193" stroke="#5DCAA5" stroke-width="1.5"/>
+  </g>
+  <text x="380" y="218" fill="#8B8FA5" font-size="9" text-anchor="middle">… ×thousands, each pair independent — a core draws as many macros as it needs (§3)</text>
+  <text x="380" y="240" fill="#5DCAA5" font-size="10.5" font-weight="bold" text-anchor="middle">independent ports → concurrent access · bandwidth scales with cores · TRUE PARALLELISM</text>
+</svg>
+<figcaption><b>Many small SRAMs.</b> Each 256 KiB block is its own SRAM macro with its
+own port, so thousands of accesses run at once — bandwidth and concurrency scale with
+core count, and a core draws as many macros as its problem needs (§<a href="#memory">3</a>).
+The SRAM holds only the resident window; deload streams the rest from SSD, so it is far
+smaller than the working set.</figcaption>
+</figure>
+
+<p>
+The cold tier barely costs anything: a full run's deload images are well under a
+gigabyte today, and even an FTA-scale run's cold footprint is a rounding error
+against any SSD. <b>That is the point of the memory lever</b> — it converts a hard
+RAM ceiling into a cheap, deep SSD that is, for practical purposes, unlimited.
+</p>
+
+<h3>7.2 · Compute — small, and that's the good news</h3>
+<p>
+A single LB core is modest: an FNV-1a hasher (a pipelined multiplier and some
+XORs), int16 comparators, set-subset/membership logic, a small register file for
+statement lines, a control FSM, and one or more phase-2 lanes. There is no
+floating-point unit, no wide vector engine, no matrix array. In gate terms this is
+small — comparable to a simple integer core, not a CPU or a GPU shader. The
+consequence: <b>on a memory-bound part you spend your silicon budget on memory and
+interconnect, and the cores come almost for free.</b> That also argues for a
+<b>mature, cheaper process node</b> — bleeding-edge logic density buys little when
+logic isn't the bottleneck.
+</p>
+
+<h3>7.3 · NRE vs per-unit — staging the build</h3>
+<p>
+The fixed cost of a custom chip (mask set + design) is millions, and it only earns
+out at volume. So the build path is staged:
+</p>
+<ul class="inv">
+<li><b>Prototype = FPGA (reduced config).</b> A high-end FPGA proves the mapping and
+the <b>determinism claim</b> end to end — but on a <i>reduced</i> GL config that fits
+the FPGA's on-chip SRAM (tens-to-hundreds of MB of BRAM/URAM), running entirely from
+that SRAM with <b>no spill to off-chip memory</b> (which would void the very test). It
+cannot hold the full multi-GB working set and will not match an ASIC's core count; it
+answers "does the all-SRAM mapping work, deterministically?" for the price of a
+workstation-class board.</li>
+<li><b>ASIC tape-out is a volume decision.</b> The mask set (cheaper on a mature
+node, far pricier at the leading edge) is only worth it once you are making
+thousands to millions of parts. Below that, an FPGA fleet is cheaper than
+amortising a mask.</li>
+</ul>
+
+<h3>7.4 · The four volume tiers</h3>
+<p>
+What it would take to build, at four unit counts — each unit is one 32-core MPU. Cost
+drivers, not point quotes; raw figures live in the <a href="#constants">appendix</a>.
+</p>
+<table class="tiers">
+<tr><th>Scale</th><th>Use case</th><th>How you'd build it</th><th>What dominates</th><th>Rough order (refresh at release)</th></tr>
+<tr>
+  <td>1<br>prototype</td>
+  <td>prove the all-SRAM mapping &amp; determinism on a reduced config</td>
+  <td>one high-end FPGA (on-chip SRAM only)</td>
+  <td>the board; engineering time. No mask NRE.</td>
+  <td class="num">~$10k–$50k + dev effort</td>
+</tr>
+<tr>
+  <td>100<br>research cluster</td>
+  <td>internal research; serve a lab; batch many proofs at once</td>
+  <td>FPGA fleet, <i>or</i> a small ASIC run on a mature node</td>
+  <td>FPGA: boards. ASIC: mask NRE amortised over only 100 ⇒ heavy per-unit.</td>
+  <td class="num">~$1M–$5M (fleet or first silicon)</td>
+</tr>
+<tr>
+  <td>10⁶<br>ASIC farm</td>
+  <td>accelerate LLMs / large-scale math research at datacentre scale</td>
+  <td>all-SRAM ASIC (modest SRAM window + SSD)</td>
+  <td>the SRAM window + SSD + package/test; NRE negligible per unit</td>
+  <td class="num">~$10²–$10³ / chip ⇒ ~$10⁸–$10⁹ fleet</td>
+</tr>
+<tr>
+  <td>10⁹<br>every PC</td>
+  <td>a local MPU like a GPU — local LLM math, or a remote agent (e.g. Claude Code) offloading math to the user's machine</td>
+  <td>small all-SRAM die + the PC's own SSD as the cold tier</td>
+  <td>die at HVM economics; the SSD is already in the PC</td>
+  <td class="num">~$10¹–$10² / chip (GPU-class BOM)</td>
+</tr>
+</table>
+
+<div class="caveat">
+<span class="lab">What the numbers say</span>
+For <b>today's</b> GL, the cost is dominated not by a giant SRAM but by the
+<b>SRAM-window-vs-SSD-streaming</b> trade. Deload keeps the SRAM small (the window),
+so the silicon is modest; the real engineering risk is making <b>SSD streaming
+bandwidth keep ahead of the cores</b> — a smaller window means more streaming, and a
+batch with poor locality can become SSD-bound. The prototype, the research cluster,
+and even a per-PC part (which reuses the PC's own SSD as the cold tier) are all
+plausible without exotic memory. What remains <b>conditional</b> is the second factor:
+whether GL does real mathematics, decided by FTA — not here. The shrink
+(§8) only makes the window smaller and the streaming easier. We are saying the
+<i>architecture</i> reaches every tier; FTA decides whether reaching them matters.
+</div>
+
+<h3>7.5 · The multiplier N — a range, and still optimistic</h3>
+<p>
+What acceleration does the MPU actually deliver? Two different kinds, and it is
+worth keeping them separate:
+</p>
+<ul class="inv">
+<li><b>Memory axis = enablement, not speedup.</b> The right number here is not "×"
+— it is "possible vs impossible." Runs that hit the heap ceiling on a workstation
+today <b>cannot finish at all</b>; with the SSD-backed hierarchy they can. For the
+problems that matter next (FTA and beyond), this is the difference between a result
+and no result. Call it <b>∞ in the impossible→possible sense</b> — the architecture
+is built to make it literal for the ceiling cases, though no run today yet
+demonstrates an out-of-memory case completing via deload.</li>
+<li><b>Runtime axis = a real, bounded speedup.</b> Phase 2 — the dominant cost — is
+embarrassingly parallel across (block, part), with tens to hundreds of thousands of
+independent tasks available at the busy moments (§5). MPU 0.1 fields the <b>same 32
+cores</b> GL runs on today, so its runtime win is <b>per-core</b>, not from more
+cores: a specialized integer/FNV datapath fed from SRAM — no FPU, no off-chip memory stalls, no
+OS/cache-miss overhead — should beat a general CPU thread on this random-access
+workload, plausibly a <b>few× to ~10×</b> per core (an unbenchmarked estimate). Adding cores is the documented
+lever beyond that (up to the ~10⁴–10⁵ the workload offers), but that is a bigger MPU,
+not 0.1. The
+many-small-SRAM memory (§<a href="#cost">7.1</a>) is what makes this real — per-block
+ports give the bandwidth and low latency to feed the cores. The remaining caveats are
+stated: phase 3 is serial per
+block, there is a mail barrier every cycle (tens of cycles to converge on the heavy
+batch), the commit seam is single-threaded, and a few <b>hot cells</b> (above all the
+root mail log, read by every block) are contention points even in SRAM. So the
+speedup is sub-linear in total cores, but the parallel fraction (phase 2) is where
+almost all the time goes, and the SRAM fabric is sized to feed it.</li>
+</ul>
+
+<div class="key">
+<b>So: is it worth building?</b> The MPU turns "out of memory" into "spill to SSD"
+and "out of time" into "add cores," at a cost dominated by SRAM today and shrinking
+with GL. GL already works without it — that is the <b>1</b> — so the MPU's worth is the <b>N</b> it adds, times whether GL can reach mathematics at all. The
+FTA campaign sets the second factor. Everything here is the first factor, costed as
+carefully as we can.
+</div>
+
+</section>
+
+<!-- ============================== SECTION 8 ============================== -->
+<section id="verdict">
+<h2><span class="num">8 ·</span> The verdict</h2>
+
+<div class="vs">
+  <div class="left">
+    <h4>What works — the wins are real</h4>
+    <ul>
+      <li>The prover is <b>already silicon-shaped</b>: fixed pools, virtual-offset
+      addressing, a working-set pager, a byte-canonical deload format. We are not
+      proposing a rewrite — we are reading out a layout that exists.</li>
+      <li><b>Integer-only datapath, no FPU</b> on the proof path. Small, cheap cores.</li>
+      <li><b>Full determinism, including across hosts.</b> No FP nondeterminism, no
+      consensus to scale out, exact external re-checking.</li>
+      <li>Both levers are <b>live in software today</b>: SSD deload (memory) and LB
+      split (runtime). Nothing here is a paper design.</li>
+      <li>Memory is <b>all SRAM</b> — many small macros, one per block — so memory
+      bandwidth scales with cores (true parallelism); SSD is the cold tier that makes
+      capacity effectively <b>unlimited</b>.</li>
+    </ul>
+  </div>
+  <div class="right">
+    <h4>What's hard — stated plainly</h4>
+    <ul>
+      <li><b>The working set is multi-GB today</b>, so even with deload the SRAM window
+      plus SSD streaming has to keep the cores fed — a poor-locality batch can go
+      SSD-bound. Sizing the window against SSD bandwidth is the real tuning problem.
+      (An optional <b>DRAM L2</b> deload-staging cache — §<a href="#memory">3</a>, not
+      in the current design — could hide that latency.)</li>
+      <li><b>The kernel's compute paths are heap-free — compiler-verified</b>: a semantic
+      call-graph inventory over the built binaries shows zero heap-using functions on the
+      proof kernel's production paths; the only permitted kernel heap is the
+      <code>hashburst_trace.txt</code> debug dump (off the compute path, not silicon-mapped).
+      What remains on the ordinary heap sits outside the kernel: the compiled-definition
+      (<code>compiledMap</code>) config tables — startup-loaded data behind zero-allocation
+      read fences, ROM on silicon; the mail-string encoding at the single-threaded commit and
+      load seams; and the global pool's recycle queue plus the compaction scratch (§3, bounded,
+      outside any one LB).</li>
+      <li>An <b>FPGA prototype is the intended first build</b> — the 32 cores fit easily;
+      its on-chip SRAM caps the window, so it would prove the mapping and determinism, not
+      peak capacity.</li>
+      <li>The <b>second factor is unproven</b>: whether GL does real mathematics is
+      decided by FTA, not here. Until then, N multiplies an unknown.</li>
+    </ul>
+  </div>
+</div>
+
+<h3>The shrink trajectory — why the destination is a cheap, pure-SRAM MPU</h3>
+<p>
+Every technology shrinks as it matures; it is the most reliable pattern in
+computing. GL is young and has <b>specific, identified</b> levers to shrink its
+per-block memory — chiefly removing the provenance/history that the proving logic
+never reads (it is process documentation, not a proof input) and finer LB split
+(smaller, more numerous blocks each holding less). The internal estimate — <b>as yet
+unvalidated</b> — is a <b>100–1000× reduction in per-block memory</b>. If it holds,
+that is the number that would shrink the working set until it fits the SRAM window
+outright — no streaming at all:
+</p>
+
+<figure>
+<svg viewBox="0 0 760 300" role="img" aria-label="Shrink trajectory: today's multi-GB working set is far larger than the SRAM window, so deload streams blocks from SSD. As GL shrinks per-block memory 100 to 1000x, the working set drops until it fits the SRAM window outright, so deload never fires and the part runs at pure-SRAM speed.">
+  <defs><marker id="t-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <!-- axes -->
+  <line x1="80" y1="40" x2="80" y2="250" stroke="#3A3D4A" stroke-width="1.5"/>
+  <line x1="80" y1="250" x2="720" y2="250" stroke="#3A3D4A" stroke-width="1.5"/>
+  <text x="70" y="44" fill="#8B8FA5" font-size="9" text-anchor="end">working set</text>
+  <text x="70" y="250" fill="#8B8FA5" font-size="9" text-anchor="end">small</text>
+  <text x="400" y="278" fill="#8B8FA5" font-size="10" text-anchor="middle">GL maturity / shrink (history removal · finer split) →</text>
+
+  <!-- SRAM threshold line -->
+  <line x1="80" y1="196" x2="720" y2="196" stroke="#5DCAA5" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="716" y="190" fill="#5DCAA5" font-size="10" text-anchor="end">working set fits the SRAM window → zero streaming</text>
+
+  <!-- descending curve -->
+  <path d="M120 70 C 280 80, 360 150, 460 188 S 640 232, 690 236" fill="none" stroke="#EF9F27" stroke-width="2.5"/>
+  <circle cx="120" cy="70" r="5" fill="#F2766B"/>
+  <text x="120" y="58" fill="#F2766B" font-size="10" text-anchor="middle">today ~1–5 GB</text>
+  <text x="120" y="88" fill="#8B8FA5" font-size="8.5" text-anchor="middle">deload streams from SSD</text>
+  <circle cx="690" cy="236" r="5" fill="#5DCAA5"/>
+  <text x="660" y="226" fill="#5DCAA5" font-size="10" text-anchor="middle">after 100–1000× cut</text>
+
+  <!-- regions -->
+  <rect x="84" y="44" width="632" height="150" fill="#F2766B" opacity="0.05"/>
+  <rect x="84" y="198" width="632" height="50" fill="#5DCAA5" opacity="0.06"/>
+  <text x="400" y="120" fill="#F2766B" font-size="10" text-anchor="middle" opacity="0.8">above → working set bigger than window: deload streams from SSD (MPU 0.1)</text>
+  <text x="400" y="228" fill="#5DCAA5" font-size="10" text-anchor="middle" opacity="0.9">below → working set fits the window: no streaming, pure-SRAM speed (destination)</text>
+</svg>
+<figcaption><b>The destination, drawn.</b> Today the working set is far larger than
+the SRAM window, so deload streams blocks from SSD (it works, but a heavy batch can
+be streaming-bound). The shrink levers push the working set down until it fits the
+window outright — then deload never fires and the part runs at pure-SRAM speed on a
+tiny die. We build for the trajectory and say exactly where we are on it.</figcaption>
+</figure>
+
+<div class="win">
+<span class="lab">Where it stands</span>
+The MPU is a <b>force multiplier</b>. It removes GL's two ceilings — memory becomes an
+SSD-deep hierarchy, runtime becomes a parallel fabric — and both levers already run in
+software. Today it is an <b>all-SRAM accelerator backed by SSD deload</b> — the SRAM
+holds the working window, the SSD holds the rest — built as <b>32 LB cores, the 32 we
+have</b>, on an FPGA prototype or a small cluster. The layout already runs in
+software, so this is a <b>starting point you can build on</b>, not a finished part:
+the cheap, ubiquitous, zero-streaming version is a shrink away, and GL has the levers
+to get there. None of it matters unless GL can do real mathematics — the question the
+<b>FTA campaign</b> answers. GL is the 1, the MPU is the N; FTA decides whether either counts.
+</div>
+
+<div class="key">
+<b>The problems are real — and we are eager to engage them.</b> The hard parts
+above are not hidden; they are the work. We would rather state the SSD-streaming
+dependency, the not-yet-static edges, and the unproven second factor plainly, and build the
+prototype that turns the argument into a measurement.
+</div>
+
+</section>
+
+<!-- ============================== APPENDIX ============================== -->
+<section id="constants">
+<h2>Appendix · Price &amp; sizing constants</h2>
+
+<div class="caveat">
+<span class="lab">How to read this appendix</span>
+Two kinds of numbers live here. <b>Sizing constants</b> are facts about the GL
+machine: the pool, block, page and datapath values are read straight from the
+source, while the <b>measured working-set peaks</b> below are the booklet's own
+dated run figures — not reproduced from any committed run log (<code>.debug/</code>
+and <code>.rt/</code> telemetry is not tracked), so re-check them against a fresh
+full-pipeline run. <b>Price constants</b> are rough,
+order-of-magnitude market figures, <b>dated</b>. When the cost section says "rough,"
+this is what it means: treat ±2× as normal.
+</div>
+
+<h3>A · GL sizing constants — code/log-derived (update with the code)</h3>
+<table>
+<tr><th>Constant</th><th>Value</th><th>Source / note</th></tr>
+<tr><td>Main pool (deloadable)</td><td class="num">8 GiB</td><td>32768 × 256 KiB blocks; 8 KiB pages</td></tr>
+<tr><td>Persistent pool</td><td class="num">1 GiB</td><td>goal registry; never deloaded</td></tr>
+<tr><td>Mail pool</td><td class="num">2 GiB</td><td>cross-block mail log; never deloaded</td></tr>
+<tr><td>LB-body pool</td><td class="num">2 GiB</td><td>block objects; never deloaded</td></tr>
+<tr><td>Per-worker scratch</td><td class="num">transient</td><td>cold-grant from the main pool, released per worker task</td></tr>
+<tr><td><b>Total reservation</b></td><td class="num"><b>13 GiB</b></td><td>fixed at start-up, never grown</td></tr>
+<tr><td>Address resolve</td><td class="num">off&gt;&gt;18 · off&amp;0x3FFFF</td><td>1 shift + 1 mask + 1 add (per-LB MMU)</td></tr>
+<tr><td>Statement line</td><td class="num">176 B, all int16</td><td>fixed record; ≤16 args</td></tr>
+<tr><td>Datapath widths</td><td class="num">16 / 32 / 64-bit</td><td>ids / packed keys / FNV digest</td></tr>
+<tr><td>Hash</td><td class="num">FNV-1a 64-bit</td><td>per-byte XOR-then-multiply</td></tr>
+<tr><td>Pager watermarks</td><td class="num">40% / 50% / 75%</td><td>park &amp; drain-floor 40%, async steward wake 50%, synchronous one-for-one 75%; window = workers + 4</td></tr>
+<tr><td>Floating-point on proof path</td><td class="num">0</td><td>one FP compare exists, only to pick split granularity</td></tr>
+</table>
+
+<h4>Measured working set (full pipeline run)</h4>
+<table>
+<tr><th>Batch</th><th>Peak resident</th><th>Active blocks</th><th>Note</th></tr>
+<tr><td>IncubatorPeano1 (heaviest)</td><td class="num">~4.76 GB</td><td class="num">19030 / 32768</td><td>~1757 active LBs, exploration batch</td></tr>
+<tr><td>IncubatorGauss1</td><td class="num">~4.08 GB</td><td class="num">16304 / 32768</td><td>fewer, fatter blocks</td></tr>
+<tr><td>Peano (named theorems)</td><td class="num">~1.21 GB</td><td class="num">4823 / 32768</td><td>~382 blocks</td></tr>
+<tr><td>Gauss (named theorems)</td><td class="num">~0.9 GB</td><td class="num">~3500 / 32768</td><td>~405 blocks</td></tr>
+<tr><td>Cold tier (whole run)</td><td class="num">~0.5 GB</td><td class="num">~2100 files</td><td>end-of-run deload images on SSD</td></tr>
+</table>
+<p style="font-size:13px;color:var(--fg-dim)">Per-<b>Logic-Block</b> averages
+(peak resident ÷ active-LB count): ≈2.7 MiB/LB on IncubatorPeano1 (~4.76 GB ÷
+~1757 LBs), and ≈13.4 MiB/LB on IncubatorGauss1 (the booklet's own figure — its
+active-LB count is not tabulated here). Dividing peak resident by the
+<i>memory-block</i> count instead just returns the 256 KiB block size by
+construction, so it carries no information. These move with the workload and the
+code.</p>
+
+<h3>B · Price constants — rough, dated, refresh at release</h3>
+<p style="font-size:13px;color:var(--fg-dim)"><b>As of 2026-07-03. Order of
+magnitude only (±2× is normal).</b> Basis: mature/leading-node 300&nbsp;mm wafer
+and mask-set figures from 2026 foundry-cost analyses (Silicon Analysts, Tom's
+Hardware, SemiEngineering); SSD $/GB from 2026 price trackers reflecting the
+AI-driven NAND shortage (Tom's Hardware, TrendForce); FPGA board list prices from
+DigiKey. All order-of-magnitude and dated — refresh at the next release.</p>
+<table>
+<tr><th>Item</th><th>Rough figure</th><th>Note</th></tr>
+<tr><td>Mature-node wafer (≈12–16 nm, 300 mm)</td><td class="num">~$3k–$5k</td><td>28 nm ≈ $3k, 12–16 nm FinFET ≈ $4k (2026). Preferred — design is memory-bound, not logic-bound</td></tr>
+<tr><td>Leading-node wafer (≈3–5 nm, 300 mm)</td><td class="num">~$18k–$22k</td><td>N5 ≈ $18.5k, N3 ≈ $19.5k (2026, +3–5% YoY); little benefit here — logic isn't the bottleneck</td></tr>
+<tr><td>On-die SRAM, $/GB</td><td class="num">~10³× SSD or more</td><td>the hot tier; on-die SRAM no longer scales with the node, so its $/GB sits far above SSD (exact figure design-specific). Deload keeps only the resident <i>window</i> in SRAM, so it is modest (not multi-GB) and need not be wafer-scale</td></tr>
+<tr><td>NVMe SSD, $/GB</td><td class="num">~$0.10 / ~$0.35</td><td>the cold tier (streamed/prefetched, not random-accessed): ≈$0.10/GB consumer, ≈$0.30–$0.40/GB enterprise after the 2026 AI-driven NAND shortage. Small in absolute terms at GL's sub-1 GB cold footprint — not "free"</td></tr>
+<tr><td>High-end FPGA board (on-chip SRAM)</td><td class="num">~$13k–$25k</td><td>the prototype platform (Versal Premium class: VPK120 ≈ $13.6k, VPK180 ≈ $20.4k, DigiKey 2026; larger boards more). Runs reduced / windowed configs from BRAM/URAM; no mask NRE</td></tr>
+<tr><td>Mask set NRE — mature node</td><td class="num">~$1M–$3M</td><td>28 nm ≈ $1M–$1.5M, 12–16 nm higher (mask set only; full design NRE runs higher). The gate to the 100/10⁶ tiers</td></tr>
+<tr><td>Mask set NRE — leading node</td><td class="num">~$15M–$25M</td><td>5 nm ≈ $15M, 3 nm ≈ $20M (mask set only; full design NRE far higher). Avoid unless logic density truly needed</td></tr>
+<tr><td>BOM → sell multiplier</td><td class="num">~2–4×</td><td>package, test, yield, margin</td></tr>
+</table>
+
+</section>
+
+<div class="foot">
+<b>License.</b> Generative Logic — MPU 0.1. © 2025-2026 Generative Logic UG
+(haftungsbeschränkt). Dual-licensed under the <b>GNU Affero General Public
+License v3 or later</b> and a <b>commercial license</b>; commercial terms at
+<a href="https://generative-logic.com/license">generative-logic.com/license</a>.
+The MPU design is worthless on its own; it is a multiplier on the GL engine it
+accelerates.
+</div>
+
+</main>
+</body>
+</html>

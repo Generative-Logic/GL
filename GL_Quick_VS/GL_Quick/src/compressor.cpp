@@ -103,7 +103,7 @@ namespace gl {
     /// @post `extracted_graphs.size() == all_theorems.size()`. Each
     ///       node carries the LB's graph, premises, head, and original
     ///       theorem text.
-    /// @invariant [I-7](../../docs/30_invariants.md#i-7) — Pass B is
+    /// @invariant [I-7](../../docs/agentic_swdd/30_invariants.md#i-7) — Pass B is
     ///            gated by `!ban_disintegration`; setting that flag here
     ///            disables disintegration for compressor mode.
     void Compressor::runPhase1() {
@@ -124,13 +124,16 @@ namespace gl {
 
         // ---- 1. Prepare N independent Logic Blocks ----
 
+        // Compressor deposits are all level {0} — one shared stack run.
+        const int lvl0Run[1] = { 0 };
+
         for (size_t i = 0; i < N; ++i) {
             const std::string& theorem = all_theorems[i];
 
-            Memory* lb = new Memory();
+            Memory* lb = analyzer.lbStore.create<Memory>();
             lb->level    = 0;
             lb->isActive = true;
-            lb->exprKey  = "CompressorNode_" + std::to_string(i);
+            lb->setExprKey("CompressorNode_" + std::to_string(i));
 
             // Load ALL proven theorems into hash memory as implication rules
             for (const std::string& rule : all_theorems) {
@@ -142,14 +145,28 @@ namespace gl {
                 std::vector<std::string> chain;
                 for (auto& t : tempChain) chain.push_back(std::get<0>(t));
 
+                StrSpan chainRun[ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS];
+                int32_t chainRunN = 0;
+                for (const std::string& s : chain) {
+                    assert(chainRunN < ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS
+                        && "addToHashMemory chain run exceeds cap");
+                    chainRun[chainRunN++] = StrSpan(s);
+                }
                 analyzer.addToHashMemory(
-                    chain, head, std::set<std::string>(), *lb, lb->overallHashMemory, { 0 }, rule,
+                    chainRun, chainRunN, StrSpan(head), nullptr, 0, *lb, lb->overallHashMemory, lvl0Run, 1, StrSpan(rule),
                     analyzer.parameters.standardMaxAdmissionDepth,
                     analyzer.parameters.standardMaxSecondaryNumber,
                     false, analyzer.parameters.minNumOperatorsKey,
-                    "implication", false, rule);
+                    StrSpan("implication", 11), false, StrSpan(rule));
 
-                lb->wholeExpressions.insert(EncodedExpression(rule, "main"));
+                // `registered` only: the rule load marks the theorem as a
+                // registered statement of the scratch LB without admitting it
+                // to the level registry (the Site F dedup record stays blind
+                // to it, as the proof engine expects).
+                upsertStatementKey(lb->intKnownStatements,
+                    packStatementKey(lb->nameMap.encode(rule),
+                                     lb->nameMap.encode("main")),
+                    /*local=*/true, /*registered=*/true, /*known=*/false);
             }
 
             // Split the target theorem into premises + head
@@ -168,17 +185,16 @@ namespace gl {
                 std::string premise = std::get<0>(t);
                 pNode.premises.insert(ExpressionWithValidity(premise, "main"));
 
-                std::pair<std::string, std::vector<ExpressionWithValidity>> origin;
-                origin.first = "premise";
+                const TransientOrigin origin{ true, OriginTag::premise, nullptr, 0 };
                 analyzer.addExprToMemoryBlock(
-                    premise, *lb, -1, 1, { 0 }, origin, -1, -1, "main", false);
+                    premise, *lb, -1, 1, lvl0Run, 1, origin, -1, -1, StrSpan("main", 4), false);
             }
 
             // Set head as proof goal
             analyzer.addExprToMemoryBlock(
-                targetHead, *lb, -1, 2, { 0 },
-                std::make_pair("goal", std::vector<ExpressionWithValidity>()),
-                -1, -1, "main", true);
+                targetHead, *lb, -1, 2, lvl0Run, 1,
+                TransientOrigin{ true, OriginTag::goal, nullptr, 0 },
+                -1, -1, StrSpan("main", 4), true);
 
             extracted_graphs.push_back(pNode);
             compressorBodies.push_back(lb);
@@ -187,15 +203,10 @@ namespace gl {
         std::cout << "Running full Prover kernel on all Compressor nodes "
                      "simultaneously..." << std::endl;
 
-        // ---- 2. Build networking & run hash bursts ----
-
-        ParentChildrenMap compressorIndex =
-            analyzer.buildParentChildrenMap(compressorBodies);
-        PerCoreMailboxes  compressorBoxes =
-            analyzer.buildPerCoreMailboxes(compressorIndex);
+        // ---- 2. Run hash bursts ----
 
         analyzer.prove(analyzer.parameters.compressor_hash_bursts,
-                       compressorBodies, compressorIndex, compressorBoxes);
+                       compressorBodies);
 
         std::cout << "Extracting proof graphs and cleaning up..." << std::endl;
 
@@ -206,16 +217,25 @@ namespace gl {
             Memory* lb = compressorBodies[i];
             CompressorNode& pNode = extracted_graphs[i];
 
-            for (const auto& kv : lb->exprOriginMap) {
-                for (const auto& orig : kv.second) {
-                    // Store the dep list (orig.second).
-                    // Empty dep lists mean the expression is unconditionally
-                    // derivable (e.g., premises, tautologies).
-                    pNode.graph[kv.first].push_back(orig.second);
-                    total_origins++;
+            {
+                // Decoded lex-sorted snapshot — strings are the cross-LB
+                // common space of the graph (each compressor LB has its
+                // own interner); per-row line order is insertion order.
+                const auto originRows =
+                    decodeOriginMapSorted(lb->exprOriginMap, lb->originInterner);
+                for (const auto& row : originRows) {
+                    const ExpressionWithValidity rowKey(row.first.first,
+                                                        row.first.second);
+                    for (const auto& orig : row.second) {
+                        // Store the dep list (orig.second).
+                        // Empty dep lists mean the expression is unconditionally
+                        // derivable (e.g., premises, tautologies).
+                        pNode.graph[rowKey].push_back(orig.second);
+                        total_origins++;
+                    }
                 }
             }
-            delete lb;
+            analyzer.lbStore.destroy(lb);
         }
 
         // ---- 4. Restore global parameters ----
@@ -327,7 +347,7 @@ namespace gl {
     ///
     /// @details
     /// Iterates the theorem list in `std::stable_sort` order (per
-    /// `OPEN-13` in `docs/SwDD.md` — output determinism depends on
+    /// `OPEN-13` in `docs/agentic_swdd/SwDD.md` — output determinism depends on
     /// stable ordering). Each pass walks every theorem and tests
     /// `isDerivable(node, dead ∪ {theorem})` on every other LB's
     /// CompressorNode; if every head stays derivable, the theorem is
@@ -342,7 +362,7 @@ namespace gl {
     /// returns only the survivors.
     ///
     /// @return Surviving theorem texts.
-    /// @see OPEN-13 in `docs/SwDD.md` — stable-sort determinism.
+    /// @see OPEN-13 in `docs/agentic_swdd/SwDD.md` — stable-sort determinism.
     std::vector<std::string> Compressor::runPhase2() {
 
         // ---- 1. Compute per-theorem usage counts ----

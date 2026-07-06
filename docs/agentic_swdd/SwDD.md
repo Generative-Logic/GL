@@ -1,0 +1,354 @@
+<!--
+Generative Logic: A deterministic reasoning and knowledge generation engine.
+Copyright (C) 2025-2026 Generative Logic UG (haftungsbeschränkt).
+Dual-licensed under the GNU Affero General Public License v3 or later
+and a commercial license — see https://generative-logic.com/license.
+Contributions require CLA — see CONTRIBUTING.md.
+-->
+
+<!-- GL-AGENT-BANNER -->
+> **Agent-oriented documentation.** This document is written for AI agents working with the GL codebase. Human readers: see the [paper](https://arxiv.org/abs/2508.00017) and the [README](../../README.md). The document is intentionally dense, cross-linked, and weakness-explicit — agents thrive on that, humans usually don't.
+
+
+# GL Software Design Document
+
+> **Status:** Living. Written primarily for AI agents who need to understand GL quickly.
+> **Scope:** everything the project conventions hints at, plus byte-accurate MPL examples from the pipeline, weaknesses per chapter, and decision history.
+
+---
+
+## What this document is
+
+This document (hereafter **SwDD**) is the on-demand long-form architectural reference for the GL project — the *why-and-where* layer behind the project's brief operational summary at the repo root (which carries rules, vocabulary, build commands). The summary tells you *what the rules are*; the SwDD tells you *why they exist, where the code enforces them, and what happens when they're violated*.
+
+Whenever you (future agent) feel the shape of a question exceed code-level reading or summary density — *"how does the prover route an `or` disintegration into branch scopes?"*, *"what does `addTheoremToMemory` actually do with a freshly-compressed theorem?"*, *"why does the mirror check permute non-anchor premises but not anchor ones?"* — open this document and jump to the relevant chapter.
+
+The SwDD is *not* a tutorial. It assumes you have read the operational summary and the README once. It is a reference — dense, cross-linked, with worked examples drawn from actual pipeline artefacts.
+
+---
+
+## How to read it — three suggested paths
+
+1. **First exposure.** Read [`01_overview.md`](01_overview.md) end-to-end (≈10 minutes), skim [`02_glossary.md`](02_glossary.md), read the [Worked example](#worked-example) chapter start-to-finish. You now have a working mental model.
+
+2. **Targeted lookup.** Jump to the stage you care about via the [Navigation](#navigation) section below. Every stage chapter is self-contained in the sense that it cites its own context — you don't need to read neighbours. Cross-references use relative links.
+
+3. **Debug session.** Scan the [Invariant quick-reference](#invariant-quick-reference) for anything the failing behaviour might be violating, then drill into the relevant stage chapter's *Weaknesses* subsection. Known fragilities are tagged as such.
+
+---
+
+## Reading conventions
+
+This document is written to tight conventions so that it stays greppable and scannable over time.
+
+### MPL quoting
+
+Every MPL expression quoted in this document is either:
+
+- **Verbatim** — a byte-accurate copy-paste from a real pipeline artefact on disk (chapter file, `conjectures.txt`, `global_theorem_list.txt`, `externally_provided_theorems.txt`, etc.). Verbatim quotes appear inside ` ```text ` or ``` ```mpl ``` fences. Where the quote is not self-explanatory, an annotation in prose follows immediately.
+- **Schematic** — a template with obvious placeholder names (`α`, `β`, `a`, `b`, `bound_vars`, etc.) used only to explain structural patterns. Schematic forms appear in *inline* ` `code` ` form or in clearly-labelled "schema" blocks, never in ` ```text ` fences.
+
+If you see an MPL expression in a ` ```text ` fence, trust that it exists on disk exactly like that.
+
+### Code citations
+
+Source citations use the `file.ext:line` form, e.g. `prover.cpp` for a function definition. Citations refer to the **definition** site unless suffixed with `(decl)`. Line numbers may drift under edits — when in doubt, grep for the symbol name. If you (future agent) find a citation that has drifted, **update it** — don't leave dead references.
+
+For C++, the canonical files live under `GL_Quick_VS/GL_Quick/src/`. Paths are shortened to just the filename in citations since there is no ambiguity.
+
+### Weaknesses tagging
+
+Every pipeline and core-concept chapter has a `## Weaknesses` subsection at the end, with three buckets:
+
+- **Known & tracked** — documented, understood, has an open plan or known mitigation. Example: *"induction typing soundness — see `docs/agentic_swdd/induction_typing_plan.md` and invariant [I-18](30_invariants.md#i-18)."*
+- **Suspected fragility** — looks like it might break under specific conditions; not currently exercised or confirmed. Example: *"Pass B's single-input-operator gate relies on `inputIndices.size == 1`; if a new operator with `input_args.size == 1` is introduced with different semantics (e.g. a non-admissive projection), the gate admits it silently."*
+- **Not exercised by tests** — has no regression coverage; surviving only on code review.
+
+If you (future agent) notice a weakness not listed, add it. Prefer honest over silent.
+
+### Tense and person
+
+Present tense, impersonal. *"The prover performs hash bursts."* not *"We do hash bursts."* or *"The prover will perform..."*. The doc describes current system state.
+
+### Full words
+
+Per the project conventions, prose uses full words. Code identifiers appear as-is inside backticks — do not expand `mb` to `memoryBlock` when citing a specific variable from the code.
+
+### Markdown
+
+ATX-style headings (`#`, `##`, `###`). Line wrapping is up to the renderer — source text is unwrapped. Tables used where structure is genuinely tabular; bulleted lists where order matters but structure is light.
+
+## Navigation
+
+### Root-level sections
+
+| File | Depth | Purpose |
+|---|---|---|
+| [`01_overview.md`](01_overview.md) | [DRAFT] | GL in one page — the dataflow, entry points, artefact layout. Read this first. |
+| [`02_glossary.md`](02_glossary.md) | [DRAFT] | Every domain term used in the codebase. |
+| [`03_mpl.md`](03_mpl.md) | [DRAFT] | The MPL language — grammar, variable conventions, type labels, shape patterns, reading exercises. |
+| [`04_configs.md`](04_configs.md) | [DRAFT] | All `files/config/*.json` files — top-level schema, per-expression fields, `parameters` and `prover_parameters` full reference, variant comparison, loader cartography. |
+| [`30_invariants.md`](30_invariants.md) | [DRAFT] | Numbered + named invariants with cross-linked anchors, `I-1`..`I-152` high-water (numbering reflects insertion order, not strict sequence; gaps and retirements exist — e.g. I-5 retired, I-11 inverted, I-30/I-35/I-47 superseded; sandbox-branch entries use `I-pending-<slug>` placeholders per Rule 15). |
+| [`40_decisions.md`](40_decisions.md) | [DRAFT] | Dated trade-off log, `D-1`..`D-193` high-water (D-38 retired, D-43 superseded; D-44/D-45 inherited from sibling; D-53 = mail-unification renumbered from main's D-46 merge; D-75 inherited, D-76; D-88–D-102; D-103). Sandbox-branch entries use `D-pending-<slug>` placeholders renumbered at merge per Rule 15. |
+| [`50_gotchas.md`](50_gotchas.md) | [DRAFT] | Chronic-failure-mode catalog, `G-1`..`G-60` high-water with gaps (numbering reflects insertion order, not strict sequence; sandbox-branch entries use `G-pending-<slug>` placeholders per Rule 15). |
+| [`worked_example.md`](worked_example.md) | [DRAFT] | One Peano theorem walked through all ten pipeline stages end-to-end. |
+| [`induction_typing_plan.md`](induction_typing_plan.md) | [FULL, pre-existing] | Architecture plan for the induction-typing soundness fix (in-flight). |
+| [`_meta/testing.md`](_meta/testing.md) | [DRAFT] | In-tree unit-test harness — `gl_quick.exe --unit-tests` gate added. |
+
+### Pipeline (the data arrow, stage by stage)
+
+| File | Depth | Stage |
+|---|---|---|
+| [`10_pipeline/01_mpl_definitions.md`](10_pipeline/01_mpl_definitions.md) | [DRAFT] | MPL, `files/definitions/*.mpl`, GL-binary schema |
+| [`10_pipeline/02_conjecturer.md`](10_pipeline/02_conjecturer.md) | [DRAFT] | `conjecturer.cpp` — enumeration + filtering |
+| [`10_pipeline/03_ce_filter.md`](10_pipeline/03_ce_filter.md) | [DRAFT] | `files/simple_facts/*` + peek-and-prune counterexample filter |
+| [`10_pipeline/04_prover.md`](10_pipeline/04_prover.md) | [DRAFT] | The main proof engine — `prover.cpp`, `memory.hpp`, `compiler.cpp` |
+| [`10_pipeline/05_compressor.md`](10_pipeline/05_compressor.md) | [DRAFT] | `compressor.cpp` — post-proof redundancy elimination |
+| [`10_pipeline/06_process_proof_graph.md`](10_pipeline/06_process_proof_graph.md) | [DRAFT] | `process_proof_graphs.py` — variable renaming, pruning |
+| [`10_pipeline/07_html_export.md`](10_pipeline/07_html_export.md) | [DRAFT] | `generate_full_proof_graph.py`, `visu_helpers.py` |
+| [`10_pipeline/08_verifier.md`](10_pipeline/08_verifier.md) | [DRAFT] | `verifier.py` — external proof checker |
+| [`10_pipeline/09_incubator.md`](10_pipeline/09_incubator.md) | [DRAFT] | Ground-level fact-table generation |
+
+### Core concepts (cross-cutting)
+
+| File | Depth | Concept |
+|---|---|---|
+| [`20_core_concepts/01_logic_blocks.md`](20_core_concepts/01_logic_blocks.md) | [DRAFT] | LB grid, parent/child hierarchy, the `Memory` class |
+| [`20_core_concepts/02_hash_engine.md`](20_core_concepts/02_hash_engine.md) | [DRAFT] | Hash-based inference, `HashMemory`, encoded expressions |
+| [`20_core_concepts/03_mail_system.md`](20_core_concepts/03_mail_system.md) | [DRAFT] | Inter-block communication, `Mail`, broadcast rules |
+| [`20_core_concepts/04_validity_stack.md`](20_core_concepts/04_validity_stack.md) | [DRAFT] | Scope names, `NameMap::encodePush`, `stackOfValidity`, `ancestorsOf` |
+| [`20_core_concepts/05_equivalence_classes.md`](20_core_concepts/05_equivalence_classes.md) | [DRAFT] | `EquivalenceClass`, negated-equality expansion |
+| [`20_core_concepts/06_anchors_and_scopes.md`](20_core_concepts/06_anchors_and_scopes.md) | [DRAFT] | `AnchorPeano`, `AnchorGauss`, `AnchorIncubator3`, `AnchorIncubator8`, anchor handling |
+| [`20_core_concepts/07_or_branching.md`](20_core_concepts/07_or_branching.md) | [DRAFT] | OR disintegration, branch scopes, convergence |
+| [`20_core_concepts/08_proof_tags.md`](20_core_concepts/08_proof_tags.md) | [DRAFT] | The 31 `TAG_CHECKERS` + non-checker categories (30 distinct tag names; one shared checker. D-35 added `or branch proven` + `or branch assumption`; D-41 added `definition set consistency` as a per-row meta-check.) |
+| [`20_core_concepts/09_static_memory.md`](20_core_concepts/09_static_memory.md) | [DRAFT] | Statification — the static memory hierarchy (one program-start pool → blocks → per-LB bump arena), `GlobalMemoryManager`, `LbArena` / `ArenaVector`, SSD deload (ASIC 0.1 path; in construction on `sandbox/statification_*`) |
+| [`20_core_concepts/09b_statification_cookbook.md`](20_core_concepts/09b_statification_cookbook.md) | [DRAFT] | Statification cookbook — type-indexed heap→static conversion recipes (`std::set<int>` → what, with example + idea), the tool-choice decision, and the campaign's pitfalls. Read before converting a heap container. |
+| [`20_core_concepts/09c_string_statification_cookbook.md`](20_core_concepts/09c_string_statification_cookbook.md) | [DRAFT] | String statification cookbook — string→span/id conversion recipes (decodeView-vs-copyFrom, span doors, ordered consumption, pitfalls). Sibling to 09b. |
+
+### Hardware track
+
+The **MPU 0.1 booklet** (`docs/MPU/index.html`) maps the live prover onto silicon — the Logic Block as a core, the static memory hierarchy as SRAM / a per-LB MMU / a cache controller, mail as a tree network-on-chip, and LB split as the runtime lever — plus an honest build-cost estimate. It is a tracked design document written for a hardware / architecture audience (sibling to the user SwDD); update it whenever a hardware-relevant architecture change lands.
+
+### Worked example
+
+[`worked_example.md`](worked_example.md) — **must-read.** One Peano theorem (`(>[i0,s,+,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in2[i0,v1,s])(in3[i0,i1,v1,+])))` — "0 + 1 = 1") traced through every pipeline stage with byte-accurate artefacts.
+
+### How to extend this document
+
+1. Find the right file. Don't create a new top-level file unless a concept truly crosscuts every chapter.
+2. Preserve the `[STUB] / [DRAFT] / [FULL]` tag at the top of each file — update it when you substantially extend.
+3. If you (future agent) make a decision worth remembering, add it to [`40_decisions.md`](40_decisions.md) with today's date.
+4. If you notice a fragility, add it to the chapter's `Weaknesses` subsection AND cross-reference from [`50_gotchas.md`](50_gotchas.md) if it's recurring.
+5. Update only with things that will outlive this project state — the SwDD is where project-state knowledge lives.
+
+
+---
+
+## Invariant quick-reference
+
+The full details live in [`30_invariants.md`](30_invariants.md). This table is for fast visual recall.
+
+| ID | Name | Scope | Cross-link |
+|---|---|---|---|
+| I-1 | Precompile structural operators on every theorem-load path | Compiler / prover | [`30_invariants.md#i-1`](30_invariants.md#i-1) |
+| I-2 | Non-main `validityName` minted only via `NameMap::encodePush` | Validity stack | [`30_invariants.md#i-2`](30_invariants.md#i-2) |
+| I-3 | `NameMap::decodeView` spans + paged-metadata reads — copy before nested mint (`decode` owns; heap `idToSub`/`stackOf`-ref retired) | Validity stack | [`30_invariants.md#i-3`](30_invariants.md#i-3) |
+| I-4 | One implication-binder rule — bind every non-`u_` variable, everywhere | Prover / compiler / conjecturer / verifier | [`30_invariants.md#i-4`](30_invariants.md#i-4) |
+| I-5 | (retired) — folded into I-4 by D-75 | — | [`30_invariants.md#i-5`](30_invariants.md#i-5) |
+| I-6 | Pass B single-input-operator gate (do not widen) | Prover disintegration | [`30_invariants.md#i-6`](30_invariants.md#i-6) |
+| I-7 | Pass B + back-reformulation + hypo-disintegration all guarded by `!parameters.ban_disintegration` (decoupled from `incubator_mode`) | Prover disintegration | [`30_invariants.md#i-7`](30_invariants.md#i-7) |
+| I-8 | Trivial equality `(=[x,x])` forbidden in head only | Conjecturer | [`30_invariants.md#i-8`](30_invariants.md#i-8) |
+| I-9 | Equality mirror guarded by `args[0]!= args[1]` | Compiler | [`30_invariants.md#i-9`](30_invariants.md#i-9) |
+| I-10 | Chapter v-numbering seeded from theorem expression | Process proof graph | [`30_invariants.md#i-10`](30_invariants.md#i-10) |
+| I-11 | (inverted) Anchor slots ARE bound in a theorem's `>[...]` — D-75 | Theorem construction | [`30_invariants.md#i-11`](30_invariants.md#i-11) |
+| I-12 | `addStatement` applies equivalence classes to `!(=[a,b])` one-sidedly | Prover | [`30_invariants.md#i-12`](30_invariants.md#i-12) |
+| I-13 | ~~`ChunkPool` uses static `char[]`~~ — retired, superseded by I-95 (the class was removed; the no-heap contract lives on in the static-memory hierarchy) | Memory | [`30_invariants.md#i-13`](30_invariants.md#i-13) |
+| I-14 | Never destroy git history | Process | [`30_invariants.md#i-14`](30_invariants.md#i-14) |
+| I-15 | `git reset --hard` only; never soft or mixed | Process | [`30_invariants.md#i-15`](30_invariants.md#i-15) |
+| I-16 | `verifier.py` is sacred — failures are real bugs | Verifier | [`30_invariants.md#i-16`](30_invariants.md#i-16) |
+| I-17 | `savedStartInt` freshness check assumes one monotonic counter | Prover disintegration | [`30_invariants.md#i-17`](30_invariants.md#i-17) |
+| I-18 | Induction scheduled on a bound variable must first prove its typing | Prover | [`30_invariants.md#i-18`](30_invariants.md#i-18) |
+| I-19 | Asserts are first-class — never weaken or remove to pass a test | Process | [`30_invariants.md#i-19`](30_invariants.md#i-19) |
+| I-20 | Auto-commit + push on source/config changes, detailed message | Process | [`30_invariants.md#i-20`](30_invariants.md#i-20) |
+| I-21 | `sameIterationInternalMail` cleared at top of hashburst after absorb, not end | Prover / mail | [`30_invariants.md#i-21`](30_invariants.md#i-21) |
+| I-22 | `admissionMapIntegration` entry NOT cleaned on revival or consumption (template-reuse) | Prover / admission | [`30_invariants.md#i-22`](30_invariants.md#i-22) |
+| I-23 | Spontaneous compact operator names stable across batches (shared registry) | Compiler + Python pipeline | [`30_invariants.md#i-23`](30_invariants.md#i-23) |
+| I-24 | `multiplyImplication` may not equate two distinct free `u_*` anchor parameters | Prover + verifier | [`30_invariants.md#i-24`](30_invariants.md#i-24) |
+| I-25 | `addStatement`'s `newStatements` out-param carries every deposit (id form) with its own scope; cross-scope deposits ride the single channel | Prover / equivalence classes | [`30_invariants.md#i-25`](30_invariants.md#i-25) |
+| I-26 | Mail-out implications/statements MAIN-ONLY; mail-out exprOriginMap ALL-SCOPES | Mail subsystem | [`30_invariants.md#i-26`](30_invariants.md#i-26) |
+| I-27 | Site F / Site H — ancestor-scan dedupe at `addExprToMemoryBlock` entry | Prover kernel entry | [`30_invariants.md#i-27`](30_invariants.md#i-27) |
+| I-28 | Cross-LB writes during `proveKernel`'s parallel phase forbidden — defer to post-`pool.join` collectors | Prover / parallelism | [`30_invariants.md#i-28`](30_invariants.md#i-28) |
+| I-29 | Variable-port type consistency: every chapter-row variable connects ports with identical type labels | Compiler + verifier | [`30_invariants.md#i-29`](30_invariants.md#i-29) |
+| I-30 | ~~`applyEquivalenceClassToRejectedMapIntegration` is additive~~ — retired, superseded by I-37 | Prover / equivalence classes | [`30_invariants.md#i-30`](30_invariants.md#i-30) |
+| I-31 | `updateEquivalenceClasses` ancestor-pass never modifies ancestor-scope class state | Prover / equivalence classes | [`30_invariants.md#i-31`](30_invariants.md#i-31) |
+| I-32 | Cross-pair `equality2` emission gated on existing class/LB origin | Prover / equivalence classes | [`30_invariants.md#i-32`](30_invariants.md#i-32) |
+| I-33 | `mergeTwoEquivalenceClasses` cross-vN preconditions (ancestor-only direction; eqArgs-subset assert is same-vN only) | Prover / equivalence classes | [`30_invariants.md#i-33`](30_invariants.md#i-33) |
+| I-34 | Cross-substitution `equality1` emission gated on existing target origin (`applyEquivalenceClass` only) | Prover / equivalence classes | [`30_invariants.md#i-34`](30_invariants.md#i-34) |
+| I-35 | ~~`addOrigin` cap-full preference~~ — superseded by [D-51](40_decisions.md#d-51), 2026-05-08 | Prover / origin tracking | [`30_invariants.md#i-35`](30_invariants.md#i-35) |
+| I-38 | `implication`-row deposit lives at `deeperOf(constituents)` — verifier-side mirror of `generateEncodedRequests` accumulation | Verifier / validity stack | [`30_invariants.md#i-38`](30_invariants.md#i-38) |
+| I-37 | `rejectedMap` AND `rejectedMapIntegration` are never written **directly** by equi-class application — both sides drop entries and mail the rewritten compound onto `sameIterationInternalMail`; insertions happen indirectly through the kernel's normal `updateRejectedMap` / `updateRejectedMapIntegration` writers downstream of mail absorb | Prover / equivalence classes | [`30_invariants.md#i-37`](30_invariants.md#i-37) |
+| I-36 | Algebra equi-class rewrites preserve positional collision pattern — drop any rewrite that collapses previously-distinct arg slots (superseded on both admission paths, algebra + integration, by `D-106` — single-representative collapse allows repetitions) | Prover / equivalence classes | [`30_invariants.md#i-36`](30_invariants.md#i-36) |
+| I-40 | Post-class-update sweep drops `admissionMap` keys with non-canonical class members (mirror of `cleanUpExpressions` + `filterIterations`) — retired on algebra admission path by `D-106` (inline drop-and-rekey) | Prover / equivalence classes | [`30_invariants.md#i-40`](30_invariants.md#i-40) |
+| I-41 | `cleanAdmissionMap` canonicalization closure — consuming K erases every K' at same validity with `canon(K') == canon(K)` | Prover / equivalence classes | [`30_invariants.md#i-41`](30_invariants.md#i-41) |
+| I-42 | `applyEquivalenceClassToAdmissionMapIntegration` is additive — original K stays, K' is added (retired by `D-106` — now drop-and-rekey) | Prover / equivalence classes | [`30_invariants.md#i-42`](30_invariants.md#i-42) |
+| I-43 | Post-class-update `admissionMapIntegration` canonical sweep; NO on-hit closure analog of I-41 (the I-22 exception) — retired by `D-106` (inline drop) | Prover / equivalence classes | [`30_invariants.md#i-43`](30_invariants.md#i-43) |
+| I-44 | `exprOriginMap` is process documentation, not a proof input (Rule 16) | Prover / origin tracking | [`30_invariants.md#i-44`](30_invariants.md#i-44) |
+| I-45 | `toBeProved` goals reach canonical form via end-of-burst `sanitizeToBeProved`; namespace preserved | Prover / equivalence classes | [`30_invariants.md#i-45`](30_invariants.md#i-45) |
+| I-46 | hashMem rule registry canonicalised by end-of-burst `sanitizeHashMemory` via `expandedImplications` index | Prover / equivalence classes | [`30_invariants.md#i-46`](30_invariants.md#i-46) |
+| I-47 | ~~`applyEquivalenceClass` compiled-implication branch via `sameIterationInternalMail`~~ — retired prototype, subsumed by I-46 | Prover / equivalence classes | [`30_invariants.md#i-47`](30_invariants.md#i-47) |
+| I-48 | LB-disable bubble-up gates on main-namescope `toBeProved` only; deeper-scope residue does not keep LBs alive | Prover / LB lifecycle | [`30_invariants.md#i-48`](30_invariants.md#i-48) |
+| I-50 | Radical subtree wipe (`Memory::wipeSubtree`) runs at end-of-burst via `pendingWipeScopes` queue, never mid-kernel | Prover / LB lifecycle | [`30_invariants.md#i-50`](30_invariants.md#i-50) |
+| I-49 | HashMemory subkey containers carry an owner-set; drop a subkey only when its owner-set empties | Hash engine | [`30_invariants.md#i-49`](30_invariants.md#i-49) |
+| I-53 | Anchor predicates are never rewritten by equivalence-class substitution — helper-level early return + admission-loop anchor-changed refuse jointly suppress every variant-generation and modified-anchor-insert path | Prover / equivalence classes | [`30_invariants.md#i-53`](30_invariants.md#i-53) |
+| I-54 | Implications cross the mail system only as compact `(implication<N>[…])` statements via `Mail::statements`; the `Mail::implications` tuple channel is deleted on this branch | Mail subsystem | [`30_invariants.md#i-54`](30_invariants.md#i-54) |
+| I-51 | Every `Mail::statements` deposit ships rules with `std::set<int>` for the level set; a non-empty deposit silently breaks the `allLevelsInvolved` discharge gate at the receiver | Mail subsystem | [`30_invariants.md#i-51`](30_invariants.md#i-51) |
+| I-52 | `compilation` row's `rest[0]` cites the binary's canonical reconstruction via `reconstructImplicationFullBind(elements[:−1], elements[−1])`, not the raw `original` that was queued — alpha-equivalent inputs collapse to the same `implication<N>` but the binary stores only the first-seen body | Prover / mail | [`30_invariants.md#i-52`](30_invariants.md#i-52) |
+| I-55 | Mail absorb runs pre-fixpoint; rules absorbed at burst N's `mailIn` fire in burst N's hashburst (post-fixpoint placement reverted on 2026-05-20 after the contradiction-LB latency overflow) | Prover / mail | [`30_invariants.md#i-55`](30_invariants.md#i-55) |
+| I-57 | External-expression mail comes only from direct ancestors; an LB's `mailIn` never carries items authored by a sibling, child, or unrelated subtree | Mail subsystem | [`30_invariants.md#i-57`](30_invariants.md#i-57) |
+| I-67 | `g_buildStackPath` per-frame insertion ownership; `buildStack`'s `erase(proved)` exits guarded by `insertedHere` so an inner re-entry never wipes the outer scope's entry | HTML export / chapter walker | [`30_invariants.md#i-67`](30_invariants.md#i-67) |
+| I-58 | `intKnownStatements` is the immortal statement record; `cleanUpExpressions` never erases rows; only the wholesale teardowns (`wipeSubtree` / `eradicateImplicationFromLB` / `resetResentExpressionRegistries`) erase, plus the CE teardown's `registered`-membership reset | Prover / equivalence classes | [`30_invariants.md#i-58`](30_invariants.md#i-58) |
+| I-59 | Every runtime measurement belongs to one `performElem2` (hashburst) call — never accumulated across calls, threads, or outer iterations | RT measurement infrastructure | [`30_invariants.md#i-59`](30_invariants.md#i-59) |
+| I-56 | Hashburst mail-deposit honors ref's Site F ancestor-scan dedup before writing to `sameIterationInternalMail` | Prover / mail | [`30_invariants.md#i-56`](30_invariants.md#i-56) |
+| I-60 | `addExprToMemoryBlock` is a flat container-insertion routine; no equivalence-class apply burst inside it | Prover | [`30_invariants.md#i-60`](30_invariants.md#i-60) |
+| I-61 | Per-step delta containers cleared once per LB in the phase-2 finalize — after every part's request generation, before the record merge (D-126) | Prover | [`30_invariants.md#i-61`](30_invariants.md#i-61) |
+| I-62 | `Memory` has two distinct internal-mail channels (`sameIterationInternalMail` / `nextIterationInternalMail`) with disjoint lifecycles | Mail subsystem | [`30_invariants.md#i-62`](30_invariants.md#i-62) |
+| I-63 | `standardProcessing` is the sole driver of mail absorb + apply + discharge + `fillMailOut` per call phase | Prover | [`30_invariants.md#i-63`](30_invariants.md#i-63) |
+| I-64 | `fillMailOut` is the primary writer to `mailOut` (per-step delta); root-only post-join `mergeBatchInto` staging adds writers; the commit barrier is the sole reader (pull model) | Prover / mail | [`30_invariants.md#i-64`](30_invariants.md#i-64) |
+| I-65 | `applyEquiClasses` covers both (delta-class × all registry statements) AND (non-delta-class × new registry statements); equality / negated-equality statements filtered | Prover / equivalence classes | [`30_invariants.md#i-65`](30_invariants.md#i-65) |
+| I-66 | Phase-2 hashburst never deactivates/discharges; the `isActive` flip + all discharge bookkeeping happen only in phase 3's post-burst `standardProcessing` | Prover / LB lifecycle | [`30_invariants.md#i-66`](30_invariants.md#i-66) |
+| I-68 | Hashburst marker-branch `admissionMap` writes staged on `admissionKeysAlgebra` + drained post-fixpoint by `drainAdmissionKeysAlgebra`, never applied inline | Prover / admission | [`30_invariants.md#i-68`](30_invariants.md#i-68) |
+| I-69 | Integration `prepareIntegration` seed registration staged on `deferredIntegrationPreps` + drained post-fixpoint by `drainDeferredIntegrationPreps`, never applied inline | Prover / admission | [`30_invariants.md#i-69`](30_invariants.md#i-69) |
+| I-70 | Request-generation validity prune is a sound over-approximation of the firing gate — never drops a request that could fire | Prover / request generation | [`30_invariants.md#i-70`](30_invariants.md#i-70) |
+| I-71 | admissionMap insert never re-adds a key in consumedAdmissionKeys (mutual exclusion; `isAdmitted` assert) | Prover / admission | [`30_invariants.md#i-71`](30_invariants.md#i-71) |
+| I-72 | `checkForEquivalence` suppresses only on a `fullyDisintegrated` variant (sound under-approximation) | Prover / disintegration gate | [`30_invariants.md#i-72`](30_invariants.md#i-72) |
+| I-77 | Hashburst deposits applied in canonical sorted order, not request-generation order (LB-split groundwork) | Prover / hashburst | [`30_invariants.md#i-77`](30_invariants.md#i-77) |
+| I-80 | `OwnerSet::partitionIds` IS the owner record — one packed (implId, scopeVid) composite per owner serving D-72 ownership + D-105 comparability (low half) + D-119 split partition; no separate owners container | Hash engine | [`30_invariants.md#i-80`](30_invariants.md#i-80) |
+| I-78 | Contradiction discharge fires at most once per LB per step, gated on `isActive` (phase-1/phase-3 idempotent) | Prover / contradiction | [`30_invariants.md#i-78`](30_invariants.md#i-78) |
+| I-79 | Request-generation u_ literal prune is a sound over-approximation of the firing gate — never drops a request that could fire | Prover / request generation | [`30_invariants.md#i-79`](30_invariants.md#i-79) |
+| I-81 | Reverse direction of a two-directional theorem is proved through the normal engine, never injected as an unproven registry row | Conjecturer / prover | [`30_invariants.md#i-81`](30_invariants.md#i-81) |
+| I-82 | Each CE-filter conjecture runs on a private single-use clone LB; the only cross-thread write is its disjoint `contradictionTable` slot | Prover / CE filter | [`30_invariants.md#i-82`](30_invariants.md#i-82) |
+| I-83 | Phase-2 parallel parts write only per-slot scratch arenas + their own sealed page set (record chain + sealed strings), never shared LB state | Prover / parallelism | [`30_invariants.md#i-83`](30_invariants.md#i-83) |
+| I-73 | The submatch cap has zero effect in CE-filter mode — a CE burst runs to completion (only its contradiction early-exit halts it), so the completeness check never truncates | Prover / CE filter | [`30_invariants.md#i-73`](30_invariants.md#i-73) |
+| I-76 | Burst early-exit honored only at `g_splitCount==1`; split parts run to completion (a sibling bailing on another part's stop is a determinism-breaking race) | Prover / LB-split | [`30_invariants.md#i-76`](30_invariants.md#i-76) |
+| I-75 | Adaptive re-split fires at most once per LB per iteration; only an unsplit LB that hit the cap escalates (≤2 passes) | Prover / LB-split | [`30_invariants.md#i-75`](30_invariants.md#i-75) |
+| I-74 | A discarded unsplit burst leaves no LB residue (read-only phase 2); the re-run at full split is byte-identical to a fresh split burst | Prover / LB-split | [`30_invariants.md#i-74`](30_invariants.md#i-74) |
+| I-84 | The int16 vectors are the ONLY stored statement form; string structs transient, decoded at boundaries (non-minting lookup, copy before mint, id-pair identity, never sort by id) | Prover / Memory | [`30_invariants.md#i-84`](30_invariants.md#i-84) |
+| I-85 | `intKnownStatements` carries two memberships via `StatementFlags` bits — `known`-reads (Site F / negation scans / dependency skip) vs `registered`-reads (registration gates); OR-only via `upsertStatementKey` | Prover / Memory | [`30_invariants.md#i-85`](30_invariants.md#i-85) |
+| I-86 | Statement indexes (`intLocalEncodedStatementsSet` / `intStatementLevelsMap`) are packed-key; ids-in-hand pack directly, string probes non-minting; no reader iterates; dump section derived by decode + lex-sort, byte-identical | Prover / Memory | [`30_invariants.md#i-86`](30_invariants.md#i-86) |
+| I-87 | Goal registry `intToBeProved` is packed-key; probes non-minting (`lookupToBeProved`); order-sensitive walks via `decodeToBeProvedSorted` lex snapshot; I-48 surveys by low-bits MAIN_ID; dump section derived, byte-identical | Prover / Memory | [`30_invariants.md#i-87`](30_invariants.md#i-87) |
+| I-89 | Admission/rejected keys are packed (templateId, validityId) in the DEDICATED `templateInterner` space (never the NameMap); writers mint, probes non-minting; phase-2 staging rides sealed page views (D-164) with minting at the single-threaded drains; order-sensitive walks via decoded snapshots; dumps byte-identical except the sanctioned lex-sorted `varsIn*Keys` sections | Prover / admission | [`30_invariants.md#i-89`](30_invariants.md#i-89) |
+| I-93 | LB state maps id-form (`orBookkeeping`/`orDisjunctCount` in `lbStateInterner`; integration-prep gates template-space; `pendingWipeScopes` NameMap vids with assert-checked non-minting inserts; `expandedImplications` packed pairs); observable walks decoded lex-sorted; `lbStateInterner` NEVER resets (expandedImplications survives destroyGrid); `orAdmissionSet` dropped | Prover / LB state | [`30_invariants.md#i-93`](30_invariants.md#i-93) |
+| I-92 | Rule registry id-form in the dedicated per-LB `ruleInterner` (LMV fields, originals chains); installs encode single-threaded, the parallel burst only decodes; `RuleJustification` closed enum; order-sensitive originals walks via decoded lex-sorted snapshots; dump sections derived byte-identical | Hash engine | [`30_invariants.md#i-92`](30_invariants.md#i-92) |
+| I-91 | Origin maps (`exprOriginMap`, `equalityOriginMap`) id-form in the dedicated per-LB `originInterner` (int64 packed keys, NEVER NameMap — dumped-id-table stability); `OriginTag` closed enum with assert-checked encode; observable walks via decoded lex-sorted snapshots; mail origin maps are id-form too — routing via the global `mailInterner` (int32), internal per-LB, decoded at the read boundary; probes non-minting | Prover / visualizer / compressor | [`30_invariants.md#i-91`](30_invariants.md#i-91) |
+| I-90 | Admission/rejected VALUES id-form in the int32 `valueInterner`; observable orderings via stateful decoded comparators (containers created only through their find-or-emplace helpers); staging rides sealed views (`StagedAdmissionValue`), working forms stay string; global `LogicalEntity` untouched; EWV sets template-space packed | Prover / admission | [`30_invariants.md#i-90`](30_invariants.md#i-90) |
+| I-88 | Equivalence-class state is id-form: `memberIds` decoded-lex sorted (canonical = first of tier, never id order); packed pair-levels keys; non-minting membership probes; name caches pure (reset only with nameMap); order-sensitive walks via decoded snapshots; dump derived byte-identical | Prover / equivalence classes | [`30_invariants.md#i-88`](30_invariants.md#i-88) |
+| I-95 | One MAIN program-start reservation backs all deloadable statified per-LB memory (`GlobalMemoryManager`: pool → blocks under a mutex); no per-object heap allocation for element payloads; exhaustion = assert naming `static_pool_bytes`, never a fallback; THREE sanctioned extra reservations selected by `PoolKind` — the persistent pool (I-108), the mail pool (`mailMemory`, backs the never-deloaded cross-LB mail log), and the LB-body pool (`lbMemory`, backs the never-deloaded LB object store, I-109); successor of retired I-13 | Statification / memory | [`30_invariants.md#i-95`](30_invariants.md#i-95) |
+| I-108 | The persistent (second) pool `persistentMemory` backs the never-deloaded `Memory::intToBeProved` on a per-LB `persistentArena` — NOT in any deload stream (tags 35-37 retired), readable while the main arena is cold, reclaimed at discharge (`resetToFresh` then `releaseAll`); the determinism fix lets the deactivation survey gate on `isActive` not `resident` | Statification / memory | [`30_invariants.md#i-108`](30_invariants.md#i-108) |
+| I-107 | Statified containers store per-LB virtual offsets (`ArenaOffset` into the LB's `LbArena`, resolved to a physical address by shift+mask per access); offsets are a pure function of allocation order; only the copying compaction (`LbMemory::reshuffle`, exclusive access) reassigns them; physical pointers never stored/compared/dumped; grant order invisible to every observable | Statification / memory | [`30_invariants.md#i-107`](30_invariants.md#i-107) |
+| I-103 | Deload files are a pure function of logical container content (element order in, bytes out): tag-ordered element streams, logical-facts-only headers, deterministic per-LB ordinal names (registry-mapped, never a content hash) — never page boundaries, vids, addresses, or `std::hash`; two dumps of one LB's equal aggregate byte-identical across runs and hosts | Statification / deload | [`30_invariants.md#i-103`](30_invariants.md#i-103) |
+| I-111 | Arena accessors assert residency (`LbArena::resolve`, `size`/`empty`); reloads only via `Memory::ensureLoaded` at enumerated touch points, never lazily in the hot path; resident `ensureLoaded` = defined no-op, double deload = assert | Statification / lifecycle | [`30_invariants.md#i-111`](30_invariants.md#i-111) |
+| I-112 | An LB that leaves the active set never returns (`dischargedForever` flag + sweep enqueue assert); only born-parked induction zero blocks may flip `isActive` back on (`activateZeroCondition` asserts against the flag); the chapter export's `ensureLoadedForRead` is the one sanctioned read-only reload of a discharged LB (D-158) | LB lifecycle / steward | [`30_invariants.md#i-112`](30_invariants.md#i-112) |
+| I-106 | Steward DELOAD-SET decisions read quiesced barrier counts + the monotone grant ledger only (`grantsSinceBarrier` / one-shot `armGrantTrigger`); mid-iteration `blocksInUse` is telemetry + exhaustion assert, never a deload-set decision input; drains in whole barrier-fixed units. (The mid-burst throttle that once relaxed this — D-148 — is removed; I-106 is absolute again.) | Steward / determinism | [`30_invariants.md#i-106`](30_invariants.md#i-106) |
+| I-122 | The SINGLE per-LB atomic `stewardClaim` word arbitrates steward vs workers in ALL THREE phases; the unified `claimAndLoadForWork` claims `Idle/Dumped → Busy`, loads UNDER `Busy`, then publishes `WorkerOwned` only when fully loaded (so a split sibling never reads a half-rebuilt cold-map); a worker finding `Busy` waits for `WorkerOwned`/`Idle`/`Dumped`; the steward also uses `Busy` for its ops; worker releases to `Idle` when done (asserted held `WorkerOwned`); second `burstClaim` word + `Planned` state retired (D-161) | Steward / parallelism | [`30_invariants.md#i-122`](30_invariants.md#i-122) |
+| I-115 | RETIRED (D-161) — the mid-burst throttle gate (`waitWhileThrottled`) + steward force-deload are removed; the working-set pager subsumes mid-burst relief (the gate's pre-allocation wait was the silent-freeze deadlock) | Statification / prover throttle | [`30_invariants.md#i-115`](30_invariants.md#i-115) |
+| I-114 | RAM is a cache of the working set — the steward keeps only the processing LBs + the next few resident in every phase (`maintainWorkingSet`: prefetch lookahead + drain deloadable biggest-first; mass-evict at 3/4, 1-for-1 at 1/2, inert below); workers self-load via `claimAndLoadForWork` and release when done; the claim word (not the index window) guarantees an in-flight LB is never deloaded; eviction set timing-dependent, proof output content-invisible | Steward / working-set pager | [`30_invariants.md#i-114`](30_invariants.md#i-114) |
+| I-96 | RETIRED — the segregated hot grant path (`acquireBlockHot`/`releaseBlockHot`/`hotBlocksInUse`) is DELETED; every arena draws cold `acquireBlock`, so grants are steward-visible but RELEASED to zero before each barrier (per-task scratch / pre-barrier sealed), keeping the deload SET deterministic (I-106) | Statification / cold arenas | [`30_invariants.md#i-96`](30_invariants.md#i-96) |
+| I-116 | RETIRED — `HotString` / `HotScope` liveness moved off the segregated HOT substrate onto the per-worker COLD scratch arena, released per task; superseded by `I-124` | Statification / scratch strings | [`30_invariants.md#i-116`](30_invariants.md#i-116) |
+| I-124 | Per-worker scratch strings ride the COLD grant path (`ScratchArena` = `LbArena` bound cold, no cap), RELEASED per worker task (`releaseAll` at `performElem2` exit, no retention); no `ScratchString` view outlives its scope (per-call `ScratchScope` rewind / per-task generation bump); liveness = generation + `usedBytes` byte-bump cursor position (scratch fill is the byte tier, not the page tier — D-189); grants net to zero before each barrier so the deload SET / proof output stay byte-identical | Statification / scratch strings | [`30_invariants.md#i-124`](30_invariants.md#i-124) |
+| I-104 | NameMap metadata is a flat paged parent-pointer forest (`validityNodes`, tag 18), deload-persisted, survives discharge; `stackOfValidity`/`ancestorsOf`/`verdict`/`comparable`/`deeperOf` walk it (no `pairMap`); single-threaded only | Validity stack / statification | [`30_invariants.md#i-104`](30_invariants.md#i-104) |
+| I-105 | NameMap id == cold-table id (no offset); "main" lazily interned as id 1 by `internMain` on first encode; eternal-root fallbacks before that, byte-identical to seeded; `nameCount` invariant so the dump stays byte-identical | Validity stack / statification | [`30_invariants.md#i-105`](30_invariants.md#i-105) |
+| I-117 | The cold-map family's key→id index is DERIVED (rebuilt on reload, never dumped, never dirties the aggregate); keys + values are cold paged + deload-persisted; deload stream = pure function of id-order content. Index LOCATION is the experiment variable: heap hash on the parent (D-165, O(1)+malloc); fully-cold sorted `PagedVector` + binary search on the binary branch (D-167, ~34% slower); throw-away paged hash `PagedHashIndex` on the hot-hash branch (D-166, O(1) + zero heap) | Statification / cold maps | [`30_invariants.md#i-117`](30_invariants.md#i-117) |
+| I-119 | Cold-map mutation beyond append (per-key `erase`/`eraseIf` via position-based `moveKeyTo`, in-place `setValueAt`) keeps the canonical-bytes contract: survivor order preserved, the mutation forces `Restructured`, the derived index rebuilt; POD-key AND byte-key set + single-value map (a byte key slides only its location entry, dead bytes left as holes the compaction reclaims); `ColdMultiMap` stays out — the CSR set form `ColdSetMap` erases run-aware via `eraseSetIf` | Statification / cold maps | [`30_invariants.md#i-119`](30_invariants.md#i-119) |
+| I-118 | Cold SET-MAP (`ColdSetMap` = `HashMap<KeyStore, SetValueStore<V>>`) keeps each key's run sorted + duplicate-free under a per-call comparator; interior insert (`insertSorted`), whole-run replace (`assignSet`), and run-aware per-key erase preserve canonical bytes; the three tags (keys → run-starts → values) stream via `KeysView`/`RunStartsView`/`RunValuesView`; POD-key only | Statification / cold maps | [`30_invariants.md#i-118`](30_invariants.md#i-118) |
+| I-98 | Cold BLOB-map (`ColdBlobMap` = `HashMap<KeyStore, BlobCsrValueStore>`): key → an ordered run of variable-length byte BLOBS (the record value store); two-level CSR (run-starts, blob-starts, dense blob-pool), boundaries derived; `assignRun`/`eraseBlobIf` via `PagedVector::replaceRange`; a per-record call-site codec (sort-before-emit every hash field) is the single determinism point | Statification / cold maps | [`30_invariants.md#i-98`](30_invariants.md#i-98) |
+| I-120 | RETIRED — `changedClassesThisStep` (tag 655) and `eqClassNameCaches` (tag 705) now ride the per-LB COLD DELOADABLE arena, enrolled in `visitContainers`; routing mail went to the never-deloaded mail pool (I-101). Superseded by `I-125` | Statification / cold containers | [`30_invariants.md#i-120`](30_invariants.md#i-120) |
+| I-100 | The four cold owner-set maps (`normalizedEncoded*` = `TypedColdBlobMap<NormKey, OwnerSet>`) are read on the request-generation hot path via a zero-allocation byte peek (`ownerKeyAccepts` → `peekRecordBytes` + `OwnerSetBlob`), never a full `OwnerSet` decode — lookup-first, the short-circuits stay free; writes are install-time RMW (`mergeOwnerRecord`); verdict identical to the former `find`+`OwnerSet&` form (sound over-approximation) | Hash engine / statification | [`30_invariants.md#i-100`](30_invariants.md#i-100) |
+| I-99 | Algebra AND integration admission/rejection `HashMemory` containers (`admissionMap`/`rejectedMap`/`admissionMapIntegration`/`rejectedMapIntegration` → `TypedColdBlobMap`, satellites → `TypedColdSet`/`Map`, identity `Codec<int32_t>` key) are cold-stored: run kept canonical (sorted) by RMW, reads snapshot, erases batch (`eraseBlobIf`/`eraseIf`), writes single-threaded; `admissionMapIntegration`'s nested `map<IntInstruction,ValueIdSet>` flattens to `IntegrationEntry` blobs; layered on I-89/I-90 | Prover / admission / statification | [`30_invariants.md#i-99`](30_invariants.md#i-99) |
+| I-113 | Every worker wait for an LB is deadline-bounded (`steward::kStuckSeconds` 30 s, `stuckDeadlineExceeded`); a phase-1 / phase-2 claim-spin stuck on `Busy` past the deadline prints the LB chain and asserts (Rule 19) — closes the `waitWhileThrottled` silent-freeze; a safety tripwire, never a proof input | Steward / safety | [`30_invariants.md#i-113`](30_invariants.md#i-113) |
+| I-123 | `HashMemory` folded into `LbMemory` (4 instances as members after `manager`; `Memory` reaches them by reference alias); `LbMemory::visitContainers` is the SOLE dump/load/release/discharge enumeration — its tags 0..50 + each instance's facets at bases 51/151/251/351 (bridged `uint32`→`ContainerTag`), byte-identical to the retired extra-column path; `survivesDischarge` true for 51..450; natural arena-last destruction retires the `~Memory` safeguard | Hash engine / statification | [`30_invariants.md#i-123`](30_invariants.md#i-123) |
+| I-121 | `Memory::exprOriginMap` is the last standalone heap origin map → cold `TypedColdBlobMap<int64_t, IdOrigin>` (Batch 5, tags 451–454 after the HashMemory band; `Record = IdOrigin` byte-identical to `serializeEquivalenceClass`'s per-line stream); cold twins of `addOriginId`/`addOriginEncoded`/`decodeOriginMapSorted` (overload-routed by map type), the equi-class→body merge a sorted in-place RMW (deterministic key mint), survives discharge + `wipeSubtree`; `equalityOriginMap` already rode the class blob (Batch 3); mail was still string at Batch 5, since migrated to id-form (`I-127`) | Prover / statification | [`30_invariants.md#i-121`](30_invariants.md#i-121) |
+| I-94 | New pull-model mail (`MailLog`) replaces push/`smashMail`; batch-log writes single-threaded (register at grid build, commit at the proveKernel post-join seam); the parallel phase-1 `MailLog::pull` only reads frozen logs + advances its own (disjoint) cursor cells (`setValueAtRelaxed`) + own `mailIn`, all cells pre-created (no insert/rehash) → race-free. STATIFIED onto the mail pool as independent per-LB append-only logs (append-only `mailBlobPool` + per-LB `mailRefs` chains + `mailHeads`; NOT a single CSR `TypedColdBlobMap`, whose cross-LB byte-shift was a reverted quadratic slowdown) | Prover / mail / statification | [`30_invariants.md#i-94`](30_invariants.md#i-94) |
+| I-101 | `mailIn`/`mailOut` routing mailboxes ride the never-deloaded MAIL POOL as self-owned-arena `RoutingColdMail` (own per-LB arena from `mailMemory`, NOT deload-registered), freed back to the pool after each read-out (mailOut at the commit barrier, mailIn after the phase-1 absorb); the commit barrier reads every body's mailOut incl. evicted LBs, which a deloadable arena could not serve; statements/origins are id-form (`IntMailStatementKey`/`IntMailOrigin`; mailOut = sender `NameMap` ids, mailIn + blob = global `mailInterner` ids, translated at the commit seam — `I-127`), `expandedImplications` deleted, `disintegrationSignals` dropped (assert-guarded) | Prover / mail / statification | [`30_invariants.md#i-101`](30_invariants.md#i-101) |
+| I-102 | The two internal-mail channels (`sameIterationInternalMail`/`nextIterationInternalMail`) go COLD as `ColdMail` on the LB's DELOADABLE arena (`LbMemory` members at bases 455/505, `survivesDischarge`), NOT the HOT routing path and NOT the never-deloaded mail pool — both are non-empty at the deload seam. Carries `disintegrationSignals` (the column `HotMail` dropped), drops the always-empty `expandedImplications`; statements/origins/signals now per-LB id-form (`IntMailStatementKey`/`IntMailOrigin`, 8 deload facets was 10); writers use the doors, the absorb reads the id-form decode helpers + `getDisintegrationSignal` directly (`makeHeapMail` now dump/test-only), the deload bytes stay deterministic via the sorted deposit boundaries. Cross-LB `nextIter` deposits `ensureLoaded` the recipient and skip `dischargedForever` targets | Prover / mail / statification | [`30_invariants.md#i-102`](30_invariants.md#i-102) |
+| I-109 | LB `Memory` node objects live in a non-relocating slab (`LbStore`) on a fourth never-deloaded pool (`PoolKind::Lb` / `lbMemory`); a slot is constructed once and never moves, so every raw `Memory*` (`parentMemory` / `simpleMap` values / `mailLog` keys) stays valid for the object's life — raw pointers, not handles; intrusive free-list, returns blocks to the pool only at teardown (`releaseAll`, like `~LbArena`), CE-clone-safe via a mutex | Statification / LB bodies | [`30_invariants.md#i-109`](30_invariants.md#i-109) |
+| I-97 | LB identity `exprKey` is a 4-byte `exprKeyId` into a shared never-deloaded skeleton `ColdStringTable` (`skeletonInterner` on `lbMemory`); `exprKey` decodes byte-identically (id 0 = empty sentinel), `setExprKey` interns; ids never observable (decoded at every site incl. the sacred dump), so sort/compare on the string not the id; readable while the LB is cold / discharged | Statification / LB bodies | [`30_invariants.md#i-97`](30_invariants.md#i-97) |
+| I-110 | LB-tree routing edges live in a never-deloaded `SimpleMapStore` (`simpleMapStore` / `ceSimpleMapStore` on `lbMemory`), not a per-`Memory` `std::map`: a per-parent newest-first `EdgeNode` chain (`edges` + `heads`) keyed by `lbKey(parent)`, routing-key strings interned in `skeletonInterner`, the child a raw address-stable `Memory*`; `findChild` non-minting, `forEachChild` decoded-key sorted (byte-identical iteration); never deloaded (no canonical-bytes obligation); two instances cleared at each tree's teardown | Statification / LB bodies | [`30_invariants.md#i-110`](30_invariants.md#i-110) |
+| I-126 | `LbArena` block/page bookkeeping pool-backed via a small-buffer `PtrDirectory` (inline + spill), never the heap; byte-transparent (re-opens D-174) | Statification / memory | [`30_invariants.md#i-126`](30_invariants.md#i-126) |
+| I-130 | Phase-2 request-generation scratch is heap-free — stack arrays (bounded) + a second per-slot `genScratchArenas` arena (DFS stacks byte-bump `ArenaStack`, `baseCandidates`/`sortedPairs` page-tier `PagedVector`, `seen` `ColdHashSet`); byte-transparent | Prover / statification | [`30_invariants.md#i-130`](30_invariants.md#i-130) |
+| I-131 | Firing-record staging structs (`FiringRecord` / `StagedAdmissionValue` / `DeferredIntegrationPrep`) are heap-free POD — former `std::set`/`std::vector` spines → `SealedSpan<T>` on the per-task `SealedPageSet`; producer assembles runs in stack buffers (bounded) or gen-scratch byte-bump (unbounded), sealed; byte-transparent | Prover / statification | [`30_invariants.md#i-131`](30_invariants.md#i-131) |
+| I-127 | Cross-LB routing mail travels as GLOBAL `mailInterner` (int32) ids, FROZEN (decode/lookup only) during the parallel phase; the ONLY mint sites are single-threaded seams (proveKernel commit barrier post `pool.join`, load-time `broadcastTheorems`, post-join `updateGlobal*` drains); mailOut = sender per-LB `NameMap`/`originInterner` ids, mailIn + blob = global ids, translated at the commit seam; internal mail stays per-LB id-form; every mail-inbox writer `ensureArena`s before its first insert (`G-55`) | Prover / mail / statification | [`30_invariants.md#i-127`](30_invariants.md#i-127) |
+| I-129 | Absorb-door interior scratch heap-free — `reconstructImplicationFullBind`'s arg-name `vector`/`set` → stack `StrSpan` arrays + `getArgsSpans`, sorted-array `binary_search` membership + parallel-bool `placed`; one `std::string` return; T3b completes the door (span `encodeExpression` twin + `NameMap::encode(StrSpan)`, `prefixArgumentsWithU` on the per-slot arena via `g_currentCoreId`, `addStatement`-return in-place sort) | Prover / statification | [`30_invariants.md#i-129`](30_invariants.md#i-129) |
+| I-132 | `disintegrateExpr2`'s accumulators (`collected`, `orBranchStatements`, `admittedVars`) off the heap as `CollectedArena` — interned-id records over a `ColdHashSet<BytesKeyStore>` byte interner, PAGE tier on `genScratchArenas` (the container arena), NOT `scratchArenas` whose `allocBytes` scratch-fill + rewind-poison clobbers any `allocPage` container sharing the slot (silently corrupted Gauss `collected` → vanished theorems, no crash); plus leaf scratch (`getArgsSpans` + regex-free `matchItLevId`/`matchIntLevId` twins + cascade `char[]`), single-entry renaming `StrReplacement`. Lessons: `allocBytes`(page scratch-fill) ≠ byte-bump and must not share an arena with a page container; never `StrSpan(charBuf)` (dangling temporary) — pass explicit length. T5 finishes the function: `finalStringStatements`/`newVarMap`(`NewVarStore`)/`existenceGroups`/rejection staging(`RejectionStore`) + `expandSignature`(`collectExprTokens`) statified; only the two root-type batches remain | Prover / statification | [`30_invariants.md#i-132`](30_invariants.md#i-132) |
+| I-133 | The integration path's transient working `Instruction`/`LogicalEntity` rides `WorkInstruction` — interned-id flat POD records (`ColdHashSet<BytesKeyStore>` + `PagedVector`) on `genScratchArenas`, append-built + rewrite-by-rebuild; `encodeWorkInstruction`/`loadFromIntInstruction` byte-identical to the heap `encodeInstruction`/`decodeInstruction` boundary (the T10 root-type the disint batch deferred); foundation landed, wiring batch by batch | Prover / statification | [`30_invariants.md#i-133`](30_invariants.md#i-133) |
+| I-128 | Equi-class processing transient heap statified; decoded `std::vector<EquivalenceClass>` snapshots read via zero-copy `EquivalenceClassView` over the cold blob (persistent class store already cold); scratch on `genScratchArenas`, cross-subsystem return vectors materialized at the edge | Prover / equivalence classes / statification | [`30_invariants.md#i-128`](30_invariants.md#i-128) |
+| I-138 | standardProcessing call tree 0% heap — ZERO false inventory rows after the roots batch (both roots `standardProcessing` + `applyEquivalenceClassToAdmissionMapIntegration` `true`); the `IntInstruction` working-struct CodeQL blind spot was ELIMINATED by the follow-on batch (four `ArenaIntegrationMap` doors); the mail-pull batch statified the last three phase-1 mail-read heap functions (shared `deserializeMailBlobInto<Src>` + `CharMailSource`/`PoolMailSource`, `pull` split), so `performElemPhase1/2/3` PRODUCTION paths are now 0% heap — remaining tree heap = the sanctioned hashburst dump island + the compiled-definition layer (I-137) | Prover / statification | [`30_invariants.md#i-138`](30_invariants.md#i-138) |
+| I-139 | `wipeSubtree` membership is the `validityNodes` forest walk (`collectClosedSubtreeIds` → stack bitmap + ascending gen-scratch id vector), provably equivalent to the retired decode-all-ids text-prefix predicate (`encodePush` asserts delimiter-free payloads; `encode` re-derives maximal-split parentage); `expandedImplications`' `lbStateInterner` half keeps the text gate as a zero-copy span twin | Prover / LB lifecycle / statification | [`30_invariants.md#i-139`](30_invariants.md#i-139) |
+| I-140 | `NameMap::strictAncestorSpans` fills `compareSpans`-sorted strict-ancestor `decodeView` spans (self excluded, tie-free) into a caller stack array sized by `MAX_SCOPE_DEPTH`; spans valid until the next mint into that NameMap (I-3); cap overflow asserts BEFORE any write (the Rule-19 depth tripwire); heap `strictAncestorNames` overloads retained as oracle | Validity stack / statification | [`30_invariants.md#i-140`](30_invariants.md#i-140) |
+| I-141 | The sanitize twins' shared scan core is heap-free — `bestSanitizePeer` walks (scope, class, peer) in the retired `decodeClassesAt` snapshot's exact visit order via zero-copy blob peeks (scan-mint-free; peer span valid until the caller's next NameMap mint); stack `StrReplacement` staging dedups with a purity assert; substitution is order-free (unique greedy-longest match) but `sortSanitizeSubstPairs` fixes the ascending `std::map` drain order the history block observes; BOTH twins' interiors are two-phase — a mint-free scan over a packed-key decoded-lex idx-sorted snapshot stages OWNED pending records (string-tier `ScratchString` payloads + gen-tier spines/int runs, I-124 split), then the minting apply drains them in the historical per-record op order (hashmem: apply-time levels probe — never staged; ascending pair-window history drain; span-retyped `eradicateImplicationFromLB`) | Prover / equivalence classes / statification | [`30_invariants.md#i-141`](30_invariants.md#i-141) |
+| I-142 | `reactToHypo`'s per-row class read is an ARENA MEMBER-RUN SNAPSHOT (memberPool/classStarts, gen page tier, cleared per row) taken before the class loop, never live blob views — the loop's own `addExprToMemoryBlock` can splice the same map's blob pool through a different key (parent-scope equality), so live views would diverge (mid-row visibility) and dangle; the snapshot reproduces the retired heap `decodeClassesById` isolation, member-runs-only (content-complete: the loop reads nothing else), bucket read at row start (current-content semantics kept); rows walk a decoded-lex vid sort; parse spans ride an owned per-row `ScratchString` (`parseHypoScopeVars`, MAX_ARITY tripwires) | Prover / equivalence classes / statification | [`30_invariants.md#i-142`](30_invariants.md#i-142) |
+| I-134 | The token memo's cold blob (`tokensByExprId_`, facets 705+1..4, `survivesDischarge`, I-88.3 purity — all untouched) is the single persistent representation; production WRITES it regex-free (`tokensViewOf` miss: occurrence scanners + direct two-pass exact-length blob build + raw `inner.assignRun`, byte-identical to the retired codec path) and READS it via the parameter-only zero-copy `SpecialTokenScanView` (dies before the next memo mutation / caller's arena pop; the caller owns the mark/pop window); the consumer's token probe order is deload-observable via `kindById_` lazy fills and FROZEN (sequential cursor walk == the retired vector loop); `std::regex` on this path is test-oracle-only (`scanSpecialTokens(std::string)` + string `filterIterations` retained production-caller-free; heap `tokensOf` deleted for its view twin) | Prover / equivalence classes / statification | [`30_invariants.md#i-134`](30_invariants.md#i-134) |
+| I-135 | Staging records ride an intrusive single-type `SealedRecordNode` chain on their task's `SealedPageSet` (`appendRecord` / `forEachRecord` / the resumable `SealedRecordCursor`) — no separate spine container; append order is the frozen iteration order (order-sensitive consumers build a sorted permutation over the stable payload addresses); the chain dies with the payload at `freePages` (covers the redo-discard drop-unread path); reads legal in `Filling`/`Sealed` only | Prover / hashburst / statification | [`30_invariants.md#i-135`](30_invariants.md#i-135) |
+| I-136 | Levels travel the `addExprToMemoryBlock` kernel chain as CALLER-OWNED ascending-unique `(const int*, int32_t)` runs (`(nullptr,0)` = empty; door assert shape fixed) — never pointers into `intStatementLevelsMap` or any callee-mutable cold column (the chain re-enters and `assignSetRange` splices the CSR pool; stack copies via `coldIntRunAt` / `insertLevelSorted` reproduce the retired per-frame set-copy semantics); sink set-overloads retained for the heap-`Mail` wire + as byte oracles; `coldIntSetAt` retained as test oracle | Prover / statification | [`30_invariants.md#i-136`](30_invariants.md#i-136) |
+| I-137 | The compiledMap complex (`compiledExpressions` / `coreExpressionMap`) is still on the heap — an OPEN violation to statify, NOT a sanctioned island (the only heap permitted in `performElem1/2/3` is `hashburst_trace.txt` generation); config-loaded, never deloaded. Phase-tree point reads go through the two read-out accessors `compiledEntity(StrSpan)` / `coreConfig(StrSpan)` (`nullptr` = defined miss == `find==end`; read-out only; zero-allocation via `std::less<>` transparent maps whose ordering is byte-identical to `std::less<std::string>`). Whole-map recursive consumers keep `const CompiledExpressionMap&` / `const ce::CoreExpressionMap&` (mechanical retype). Writers stay direct on single-threaded seams (compile/init, deferred-compaction drain, `constructOrTheorem`, `loadGlBinary`). The Rule-14 dump signatures retyped under user consent | Prover / statification | [`30_invariants.md#i-137`](30_invariants.md#i-137) |
+
+---
+
+## Open questions
+
+Each entry owns a location — the chapter where the full write-up lives. As of 2026-04-23, every question enumerated during the initial SwDD build has been either resolved, partially resolved, or scoped out (remaining-open entries are flagged by reason).
+
+### Resolved
+
+- **OPEN-1 — PARTIAL.** All-disjuncts-refuted OR branch: each branch's contradiction LB proves `!disjunct_i`; parent scope ends up with `∧ !disjunct_i` across all branches. `cleanUpOrIntegrationBranches` is a *post-convergence* cleanup, not invoked here. No specific vacuous-truth emission on this path. Full write-up: [`20_core_concepts/07_or_branching.md`](20_core_concepts/07_or_branching.md#open-questions).
+- **OPEN-2 — RESOLVED (correction).** `origin` IS a real validator at [`verifier.py–2749`](../verifier.py); just lives outside the `TAG_CHECKERS` dispatch table. Directly called from `verify_chapter`, counts success/failure. See [`10_pipeline/08_verifier.md`](10_pipeline/08_verifier.md#open-questions).
+- **OPEN-3 — RESOLVED (final stance).** Empirical, reversion. No theoretical justification documented. Widening the gate remains forbidden ([I-6](30_invariants.md#i-6)). Close unless/until a theoretical argument is developed.
+- **OPEN-4 — RESOLVED.** `ExpressionAnalyzer::operators` populated at [`prover.cpp–200`](../GL_Quick_VS/GL_Quick/src/prover.cpp) from `coreExpressionMap`. Canonical by construction.
+- **OPEN-6 — RESOLVED.** `performDisintegration` absent from source; the project conventions stale. Real surface: `ce::disintegrateImplication` + `disintegrateExpr2`.
+- **OPEN-8 — RESOLVED (no assert; recommended to add).** No `rightMax ≤ 3` assert in any form. Misconfiguration → silent OOM. Recommended fix: add an assert at `createMapAnchor` entry. See [`10_pipeline/02_conjecturer.md`](10_pipeline/02_conjecturer.md#open-questions).
+- **OPEN-9 — CORRECTED.** `apply_in_premise_filter` is declared + loaded but dead code — never consulted. Setting `false` in a config has no effect. See [`10_pipeline/02_conjecturer.md#open-questions`](10_pipeline/02_conjecturer.md#open-questions) (OPEN-9 corrected entry).
+- **OPEN-10 — RESOLVED.** `loadFactsForCEFiltering` uses generic `addExprToMemoryBlock` — polymorphic over fact shape. Atomic facts → statements; implication-shaped facts → hash rules.
+- **OPEN-11 — RESOLVED.** No per-conjecture timeout — only the batch-wide `numberIterationsConjectureFiltering` budget. A slow conjecture can starve others; not currently a problem in practice.
+- **OPEN-12 — RESOLVED.** Induction variable = every `digitArg` (from `findDigitArgs`). Prover spawns one recursion sub-block per digit-arg; the succeeding triad's digit-arg becomes the reference-column entry.
+- **OPEN-13 — RESOLVED.** `std::stable_sort` at [`compressor.cpp`](../GL_Quick_VS/GL_Quick/src/compressor.cpp). Output deterministic.
+- **OPEN-14 — RESOLVED.** x-prefix emitted by `prehandleAnchor` ([`prover.cpp`](../GL_Quick_VS/GL_Quick/src/prover.cpp)) during anchor handling — the grid-wide pre-pass is the sole emitter (the dormant per-expression `handleAnchor` twin was deleted 2026-07-03).
+- **OPEN-15 — RESOLVED.** A chapter-less survivor is silently invisible to chapter-level audit. Induction triads raise `AssertionError` on missing; direct/mirrored/reformulated fail silently. Hardening: cross-check every `global_theorem_list.txt` row has a file.
+- **OPEN-16 — RESOLVED.** Induction renders as **one** HTML page per theorem with typing/zero/condition sub-sections.
+- **OPEN-17 — RESOLVED.** No sitemap generated. Pages carry `<meta name="robots" content="index, follow, noai, noimageai">` — allows search indexing, blocks compliant AI crawlers.
+- **OPEN-18 — PLANNED.** Induction-typing checker: new `"induction typing"` key in `TAG_CHECKERS`; walks every `method == "induction"` row; verifies typing chapter exists + asserts its head. Full spec in [`induction_typing_plan.md`](induction_typing_plan.md) stage 3.
+- **OPEN-19 — RESOLVED.** j-copy strategy: always emit j0/j1 anchor-matching variants (`max_j=2`); additionally break repeats in i-value args when facts have them.
+- **OPEN-20 — RESOLVED.** `compressed_out_theorems.txt` holds eliminated externals (compressor-removed theorems from the external pool). Written at [`compressor.cpp`](../GL_Quick_VS/GL_Quick/src/compressor.cpp), appended at [`run_modes.cpp`](../GL_Quick_VS/GL_Quick/src/run_modes.cpp).
+- **OPEN-21 — RESOLVED.** `buildPerCoreMailboxes` at [`prover.cpp`](../GL_Quick_VS/GL_Quick/src/prover.cpp). Per-LB mailbox of `logicalCores` slots; effectively per-LB with `logicalCores=1`.
+- **OPEN-22 — RESOLVED.** `smashMail` at [`prover.cpp`](../GL_Quick_VS/GL_Quick/src/prover.cpp) sorts recipients by `exprKey`; intra-recipient merge is set-based. Byte-reproducible.
+- **OPEN-CFG-1 — RESOLVED.** `skip_eq_classes` bypasses equivalence-class registration in `addStatement`. Used by incubator to contain blow-up; mirrors still emitted, class-propagation dropped.
+- **OPEN-CFG-2 — RESOLVED (dead field).** `fact_variable_kinds` is loaded but never consumed. Cleanup candidate.
+- **OPEN-CFG-3 — RESOLVED.** `operator_threshold` feeds conjecturer filter-cascade gates at [`conjecturer.cpp–2599`](../GL_Quick_VS/GL_Quick/src/conjecturer.cpp) and [`:3580–3581`](../GL_Quick_VS/GL_Quick/src/conjecturer.cpp). `max_size_mapping_def_set` feeds `createMap(N)` at [`conjecturer.cpp`](../GL_Quick_VS/GL_Quick/src/conjecturer.cpp).
+- **OPEN-CFG-4 — RESOLVED.** `.bak` files are never read — exact-filename load path, no glob. Manual backup only.
+- **OPEN-MPL-1 — RESOLVED (partial normalisation).** Double negation cancelled at two sites ([`prover.cpp`](../GL_Quick_VS/GL_Quick/src/prover.cpp), [`prover.cpp`](../GL_Quick_VS/GL_Quick/src/prover.cpp)); no universal normaliser. Raw `!!X` in an external theorem would hash distinctly from `X`. Hardening: canonicalise at load.
+
+### Remaining open
+
+- **OPEN-5.** Compressor Phase 1 memory footprint on the Gauss batch — genuinely requires measurement, not code-reading. Measure before FTA.
+- **OPEN-7 — PARTIAL.** `fXY` / `fXYZ` have `category = "existence"` in the generated binary; exact inference site inside the C++ compiler parse-tree walk has not been located (no `category = "existence"` string-match in `compiler.hpp`). Requires targeted read of the parse path.
+- **OPEN-MPL-2.** `(&X)` and `(>[])` parser acceptance — untested. Neither shape is emitted by the conjecturer; behaviour moot unless an external theorem uses it. Low priority.
+
+---
+
+## Meta
+
+- **License.** This document is dual-licensed under AGPLv3 and commercial terms alongside the code it describes. See [https://generative-logic.com/license](https://generative-logic.com/license).
+- **the project conventions overlap.** Intentional while this document is maturing. Once [`01_overview.md`](01_overview.md) and each stage chapter reach `[FULL]`, the corresponding section in the project conventions will be trimmed to a one-liner pointer.
+- **Primary customer.** Future agents. Every design choice in the document (stable anchors, file + symbol citations, invariant numbering, weakness tagging) exists to make consultation cheap for an LLM operating under token pressure.
+
+---
+
+## Commercial use
+
+If GL is being evaluated for a closed-source product, a hosted service, or any deployment where the AGPLv3 network-distribution clause is incompatible with your use case, the commercial license removes that obligation and adds warranty + IP indemnity.
+
+- Commercial licensing page: [https://generative-logic.com/license](https://generative-logic.com/license)
+- Direct contact: [info@generative-logic.com](mailto:info@generative-logic.com)
+
+---
+
+<!-- GL-PAGE-FOOTER -->
+**Generative Logic** — © 2025-2026 Generative Logic UG (haftungsbeschränkt). Dual-licensed under the [GNU Affero General Public License v3 or later](https://www.gnu.org/licenses/agpl-3.0.html) and a [commercial license](https://generative-logic.com/license). Source: [github.com/Generative-Logic/GL](https://github.com/Generative-Logic/GL) · Paper: [arxiv.org/abs/2508.00017](https://arxiv.org/abs/2508.00017)

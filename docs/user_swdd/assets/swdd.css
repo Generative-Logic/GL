@@ -1,0 +1,520 @@
+/*
+Generative Logic: A deterministic reasoning and knowledge generation engine.
+Copyright (C) 2025-2026 Generative Logic UG (haftungsbeschränkt).
+Dual-licensed under the GNU Affero General Public License v3 or later
+and a commercial license — see https://generative-logic.com/license.
+
+Shared stylesheet for the user-oriented SwDD (docs/user_swdd/). One file so the
+whole concept document restyles from a single place as GL evolves. Palette reuses
+the proof-graph HTML colours so the two surfaces feel like one product.
+*/
+
+:root {
+  --bg:        #181B27;   /* page background          */
+  --bg-card:   #20232F;   /* cards, code, callouts    */
+  --bg-side:   #15171F;   /* sidebar                  */
+  --fg:        #F0E8DC;   /* body text                */
+  --fg-dim:    #8B8FA5;   /* captions, meta           */
+  --border:    #3A3D4A;   /* hairlines                */
+  --mint:      #5DCAA5;   /* links, structure         */
+  --amber:     #EF9F27;   /* goals, emphasis          */
+  --lavender:  #B084EB;   /* scope / validity         */
+  --magenta:   #E879F9;   /* mail / cross-block       */
+  --maxw:      900px;     /* reading column           */
+}
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+        Helvetica, Arial, sans-serif;
+  display: flex;
+  min-height: 100vh;
+}
+
+/* ---- sidebar ----------------------------------------------------------- */
+
+#side {
+  width: 270px;
+  flex: 0 0 270px;
+  background: var(--bg-side);
+  border-right: 1px solid var(--border);
+  padding: 24px 18px 60px;
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  height: 100vh;
+  overflow-y: auto;
+}
+
+#side .brand {
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--fg);
+  letter-spacing: .02em;
+  margin-bottom: 2px;
+}
+
+#side .brand span { color: var(--mint); }
+
+#side .tag {
+  font-size: 12px;
+  color: var(--fg-dim);
+  margin-bottom: 22px;
+}
+
+#side ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  counter-reset: ch;
+}
+
+#side > ol > li {
+  counter-increment: ch;
+  margin: 0 0 12px;
+}
+
+#side > ol > li > a {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+#side > ol > li > a::before {
+  content: counter(ch) ". ";
+  color: var(--fg-dim);
+}
+
+#side ul {
+  list-style: none;
+  margin: 5px 0 0;
+  padding: 0 0 0 16px;
+}
+
+#side ul li { margin: 3px 0; }
+
+#side ul a { font-size: 13px; color: var(--fg-dim); }
+
+/* Collapse subchapter lists for every chapter except the current one. */
+#side > ol > li > ul { display: none; }
+#side > ol > li > a.current + ul { display: block; }
+
+#side a { color: var(--mint); text-decoration: none; }
+#side a:hover { color: var(--amber); }
+#side a.current { color: var(--amber); }
+
+/* ---- main column ------------------------------------------------------- */
+
+main {
+  flex: 1 1 auto;
+  padding: 46px 56px 120px;
+  max-width: calc(var(--maxw) + 112px);
+  margin: 0 auto;
+  min-width: 0;
+}
+
+main h1 {
+  font-size: 30px;
+  line-height: 1.25;
+  margin: 0 0 6px;
+  color: var(--fg);
+}
+
+main h1 .num { color: var(--mint); }
+
+.lede {
+  font-size: 17px;
+  color: var(--fg-dim);
+  margin: 0 0 34px;
+  max-width: var(--maxw);
+}
+
+main h2 {
+  font-size: 22px;
+  margin: 52px 0 4px;
+  padding-top: 10px;
+  color: var(--mint);
+  border-top: 1px solid var(--border);
+}
+
+main h3 {
+  font-size: 17px;
+  margin: 30px 0 4px;
+  color: var(--amber);
+}
+
+main h4 {
+  font-size: 15px;
+  margin: 22px 0 4px;
+  color: var(--lavender);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+main p, main li { max-width: var(--maxw); }
+
+main a { color: var(--mint); }
+main a:hover { color: var(--amber); }
+
+code {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font: 13.5px/1.5 "SF Mono", "Cascadia Code", Consolas, monospace;
+  color: var(--mint);
+}
+
+pre {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  max-width: var(--maxw);
+}
+
+pre code { background: none; border: none; padding: 0; color: var(--fg); }
+
+/* ---- in-page table of contents ---------------------------------------- */
+
+.toc {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 20px;
+  margin: 0 0 38px;
+  max-width: var(--maxw);
+}
+
+.toc strong {
+  display: block;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--fg-dim);
+  margin-bottom: 8px;
+}
+
+.toc ol { margin: 0; padding-left: 20px; }
+.toc ol ol { padding-left: 18px; }
+.toc li { margin: 2px 0; }
+.toc a { color: var(--mint); text-decoration: none; }
+.toc a:hover { color: var(--amber); }
+
+/* ---- figures ----------------------------------------------------------- */
+
+figure {
+  margin: 26px 0;
+  padding: 18px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  max-width: var(--maxw);
+}
+
+figure svg { display: block; width: 100%; height: auto; }
+
+figcaption {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--fg-dim);
+  text-align: center;
+}
+
+figcaption b { color: var(--fg); font-weight: 600; }
+
+/* shared SVG text defaults — keep diagrams legible on the dark card */
+svg text { font-family: "SF Mono", "Cascadia Code", Consolas, monospace; }
+
+/* ---- callouts ---------------------------------------------------------- */
+
+.note, .key {
+  border-left: 3px solid var(--border);
+  background: var(--bg-card);
+  border-radius: 0 8px 8px 0;
+  padding: 12px 18px;
+  margin: 22px 0;
+  max-width: var(--maxw);
+  font-size: 15px;
+}
+
+.key   { border-left-color: var(--amber); }
+.note  { border-left-color: var(--mint); }
+
+.note b, .key b { color: var(--fg); }
+
+/* ---- invariant / load-bearing-rule list -------------------------------- */
+
+ul.inv {
+  list-style: none;
+  margin: 20px 0;
+  padding: 10px 0;
+  max-width: var(--maxw);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+ul.inv li {
+  margin: 0;
+  padding: 7px 4px 7px 26px;
+  position: relative;
+  font-size: 14px;
+  border-bottom: 1px solid #23262F;
+}
+
+ul.inv li:last-child { border-bottom: none; }
+
+ul.inv li::before {
+  content: "▸";
+  position: absolute;
+  left: 6px;
+  color: var(--amber);
+}
+
+ul.inv b { color: var(--lavender); }
+
+/* ---- worked-example block ---------------------------------------------- */
+
+.ex {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--amber);
+  border-radius: 0 8px 8px 0;
+  padding: 14px 20px;
+  margin: 24px 0;
+  max-width: var(--maxw);
+  font-size: 14px;
+}
+
+.ex .lab {
+  display: inline-block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  color: var(--amber);
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.ex ol { margin: 6px 0 0; padding-left: 22px; }
+.ex li { margin: 5px 0; }
+.ex .st {
+  color: var(--mint);
+  font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 13px;
+}
+
+/* ---- tables ------------------------------------------------------------ */
+
+table {
+  border-collapse: collapse;
+  margin: 22px 0;
+  font-size: 14px;
+  max-width: var(--maxw);
+  width: 100%;
+}
+
+th, td {
+  border: 1px solid var(--border);
+  padding: 7px 11px;
+  text-align: left;
+  vertical-align: top;
+}
+
+th { background: var(--bg-card); color: var(--mint); }
+
+/* ---- footer ------------------------------------------------------------ */
+
+.foot {
+  margin-top: 80px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--fg-dim);
+  max-width: var(--maxw);
+}
+
+.foot a { color: var(--fg-dim); }
+
+.pager {
+  display: flex;
+  justify-content: space-between;
+  margin: 56px 0 0;
+  max-width: var(--maxw);
+}
+
+.pager a {
+  color: var(--mint);
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.pager a:hover { color: var(--amber); }
+
+/* ---- part-divider in the sidebar -------------------------------------- */
+
+#side .part {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .09em;
+  color: var(--fg-dim);
+  margin: 16px 0 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+/* ---- "definition" block (term + body) --------------------------------- */
+
+dl.terms {
+  margin: 22px 0;
+  max-width: var(--maxw);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  padding: 8px 0;
+}
+
+dl.terms dt {
+  font-weight: 700;
+  color: var(--amber);
+  margin: 10px 0 2px;
+  font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 13.5px;
+}
+
+dl.terms dd {
+  margin: 0 0 8px 0;
+  font-size: 14px;
+  color: var(--fg);
+}
+
+dl.terms dd em {
+  color: var(--lavender);
+  font-style: normal;
+}
+
+/* ---- two-column comparison ("vs" block) -------------------------------- */
+
+.vs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin: 22px 0;
+  max-width: var(--maxw);
+}
+
+.vs > div {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 18px;
+}
+
+.vs > div h4 {
+  margin-top: 0;
+  font-size: 13.5px;
+  letter-spacing: .03em;
+  color: var(--lavender);
+  text-transform: uppercase;
+}
+
+.vs > div.left  h4 { color: var(--mint); }
+.vs > div.right h4 { color: var(--amber); }
+
+.vs ul { margin: 6px 0 0; padding-left: 18px; }
+.vs li { margin: 4px 0; font-size: 13.5px; }
+
+/* ---- "deep-dive" section banner --------------------------------------- */
+
+.deep {
+  margin: 18px 0 28px;
+  padding: 8px 16px;
+  background: linear-gradient(90deg, #1C1F2B 0%, #181B27 80%);
+  border-left: 3px solid var(--lavender);
+  border-radius: 0 8px 8px 0;
+  font-size: 13.5px;
+  color: var(--fg-dim);
+  max-width: var(--maxw);
+}
+
+.deep b { color: var(--lavender); }
+
+/* ---- step-by-step walk (numbered, with caption) ----------------------- */
+
+ol.walk {
+  counter-reset: step;
+  list-style: none;
+  padding: 0;
+  margin: 22px 0;
+  max-width: var(--maxw);
+}
+
+ol.walk > li {
+  counter-increment: step;
+  padding: 12px 18px 12px 56px;
+  position: relative;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 8px 0;
+  font-size: 14px;
+}
+
+ol.walk > li::before {
+  content: counter(step);
+  position: absolute;
+  top: 12px;
+  left: 14px;
+  width: 28px;
+  height: 28px;
+  text-align: center;
+  line-height: 28px;
+  background: var(--amber);
+  color: #181B27;
+  font-weight: 700;
+  border-radius: 50%;
+  font-size: 13px;
+}
+
+ol.walk b { color: var(--lavender); }
+
+/* ---- inline label badge (used inside prose) --------------------------- */
+
+.badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--lavender);
+  font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+  margin: 0 2px;
+}
+
+.badge.gold   { color: var(--amber);   border-color: var(--amber); }
+.badge.mint   { color: var(--mint);    border-color: var(--mint); }
+.badge.lav    { color: var(--lavender);border-color: var(--lavender); }
+.badge.mag    { color: var(--magenta); border-color: var(--magenta); }
+
+/* ---- narrow screens ---------------------------------------------------- */
+
+@media (max-width: 880px) {
+  body { flex-direction: column; }
+  #side {
+    width: 100%;
+    flex-basis: auto;
+    height: auto;
+    position: static;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  main { padding: 30px 22px 90px; }
+  .vs { grid-template-columns: 1fr; }
+}

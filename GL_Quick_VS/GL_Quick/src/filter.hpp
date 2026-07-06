@@ -45,7 +45,7 @@
 /// `successful` in `contradictionTable[i]`; the filter then survives the
 /// conjecture into `filtered_conjectures.txt` for the main prover stage.
 ///
-/// @see [`docs/10_pipeline/03_ce_filter.md`](../../docs/10_pipeline/03_ce_filter.md)
+/// @see [`docs/agentic_swdd/10_pipeline/03_ce_filter.md`](../../docs/agentic_swdd/10_pipeline/03_ce_filter.md)
 ///      for the full pipeline-stage chapter.
 
 namespace gl {

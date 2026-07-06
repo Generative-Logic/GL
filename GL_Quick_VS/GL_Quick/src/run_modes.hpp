@@ -1,5 +1,5 @@
 /* Generative Logic : A deterministic reasoning and knowledge generation engine.
- Copyright(C) 2025-2026 Generative Logic UG(haftungsbeschränkt)
+ Copyright(C) 2025-2026 Generative Logic UG(haftungsbeschrï¿½nkt)
 
  This program is free software : you can redistribute it and /or modify
  it under the terms of the GNU Affero General Public License as published by
@@ -29,4 +29,13 @@
 namespace run_modes {
 
     void fullRun(const std::string& anchor_id);
+
+    // CE-filter-only entry point. Performs the same config + theorem-loading
+    // setup as `fullRun` but runs only the counterexample filter and exits
+    // after writing `filtered_conjectures.txt`. Compression, proof-graph
+    // emission, and the main prover are all skipped.
+    //
+    // Used by the `--ce-only <Tag>` CLI flag for the fast-iteration
+    // filter-design workflow (peano_filter_design_decisions.md D-rtf-1).
+    void ceOnlyRun(const std::string& anchor_id);
 }

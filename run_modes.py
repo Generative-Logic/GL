@@ -95,41 +95,40 @@ def _seed_per_batch_binary(tag: str) -> None:
 
 
 def _merge_into_shared(tag: str) -> None:
-    """Post-batch: read GL_binary_<tag>.json and add any new spontaneous
-    operator entries (categories: implication / existence / or / and) into
-    GL_binary_shared.json. Anchor entries (names beginning with ``Anchor``)
-    and atomic entries are excluded — they are batch-local and must not leak
-    across batches. The shared file grows monotonically over the run; entries
-    already present are not overwritten so a name allocated by an earlier
-    batch keeps its original definition.
+    """Post-batch: read GL_binary_<tag>.json and add any new entries with a
+    spontaneous category (``implication`` / ``existence`` / ``or`` / ``and``)
+    into GL_binary_shared.json. Atomic entries are excluded by the category
+    check; everything else with a spontaneous category is merged.
 
-    Incubator-tagged batches (``IncubatorPeano`` / ``IncubatorGauss`` /
-    ``IncubatorGauss1`` / ...) are skipped: their spontaneous compact-operator
-    allocations are batch-local and must not propagate into the shared
-    cross-batch registry. Propagating them would bump the counters and
-    operator-name set seen by the next main batch, change the names main
-    allocates, and shift theorem texts. Pre-2026-05-08 the visualizer wrote
-    incubator binaries to ``files/incubator/GL_binaries/`` (a stale folder
-    nothing here read), so the merge was a structural no-op for incubator
-    tags; once visualizer.cpp was switched to the unified path, the merge
-    must skip incubator tags explicitly to preserve identical behaviour.
-    See D-54.
+    Applies to EVERY tag — incubator and main alike. Incubator allocations
+    safely contribute to shared and every batch sees the same compiled-
+    expression space, because ``ExpressionAnalyzer::repetitionExclusionMap``
+    is keyed by ``(elements, category)`` — without that an incubator-allocated
+    implication with elements E and a main-batch existence with the same
+    elements E would collide on lookup, causing the main batch to compile its
+    existence body as an implication — see [D-61] and
+    [D-60].
+
+    Why no name-prefix filter. Restricting the merge to names matching
+    ``^(existence|implication|or|and)\\d+$`` so anchor entries like
+    ``AnchorIncubator`` would not leak into shared would be too
+    aggressive: hand-defined entities such as ``preorder`` / ``sequence`` /
+    ``interval`` / ``limitSet`` / ``fXY`` / ``fold`` / ``constSeq`` etc. are
+    transitive dependencies of spontaneous-allocator operators (e.g.
+    ``implication20`` carries ``(preorder[u_2,u_3,u_4,1])`` in its elements),
+    and Peano's MPL does not define them. With those entities filtered out
+    of shared, Peano boots without ``preorder`` in ``compiledExpressions``
+    and the prover asserts at ``prover.hpp::resolveCoreOrCrash`` when an
+    implication walk reaches ``preorder``. Category-only is the correct
+    filter; anchor entries are inert in batches whose theorems do not name
+    them (Peano references ``AnchorPeano``, never ``AnchorIncubator``).
+
+    The shared file grows monotonically over the run; entries already present
+    are not overwritten so a name allocated by an earlier batch keeps its
+    original definition.
     """
     bin_dir = PROJECT_ROOT / "files" / "GL_binaries"
     shared = bin_dir / "GL_binary_shared.json"
-
-    if tag.startswith("Incubator"):
-        # Preserve the existing log line so .debug/run_*.log diffs cleanly.
-        shared_entries = {}
-        if shared.exists():
-            try:
-                with open(shared, "r", encoding="utf-8") as f:
-                    shared_entries = json.load(f) or {}
-            except (json.JSONDecodeError, OSError):
-                shared_entries = {}
-        print(f"[merge_into_shared] {tag}: +0 new entries "
-              f"(shared total: {len(shared_entries)})")
-        return
 
     per_batch = bin_dir / f"GL_binary_{tag}.json"
     if not per_batch.exists():
@@ -186,7 +185,7 @@ def generate_anchor_connection(current_tag: str, prev_tag: str, theorems_dir=Non
     """
     Connects current tag's anchor (A) to previous tag's anchor (B) as A -> B.
     (e.g., AnchorGauss -> AnchorPeano)
-    Appends the result to theorems.txt.
+    Appends the result to conjectures.txt.
     """
     # 1. Load Configurations
     config_current = configuration_reader(PROJECT_ROOT / "files" / "config" / f"Config{current_tag}.json")
@@ -220,16 +219,16 @@ def generate_anchor_connection(current_tag: str, prev_tag: str, theorems_dir=Non
 
     implication = f"(>[{','.join(quantified_vars)}]{expr_A}{expr_B})"
 
-    # 6. Append to theorems.txt
+    # 6. Append to conjectures.txt
     if theorems_dir is None:
         theorems_dir = PROJECT_ROOT / "files" / "theorems"
-    theorems_path = theorems_dir / "theorems.txt"
+    theorems_path = theorems_dir / "conjectures.txt"
     try:
         with open(theorems_path, "a", encoding="utf-8") as f:
             f.write(implication + "\n")
         print(f"Attached anchor implication between {current_tag} and {prev_tag}: {implication}")
     except IOError as e:
-        print(f"Error appending to theorems.txt: {e}")
+        print(f"Error appending to conjectures.txt: {e}")
 
 def empty_raw_proof_graph(dir_path: str = "files/raw_proof_graph") -> None:
     """Remove all files/subdirectories inside files/raw_proof_graph (leaves the folder)."""
@@ -264,7 +263,7 @@ def _setup_theorem_folder(theorems_dir: Path):
     theorems_dir.mkdir(parents=True, exist_ok=True)
 
     for fname in [
-        "proved_theorems.txt",
+        "theorems.txt",
         "compressed_out_theorems.txt",
     ]:
         fpath = theorems_dir / fname
@@ -301,7 +300,7 @@ def _run_batch(tag: str, prev_tags: list, theorems_dir: Path = None,
     behaviour. The orchestrator passes False for the 2nd, 3rd, … batches
     of the same tag — the cross-anchor implication only needs to be added
     once per tag (it's identical across that tag's batches), and
-    re-emitting it pollutes the next batch's theorems.txt.
+    re-emitting it pollutes the next batch's conjectures.txt.
     """
     config_path = PROJECT_ROOT / "files" / "config" / f"Config{tag}.json"
     if not config_path.exists():
@@ -347,9 +346,9 @@ def _run_batch(tag: str, prev_tags: list, theorems_dir: Path = None,
 
 
 CLEAN_RUN = True
-RUN_INCUBATOR = True  # D-49 verification: full pipe with incubator enabled, DoD = Gauss 11 + FTA-rung-1 alive
+RUN_INCUBATOR = True  # full run: incubator + main (submatch cap=40000, fixed-100 splits)
 
-RUN_MAIN_PATH = True  # fullest reproduce: 2 incub failures only emerge with main path active
+RUN_MAIN_PATH = True  # full pipeline: incubator + main (determinism study complete)
 
 SIMPLE_FACTS_MAP = {}
 
@@ -362,7 +361,7 @@ def full_run():
     Main path produces proof graph theorems.
     Use --no-clean to keep previous results (e.g. run only Gauss after Peano).
     """
-    tags = ["Peano", "Gauss"]  # D-51 fullest verification
+    tags = ["Peano", "Gauss"]  # full pipeline
 
     theorems_dir = PROJECT_ROOT / "files" / "theorems"
     incubator_theorems_dir = PROJECT_ROOT / "files" / "incubator" / "theorems"
@@ -411,12 +410,12 @@ def full_run():
             # Provide main proved theorems as incubator externals — once per
             # tag, before the FIRST incubator batch. Subsequent incubator
             # batches under the same tag share the same theorems folder, so
-            # they see the prior batch's proved theorems via proved_theorems.txt.
+            # they see the prior batch's proved theorems via theorems.txt.
             #
-            # Source switched 2026-05-03 from proved_theorems.txt (expanded —
-            # compiled operators like existence2 / or0 expanded to base form)
-            # to compiled_proved_theorems.txt (compact form — keeps existence2
-            # / or0 as compact heads). Reason: chapter rows cite rules in
+            # The source is compiled_theorems.txt (compact form — keeps
+            # existence2 / or0 as compact heads), not theorems.txt
+            # (expanded — compiled operators like existence2 / or0 expanded to
+            # base form). Reason: chapter rows cite rules in
             # compact form; the verifier's `origin` check looks them up by
             # alpha-canonical match against the externals registry; expanded
             # form misses on compact-form citations. Cross-batch parsing of
@@ -424,7 +423,7 @@ def full_run():
             # carries the spontaneous compact-name dictionary across batches
             # (see _seed_per_batch_binary / _merge_into_shared above).
             if prev_tags:
-                main_compiled = theorems_dir / "compiled_proved_theorems.txt"
+                main_compiled = theorems_dir / "compiled_theorems.txt"
                 incubator_ext = incubator_theorems_dir / "externally_provided_theorems.txt"
                 with open(main_compiled, "r", encoding="utf-8") as src:
                     content = src.read()
@@ -433,14 +432,24 @@ def full_run():
                         dst.write(content)
                     _rebuild_compressed_externals(incubator_theorems_dir)
 
-            # Incubator stage(s) — alphanumeric order. Cross-anchor only
-            # added on the FIRST batch (j == 0); subsequent batches in the
-            # same tag inherit it via the shared theorems folder.
+            # Incubator stage(s) — alphanumeric order. Cross-anchor is
+            # attached for the FIRST batch encountered for each distinct
+            # anchor in the group (so e.g. AI8 -> Peano lands on the first
+            # AI8 batch and AI3 -> Peano lands on the first AI3 batch).
+            # Once a batch proves its cross-anchor implication it goes into
+            # theorems.txt and subsequent same-anchor batches inherit
+            # it via the shared theorems folder.
+            incub_bridged_anchors: set[str] = set()
             for j, incub_tag in enumerate(incub_suffixes):
+                incub_cfg = configuration_reader(
+                    PROJECT_ROOT / "files" / "config" / f"Config{incub_tag}.json")
+                incub_anchor = expression_utils.get_anchor_name(incub_cfg)
+                needs_bridge = bool(prev_tags) and incub_anchor not in incub_bridged_anchors
+                incub_bridged_anchors.add(incub_anchor)
                 print(f"\n=== Incubator {tag}: {incub_tag} ===")
                 _run_batch(incub_tag, prev_tags=prev_tags,
                            theorems_dir=incubator_theorems_dir,
-                           add_cross_anchor=(j == 0))
+                           add_cross_anchor=needs_bridge)
 
         else:
             print(f"\n=== Skipping Incubator {tag} ===")
@@ -489,12 +498,11 @@ def full_run():
     if RUN_INCUBATOR:
         main_siblings.append({"proc_dir": incubator_proc_dir, "out_dir": incubator_full_dir})
 
-    # 3a. Main proof graph — runs first so files/processed_proof_graph/
+    # 3a. Main proof graph — must run first so files/processed_proof_graph/
     # global_theorem_list.txt exists before the incubator HTML pass
-    # (Section 3b) references it via `incubator_siblings`. Reversing the
-    # original 3a/3b order fixes a FileNotFoundError at
-    # generate_full_proof_graph.read_theorem_list when the sibling read
-    # hits a not-yet-created path on a fresh worktree.
+    # (Section 3b) references it via `incubator_siblings`. Otherwise
+    # generate_full_proof_graph.read_theorem_list raises FileNotFoundError
+    # when the sibling read hits a not-yet-created path on a fresh worktree.
     if RUN_MAIN_PATH:
         print("\n--- Generating Proof Graph ---")
         process_proof_graphs.create_processed_proof_graph(configuration_visu)

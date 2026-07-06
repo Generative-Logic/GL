@@ -8,11 +8,13 @@ Deterministic computer architecture for automated mathematical reasoning. From u
 
 ## For AI agents working with GL
 
-GL ships an agent-oriented Software Design Document at [`docs/AGENT_SwDD.md`](docs/AGENT_SwDD.md). It is a dense, cross-linked reference written for an AI assistant (or close-reader human) trying to make a code change to the project. It maps the ten pipeline stages, names every load-bearing invariant with stable cross-reference anchors, lists known weaknesses and gotchas, and walks one theorem end-to-end through the full pipeline.
+GL ships an agent-oriented Software Design Document at [`docs/agentic_swdd/SwDD.md`](docs/agentic_swdd/SwDD.md). It is a dense, cross-linked reference written for an AI assistant (or close-reader human) trying to make a code change to the project. It maps the ten pipeline stages, names every load-bearing invariant with stable cross-reference anchors, lists known weaknesses and gotchas, and walks one theorem end-to-end through the full pipeline.
 
-The companion [`fta_ladder/`](fta_ladder/) folder is the rung-by-rung roadmap toward the Fundamental Theorem of Arithmetic — each rung has its own subdir (`fta_ladder/rung<N>/`) carrying the math statement, intermediate proof obligations, and (for in-flight rungs) the live analysis trace.
+The companion [`docs/fta_ladder/`](docs/fta_ladder/) folder is the rung-by-rung roadmap toward the Fundamental Theorem of Arithmetic — each rung has its own subdir (`docs/fta_ladder/rung<N>/`) carrying the math statement, intermediate proof obligations, and (for in-flight rungs) the live analysis trace.
 
 GL's natural user is a researcher or engineer working alongside an AI coding assistant (Claude Code, Cursor, Codex, Copilot, etc.). The SwDD is sized for that workflow: paste an error message + the relevant chapter section into the assistant and it has enough context to proceed. For human-only readers, the [paper](https://arxiv.org/abs/2508.00017) and this README are the lighter entry points.
+
+GL also ships a hardware-oriented design document: the **MPU 0.1 booklet** at [`docs/MPU/index.html`](docs/MPU/index.html) maps the live prover onto silicon — the logic block as a core, the static memory hierarchy as on-die SRAM with on-demand SSD paging, the cross-block mail system as an on-chip network, and logic-block split as the parallelism lever — together with an order-of-magnitude estimate of what building a Mathematical Processing Unit (MPU) would cost. It is written for a hardware / computer-architecture audience and is maintained as a tracked design document alongside the SwDD.
 
 ## Three pillars
 
@@ -27,7 +29,7 @@ GL's reasoning surface decomposes into three pillars, each contributing a distin
 3. **Case differentiation — branching** — *in progress, version 0.1, 2026-05*.
    Sub-proofs split on disjunctive hypotheses, run independently in scoped sub-contexts, and recombine. **Initial version 0.1 closed the forward direction of FTA-ladder rung 1, `{0, 1} = [0, 1]`.**
 
-The Fundamental Theorem of Arithmetic is the next major milestone, climbed one rung at a time along an FTA ladder of intermediate theorems — see [`fta_ladder/`](fta_ladder/) for the rung-by-rung index. Pillar internals are documented in [`docs/AGENT_SwDD.md`](docs/AGENT_SwDD.md): pipeline stages under `docs/10_pipeline/`, cross-cutting concepts (logic blocks, hash engine, mail system, validity stack, equivalence classes, anchors, OR-branching, proof tags) under `docs/20_core_concepts/`.
+The Fundamental Theorem of Arithmetic is the next major milestone, climbed one rung at a time along an FTA ladder of intermediate theorems — see [`docs/fta_ladder/`](docs/fta_ladder/) for the rung-by-rung index. Pillar internals are documented in [`docs/agentic_swdd/SwDD.md`](docs/agentic_swdd/SwDD.md): pipeline stages under `docs/agentic_swdd/10_pipeline/`, cross-cutting concepts (logic blocks, hash engine, mail system, validity stack, equivalence classes, anchors, OR-branching, proof tags) under `docs/agentic_swdd/20_core_concepts/`.
 
 ## Branching apparatus
 
@@ -54,24 +56,26 @@ The disintegration mechanism is gated to prevent runaway fan-out. The gate admit
 
 OR-integration is the dual of disintegration, used when the proof has split on an OR-introduction goal. Given a `toBeProved` of OR shape, the prover mints `_boundary_orint_(orSignature)_((head))` branch scopes per disjunct, each carrying that disjunct's head as the local sub-goal. When one branch proves its head, the wrapping OR is emitted at the OR-branches' shared parent scope (recovered by peeling the trailing `_boundary_<payload>` segment off the proving branch's validity name) and the remaining sibling branches are wiped wholesale. The wiped branches' facts were conditional on the sibling disjuncts being true; once the OR has been proven via one branch, the other branches are unreachable case structures whose persistence would only contaminate later reasoning.
 
-For implementation depth — exact validity-stack semantics, the `K` mutual-exclusion sub-implications produced by OR-disintegration with full provenance, the convergence kernel pipeline, and known weaknesses — see [`docs/20_core_concepts/07_or_branching.md`](docs/20_core_concepts/07_or_branching.md) and the firing-site walkthroughs under [`docs/10_pipeline/04_prover.md`](docs/10_pipeline/04_prover.md).
+For implementation depth — exact validity-stack semantics, the `K` mutual-exclusion sub-implications produced by OR-disintegration with full provenance, the convergence kernel pipeline, and known weaknesses — see [`docs/agentic_swdd/20_core_concepts/07_or_branching.md`](docs/agentic_swdd/20_core_concepts/07_or_branching.md) and the firing-site walkthroughs under [`docs/agentic_swdd/10_pipeline/04_prover.md`](docs/agentic_swdd/10_pipeline/04_prover.md).
 
-## Status snapshot (2026-05)
+## Status snapshot (2026-07)
 
 | Pillar | Status |
 |---|---|
 | Algebraic manipulations (Peano) | shipped 2025-09 |
 | Logical transformations (Gauss) | shipped 2026-02 |
 | Case differentiation — branching 0.1 | shipped 2026-05 (FTA-ladder rung 1, `EnumerationSet2 ⟹ interval`) |
+| Runtime & memory — MPU 0.1 (static prover memory) | shipped 2026-07 (v0.9.0) |
 
-The next frontier — see [`fta_ladder/README.md`](fta_ladder/README.md) for the rung-by-rung index, and `fta_ladder/rung<N>/current_proof_state.md` for any in-flight rung's live analysis trace:
+The next frontier — see [`docs/fta_ladder/README.md`](docs/fta_ladder/README.md) for the rung-by-rung index, and `docs/fta_ladder/rung<N>/current_proof_state.md` for any in-flight rung's live analysis trace:
 
 - **Incubator-side ground facts** to filter statements about intervals and sequences — extensions of the rung-1 pattern to larger fixed sets, e.g. `{0,1,2}=[0,2]`, `{0,1,2,3}=[0,3]`, and analogous claims. These are the concrete-instance theorems the CE filter needs in order to kill false conjectures about general intervals and sequences before they reach the prover.
 - **Euclid's lemma**.
 - **FTA proper**.
-- **ASIC 0.1 — runtime and memory optimization campaign.** Static memory allocation of the entire prover state (logic-block pool, hash memory, mail buffers, name map). ASIC 0.1 is part of the branching campaign / FTA ladder and is gated to land before the FTA push resumes — current allocation patterns make FTA-scale proofs infeasible at present consumption.
 
-Verifier coverage: one entry per proof-graph tag in `verifier.py`'s `TAG_CHECKERS` dispatch table. On a clean release, every category reports `failure 0`. Tag semantics: [`docs/20_core_concepts/08_proof_tags.md`](docs/20_core_concepts/08_proof_tags.md). Verifier algorithm: [`docs/10_pipeline/08_verifier.md`](docs/10_pipeline/08_verifier.md).
+Runtime and memory — the **MPU 0.1** campaign — is done: the entire per-logic-block prover state (logic-block pool, hash memory, mail buffers, name map) now lives in a fixed static pool with on-demand SSD paging, shipped in v0.9.0. This removed the per-proof heap growth that made FTA-scale proofs infeasible at prior consumption, unblocking the FTA push above. See the [MPU 0.1 booklet](docs/MPU/index.html) and `RELEASE_NOTES.md`.
+
+Verifier coverage: one entry per proof-graph tag in `verifier.py`'s `TAG_CHECKERS` dispatch table. On a clean release, every category reports `failure 0`. Tag semantics: [`docs/agentic_swdd/20_core_concepts/08_proof_tags.md`](docs/agentic_swdd/20_core_concepts/08_proof_tags.md). Verifier algorithm: [`docs/agentic_swdd/10_pipeline/08_verifier.md`](docs/agentic_swdd/10_pipeline/08_verifier.md).
 
 ---
 
@@ -79,7 +83,7 @@ Verifier coverage: one entry per proof-graph tag in `verifier.py`'s `TAG_CHECKER
 
 ## Run mode
 
-There is only one run mode (previously called "Full Mode"). `python main.py` orchestrates the full ten-stage pipeline end-to-end (MPL definitions → conjecturer → CE filter → prover → compressor → process-proof-graph → HTML export → verifier; plus the incubator counterpart for ground-fact discovery). Each stage is documented in its own chapter under [`docs/10_pipeline/`](docs/10_pipeline/) — read those if you need to understand or modify a specific stage.
+There is only one run mode (previously called "Full Mode"). `python main.py` orchestrates the full ten-stage pipeline end-to-end (MPL definitions → conjecturer → CE filter → prover → compressor → process-proof-graph → HTML export → verifier; plus the incubator counterpart for ground-fact discovery). Each stage is documented in its own chapter under [`docs/agentic_swdd/10_pipeline/`](docs/agentic_swdd/10_pipeline/) — read those if you need to understand or modify a specific stage.
 
 End-to-end runtime, full pipeline (reference): ~21 minutes on a Dell G16 7630 (Intel-class laptop, Windows MSVC build); ~26 minutes on a 32-core i9-13900HX laptop (both Windows + Linux+mimalloc); driven primarily by the incubator and branching stages. Memory peak ~5 GB. The Linux build needs `libmimalloc-dev` installed (see *Why mimalloc is required by default* in the build section).
 
@@ -123,6 +127,8 @@ Outputs:
 The native prover is a C++ project compiled with Microsoft Visual Studio on Windows 11.
 
 **Windows (Visual Studio 2022)**
+
+Prerequisite — mimalloc: the `.vcxproj` links mimalloc via [vcpkg](https://github.com/microsoft/vcpkg). The prebuilt mimalloc package is **not bundled** in the release (it is Windows-only and large); restore it once with `vcpkg install` from the directory that holds `vcpkg.json`. If you do not need cross-platform proof-graph parity, build with `USE_MIMALLOC=0` instead.
 
 1. Open `GL_Quick_VS/GL_Quick.sln` in Visual Studio.
 2. Build Release x64 (recommended).
@@ -185,7 +191,7 @@ If you place the binary somewhere else or name it differently, update the path i
 - No HTML output — check `files/raw_proof_graph/*` was generated and that `files/full_proof_graph/` is created. Running `python main.py` regenerates these.
 - Slow run — make sure you're using a Release build of the native binary; performance varies by CPU. Reference timing: full pipeline ~26 minutes on a 32-core i9-13900HX, similar on Linux+mimalloc.
 
-**Stuck?** Most build / runtime issues fall to a single AI-assistant query if you're using one (Claude Code, Cursor, Codex, Copilot, etc.). Paste the error message, the command you ran, and your platform; the assistant has enough to debug from there. The agent-oriented [`docs/AGENT_SwDD.md`](docs/AGENT_SwDD.md) is also designed to give an LLM enough context to navigate the codebase end-to-end.
+**Stuck?** Most build / runtime issues fall to a single AI-assistant query if you're using one (Claude Code, Cursor, Codex, Copilot, etc.). Paste the error message, the command you ran, and your platform; the assistant has enough to debug from there. The agent-oriented [`docs/agentic_swdd/SwDD.md`](docs/agentic_swdd/SwDD.md) is also designed to give an LLM enough context to navigate the codebase end-to-end.
 
 ## Paths recap
 

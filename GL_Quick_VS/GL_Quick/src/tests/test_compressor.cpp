@@ -31,7 +31,7 @@
 /// theorems, which is too heavyweight for a <30 s test budget. Phase 6
 /// covers the value-only piece: `CompressorNode` default + populated
 /// shape and `std::stable_sort` determinism on a synthetic theorem list
-/// (the determinism property OPEN-13 in `docs/SwDD.md` calls out).
+/// (the determinism property OPEN-13 in `docs/agentic_swdd/SwDD.md` calls out).
 ///
 /// `Compressor` instance tests land in Phase 7+ alongside
 /// ExpressionAnalyzer machinery.
@@ -71,7 +71,7 @@ TEST(compressor, compressornode_populated) {
     ASSERT_EQ(n.head.original,           std::string("(p[a])"));
 }
 
-// std::stable_sort determinism — OPEN-13 in docs/SwDD.md says the
+// std::stable_sort determinism — OPEN-13 in docs/agentic_swdd/SwDD.md says the
 // compressor relies on stable sort for reproducible kill order. Pin
 // the stability property on a synthetic equal-key input.
 TEST(compressor, stable_sort_preserves_input_order_for_equal_keys) {

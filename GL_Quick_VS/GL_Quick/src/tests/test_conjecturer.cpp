@@ -27,7 +27,7 @@
 ///
 /// @details
 /// Mirrors the prover/memory/compiler/filter/compressor harness rhythm
-/// (see `docs/_meta/testing.md`). Tests register into the existing
+/// (see `docs/agentic_swdd/_meta/testing.md`). Tests register into the existing
 /// Meyers-singleton registry via `TEST(conjecturer, …)` and run as
 /// part of `gl_quick.exe --unit-tests` together with the prover suite.
 ///
@@ -64,10 +64,10 @@
 /// class lives entirely inside this translation unit; production
 /// code never references it.
 ///
-/// @see [`docs/10_pipeline/02_conjecturer.md`](../../../docs/10_pipeline/02_conjecturer.md)
+/// @see [`docs/agentic_swdd/10_pipeline/02_conjecturer.md`](../../../docs/agentic_swdd/10_pipeline/02_conjecturer.md)
 ///      — full architecture, filter cascade, reshuffle pipeline,
 ///      weaknesses, open questions.
-/// @see [`docs/_meta/testing.md`](../../../docs/_meta/testing.md)
+/// @see [`docs/agentic_swdd/_meta/testing.md`](../../../docs/agentic_swdd/_meta/testing.md)
 ///      — harness contract, performance budget, sacred boundaries.
 
 #include "test_harness.hpp"
@@ -446,6 +446,51 @@ TEST(conjecturer, helper_repetitions_exist_single_token) {
 
 TEST(conjecturer, helper_repetitions_exist_three_tokens_with_one_dup) {
     ASSERT_TRUE(conj::repetitionsExist("(=[1,2])(in[3,4])(=[1,2])"));
+}
+
+
+// ---- mergeMirrorConjecturesIntoPool (5 tests) ----
+
+TEST(conjecturer, helper_merge_mirror_appends_new) {
+    // A mirror not already in the pool is appended; count == 1.
+    std::vector<std::string> pool = {"A", "B"};
+    const int added = conj::mergeMirrorConjecturesIntoPool(pool, {"C"});
+    ASSERT_EQ(added, 1);
+    ASSERT_EQ((int)pool.size(), 3);
+    ASSERT_EQ(pool[2], std::string("C"));
+}
+
+TEST(conjecturer, helper_merge_mirror_dedups_against_pool) {
+    // A mirror already present in the pool is not duplicated.
+    std::vector<std::string> pool = {"A", "B"};
+    const int added = conj::mergeMirrorConjecturesIntoPool(pool, {"B", "C"});
+    ASSERT_EQ(added, 1);
+    ASSERT_EQ((int)pool.size(), 3);
+    ASSERT_EQ(pool[2], std::string("C"));
+}
+
+TEST(conjecturer, helper_merge_mirror_skips_empty) {
+    // Empty == "no distinct reverse direction" (I-9 collapse); skipped.
+    std::vector<std::string> pool = {"A"};
+    const int added = conj::mergeMirrorConjecturesIntoPool(pool, {"", "D"});
+    ASSERT_EQ(added, 1);
+    ASSERT_EQ((int)pool.size(), 2);
+    ASSERT_EQ(pool[1], std::string("D"));
+}
+
+TEST(conjecturer, helper_merge_mirror_all_duplicates_adds_nothing) {
+    std::vector<std::string> pool = {"A", "B"};
+    const int added = conj::mergeMirrorConjecturesIntoPool(pool, {"A", "B"});
+    ASSERT_EQ(added, 0);
+    ASSERT_EQ((int)pool.size(), 2);
+}
+
+TEST(conjecturer, helper_merge_mirror_internal_dedup) {
+    // A mirror repeated within the input is appended only once.
+    std::vector<std::string> pool = {"A"};
+    const int added = conj::mergeMirrorConjecturesIntoPool(pool, {"C", "C"});
+    ASSERT_EQ(added, 1);
+    ASSERT_EQ((int)pool.size(), 2);
 }
 
 
@@ -1706,10 +1751,23 @@ TEST(conjecturer, mappings_connect_expressions_int_with_anchor_succeeds) {
     int16_t binList[1] = {0};
     conj::IntConjBuf out{};
     conj::IntDefSetMap outMap{};
+    // Production argument order: the anchor is ALWAYS expr1 when
+    // connectToAnchor=true (every conjecturer.cpp anchor-attach site passes
+    // anchorInt_ first). The pre-unification fixture passed the anchor as
+    // expr2 and asserted the old sparse-binder encoded length; both are
+    // corrected here (D-75).
     bool ok = conj::testing::Friend::connectExpressionsInt(
-        c, a, anc, am, ancM, sub, binList, 1, true, out, outMap);
+        c, anc, a, ancM, am, sub, binList, 1, true, out, outMap);
     ASSERT_TRUE(ok);
-    ASSERT_EQ(out.len, 14);  // anchor (10 words) + atom (smaller, merged)
+    // Unified binder (D-75): the outer
+    // >[...] binds EVERY anchor slot in occurrence order (= anchor-atom
+    // order, since the anchor is the first premise), not the
+    // body-referenced removable subset. Decoded form is the self-
+    // documenting oracle (verified by decode, not a magic length):
+    // all six AnchorPeano slots are bound; the (in[1,2]) body is shifted
+    // to (in[7,8]) (shiftNum = 6 = max anchor argId).
+    ASSERT_EQ(conj::testing::Friend::decodeExpr(c, out),
+              "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(in[7,8]))");
 }
 
 TEST(conjecturer, mappings_connect_expressions_string_simple_smoke) {
@@ -1726,8 +1784,11 @@ TEST(conjecturer, mappings_connect_expressions_string_simple_smoke) {
 
 TEST(conjecturer, mappings_connect_expressions_string_with_anchor_smoke) {
     conj::Conjecturer c("Peano");
+    // Production argument order: anchor is expr1 when connectToAnchor=true
+    // (mirrors conjecturer.cpp anchor-attach; satisfies the new
+    // expr1-is-anchor precondition assert). D-75.
     auto [success, m, _mm] = conj::testing::Friend::connectExpressions(
-        c, "(in[1,2])", "(AnchorPeano[1,2,3,4,5,6])",
+        c, "(AnchorPeano[1,2,3,4,5,6])", "(in[1,2])",
         conj::DefSetMap{}, conj::DefSetMap{},
         std::map<std::string,std::string>{},
         std::vector<int>{0}, true);
@@ -2395,7 +2456,7 @@ TEST(conjecturer, filter_passes_max_size_after_existence_high_leaf_count_rejecte
 // nested quantifier layers (complexity 3+), and (1)-typed anchor
 // slots in leaves all returned `true`. The rejection path is
 // covered by integration via main.py runs (where real conjectures
-// from theorems.txt that hit the 3-condition rule are emitted by
+// from conjectures.txt that hit the 3-condition rule are emitted by
 // the conjecturer's combine loop and rejected post-attach).
 // SwDD chapter notes this filter as smoke-only at the unit level.
 

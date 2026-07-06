@@ -14,7 +14,7 @@ Pull requests are reviewed by the maintainer. Ensure:
 
 - The CLA is signed (see above) — the project cannot accept code from unsigned contributors.
 - Tests pass: `python verifier.py` against the current processed proof graph reports `0 failures` across every tag category.
-- Documentation in [`docs/AGENT_SwDD.md`](docs/AGENT_SwDD.md) is updated for any change that touches prover semantics, provenance recording, scope handling, the proof-graph contract, MPL grammar, or config schema.
+- Documentation in [`docs/agentic_swdd/SwDD.md`](docs/agentic_swdd/SwDD.md) is updated for any change that touches prover semantics, provenance recording, scope handling, the proof-graph contract, MPL grammar, or config schema.
 
 ## License
 

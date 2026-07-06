@@ -37,13 +37,42 @@
 /// Entry point for users is `gl_quick.exe --unit-tests`; `main.py`
 /// invokes it before any pipeline work and aborts on a non-zero exit.
 ///
-/// Performance budget: <30 s wall-clock for the full suite (per the
-/// approved sandbox/unite_test plan). Per-test budget ~100 µs–500 ms.
+/// Performance budget: <30 s wall-clock for the full suite.
+/// Per-test budget ~100 µs–500 ms.
 ///
 /// @see `src/tests/test_harness.cpp` for the registry implementation.
 
 #include <cstdio>
 #include <vector>
+#include <string>
+#include <cstddef>
+
+/// @brief Test-local byte-identical oracle for the heap form of
+///        `extractExpressionUniversal`, which has no production counterpart.
+///
+/// @details
+/// Production code reads the core name through the span form
+/// `gl::extractExpressionUniversalSpan` exclusively; per
+/// D-193 a prover-only heap `ce::` function is not
+/// kept in the production tree, so its Rule-18 differential oracle lives here
+/// instead. A pure `std::string` slice, no dependency on the production tree.
+///
+/// @param s Canonical MPL expression text, possibly negated.
+/// @return Core name (no negation prefix / parens / brackets); empty when the
+///         shape is neither `(name[...])` nor `!(name[...])`.
+/// @see gl::extractExpressionUniversalSpan — the production span replacement.
+inline std::string extractExpressionUniversalOracle(const std::string& s) {
+    std::size_t index = s.find('[');
+    if (index != std::string::npos) {
+        if (!s.empty() && s[0] == '(') {
+            return s.substr(1, index - 1);
+        }
+        else if (s.size() >= 2 && s[0] == '!' && s[1] == '(') {
+            return s.substr(2, index - 2);
+        }
+    }
+    return std::string();
+}
 
 namespace gl {
 namespace tests {

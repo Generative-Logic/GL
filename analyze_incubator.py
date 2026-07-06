@@ -23,15 +23,15 @@
 # Contributor License Agreement (CLA). See the project's CONTRIBUTING.md file.
 
 """
-Analyze incubator proved_theorems.txt vs theorems.txt (conjectures).
+Analyze incubator theorems.txt vs conjectures.txt (conjectures).
 Lists positive/negative proved theorems and missing conjectures.
 """
 import re
 import sys
 from collections import defaultdict
 
-THEOREMS_FILE = "files/theorems_incubator/theorems.txt"
-PROVED_FILE = "files/theorems_incubator/proved_theorems.txt"
+THEOREMS_FILE = "files/incubator/theorems/conjectures.txt"
+PROVED_FILE = "files/incubator/theorems/theorems.txt"
 
 ANCHOR_ARGS = {
     "1": "N", "2": "i0", "3": "s", "4": "+", "5": "*",
@@ -144,7 +144,7 @@ def back_reformulate(conjecture):
     """
     # Match operator-equality pattern
     m = re.match(
-        r'(\(>[^\]]+\]\(AnchorIncubator\[[^\]]+\]\))'  # prefix: (>[vars](Anchor[...])
+        r'(\(>[^\]]+\]\(AnchorIncubator\d+\[[^\]]+\]\))'  # prefix: (>[vars](AnchorIncubator<N>[...])
         r'\(>\[(\d+)\]'                                  # bound var
         r'(\([^)]+\[[^\]]+\]\))'                        # operator expr
         r'\(=\[\2,(\d+)\]\)'                            # equality
@@ -184,10 +184,12 @@ def extract_head_type(expr):
     if neg:
         m = re.search(r'!\(([a-z0-9=]+)\[', expr)
     else:
-        # Skip the anchor, find the head
-        parts = expr.split('AnchorIncubator[')
-        if len(parts) > 1:
-            rest = parts[1]
+        # Skip the anchor, find the head. The anchor name is `AnchorIncubator3`
+        # or `AnchorIncubator8` after the AI3/AI8 split — split on the prefix
+        # that's common to both so both batches are handled.
+        m_anchor = re.search(r'AnchorIncubator\d+\[[^\]]+\]\)', expr)
+        if m_anchor:
+            rest = expr[m_anchor.end():]
             m = re.search(r'\(([a-z0-9=]+)\[', rest)
         else:
             m = None
@@ -258,7 +260,7 @@ def analyze():
             # Negative form: insert ! before (=
             neg_form = conj.replace('](Anchor', '](Anchor', 1)
             # Build it properly
-            m = re.match(r'(\(>[^\]]+\]\(AnchorIncubator\[[^\]]+\]\))\(', conj)
+            m = re.match(r'(\(>[^\]]+\]\(AnchorIncubator\d+\[[^\]]+\]\))\(', conj)
             if m:
                 prefix = m.group(1)
                 rest = conj[len(prefix):]

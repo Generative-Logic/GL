@@ -40,7 +40,7 @@ from tests.test_harness import (  # noqa: E402
 )
 from verifier import (  # noqa: E402
     check_disintegration, check_expansion, check_recursion,
-    check_anchor_handling,
+    check_anchor_handling, check_compilation,
 )
 
 
@@ -402,6 +402,91 @@ def test_expansion_negated_inner_missing_paren():
     )
     support = make_proof_line("!barebones", "main", "task formulation")
     assert_failure(check_expansion, line, [line, support], state)
+
+
+# ===========================================================================
+#  tag: compilation
+# ===========================================================================
+
+@register
+def test_compilation_rest_empty():
+    """rest empty -> ``len(rest) < 2`` short-circuits to reject."""
+    state = make_state_with_binaries(("Peano",))
+    line = make_proof_line("(implication0[a,b])", "main", "compilation")
+    assert_failure(check_compilation, line, [line], state)
+
+
+@register
+def test_compilation_rest_one_field():
+    """Only the original but no original_ns -> ``len(rest) < 2`` reject."""
+    state = make_state_with_binaries(("Peano",))
+    line = make_proof_line(
+        "(implication0[a,b])", "main", "compilation",
+        "(>[1](in[1,a])(in[1,b]))",
+    )
+    assert_failure(check_compilation, line, [line], state)
+
+
+@register
+def test_compilation_ns_mismatch():
+    """line.namespace != original_ns -> compaction must stay in scope."""
+    state = make_state_with_binaries(("Peano",))
+    line = make_proof_line(
+        "(implication0[a,b])", "main", "compilation",
+        "(>[1](in[1,a])(in[1,b]))", "main_boundary_orint_X_((=[c,d]))",
+    )
+    assert_failure(check_compilation, line, [line], state)
+
+
+@register
+def test_compilation_core_not_in_binary():
+    """compact's core is in no GL binary -> reject."""
+    state = make_state_with_binaries(("Peano",))
+    line = make_proof_line(
+        "(nonexistent_impl_core[a,b])", "main", "compilation",
+        "(>[1](in[1,a])(in[1,b]))", "main",
+    )
+    assert_failure(check_compilation, line, [line], state)
+
+
+@register
+def test_compilation_category_not_implication():
+    """Binary entry exists but its category is not 'implication' -> reject
+    (a `compilation` row's compact MUST be an implication-compiled name)."""
+    state = make_state_with_binaries(("Peano",))
+    state.gl_binaries = dict(state.gl_binaries)
+    state.gl_binaries["Peano"] = dict(state.gl_binaries["Peano"])
+    state.gl_binaries["Peano"]["andshaped1"] = {
+        "category": "and",
+        "signature": "(andshaped1[u_1,u_2])",
+        "elements": ["(in[1,u_1])", "(in[1,u_2])"],
+    }
+    state.current_gl_binary = state.gl_binaries["Peano"]
+    line = make_proof_line(
+        "(andshaped1[a,b])", "main", "compilation",
+        "(>[1](in[1,a])(in[1,b]))", "main",
+    )
+    assert_failure(check_compilation, line, [line], state)
+
+
+@register
+def test_compilation_does_not_reconstruct_original():
+    """Implication-category entry, but rest[0] is not what the compact's
+    elements reconstruct to -> reject."""
+    state = make_state_with_binaries(("Peano",))
+    state.gl_binaries = dict(state.gl_binaries)
+    state.gl_binaries["Peano"] = dict(state.gl_binaries["Peano"])
+    state.gl_binaries["Peano"]["impltest9"] = {
+        "category": "implication",
+        "signature": "(impltest9[u_1,u_2])",
+        "elements": ["(in[1,u_1])", "(in[1,u_2])"],
+    }
+    state.current_gl_binary = state.gl_binaries["Peano"]
+    line = make_proof_line(
+        "(impltest9[a,b])", "main", "compilation",
+        "(>[1](in[1,a])(eq[1,b]))", "main",   # head differs (eq vs in)
+    )
+    assert_failure(check_compilation, line, [line], state)
 
 
 # ===========================================================================

@@ -125,7 +125,7 @@
         false
       ]
     },
-    "full_mpl": "fXY.txt",
+    "full_mpl": "fXY.mpl",
     "short_mpl": "(fXY[f,X,Y])",
     "max_count_per_conjecture": 1,
     "input_args": [],
@@ -146,7 +146,7 @@
         false
       ]
     },
-    "full_mpl": "infiniteSequence.txt",
+    "full_mpl": "infiniteSequence.mpl",
     "short_mpl": "(infiniteSequence[f,N])",
     "max_count_per_conjecture": 0,
     "input_args": [],
@@ -175,7 +175,7 @@
         false
       ]
     },
-    "full_mpl": "fXYZ.txt",
+    "full_mpl": "fXYZ.mpl",
     "short_mpl": "(fXYZ[f,X,Y,Z])",
     "max_count_per_conjecture": 0,
     "input_args": [],
@@ -208,7 +208,7 @@
         true
       ]
     },
-    "full_mpl": "NaturalNumbers.txt",
+    "full_mpl": "NaturalNumbers.mpl",
     "short_mpl": "(NaturalNumbers[N,i0,s,+,*])",
     "max_count_per_conjecture": 0,
     "input_args": [],
@@ -237,7 +237,7 @@
         false
       ]
     },
-    "full_mpl": "residual.txt",
+    "full_mpl": "residual.mpl",
     "short_mpl": "(residual[n,m,p,+])",
     "max_count_per_conjecture": 0,
     "input_args": [
@@ -275,7 +275,7 @@
         true
       ]
     },
-    "full_mpl": "interval.txt",
+    "full_mpl": "interval.mpl",
     "short_mpl": "(interval[N,+,n,m,M])",
     "max_count_per_conjecture": 2,
     "input_args": [],
@@ -312,7 +312,7 @@
         true
       ]
     },
-    "full_mpl": "split.txt",
+    "full_mpl": "split.mpl",
     "short_mpl": "(split[N,+,n,m,f,g])",
     "max_count_per_conjecture": 0,
     "input_args": [
@@ -347,7 +347,7 @@
         true
       ]
     },
-    "full_mpl": "limitSequence.txt",
+    "full_mpl": "limitSequence.mpl",
     "short_mpl": "(limitSequence[N,+,n,f,g])",
     "max_count_per_conjecture": 1,
     "input_args": [
@@ -390,7 +390,7 @@
         true
       ]
     },
-    "full_mpl": "fold.txt",
+    "full_mpl": "fold.mpl",
     "short_mpl": "(fold[N,s,+,f,n,m,p])",
     "max_count_per_conjecture": 1,
     "input_args": [
@@ -423,7 +423,7 @@
         true
       ]
     },
-    "full_mpl": "preorder.txt",
+    "full_mpl": "preorder.mpl",
     "short_mpl": "(preorder[N,+,n,m])",
     "max_count_per_conjecture": 3,
     "input_args": [
@@ -447,7 +447,7 @@
         false
       ]
     },
-    "full_mpl": "identity.txt",
+    "full_mpl": "identity.mpl",
     "short_mpl": "(identity[X,id])",
     "max_count_per_conjecture": 0,
     "input_args": [],
@@ -480,7 +480,7 @@
         true
       ]
     },
-    "full_mpl": "sequence.txt",
+    "full_mpl": "sequence.mpl",
     "short_mpl": "(sequence[N,+,n,m,seq])",
     "max_count_per_conjecture": 2,
     "input_args": [
@@ -515,7 +515,7 @@
         true
       ]
     },
-    "full_mpl": "limitSet.txt",
+    "full_mpl": "limitSet.mpl",
     "short_mpl": "(limitSet[N,+,M,n,L])",
     "max_count_per_conjecture": 1,
     "input_args": [],
@@ -552,7 +552,7 @@
         true
       ]
     },
-    "full_mpl": "AnchorPeano.txt",
+    "full_mpl": "AnchorPeano.mpl",
     "short_mpl": "(AnchorPeano[N,i0,s,+,*,i1])",
     "max_count_per_conjecture": 0,
     "input_args": [],
@@ -842,7 +842,7 @@
         true
       ]
     },
-    "full_mpl": "AnchorGauss.txt",
+    "full_mpl": "AnchorGauss.mpl",
     "short_mpl": "(AnchorGauss[N,i0,s,+,*,i1,i2,id])",
     "max_count_per_conjecture": 0,
     "input_args": [],

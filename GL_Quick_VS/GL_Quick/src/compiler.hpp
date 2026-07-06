@@ -45,6 +45,7 @@
 #include <fstream>
 #include <json.hpp>
 #include "parameters.hpp"
+#include "memory_infra/str_ops.hpp"
 #include <iostream>
 
 // ============================================================================
@@ -58,7 +59,7 @@
 //   - `loadCoreExpressionMap` / `modifyCoreExpressionMap` — JSON config
 //     loaders that produce the per-anchor `coreExpressionMap` consumed by
 //     `ExpressionAnalyzer`,
-//   - the parser surface (`getArgs`, `extractExpression`, `extractExpressionUniversal`,
+//   - the parser surface (`getArgs`, `extractExpression`,
 //     `extractExpressionFromNegation`, `cleanExpr`, `replaceKeysInString`,
 //     `joinWithComma`, `orderByPattern`),
 //   - the tree-shaped intermediate (`TreeNode1` + `nodeToStr` + `treeToExpr` +
@@ -194,6 +195,42 @@ struct CoreExpressionConfig {
     }
 };
 
+/// @brief The core-expression map: `CoreExpressionConfig` keyed by core
+///        expression name, with a transparent comparator.
+///
+/// @details
+/// This is the storage type of `ExpressionAnalyzer::coreExpressionMap` (and
+/// the conjecturer's `coreExprMap_`) — the config-loaded half of the
+/// compiledMap / compiled-definition layer, which still allocates on the
+/// heap. THE RULE: in the burst kernel the ONLY permitted heap is the
+/// Rule-14 `hashburst_trace.txt` debug dump (off the compute path, not
+/// silicon-mapped). This map is NOT that dump — it is an OPEN violation of
+/// the static-memory rule, still to be statified, NOT a sanctioned heap
+/// island and NOT a user-approved carve-out (`I-137`). The comparator is `std::less<>`
+/// (transparent) rather than the default `std::less<std::string>` so that a
+/// heterogeneous `find(std::string_view)` probe compiles without
+/// materializing a `std::string` key — the zero-allocation read the
+/// `ExpressionAnalyzer::coreConfig` accessor relies on.
+///
+/// **Byte-order contract.** `std::less<>` compares two stored `std::string`
+/// keys via `std::string::operator<` — byte-lexicographic, the SAME strict
+/// weak order the default `std::less<std::string>` produced. The tree shape,
+/// insertion results, and every whole-map iteration order (`findAnchorKey`'s
+/// sorted walk included) are byte-identical to the pre-switch map. A
+/// heterogeneous probe compares a stored `std::string` against a
+/// `std::string_view` via `std::string_view::operator<` — also
+/// byte-lexicographic — so a span probe returns exactly the entry a
+/// materialized-`std::string` probe returned. No mint, interner, or
+/// serialization touches this map (config-load populated, never deloaded),
+/// so the switch has zero observable surface beyond compile-time type
+/// identity.
+///
+/// @invariant `I-137` — this map is an OPEN heap violation still to be
+///            statified, not a sanctioned carve-out.
+/// @see `ExpressionAnalyzer::coreConfig` — the reader accessor.
+/// @see `gl::CompiledExpressionMap` — the sibling transparent map.
+using CoreExpressionMap = std::map<std::string, CoreExpressionConfig, std::less<>>;
+
 
 /// @brief Per-anchor summary derived from a `CoreExpressionConfig` map.
 ///
@@ -253,7 +290,7 @@ struct AnchorInfo {
 ///         tripping `initAnchor`'s assert).
 /// @see `initAnchor` — primary consumer.
 inline std::string
-findAnchorKey(const std::map<std::string, ce::CoreExpressionConfig>& coreExpressionMap)
+findAnchorKey(const ce::CoreExpressionMap& coreExpressionMap)
 {
     for (const auto& kv : coreExpressionMap) {
         const std::string& k = kv.first;
@@ -310,9 +347,9 @@ inline std::string makeAnchorSignature(const std::string& name, int arity)
 ///                          prefix (e.g. `"Peano"`, `"Gauss"`).
 /// @return Populated `AnchorInfo`. The `definitionSets` field carries
 ///         only the patterns; the mandatory flag is dropped.
-/// @invariant [I-19](../../docs/30_invariants.md#i-19) — the missing-anchor
+/// @invariant [I-19](../../docs/agentic_swdd/30_invariants.md#i-19) — the missing-anchor
 ///            assert is intentional; a misnamed batch trips it loud.
-inline AnchorInfo initAnchor(const std::map<std::string, ce::CoreExpressionConfig>& coreExpressionMap, const std::string& anchorID) {
+inline AnchorInfo initAnchor(const ce::CoreExpressionMap& coreExpressionMap, const std::string& anchorID) {
 
     std::string key = "Anchor" + anchorID;
 
@@ -404,7 +441,7 @@ inline std::string readTreeFromFile(const std::filesystem::path& p) {
 inline std::vector<std::string> getArgs(const std::string& expr);
 
 
-inline std::map<std::string, CoreExpressionConfig>
+inline CoreExpressionMap
 modifyCoreExpressionMap(const std::filesystem::path& configPath)
 {
     using json = nlohmann::json;
@@ -424,7 +461,7 @@ modifyCoreExpressionMap(const std::filesystem::path& configPath)
     json j;
     in >> j;
 
-    std::map<std::string, CoreExpressionConfig> resolved;
+    CoreExpressionMap resolved;
     const std::filesystem::path cfgDir = configPath.parent_path();
 
     for (auto it = j.begin(); it != j.end(); ++it) {
@@ -441,7 +478,7 @@ modifyCoreExpressionMap(const std::filesystem::path& configPath)
         const bool looks_like_file =
             (!full_mpl_raw.empty()) &&
             (full_mpl_raw.size() >= 4 &&
-                full_mpl_raw.rfind(".txt") == full_mpl_raw.size() - 4 ||
+                full_mpl_raw.rfind(".mpl") == full_mpl_raw.size() - 4 ||
                 full_mpl_raw.find('/') != std::string::npos ||
                 full_mpl_raw.find('\\') != std::string::npos);
 
@@ -578,7 +615,7 @@ modifyCoreExpressionMap(const std::filesystem::path& configPath)
 }
 
 
-inline std::map<std::string, CoreExpressionConfig>
+inline CoreExpressionMap
 modifyCoreExpressionMap(std::string anchorID)
 {
     const auto configPath =
@@ -656,12 +693,12 @@ inline std::vector<std::string> getArgs(const std::string& expr) {
 /// Strips the leading `(` and reads the name up to the first `[`. For
 /// `(=[a,b])` returns `"="`; for `(in2[x,y,z])` returns `"in2"`; for
 /// `(AnchorPeano[N,...])` returns `"AnchorPeano"`. Companion functions
-/// `extractExpressionUniversal` (handles both negated and non-negated
-/// forms) and `extractExpressionFromNegation` (specifically for
-/// `!(<...>)` shape) cover the negation cases.
+/// `gl::extractExpressionUniversalSpan` (the span twin handling both negated
+/// and non-negated forms) and `extractExpressionFromNegation` (specifically
+/// for `!(<...>)` shape) cover the negation cases.
 ///
 /// @param s Canonical MPL expression text. Must NOT be a negated form;
-///          for that use `extractExpressionUniversal` or
+///          for that use `gl::extractExpressionUniversalSpan` or
 ///          `extractExpressionFromNegation`.
 /// @return Expression name (no enclosing parens or brackets).
 inline std::string extractExpression(const std::string& s) {
@@ -681,29 +718,6 @@ inline std::string extractExpression(const std::string& s) {
     return std::string();
 }
 
-/// @brief Extract the core expression name from a possibly-negated form.
-///
-/// @details
-/// Handles both `(p[...])` and `!(p[...])` — chooses the right
-/// extractor (`extractExpression` or `extractExpressionFromNegation`)
-/// based on the leading character. Returns the name only; the negation
-/// flag is implicit in the input string and not propagated.
-///
-/// @param s Canonical MPL expression text, possibly negated.
-/// @return Core expression name (no negation prefix, no parens, no
-///         brackets).
-inline std::string extractExpressionUniversal(const std::string& s) {
-    std::size_t index = s.find('[');
-    if (index != std::string::npos) {
-        if (!s.empty() && s[0] == '(') {
-            return s.substr(1, index - 1);
-        }
-        else if (s.size() >= 2 && s[0] == '!' && s[1] == '(') {
-            return s.substr(2, index - 2);
-        }
-    }
-    return std::string();
-}
 
 /// @brief Extract the core expression name from a `!(p[...])` form.
 ///
@@ -1089,7 +1103,7 @@ inline std::string disintegrateImplication(
     std::vector<std::string>,
     std::set<std::string>
     > >& chain,
-    const std::map<std::string, CoreExpressionConfig>& coreExpressionMap) {
+    const CoreExpressionMap& coreExpressionMap) {
 
 #if GL_DISINT_PROFILE
     auto _t0 = std::chrono::steady_clock::now();
@@ -1244,6 +1258,94 @@ inline std::string disintegrateImplication(
     return head;
 }
 
+/// @brief Span-native twin of @ref disintegrateImplication — the layer-peel
+///        walk emitting `(key, boundVars)` per chain triple as zero-copy spans,
+///        no heap chain, no `leftArgs`, no cache.
+///
+/// @details
+/// Byte-for-byte the heap walker's iterative layer-peel (strip the `(>[bvs]`
+/// prefix + matching `)`, parse the `[id1,id2,...]` bound-var list as
+/// comma-split spans, locate the paren-balanced `(prem)` / `!(prem)`, emit the
+/// triple, advance, and finally set @p headOut to the residual `s[cursor..end)`)
+/// — but every emitted string is a `gl::StrSpan` INTO the caller's stable
+/// @p expr (the heap form's `s.substr(...)` outputs), so the twin allocates
+/// nothing. Three deliberate drops relative to the heap form: (1) the
+/// `std::set<std::string> leftArgs` third field is NOT computed (never read
+/// in-tree); (2) no `DisintCache` (correctness-first; byte-identity unaffected);
+/// (3) the unused `coreExpressionMap` param. The visitor @p sink fires
+/// SYNCHRONOUSLY per triple with a stack `bvSpans` array valid only for that
+/// call — I-116: it must not stash a `StrSpan`; copy what it needs.
+///
+/// @tparam TripleSink `void(gl::StrSpan keySpan, const gl::StrSpan* bvSpans,
+///                    int32_t bvN)`.
+/// @param expr    The implication expression (span over stable input).
+/// @param headOut Set to the disintegrated head span on return.
+/// @param sink    Per-triple visitor.
+/// @invariant Mints / allocates nothing; every span aliases @p expr, which must
+///            outlive the call and the sink's use of the spans.
+/// @see disintegrateImplication — the retained heap oracle (byte-twin test
+///      `disintegrate_implication_spans_matches_heap`); prover.hpp::disintegrateExpr2.
+template <typename TripleSink>
+inline void disintegrateImplicationSpans(gl::StrSpan expr,
+    gl::StrSpan& headOut, TripleSink&& sink) {
+    const char* s = expr.ptr;
+    int32_t cursor = 0;
+    int32_t end = expr.len;
+    while (cursor + 3 <= end
+           && s[cursor] == '(' && s[cursor + 1] == '>' && s[cursor + 2] == '[') {
+        // Parse this layer's bound-var list `[id1,id2,...]` into a stack array.
+        const int32_t bvStart = cursor + 3;
+        int32_t bvClose = -1;
+        for (int32_t i = bvStart; i < end; ++i) { if (s[i] == ']') { bvClose = i; break; } }
+        if (bvClose < 0) break;
+        gl::StrSpan bvs[gl::ExecutionParameters::MAX_ARITY];
+        int32_t bvN = 0;
+        {
+            int32_t p = bvStart;
+            while (p < bvClose) {
+                int32_t c = -1;
+                for (int32_t i = p; i < bvClose; ++i) { if (s[i] == ',') { c = i; break; } }
+                if (c < 0) c = bvClose;
+                if (c > p) {
+                    assert(bvN < gl::ExecutionParameters::MAX_ARITY
+                        && "disintegrateImplicationSpans: bound-var count exceeds MAX_ARITY");
+                    bvs[bvN++] = gl::StrSpan(s + p, c - p);
+                }
+                p = c + 1;
+            }
+        }
+
+        // Locate the premise: `(prem)` positive, or `!(prem)` negated; anything
+        // else ends the peel (the rest is the head).
+        if (bvClose + 1 >= end) break;
+        const int32_t premRealStart = bvClose + 1;
+        int32_t balanceFrom;
+        if (s[premRealStart] == '(') {
+            balanceFrom = premRealStart;
+        } else if (s[premRealStart] == '!' && premRealStart + 1 < end
+                   && s[premRealStart + 1] == '(') {
+            balanceFrom = premRealStart + 1;
+        } else {
+            break;
+        }
+        int32_t premEnd = balanceFrom;
+        int depth = 0;
+        for (; premEnd < end; ++premEnd) {
+            const char ch = s[premEnd];
+            if (ch == '(') ++depth;
+            else if (ch == ')') { --depth; if (depth == 0) break; }
+        }
+        if (premEnd >= end) break;
+        // key = s[premRealStart .. premEnd] inclusive (keeps the `!` prefix).
+        const gl::StrSpan keySpan(s + premRealStart, premEnd - premRealStart + 1);
+        sink(keySpan, bvs, bvN);
+
+        cursor = premEnd + 1;
+        end = end - 1;
+    }
+    headOut = gl::StrSpan(s + cursor, end - cursor);
+}
+
 
 
 inline void prioritizeAnchor(std::vector<std::string>& chain, const std::string& anchor) {
@@ -1259,7 +1361,7 @@ inline void prioritizeAnchor(std::vector<std::string>& chain, const std::string&
 
 inline bool staysOutputVariable(const std::string& fullExpr,
     const std::string& outputVariable,
-    const std::map<std::string, CoreExpressionConfig>& coreExpressionMap) {
+    const CoreExpressionMap& coreExpressionMap) {
 
     const std::string coreExpr = extractExpression(fullExpr);
     auto it = coreExpressionMap.find(coreExpr);
@@ -1307,7 +1409,7 @@ inline bool staysOutputVariable(const std::string& fullExpr,
 inline std::string createReshuffledMirrored(const std::string& expr,
     const std::string& anchorName,
     bool anchorFirst,
-    const std::map<std::string, CoreExpressionConfig>& coreExpressionMap) {
+    const CoreExpressionMap& coreExpressionMap) {
 
     std::vector< std::tuple< std::string, std::vector<std::string>, std::set<std::string> > > tempChain;
     const std::string head = disintegrateImplication(expr, tempChain, coreExpressionMap);
@@ -1358,24 +1460,87 @@ inline std::string createReshuffledMirrored(const std::string& expr,
         argsToRemove.insert(nodeArgs.begin(), nodeArgs.end());
     }
 
-    std::vector< std::set<std::string> > argsChain;
-    argsChain.reserve(chain.size());
-    for (const auto& c : chain) {
-        const std::vector<std::string> a = getArgs(c);
-        argsChain.emplace_back(a.begin(), a.end());
-    }
-
     if (chain.empty()) return std::string();
     std::vector< std::vector<std::string> > howToRemove(chain.size() - 1);
 
-    for (const std::string& argToRemove : argsToRemove) {
-        for (std::size_t idx = 0; idx < chain.size(); ++idx) {
-            if (argsChain[idx].find(argToRemove) != argsChain[idx].end()) {
+    // Assign each bound variable to the >[...] group of the chain element where
+    // it FIRST appears, in left-to-right body-occurrence order (FullBind form,
+    // I-4) — the same rule reshuffle() applies via ce::orderByPattern. The
+    // earlier formulation iterated argsToRemove (a sorted std::set), so each
+    // binder list came out in lexicographic order — e.g. >[v4,v5] over a body
+    // in3[v2,v5,v4] where v5 occurs before v4. The verifier reconstructs
+    // implications in occurrence order, so the sorted form misses.
+    std::set<std::string> placed;
+    for (std::size_t idx = 0; idx < chain.size(); ++idx) {
+        const std::vector<std::string> bodyArgs = getArgs(chain[idx]);
+        for (std::size_t j = 0; j < bodyArgs.size(); ++j) {
+            const std::string& arg = bodyArgs[j];
+            if (argsToRemove.find(arg) != argsToRemove.end()
+                && placed.find(arg) == placed.end()) {
+                placed.insert(arg);
                 if (idx < howToRemove.size()) {
-                    howToRemove[idx].push_back(argToRemove);
+                    howToRemove[idx].push_back(arg);
                 }
-                break;
             }
+        }
+    }
+
+    // Rename body bound variables to canonical occurrence order.
+    //
+    // `decdaaee` made the BINDER LIST WITHIN each chain element follow
+    // occurrence order. But the variable NAMES themselves were inherited
+    // verbatim from the input. After the mirror swap (the original "head"
+    // becomes a premise, the original "alternative" premise becomes the new
+    // head), the same names appear at different body positions — so the
+    // post-mirror occurrence order of names is no longer canonical (e.g. the
+    // induction source's body names 7..12 in occurrence order become 7,8,9,
+    // 12,10,11 in the mirror). The deferred-compaction drain's
+    // `compileCoreExpressionMapCore` / `makeNormalizedEncodedKey` then
+    // renormalizes during compaction, producing a body whose names ARE in
+    // canonical occurrence order — making the mirror's globalTheoremList
+    // entry and the chapter's binary-canonical reconstruction byte-different
+    // even though they share the same alpha-class. The verifier's `origin`
+    // meta-check has no permutation/canonicalization fallback (I-16: sacred),
+    // so the implication-row citation (canonical via binary) misses the
+    // registry entry (non-canonical via mirror).
+    //
+    // Fix: re-assign body bound-var names in occurrence order across the
+    // rearranged chain, using the same name set the SOURCE expression
+    // provided (preserves the conjecturer's numbering scheme — numeric for
+    // compiled theorems, named for named MPL). Result is byte-identical to
+    // what `makeNormalizedEncodedKey` will derive later, so registry and
+    // chapter citation agree.
+    std::vector<std::string> canonicalPool;
+    {
+        std::set<std::string> seen;
+        for (const auto& t : tempChain) {
+            const std::vector<std::string>& nodeArgs = std::get<1>(t);
+            for (const std::string& a : nodeArgs) {
+                if (seen.insert(a).second) {
+                    canonicalPool.push_back(a);
+                }
+            }
+        }
+    }
+    std::vector<std::string> newOrder;
+    {
+        std::set<std::string> seen;
+        for (std::size_t idx = 0; idx < chain.size(); ++idx) {
+            const std::vector<std::string> bodyArgs = getArgs(chain[idx]);
+            for (const std::string& a : bodyArgs) {
+                if (argsToRemove.find(a) != argsToRemove.end()
+                    && seen.insert(a).second) {
+                    newOrder.push_back(a);
+                }
+            }
+        }
+    }
+    assert(newOrder.size() == canonicalPool.size()
+        && "createReshuffledMirrored: post-mirror bound-var count must match pre-mirror");
+    std::map<std::string, std::string> renameMap;
+    for (std::size_t i = 0; i < newOrder.size(); ++i) {
+        if (newOrder[i] != canonicalPool[i]) {
+            renameMap[newOrder[i]] = canonicalPool[i];
         }
     }
 
@@ -1390,6 +1555,9 @@ inline std::string createReshuffledMirrored(const std::string& expr,
         newExpr = "(>[" + joined + "]" + chain[ind] + newExpr + ")";
     }
 
+    if (!renameMap.empty()) {
+        newExpr = replaceKeysInString(newExpr, renameMap);
+    }
     return newExpr;
 }
 
@@ -1489,39 +1657,62 @@ inline bool expressionIsSimple(const std::string& expr) {
 }
 
 
-inline std::pair<std::string, std::string>
-extractKeyValue(const std::string& expr2,
-    const std::map<std::string, ce::CoreExpressionConfig>& coreExpressionMap) {
-    TreeNode1* root = parseExpr(expr2);
+/// @brief Key-only span twin of the retired `extractKeyValue` — the
+///        disintegrated implication `key` (the input with its innermost head
+///        spliced out), built on a scratch arena with zero heap.
+///
+/// @details
+/// The retired heap oracle returned `(key, value)`; its sole prover caller read
+/// ONLY `key` (the `value` field was dead there), so this twin produces the key
+/// alone and never builds a parse tree.
+///
+/// The `value` the oracle spliced out is the innermost consequent
+/// `treeToExpr(first-non-'>'-node)`. For canonical MPL that is byte-identical
+/// to @ref disintegrateImplicationSpans's `headOut` — a slice of @p expr2 —
+/// because the oracle descended the SAME `>`-binder chain (`node->right`) that
+/// the peel strips, and the head re-serialises to its own input bytes. The key
+/// is then @p expr2 with the LAST occurrence of that head removed
+/// (`std::string::rfind` semantics, reproduced by @ref gl::rfindSpanBefore):
+/// `expr2[0..pos) ++ expr2[pos+head.len..end)`. A bare non-implication atom
+/// peels nothing, so `headOut == expr2`, `pos == 0`, and the spliced length is
+/// 0 — an empty key, matching the oracle's `"" + ""`.
+///
+/// The result rides @p arena's byte-bump (string) tier via one explicit-length
+/// fill; hold it as a NAMED `ScratchString` across its reads (I-116 — a raw
+/// `StrSpan` carries no liveness stamp).
+///
+/// @param expr2 The implication expression (span over stable input); reads no
+///              interner, so there is no `decodeView`/`copyFrom` concern.
+/// @param arena Scratch arena (string tier) receiving the fresh key bytes.
+/// @return The disintegrated key as a fresh `ScratchString` on @p arena; empty
+///         when @p expr2 is a bare non-implication atom.
+/// @invariant Allocates on the heap NOTHING; every read span aliases @p expr2,
+///            which must outlive the call.
+/// @see disintegrateImplicationSpans; gl::rfindSpanBefore; byte-twin test
+///      `extract_key_value_key_scratch_matches_heap` (against the retained
+///      test-local `extractKeyValueOracle`).
+inline gl::ScratchString
+extractKeyValueKeyScratch(const gl::StrSpan& expr2, gl::ScratchArena& arena) {
+    // value = innermost consequent = disintegrateImplicationSpans headOut,
+    // a slice of expr2 (triples ignored -- only the head is needed).
+    gl::StrSpan headOut;
+    disintegrateImplicationSpans(expr2, headOut,
+        [](gl::StrSpan, const gl::StrSpan*, int32_t) {});
+    assert(headOut.len > 0
+        && "extractKeyValueKeyScratch: disintegrated head must be non-empty");
 
-    std::string value;
-    TreeNode1* node = root;
-    while (node != NULL) {
-        if (!node->value.empty() && node->value[0] == '>') {
-            node = node->right;
-        }
-        else {
-            value = treeToExpr(node);
-            break;
-        }
-    }
-
-    std::string key;
-    if (value.empty()) {
-        key = expr2;
-    }
-    else {
-        const std::size_t pos = expr2.rfind(value);
-        if (pos != std::string::npos) {
-            key = expr2.substr(0, pos) + expr2.substr(pos + value.size());
-        }
-        else {
-            key = expr2;
-        }
-    }
-
-    deleteTree(root);
-    return std::make_pair(key, value);
+    // key = expr2 with the LAST occurrence of headOut removed.
+    const int32_t pos = gl::rfindSpanBefore(expr2, headOut, expr2.len);
+    assert(pos >= 0
+        && "extractKeyValueKeyScratch: head span must occur in expr2");
+    const int32_t n = expr2.len - headOut.len;
+    if (n == 0) return gl::ScratchString();   // bare atom -> empty key
+    char* buf = arena.allocBytes(n);
+    int32_t at = 0;
+    for (int32_t i = 0; i < pos; ++i) buf[at++] = expr2.ptr[i];
+    for (int32_t i = pos + headOut.len; i < expr2.len; ++i) buf[at++] = expr2.ptr[i];
+    assert(at == n);
+    return gl::ScratchString::wrap(arena, buf, n);
 }
 
 
@@ -1575,7 +1766,7 @@ namespace gl {
 
     class ArgumentAnalyzer {
     private:
-        const std::map<std::string, ce::CoreExpressionConfig>& coreConfig;
+        const ce::CoreExpressionMap& coreConfig;
 
         std::map<std::string, std::string> mergeMaps(const std::map<std::string, std::string>& a,
             const std::map<std::string, std::string>& b) const {
@@ -1757,7 +1948,7 @@ namespace gl {
         };
 
     public:
-        explicit ArgumentAnalyzer(const std::map<std::string, ce::CoreExpressionConfig>& config)
+        explicit ArgumentAnalyzer(const ce::CoreExpressionMap& config)
             : coreConfig(config) {
         }
 

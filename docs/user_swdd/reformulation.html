@@ -1,0 +1,618 @@
+<!--
+Generative Logic: A deterministic reasoning and knowledge generation engine.
+Copyright (C) 2025-2026 Generative Logic UG (haftungsbeschränkt).
+Dual-licensed under the GNU Affero General Public License v3 or later
+and a commercial license — see https://generative-logic.com/license.
+
+User-oriented SwDD — Chapter 10: Reformulation & head switch.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GL Prover User SwDD — 10 · Reformulation &amp; head switch</title>
+<meta name="copyright" content="© 2025-2026 Generative Logic UG">
+<meta name="license" content="AGPL-3.0-or-later">
+<meta name="robots" content="noindex, nofollow, noai, noimageai">
+<link rel="stylesheet" href="assets/swdd.css">
+</head>
+<body>
+
+<nav id="side">
+  <div class="brand">GL · <span>User SwDD</span></div>
+  <div class="tag">The prover subsystem — reference concepts &amp; diagrams</div>
+  <ol>
+    <li><a href="index.html">Overview</a>
+      <ul>
+        <li><a href="index.html#what">What GL is</a></li>
+        <li><a href="index.html#pipeline">The pipeline</a></li>
+        <li><a href="index.html#deductive">Deductive neighbourhood</a></li>
+        <li><a href="index.html#artefacts">Artefacts on disk</a></li>
+        <li><a href="index.html#read">How to read this</a></li>
+        <li><a href="index.html#glossary">Quick glossary</a></li>
+        <li><a href="index.html#bounds">What is &amp; isn't in this doc</a></li>
+      </ul>
+    </li>
+    <li><a href="prover.html">The prover at a glance</a>
+      <ul>
+        <li><a href="prover.html#life">Life of a run</a></li>
+        <li><a href="prover.html#cycles">Cycles</a></li>
+        <li><a href="prover.html#enter">How a theorem enters</a></li>
+        <li><a href="prover.html#status">Status modes</a></li>
+        <li><a href="prover.html#deactivate">Deactivation cascade</a></li>
+        <li><a href="prover.html#dump">The hashburst dump</a></li>
+      </ul>
+    </li>
+    <li><a href="substrate.html">The substrate</a>
+      <ul>
+        <li><a href="substrate.html#lb">Logic blocks</a></li>
+        <li><a href="substrate.html#hash">Hash engine</a></li>
+        <li><a href="substrate.html#mail">Mail</a></li>
+        <li><a href="substrate.html#scope">Scope &amp; validity</a></li>
+        <li><a href="substrate.html#compile">Compilation</a></li>
+        <li><a href="substrate.html#delta">Delta machinery</a></li>
+        <li><a href="substrate.html#wipe">Subtree wipe</a></li>
+      </ul>
+    </li>
+    <li><a href="mechanisms.html">Proof mechanisms</a>
+      <ul>
+        <li><a href="mechanisms.html#disint">Disintegration</a></li>
+        <li><a href="mechanisms.html#admit">Admission, rejection &amp; equi-classes</a></li>
+        <li><a href="mechanisms.html#integ">Integration</a></li>
+        <li><a href="mechanisms.html#branch">Branching &amp; contradiction</a></li>
+        <li><a href="mechanisms.html#induct">Induction</a></li>
+        <li><a href="mechanisms.html#fan5">5-batch fan-out</a></li>
+        <li><a href="mechanisms.html#cascade">Pending-rejection cascade</a></li>
+      </ul>
+    </li>
+    <li><a href="parallel.html">Parallel execution</a>
+      <ul>
+        <li><a href="parallel.html#pool">The worker pool</a></li>
+        <li><a href="parallel.html#barrier">The join barrier</a></li>
+        <li><a href="parallel.html#collect">Serial collectors</a></li>
+        <li><a href="parallel.html#why">Why deferral — a race</a></li>
+        <li><a href="parallel.html#asic">The silicon mapping</a></li>
+        <li><a href="parallel.html#mailbox">Per-LB mailbox geometry</a></li>
+        <li><a href="parallel.html#cycleN">The cycle-N rule</a></li>
+      </ul>
+    </li>
+    <li><a href="memory.html">Static memory</a>
+      <ul>
+        <li><a href="memory.html#why">Why static</a></li>
+        <li><a href="memory.html#hierarchy">The memory hierarchy</a></li>
+        <li><a href="memory.html#virtual">The page tier</a></li>
+        <li><a href="memory.html#aggregate">LbMemory — the aggregate</a></li>
+        <li><a href="memory.html#deload">Deload / reload</a></li>
+        <li><a href="memory.html#scope">Scope</a></li>
+      </ul>
+    </li>
+    <li><a href="provenance.html">Provenance</a>
+      <ul>
+        <li><a href="provenance.html#record">Recording an origin</a></li>
+        <li><a href="provenance.html#local">Locality</a></li>
+        <li><a href="provenance.html#lift">The chapter walker</a></li>
+        <li><a href="provenance.html#lift-mech">Lift — soundness</a></li>
+        <li><a href="provenance.html#barrier">OR-branch barrier</a></li>
+        <li><a href="provenance.html#cycle">Path-cycle filter</a></li>
+        <li><a href="provenance.html#contraswitch">Contradiction fallback</a></li>
+        <li><a href="provenance.html#notinput">Never a proof input</a></li>
+      </ul>
+    </li>
+    <li><a href="compilation.html">Compilation &amp; names</a>
+      <ul>
+        <li><a href="compilation.html#why">Two canonical forms</a></li>
+        <li><a href="compilation.html#pre">Precompilation</a></li>
+        <li><a href="compilation.html#names">The five name families</a></li>
+        <li><a href="compilation.html#counters">Counters &amp; registry</a></li>
+        <li><a href="compilation.html#namemap">NameMap &amp; scopes</a></li>
+        <li><a href="compilation.html#encoded">EncodedExpression → IntNormalizedKey</a></li>
+        <li><a href="compilation.html#pool">The static-memory floor</a></li>
+        <li><a href="compilation.html#fail">Failure modes</a></li>
+      </ul>
+    </li>
+    <li><a href="anchors.html">Anchors &amp; types</a>
+      <ul>
+        <li><a href="anchors.html#what">What an anchor is</a></li>
+        <li><a href="anchors.html#three">The four anchors</a></li>
+        <li><a href="anchors.html#types">Slot types</a></li>
+        <li><a href="anchors.html#handling">Anchor handling</a></li>
+        <li><a href="anchors.html#copy">The <code>_copy</code> machinery</a></li>
+        <li><a href="anchors.html#tag">The proof-graph row</a></li>
+        <li><a href="anchors.html#i29">Variable-port consistency</a></li>
+        <li><a href="anchors.html#bridge">Cross-anchor bridges</a></li>
+      </ul>
+    </li>
+    <li><a href="reformulation.html" class="current">Reformulation &amp; head switch</a>
+      <ul>
+        <li><a href="reformulation.html#why">Why reformulation</a></li>
+        <li><a href="reformulation.html#switch">Head switch — the walk</a></li>
+        <li><a href="reformulation.html#sites">Two call sites</a></li>
+        <li><a href="reformulation.html#mirror">Both directions proved</a></li>
+        <li><a href="reformulation.html#back">Back-reformulation</a></li>
+        <li><a href="reformulation.html#contra">Contradiction reconstruction</a></li>
+        <li><a href="reformulation.html#orthm">OR-theorem assembly</a></li>
+        <li><a href="reformulation.html#methods">The five method tags</a></li>
+      </ul>
+    </li>
+    <li><a href="auxiliary.html">CE filter &amp; compressor</a>
+      <ul>
+        <li><a href="auxiliary.html#engine">Same engine, two modes</a></li>
+        <li><a href="auxiliary.html#ce">Counterexample filter</a></li>
+        <li><a href="auxiliary.html#j">The j-copy trick</a></li>
+        <li><a href="auxiliary.html#comp">Compressor — throwaway trees</a></li>
+        <li><a href="auxiliary.html#p1">Phase 1 — dependency graphs</a></li>
+        <li><a href="auxiliary.html#p2">Phase 2 — greedy elimination</a></li>
+        <li><a href="auxiliary.html#out">What lands on disk</a></li>
+      </ul>
+    </li>
+  </ol>
+</nav>
+
+<main>
+<h1><span class="num">10 ·</span> Reformulation &amp; head switch</h1>
+<p class="lede">A single proof can yield several theorems if you read it from
+several angles. This chapter is GL's machinery for that — the head-switch walk
+that produces a theorem's contrapositive, the way the reverse direction of a
+theorem is now proved for real, the contradiction-theorem reconstruction that
+lifts a self-refuting branch into a parent-scope claim, the OR-theorem assembly that
+fuses a mutually-exclusive pair into a single disjunction, and the difference
+between sound (main) and unsound (incubator) reformulation.</p>
+
+<div class="toc">
+  <strong>On this page</strong>
+  <ol>
+    <li><a href="#why">10.1 &nbsp;Why reformulation</a></li>
+    <li><a href="#switch">10.2 &nbsp;The head-switch walk — <code>headSwitchOne</code></a></li>
+    <li><a href="#sites">10.3 &nbsp;Two call sites — pre-emit and post-prove</a></li>
+    <li><a href="#mirror">10.4 &nbsp;Both directions, proved for real</a></li>
+    <li><a href="#back">10.5 &nbsp;Back-reformulation — the incubator-only path</a></li>
+    <li><a href="#contra">10.6 &nbsp;Contradiction-theorem reconstruction</a></li>
+    <li><a href="#orthm">10.7 &nbsp;OR-theorem assembly</a></li>
+    <li><a href="#methods">10.8 &nbsp;The five method tags</a></li>
+    <li><a href="#fail">10.9 &nbsp;Failure modes</a></li>
+  </ol>
+</div>
+
+<!-- ===================== 10.1 ===================== -->
+<h2 id="why">10.1 &nbsp;Why reformulation</h2>
+<p>
+GL only reasons <i>forward</i>: from premises through hash-rule fires to a
+head. But a forward proof of <code>A → B</code> is, logically, also a proof of
+<code>¬B → ¬A</code> — the <b>contrapositive</b>. Likewise, an OR branch that
+self-refutes proves the negation of its assumption, which fed back to the
+parent looks like a positive claim. And a pair of mutually-exclusive
+implications (“if not A then B”, “if not B then A”) together constitute a
+disjunctive theorem (“A ∨ B”).
+</p>
+<p>
+Each of these is a different way of reading the same proof — they do not
+require additional proving work. Reformulation is the umbrella name for the
+mechanisms that <i>read</i> the work the prover has already done and emit the
+additional theorems it implies.
+</p>
+
+<figure>
+<svg viewBox="0 0 760 230" role="img" aria-label="Reformulation: extracting multiple theorems from one proof">
+  <defs><marker id="rf-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="280" y="22" width="200" height="40" rx="8" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="380" y="46" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">one forward proof</text>
+
+  <path d="M340 62 L100 100"  stroke="#5DCAA5" stroke-width="1.4" marker-end="url(#rf-ar)"/>
+  <path d="M362 62 L280 100"  stroke="#5DCAA5" stroke-width="1.4" marker-end="url(#rf-ar)"/>
+  <path d="M392 62 L460 100"  stroke="#5DCAA5" stroke-width="1.4" marker-end="url(#rf-ar)"/>
+  <path d="M420 62 L660 100"  stroke="#5DCAA5" stroke-width="1.4" marker-end="url(#rf-ar)"/>
+
+  <rect x="22" y="104" width="156" height="74" rx="9" fill="#262938" stroke="#5DCAA5"/>
+  <text x="100" y="124" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">direct</text>
+  <text x="100" y="142" fill="#F0E8DC" font-size="9.5" text-anchor="middle">A → B</text>
+  <text x="100" y="160" fill="#8B8FA5" font-size="9" text-anchor="middle">the literal forward proof</text>
+
+  <rect x="202" y="104" width="156" height="74" rx="9" fill="#262938" stroke="#5DCAA5"/>
+  <text x="280" y="124" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">contrapositive</text>
+  <text x="280" y="142" fill="#F0E8DC" font-size="9.5" text-anchor="middle">¬B → ¬A</text>
+  <text x="280" y="160" fill="#8B8FA5" font-size="9" text-anchor="middle">head switch — proved for real</text>
+
+  <rect x="382" y="104" width="156" height="74" rx="9" fill="#262938" stroke="#B084EB"/>
+  <text x="460" y="124" fill="#B084EB" font-size="11" font-weight="bold" text-anchor="middle">contradiction</text>
+  <text x="460" y="142" fill="#F0E8DC" font-size="9.5" text-anchor="middle">¬A in parent</text>
+  <text x="460" y="160" fill="#8B8FA5" font-size="9" text-anchor="middle">from a refuted branch</text>
+
+  <rect x="582" y="104" width="156" height="74" rx="9" fill="#262938" stroke="#EF9F27"/>
+  <text x="660" y="124" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">OR theorem</text>
+  <text x="660" y="142" fill="#F0E8DC" font-size="9.5" text-anchor="middle">A ∨ B</text>
+  <text x="660" y="160" fill="#8B8FA5" font-size="9" text-anchor="middle">from a mutex pair</text>
+
+  <text x="380" y="206" fill="#8B8FA5" font-size="11" text-anchor="middle">The proof is the same work; reformulation just reads more theorems out of it.</text>
+</svg>
+<figcaption><b>Four readings of one proof.</b> Each is treated as a first-class
+theorem with its own row in <code>global_theorem_list.txt</code> and its own
+chapter.</figcaption>
+</figure>
+
+<!-- ===================== 10.2 ===================== -->
+<h2 id="switch">10.2 &nbsp;The head-switch walk — <code>headSwitchOne</code></h2>
+<p>
+The head-switch walk is the simplest possible thing it could be: a pure
+structural string rewrite that takes a chain
+<code>P₁ ∧ P₂ ∧ … ∧ P_k ∧ !Q → R</code> and produces
+<code>P₁ ∧ P₂ ∧ … ∧ P_k ∧ !R → Q</code>. The “head” (the implication's
+conclusion) is swapped with the right-most negated premise. No proof work, no
+search — just rebuild by concatenation.
+</p>
+
+<figure>
+<svg viewBox="0 0 760 220" role="img" aria-label="headSwitchOne — swap head with the rightmost negated premise">
+  <defs><marker id="hs-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="20" y="40" width="320" height="100" rx="10" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <text x="180" y="62" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">input chain</text>
+  <text x="180" y="84" fill="#F0E8DC" font-size="10.5" text-anchor="middle">P₁ ∧ P₂ ∧ <tspan fill="#EF9F27">!Q</tspan> → <tspan fill="#5DCAA5">R</tspan></text>
+  <text x="180" y="104" fill="#8B8FA5" font-size="9.5" text-anchor="middle">find right-most <tspan fill="#EF9F27">!-prefixed</tspan> premise</text>
+  <text x="180" y="120" fill="#8B8FA5" font-size="9.5" text-anchor="middle">with empty inner bound-var list</text>
+
+  <path d="M340 90 L378 90" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#hs-ar)"/>
+
+  <rect x="380" y="32" width="200" height="116" rx="10" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="480" y="54" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">headSwitchOne</text>
+  <text x="480" y="74" fill="#F0E8DC" font-size="10" text-anchor="middle">▸ scan premise chain</text>
+  <text x="480" y="90" fill="#F0E8DC" font-size="10" text-anchor="middle">▸ identify swap target</text>
+  <text x="480" y="106" fill="#F0E8DC" font-size="10" text-anchor="middle">▸ negate the body of</text>
+  <text x="480" y="120" fill="#F0E8DC" font-size="10" text-anchor="middle">  R, drop ! on Q</text>
+  <text x="480" y="134" fill="#F0E8DC" font-size="10" text-anchor="middle">▸ rebuild by concat</text>
+
+  <path d="M580 90 L618 90" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#hs-ar)"/>
+
+  <rect x="620" y="40" width="120" height="100" rx="10" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <text x="680" y="60" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">output</text>
+  <text x="680" y="78" fill="#F0E8DC" font-size="10" text-anchor="middle">P₁ ∧ P₂ ∧</text>
+  <text x="680" y="92" fill="#F0E8DC" font-size="10" text-anchor="middle"><tspan fill="#EF9F27">!R</tspan> → <tspan fill="#5DCAA5">Q</tspan></text>
+  <text x="680" y="118" fill="#8B8FA5" font-size="9" text-anchor="middle">contrapositive</text>
+
+  <text x="380" y="184" fill="#8B8FA5" font-size="11" text-anchor="middle">Stateless and string-level. Whatever the prover thought about the original chain is irrelevant —</text>
+  <text x="380" y="200" fill="#8B8FA5" font-size="11" text-anchor="middle">if the proof shows A→B, the same evidence shows ¬B→¬A; the swap just reads it out.</text>
+</svg>
+<figcaption><b>Pure rewrite, no search.</b> The walk is a few hundred lines
+of code, all linear in the premise count.</figcaption>
+</figure>
+
+<div class="key">
+<b>The “empty inner bound list” gate.</b> Head switch only fires when the
+target <code>!Q</code> premise has no inner <code>&gt;[…]</code> binding its
+own variables. Crossing a binder would require alpha-renaming and bound-set
+juggling — which is exactly what the prover does dynamically anyway, but the
+head-switch helper is deliberately the cheap rewrite, not a re-prover. Cases
+that need binders are picked up by the regular proof loop via
+<code>back-reformulation</code> (§10.5).
+</div>
+
+<!-- ===================== 10.3 ===================== -->
+<h2 id="sites">10.3 &nbsp;Two call sites — pre-emit and post-prove</h2>
+<p>
+<code>headSwitchOne</code> is invoked from <b>two</b> places, both unconditional
+on a qualifying theorem shape. Each yields a different artefact stream.
+</p>
+
+<table>
+<tr><th>Site</th><th>When</th><th>Produces</th></tr>
+<tr><td><b>Pre-emit pass</b></td><td>Just before the first <code>compileAndRegister</code> in <code>analyzeExpressions</code></td><td>Adds the contrapositive of every qualifying conjecture to the goal pool, so the single prove pass reaches both readings at once. Replaces the deleted multi-iteration loop.</td></tr>
+<tr><td><b>Post-prove walk</b></td><td>Immediately after <code>prove()</code> returns, before compressor + OR-theorem construction</td><td>Populates <code>orPairsFromHeadSwitch</code>: every <code>(!A → B, !B → A)</code> pair the prover happened to derive becomes a candidate for OR-theorem assembly (§10.7).</td></tr>
+</table>
+
+<figure>
+<svg viewBox="0 0 760 240" role="img" aria-label="The two call sites for headSwitchOne in the run lifecycle">
+  <defs><marker id="cs-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <text x="380" y="22" fill="#5DCAA5" font-size="12.5" font-weight="bold" text-anchor="middle">life of a run — where headSwitchOne fires</text>
+
+  <rect x="20" y="46" width="120" height="40" rx="7" fill="#262938" stroke="#5DCAA5"/>
+  <text x="80" y="70" fill="#F0E8DC" font-size="10.5" text-anchor="middle">constructor</text>
+
+  <path d="M140 66 L162 66" stroke="#5DCAA5" stroke-width="1.4" marker-end="url(#cs-ar)"/>
+
+  <rect x="162" y="46" width="120" height="40" rx="7" fill="#262938" stroke="#5DCAA5"/>
+  <text x="222" y="70" fill="#F0E8DC" font-size="10.5" text-anchor="middle">load externals</text>
+
+  <path d="M282 66 L304 66" stroke="#5DCAA5" stroke-width="1.4" marker-end="url(#cs-ar)"/>
+
+  <rect x="304" y="36" width="158" height="60" rx="9" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="383" y="58" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">PRE-EMIT</text>
+  <text x="383" y="74" fill="#8B8FA5" font-size="9.5" text-anchor="middle">headSwitchOne over</text>
+  <text x="383" y="88" fill="#8B8FA5" font-size="9.5" text-anchor="middle">every conjecture</text>
+
+  <path d="M462 66 L484 66" stroke="#5DCAA5" stroke-width="1.4" marker-end="url(#cs-ar)"/>
+
+  <rect x="484" y="46" width="120" height="40" rx="7" fill="#262938" stroke="#5DCAA5"/>
+  <text x="544" y="70" fill="#F0E8DC" font-size="10.5" text-anchor="middle">prove()</text>
+
+  <path d="M604 66 L626 66" stroke="#5DCAA5" stroke-width="1.4" marker-end="url(#cs-ar)"/>
+
+  <rect x="626" y="36" width="120" height="60" rx="9" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="686" y="58" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">POST-PROVE</text>
+  <text x="686" y="74" fill="#8B8FA5" font-size="9.5" text-anchor="middle">headSwitchOne</text>
+  <text x="686" y="88" fill="#8B8FA5" font-size="9.5" text-anchor="middle">→ orPairs</text>
+
+  <path d="M380 96 L380 130" stroke="#EF9F27" stroke-width="1.5" marker-end="url(#cs-ar)"/>
+  <rect x="156" y="134" width="448" height="64" rx="9" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <text x="380" y="156" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">single prove pass</text>
+  <text x="380" y="174" fill="#F0E8DC" font-size="10" text-anchor="middle">contrapositive added pre-emit → no need for the deleted bigIteration loop</text>
+  <text x="380" y="190" fill="#8B8FA5" font-size="9.5" text-anchor="middle">(D-24, 2026 — see life-of-a-run diagram in §2.1)</text>
+
+  <text x="686" y="120" fill="#8B8FA5" font-size="10" text-anchor="middle">→ §10.7</text>
+</svg>
+<figcaption><b>Same helper, two slots in the lifecycle.</b> Pre-emit adds
+goals; post-prove harvests pairs.</figcaption>
+</figure>
+
+<!-- ===================== 10.4 ===================== -->
+<h2 id="mirror">10.4 &nbsp;Both directions, proved for real</h2>
+<p>
+Many theorems have a natural reverse direction — the same relation read with the
+output role moved from the head to a premise (for an operator <code>a∘b=c</code>:
+"given <code>a</code>,<code>b</code> find <code>c</code>" versus "given
+<code>c</code>,<code>a</code> find <code>b</code>"). GL used to fabricate that
+reverse direction <i>after</i> proving the forward one and stamp it
+<code>method = mirrored statement</code> — a row asserting a theorem the prover
+never derived. Because the swap is the <i>converse</i> of a functional relation
+and not a logical equivalence, that row could be quietly wrong.
+</p>
+<p>
+GL no longer does this. The conjecturer folds each conjecture's reverse-direction
+mirror into the real prove pool (<code>conjectures.txt</code>), so it runs through the
+same counterexample filter and the same proof engine as every other conjecture. A
+true reverse direction is proved for real — it appears with <code>method =
+direct</code> or <code>induction</code> and carries its own proof chapter; a false
+one simply fails to prove and never appears. The proof is now explicit in both
+directions.
+</p>
+
+<div class="key">
+<p><b>No unproven rows.</b> There is no longer a <code>mirrored statement</code>
+method or <code>mirrored from</code> tag, and the verifier no longer carries a
+mirror checker. Every theorem in the global list is backed by a real proof
+chapter. (The distinct, sound equality mirror <code>(=[a,b]) → (=[b,a])</code> and
+the head-switch contrapositive of §10.2 are unaffected — both were always
+genuine.)</p>
+</div>
+
+<!-- ===================== 10.5 ===================== -->
+<h2 id="back">10.5 &nbsp;Back-reformulation — the incubator-only path</h2>
+<p>
+<b>Back-reformulation</b> is a stricter cousin of head-switch that operates
+deep <i>inside</i> the prover, on partially-built intermediate states rather
+than on top-level theorems. The hot example: when an incubator block has
+proved a chain part-way but not its head, the back-reformulation pass tries
+to recast the chain so a different intermediate becomes the head. If the
+recast lands on a known derivable fact, the chain closes.
+</p>
+<p>
+Back-reformulation is gated by <code>!parameters.ban_disintegration</code> and additionally <code>incubator_mode</code>: it does not run in main
+batches. The reason is that back-reformulation, by construction, weakens
+some preconditions — useful for the incubator's heuristic fact harvest,
+unsound for a main proof.
+</p>
+
+<div class="vs">
+  <div class="left">
+    <h4>main: <code>reformulated from</code></h4>
+    <ul>
+      <li>Tag in the proof graph for a row whose head was reached via a head-switch path the verifier can re-check.</li>
+      <li>Sound — mathematics is preserved.</li>
+      <li>Verifier checker: <code>_check_reformulation</code> against a real GL binary.</li>
+    </ul>
+  </div>
+  <div class="right">
+    <h4>incubator: <code>incubator back reformulation</code></h4>
+    <ul>
+      <li>Tag for an incubator-only reformulation step that the verifier <b>does not</b> re-check by content.</li>
+      <li>Unsound in general — the incubator deliberately weakens to harvest facts.</li>
+      <li>Verifier just counts; the binary <code>"Incubator"</code> resolves to <code>None</code> and the structural checker bypasses.</li>
+    </ul>
+  </div>
+</div>
+
+<div class="key">
+<b>Do not group them.</b> A common reading error is to treat
+<code>reformulated from</code> and <code>incubator back reformulation</code>
+as the same tag with different labels. They are <i>structurally</i> different:
+the main-side row is a verifier check; the incubator-side row is a counter.
+Mixing the two — for example, accepting an incubator back-reformulation as
+discharge for a main goal — silently widens the main proof's accepted-input
+set.
+</div>
+
+<!-- ===================== 10.6 ===================== -->
+<h2 id="contra">10.6 &nbsp;Contradiction-theorem reconstruction</h2>
+<p>
+An OR branch (§4.4) is opened with a disjunct asserted as a local assumption.
+If the branch's other facts contradict that assumption — both <code>X</code>
+and <code>!X</code> become derivable inside the branch — the branch is
+self-refuting. Mathematically, this proves <code>¬(assumption)</code> in the
+parent scope. The prover reconstructs this as a theorem and discharges it
+upward.
+</p>
+
+<figure>
+<svg viewBox="0 0 760 250" role="img" aria-label="Contradiction discharge: from a refuted branch to a parent-scope theorem">
+  <defs><marker id="ct-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="20" y="40" width="200" height="84" rx="10" fill="#1C1F2B" stroke="#B084EB"/>
+  <text x="120" y="62" fill="#B084EB" font-size="11" font-weight="bold" text-anchor="middle">branch scope</text>
+  <text x="120" y="80" fill="#F0E8DC" font-size="10" text-anchor="middle">assume D₁</text>
+  <text x="120" y="96" fill="#F0E8DC" font-size="10" text-anchor="middle">derive X and !X</text>
+  <text x="120" y="114" fill="#8B8FA5" font-size="9" text-anchor="middle">primedForContradiction kept alive</text>
+
+  <path d="M220 82 L246 82" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ct-ar)"/>
+
+  <rect x="246" y="40" width="240" height="84" rx="10" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="366" y="62" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">contradictionTheoremId</text>
+  <text x="366" y="80" fill="#F0E8DC" font-size="10" text-anchor="middle">reconstruct the implication:</text>
+  <text x="366" y="98" fill="#F0E8DC" font-size="10" text-anchor="middle">P₁ ∧ … ∧ P_k → ¬D₁</text>
+  <text x="366" y="116" fill="#8B8FA5" font-size="9" text-anchor="middle">(P_i = branch-local premises that survive)</text>
+
+  <path d="M486 82 L512 82" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ct-ar)"/>
+
+  <rect x="512" y="40" width="220" height="84" rx="10" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <text x="622" y="62" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">parent scope</text>
+  <text x="622" y="80" fill="#F0E8DC" font-size="10" text-anchor="middle">emit ¬D₁ as derived fact</text>
+  <text x="622" y="98" fill="#F0E8DC" font-size="10" text-anchor="middle">discharge the assumption</text>
+  <text x="622" y="116" fill="#8B8FA5" font-size="9" text-anchor="middle">branch closes; OR continues</text>
+
+  <rect x="240" y="156" width="280" height="60" rx="10" fill="#262938" stroke="#3A3D4A"/>
+  <text x="380" y="178" fill="#F0E8DC" font-size="10.5" text-anchor="middle">If every branch refutes:</text>
+  <text x="380" y="196" fill="#F0E8DC" font-size="10.5" text-anchor="middle">parent holds ¬D₁ ∧ ¬D₂ ∧ … ∧ ¬D_K</text>
+  <text x="380" y="212" fill="#8B8FA5" font-size="9" text-anchor="middle">(OR itself unproved — no convergence fires)</text>
+</svg>
+<figcaption><b>Discharge mechanics.</b> The branch's local proof of
+contradiction becomes the parent's positive fact <code>¬D₁</code>. The flag
+<code>primedForContradiction</code> on the branch LB is the trick that keeps
+it alive long enough to harvest the result.</figcaption>
+</figure>
+
+<h3>10.6.1 &nbsp;What <code>primedForContradiction</code> does</h3>
+<p>
+A branch that proves a contradiction satisfies the normal “my goal is done”
+criterion: the contradiction <i>is</i> the goal in the negated head sense.
+Without intervention, <code>deactivateRecursively</code> would tear the branch
+down immediately — but the parent still needs the branch alive for one more
+cycle to harvest the reconstructed theorem. <code>primedForContradiction</code>
+is a per-LB flag that suspends deactivation until the discharge has fired.
+After discharge it is cleared and the normal lifecycle resumes.
+</p>
+
+<!-- ===================== 10.7 ===================== -->
+<h2 id="orthm">10.7 &nbsp;OR-theorem assembly</h2>
+<p>
+A theorem whose <i>head</i> is an OR is not proved by the prover directly —
+proving a disjunction by forward inference would require choosing one of the
+disjuncts, which is the case-analysis the prover deliberately avoids. The
+trick is to look for a <b>mutually-exclusive pair</b> of proved theorems:
+<code>!A → B</code> and <code>!B → A</code>. Together, those two readings
+say “at least one of A, B holds” — which is exactly <code>A ∨ B</code>.
+</p>
+
+<figure>
+<svg viewBox="0 0 760 220" role="img" aria-label="OR-theorem assembly from a mutex pair">
+  <defs><marker id="ot-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="40" y="38" width="220" height="40" rx="7" fill="#262938" stroke="#5DCAA5"/>
+  <text x="150" y="62" fill="#F0E8DC" font-size="11" text-anchor="middle">parent A: ¬D_a → D_b</text>
+  <rect x="40" y="92" width="220" height="40" rx="7" fill="#262938" stroke="#5DCAA5"/>
+  <text x="150" y="116" fill="#F0E8DC" font-size="11" text-anchor="middle">parent B: ¬D_b → D_a</text>
+
+  <path d="M260 60 L312 78"  stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ot-ar)"/>
+  <path d="M260 112 L312 94" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ot-ar)"/>
+
+  <rect x="312" y="58" width="200" height="60" rx="9" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="412" y="80" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">constructOrTheorem</text>
+  <text x="412" y="98" fill="#F0E8DC" font-size="10" text-anchor="middle">head = or&lt;N&gt;[D_a, D_b]</text>
+  <text x="412" y="134" fill="#8B8FA5" font-size="9" text-anchor="middle">pair canonicalised to (min,max) in fullRun's OR-construction loop</text>
+
+  <path d="M512 88 L548 88" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ot-ar)"/>
+
+  <rect x="548" y="58" width="190" height="60" rx="9" fill="#262938" stroke="#5DCAA5"/>
+  <text x="643" y="80" fill="#F0E8DC" font-size="11" font-weight="bold" text-anchor="middle">OR theorem kept</text>
+  <text x="643" y="98" fill="#8B8FA5" font-size="9.5" text-anchor="middle">parents → compressed_out</text>
+  <text x="643" y="114" fill="#8B8FA5" font-size="9" text-anchor="middle">D-55 dedup keeps the OR alive</text>
+
+  <text x="380" y="172" fill="#8B8FA5" font-size="11" text-anchor="middle">The OR <i>subsumes</i> the pair: the pair is recoverable from the OR.</text>
+  <text x="380" y="188" fill="#8B8FA5" font-size="11" text-anchor="middle">Keeping both the OR and the parents would clutter the theorem corpus without adding mathematics.</text>
+</svg>
+<figcaption><b>Construction, not proof.</b> The OR is assembled from artefacts
+the prover already produced; the parents are then subsumed by their OR-shaped
+unification.</figcaption>
+</figure>
+
+<h3>10.7.1 &nbsp;The pair-canonicalisation rule</h3>
+<p>
+The pair <code>(¬A → B, ¬B → A)</code> is symmetric: it could equally well be
+written <code>(¬B → A, ¬A → B)</code>. To avoid emitting two OR theorems for
+the same logical pair, the disjunct set is canonicalised by sorting:
+<code>(min, max)</code> by the disjunct expressions' string form. Once
+canonicalised, each unordered pair maps to exactly one OR theorem.
+</p>
+
+<!-- ===================== 10.8 ===================== -->
+<h2 id="methods">10.8 &nbsp;The five method tags</h2>
+<p>
+Every entry in <code>global_theorem_list.txt</code> carries a
+<code>method</code> tag that names how the theorem was obtained. The five
+values are exclusive and cover every emission path.
+</p>
+
+<table>
+<tr><th>Tag</th><th>Source</th><th>Verifier checker</th></tr>
+<tr><td><code>direct</code></td><td>The literal forward proof — the head was reached by the regular hash-engine fire.</td><td><code>theorem goal reached</code> (resolves to the chapter's last row).</td></tr>
+<tr><td><code>induction</code></td><td>The induction triad fired: base case, step case, and typing all landed.</td><td><code>check_induction_condition</code> + <code>check_zero</code> + <code>induction_typing</code> across the triad chapters.</td></tr>
+<tr><td><code>reformulated statement</code></td><td>A head-switch-reachable form whose proof was found via reformulation rather than direct fire — the row form changed structurally.</td><td><code>_check_reformulation</code> against the real GL binary.</td></tr>
+<tr><td><code>incubator back reformulation</code></td><td>An incubator-only reformulation step (§10.5); the incubator deliberately weakens preconditions to harvest facts, so it is unsound in general.</td><td><code>check_incubator_back_reformulation</code> — the witness-elimination rewrite is now checked structurally by content: the direct form must be the cited existence source with its witness eliminated through the trailing equality. (The check certifies the rewrite step, not the harvested fact's global soundness.)</td></tr>
+<tr><td><code>or theorem</code></td><td>An OR head assembled from a mutex pair (§10.7).</td><td><code>or theorem</code> check — the verifier validates the parents and the disjunct canonicalisation.</td></tr>
+</table>
+
+<div class="key">
+<b>Method labels can shift across commits without proof loss.</b> The same
+theorem (same raw MPL content in <code>theorems.txt</code>) can be
+emitted under different method tags depending on which path closed first.
+<code>theorems.txt</code> is the authoritative regression target;
+<code>global_theorem_list.txt</code>'s method-count deltas are not direct
+loss signals.
+</div>
+
+<!-- ===================== 10.9 ===================== -->
+<h2 id="fail">10.9 &nbsp;Failure modes</h2>
+<dl class="terms">
+<dt>“The <code>mirrored from</code> count went to zero — did we lose theorems?”</dt>
+<dd>No. The <code>mirrored statement</code> method was removed; each reverse
+direction that used to be fabricated is now proved for real and re-emitted under
+<code>direct</code> or <code>induction</code>. The raw set in
+<code>theorems.txt</code> is the source of truth — a genuinely missing
+theorem is one whose raw MPL is absent there.
+<em>Check</em>: <code>grep -F</code> the raw content in
+<code>theorems.txt</code> on both sides.</dd>
+
+<dt>“OR theorem missing the parents — chapter walker can't find them”</dt>
+<dd>The parents are moved to <code>compressed_out_theorems.txt</code> by
+design (D-55 dedup). The verifier knows to look there.
+<em>Check</em>: the parents exist in <code>compressed_out_theorems.txt</code>;
+the OR theorem's chapter cites them with the right validity.</dd>
+
+<dt>“Verifier reports <code>reformulated from</code> failure 1”</dt>
+<dd>The cited binary doesn't resolve. Often: a row was tagged
+<code>reformulated from</code> on an incubator batch by mistake (incubator
+uses <code>incubator back reformulation</code> instead).
+<em>Check</em>: the chapter's anchor; if it's an incubator anchor (<code>AnchorIncubator8</code> / <code>AnchorIncubator3</code>),
+the row's tag should be the incubator one. See [V-6 / V-7 in the rung-1
+verifier report].</dd>
+
+<dt>“Contradiction discharge fires but parent shows no negated fact”</dt>
+<dd>The branch LB was deactivated before discharge had a chance to fire —
+<code>primedForContradiction</code> was not set. <em>Check</em>: the OR
+branch construction sets the flag at branch open; deactivation respects it.</dd>
+
+<dt>“OR theorem assembled from a pair where one was head-switched and the
+other was not — they look mutex but aren't”</dt>
+<dd>The pair has to come from <code>orPairsFromHeadSwitch</code>, populated
+by the post-prove pass. A pair from any other source has not been validated
+as mutex. <em>Check</em>: every OR-theorem construction reads from
+<code>orPairsFromHeadSwitch</code>; no ad-hoc pairing.</dd>
+</dl>
+
+<div class="note">
+The last chapter steps outside the main proving pass entirely — to two other
+uses of the same prover machinery: the counterexample filter (a small-model
+disprover that runs <i>before</i> proof) and the compressor (a derivability
+checker that runs <i>after</i>).
+</div>
+
+<div class="pager">
+  <a href="anchors.html">&larr; 9 · Anchors &amp; types</a>
+  <a href="auxiliary.html">11 · CE filter &amp; compressor &rarr;</a>
+</div>
+
+<div class="foot">
+<b>License.</b> Generative Logic prover reference. © 2025-2026 Generative Logic UG
+(haftungsbeschränkt). Dual-licensed under the <b>GNU Affero General Public License
+v3 or later</b> and a <b>commercial license</b>; this document and the proof
+artefacts it describes inherit the same terms — commercial terms at
+<a href="https://generative-logic.com/license">generative-logic.com/license</a>.
+</div>
+
+</main>
+</body>
+</html>

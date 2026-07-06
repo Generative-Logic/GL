@@ -1,0 +1,699 @@
+<!--
+Generative Logic: A deterministic reasoning and knowledge generation engine.
+Copyright (C) 2025-2026 Generative Logic UG (haftungsbeschränkt).
+Dual-licensed under the GNU Affero General Public License v3 or later
+and a commercial license — see https://generative-logic.com/license.
+
+User-oriented SwDD — Chapter 9: Anchors & types.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GL Prover User SwDD — 9 · Anchors &amp; types</title>
+<meta name="copyright" content="© 2025-2026 Generative Logic UG">
+<meta name="license" content="AGPL-3.0-or-later">
+<meta name="robots" content="noindex, nofollow, noai, noimageai">
+<link rel="stylesheet" href="assets/swdd.css">
+</head>
+<body>
+
+<nav id="side">
+  <div class="brand">GL · <span>User SwDD</span></div>
+  <div class="tag">The prover subsystem — reference concepts &amp; diagrams</div>
+  <ol>
+    <li><a href="index.html">Overview</a>
+      <ul>
+        <li><a href="index.html#what">What GL is</a></li>
+        <li><a href="index.html#pipeline">The pipeline</a></li>
+        <li><a href="index.html#deductive">Deductive neighbourhood</a></li>
+        <li><a href="index.html#artefacts">Artefacts on disk</a></li>
+        <li><a href="index.html#read">How to read this</a></li>
+        <li><a href="index.html#glossary">Quick glossary</a></li>
+        <li><a href="index.html#bounds">What is &amp; isn't in this doc</a></li>
+      </ul>
+    </li>
+    <li><a href="prover.html">The prover at a glance</a>
+      <ul>
+        <li><a href="prover.html#life">Life of a run</a></li>
+        <li><a href="prover.html#cycles">Cycles</a></li>
+        <li><a href="prover.html#enter">How a theorem enters</a></li>
+        <li><a href="prover.html#status">Status modes</a></li>
+        <li><a href="prover.html#deactivate">Deactivation cascade</a></li>
+        <li><a href="prover.html#dump">The hashburst dump</a></li>
+      </ul>
+    </li>
+    <li><a href="substrate.html">The substrate</a>
+      <ul>
+        <li><a href="substrate.html#lb">Logic blocks</a></li>
+        <li><a href="substrate.html#hash">Hash engine</a></li>
+        <li><a href="substrate.html#mail">Mail</a></li>
+        <li><a href="substrate.html#scope">Scope &amp; validity</a></li>
+        <li><a href="substrate.html#compile">Compilation</a></li>
+        <li><a href="substrate.html#delta">Delta machinery</a></li>
+        <li><a href="substrate.html#wipe">Subtree wipe</a></li>
+      </ul>
+    </li>
+    <li><a href="mechanisms.html">Proof mechanisms</a>
+      <ul>
+        <li><a href="mechanisms.html#disint">Disintegration</a></li>
+        <li><a href="mechanisms.html#admit">Admission, rejection &amp; equi-classes</a></li>
+        <li><a href="mechanisms.html#integ">Integration</a></li>
+        <li><a href="mechanisms.html#branch">Branching &amp; contradiction</a></li>
+        <li><a href="mechanisms.html#induct">Induction</a></li>
+        <li><a href="mechanisms.html#fan5">5-batch fan-out</a></li>
+        <li><a href="mechanisms.html#cascade">Pending-rejection cascade</a></li>
+      </ul>
+    </li>
+    <li><a href="parallel.html">Parallel execution</a>
+      <ul>
+        <li><a href="parallel.html#pool">The worker pool</a></li>
+        <li><a href="parallel.html#barrier">The join barrier</a></li>
+        <li><a href="parallel.html#collect">Serial collectors</a></li>
+        <li><a href="parallel.html#why">Why deferral — a race</a></li>
+        <li><a href="parallel.html#asic">The silicon mapping</a></li>
+        <li><a href="parallel.html#mailbox">Per-LB mailbox geometry</a></li>
+        <li><a href="parallel.html#cycleN">The cycle-N rule</a></li>
+      </ul>
+    </li>
+    <li><a href="memory.html">Static memory</a>
+      <ul>
+        <li><a href="memory.html#why">Why static</a></li>
+        <li><a href="memory.html#hierarchy">The memory hierarchy</a></li>
+        <li><a href="memory.html#virtual">The page tier</a></li>
+        <li><a href="memory.html#aggregate">LbMemory — the aggregate</a></li>
+        <li><a href="memory.html#deload">Deload / reload</a></li>
+        <li><a href="memory.html#scope">Scope</a></li>
+      </ul>
+    </li>
+    <li><a href="provenance.html">Provenance</a>
+      <ul>
+        <li><a href="provenance.html#record">Recording an origin</a></li>
+        <li><a href="provenance.html#local">Locality</a></li>
+        <li><a href="provenance.html#lift">The chapter walker</a></li>
+        <li><a href="provenance.html#lift-mech">Lift — soundness</a></li>
+        <li><a href="provenance.html#barrier">OR-branch barrier</a></li>
+        <li><a href="provenance.html#cycle">Path-cycle filter</a></li>
+        <li><a href="provenance.html#contraswitch">Contradiction fallback</a></li>
+        <li><a href="provenance.html#notinput">Never a proof input</a></li>
+      </ul>
+    </li>
+    <li><a href="compilation.html">Compilation &amp; names</a>
+      <ul>
+        <li><a href="compilation.html#why">Two canonical forms</a></li>
+        <li><a href="compilation.html#pre">Precompilation</a></li>
+        <li><a href="compilation.html#names">The five name families</a></li>
+        <li><a href="compilation.html#counters">Counters &amp; registry</a></li>
+        <li><a href="compilation.html#namemap">NameMap &amp; scopes</a></li>
+        <li><a href="compilation.html#encoded">EncodedExpression → IntNormalizedKey</a></li>
+        <li><a href="compilation.html#pool">The static-memory floor</a></li>
+        <li><a href="compilation.html#fail">Failure modes</a></li>
+      </ul>
+    </li>
+    <li><a href="anchors.html" class="current">Anchors &amp; types</a>
+      <ul>
+        <li><a href="anchors.html#what">What an anchor is</a></li>
+        <li><a href="anchors.html#three">The four anchors</a></li>
+        <li><a href="anchors.html#types">Slot types</a></li>
+        <li><a href="anchors.html#handling">Anchor handling</a></li>
+        <li><a href="anchors.html#copy">The <code>_copy</code> machinery</a></li>
+        <li><a href="anchors.html#tag">The proof-graph row</a></li>
+        <li><a href="anchors.html#i29">Variable-port consistency</a></li>
+        <li><a href="anchors.html#bridge">Cross-anchor bridges</a></li>
+      </ul>
+    </li>
+    <li><a href="reformulation.html">Reformulation &amp; head switch</a>
+      <ul>
+        <li><a href="reformulation.html#why">Why reformulation</a></li>
+        <li><a href="reformulation.html#switch">Head switch — the walk</a></li>
+        <li><a href="reformulation.html#sites">Two call sites</a></li>
+        <li><a href="reformulation.html#mirror">Both directions proved</a></li>
+        <li><a href="reformulation.html#back">Back-reformulation</a></li>
+        <li><a href="reformulation.html#contra">Contradiction reconstruction</a></li>
+        <li><a href="reformulation.html#orthm">OR-theorem assembly</a></li>
+        <li><a href="reformulation.html#methods">The five method tags</a></li>
+      </ul>
+    </li>
+    <li><a href="auxiliary.html">CE filter &amp; compressor</a>
+      <ul>
+        <li><a href="auxiliary.html#engine">Same engine, two modes</a></li>
+        <li><a href="auxiliary.html#ce">Counterexample filter</a></li>
+        <li><a href="auxiliary.html#j">The j-copy trick</a></li>
+        <li><a href="auxiliary.html#comp">Compressor — throwaway trees</a></li>
+        <li><a href="auxiliary.html#p1">Phase 1 — dependency graphs</a></li>
+        <li><a href="auxiliary.html#p2">Phase 2 — greedy elimination</a></li>
+        <li><a href="auxiliary.html#out">What lands on disk</a></li>
+      </ul>
+    </li>
+  </ol>
+</nav>
+
+<main>
+<h1><span class="num">9 ·</span> Anchors &amp; types</h1>
+<p class="lede">An anchor is GL's way of saying “this run is about <i>this</i>
+mathematics, not arbitrary algebra.” It binds the symbols a theorem may use to
+specific axiomatic roles, and it carries types that the prover and verifier both
+read. This chapter is the user-side view of anchors, slot types, anchor
+handling, and the variable-port discipline that ties them together.</p>
+
+<div class="toc">
+  <strong>On this page</strong>
+  <ol>
+    <li><a href="#what">9.1 &nbsp;What an anchor is</a></li>
+    <li><a href="#three">9.2 &nbsp;The four current anchors</a></li>
+    <li><a href="#types">9.3 &nbsp;Slot types — the <code>(1)</code> / <code>P(1)</code> / <code>P(x(1)(1))</code> lattice</a></li>
+    <li><a href="#handling">9.4 &nbsp;Anchor handling — <code>prehandleAnchor</code></a></li>
+    <li><a href="#copy">9.5 &nbsp;The <code>_copy</code> machinery</a></li>
+    <li><a href="#tag">9.6 &nbsp;The <code>anchor handling</code> proof-graph row</a></li>
+    <li><a href="#i29">9.7 &nbsp;Variable-port type consistency — <b>I-29</b></a></li>
+    <li><a href="#bridge">9.8 &nbsp;Cross-anchor theorems &amp; the FTA bridge</a></li>
+    <li><a href="#fail">9.9 &nbsp;Failure modes</a></li>
+  </ol>
+</div>
+
+<!-- ===================== 9.1 ===================== -->
+<h2 id="what">9.1 &nbsp;What an anchor is</h2>
+<p>
+Every theorem in a GL run carries an <b>anchor atom</b> at the outermost position
+of its body. The atom names the axiomatic context the theorem speaks in: which
+symbols are constants of the theory, what relationship those symbols are
+committed to. Two theorems sharing the same anchor are about the same
+mathematics; a theorem without the anchor is meaningless — there is no fixed
+vocabulary.
+</p>
+<p>
+Architecturally, the anchor is a single atomic expression. The body of the
+anchor (defined in <code>files/definitions/Anchor*.mpl</code>) unfolds into
+the axiomatic claim. For Peano:
+</p>
+<figure>
+<svg viewBox="0 0 760 230" role="img" aria-label="The anchor atom and its body unfolding into Peano axioms">
+  <defs><marker id="a-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="34" y="40" width="280" height="60" rx="10" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="174" y="62" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">AnchorPeano[N,i0,s,+,*,i1]</text>
+  <text x="174" y="80" fill="#8B8FA5" font-size="10" text-anchor="middle">one atomic expression</text>
+  <text x="174" y="92" fill="#8B8FA5" font-size="10" text-anchor="middle">six slots</text>
+
+  <path d="M314 70 L356 70" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#a-ar)"/>
+  <text x="336" y="60" fill="#8B8FA5" font-size="9.5" text-anchor="middle">unfolds to</text>
+
+  <rect x="356" y="22" width="380" height="96" rx="10" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <text x="546" y="42" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">body — Anchor body in MPL</text>
+  <text x="546" y="64" fill="#F0E8DC" font-size="10.5" text-anchor="middle">(&amp;</text>
+  <text x="546" y="80" fill="#F0E8DC" font-size="10.5" text-anchor="middle">  (NaturalNumbers[N,i0,s,+,*])</text>
+  <text x="546" y="96" fill="#F0E8DC" font-size="10.5" text-anchor="middle">  (in2[i0,i1,s]))</text>
+  <text x="546" y="111" fill="#8B8FA5" font-size="9" text-anchor="middle">"(N,i0,s,+,*) satisfy Peano, and i1 is s(i0)"</text>
+
+  <rect x="34" y="142" width="702" height="68" rx="10" fill="#1C1F2B" stroke="#B084EB"/>
+  <text x="384" y="164" fill="#B084EB" font-size="11.5" font-weight="bold" text-anchor="middle">a theorem under the anchor</text>
+  <text x="384" y="184" fill="#F0E8DC" font-size="10.5" text-anchor="middle">(&gt;[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(&gt;[v1](in2[i0,v1,s])(in3[i0,i1,v1,+])))</text>
+  <text x="384" y="200" fill="#8B8FA5" font-size="9.5" text-anchor="middle">— for any N,i0,s,+,*,i1 satisfying the anchor, and any v1 with v1 = s(i0), we have i1 + v1 (Peano shape).</text>
+</svg>
+<figcaption><b>One atom carries the whole axiomatic context.</b> Everything
+inside the theorem is interpreted against the anchor's body.</figcaption>
+</figure>
+
+<div class="key">
+<b>Why this matters for the prover.</b> The prover never asserts the anchor
+body itself as a derived fact — the body is <i>given</i>, by the anchor's
+presence. What the prover <i>does</i> do is treat any expression citing an
+anchor slot the same way it treats a defined operator: a stable name with a
+known type. That treatment is what the rest of this chapter unpacks.
+</div>
+
+<!-- ===================== 9.2 ===================== -->
+<h2 id="three">9.2 &nbsp;The four current anchors</h2>
+<p>
+Four anchors are live in the codebase; a fifth (<code>AnchorFTA</code>) is
+specified per FTA-ladder rung. They differ in slot count and in which kinds of
+mathematics they commit to.
+</p>
+
+<table>
+<tr><th>Anchor</th><th>Slots</th><th>What it commits to</th></tr>
+<tr><td><code>AnchorPeano</code></td><td>6 — <code>[N, i0, s, +, *, i1]</code></td><td>(N, i0, s, +, *) satisfy the Peano axioms; i1 is the successor of i0. Drives the first batch.</td></tr>
+<tr><td><code>AnchorGauss</code></td><td>8 — <code>[N, i0, s, +, *, i1, i2, id]</code></td><td>Extends Peano with two more constants (i2, id). Drives the Gauss summation theorem and intermediate algebra.</td></tr>
+<tr><td><code>AnchorIncubator8</code></td><td>14 — <code>[N, i0, s, +, *, i1, i2, id, i3, i4, i5, i6, i7, i8]</code></td><td>The widest anchor (the original <code>AnchorIncubator</code>, renamed when the incubator anchor was split). Used by the wide incubator batches to produce ground-level facts. Many slots are unused in any individual theorem but available to the conjecturer's enumeration.</td></tr>
+<tr><td><code>AnchorIncubator3</code></td><td>9 — <code>[N, i0, s, +, *, i1, i2, id, i3]</code></td><td>The narrow incubator anchor (Gauss plus <code>i3</code>). Used by the AI3 incubator batches and the FTA-rung-1 batch, whose shorter successor chain generates only the i0–i3 facts it needs and so avoids saturating the int16 name-id cap.</td></tr>
+</table>
+
+<figure>
+<svg viewBox="0 0 760 260" role="img" aria-label="The four anchors as nested supersets of slots">
+  <rect x="40" y="40" width="660" height="200" rx="14" fill="#1C1F2B" stroke="#B084EB"/>
+  <text x="62" y="60" fill="#B084EB" font-size="11" font-weight="bold">AnchorIncubator8 — 14</text>
+
+  <rect x="58" y="74" width="500" height="148" rx="12" fill="#181B27" stroke="#5DCAA5"/>
+  <text x="78" y="92" fill="#5DCAA5" font-size="11" font-weight="bold">AnchorGauss — 8</text>
+
+  <rect x="76" y="104" width="350" height="106" rx="10" fill="#262938" stroke="#EF9F27" stroke-width="2"/>
+  <text x="96" y="122" fill="#EF9F27" font-size="11" font-weight="bold">AnchorPeano — 6</text>
+
+  <text x="251" y="148" fill="#F0E8DC" font-size="10" text-anchor="middle">N    i0    s    +    *    i1</text>
+
+  <text x="492" y="148" fill="#F0E8DC" font-size="10" text-anchor="middle">+ i2 · id</text>
+  <text x="492" y="166" fill="#8B8FA5" font-size="9" text-anchor="middle">algebraic extension</text>
+
+  <text x="618" y="148" fill="#F0E8DC" font-size="10" text-anchor="middle">+ i3 · i4 · i5 · i6 · i7 · i8</text>
+  <text x="618" y="182" fill="#8B8FA5" font-size="9" text-anchor="middle">AnchorIncubator3 adds i3 · AnchorIncubator8 adds i4–i8</text>
+
+  <text x="380" y="232" fill="#8B8FA5" font-size="11" text-anchor="middle">Nested supersets — a theorem proved under a narrower anchor is re-checkable under any wider one that shares its slots.</text>
+</svg>
+<figcaption><b>Nested contexts.</b> Peano ⊂ Gauss ⊂ AnchorIncubator3 ⊂ AnchorIncubator8 — the
+incubator anchor was split into a narrow 9-slot <code>AnchorIncubator3</code> and the
+renamed wide 14-slot <code>AnchorIncubator8</code>. The
+cross-anchor bridge theorem in §9.8 is how this nesting becomes useful at proof
+time.</figcaption>
+</figure>
+
+<h3>9.2.1 &nbsp;Free vs bound anchor slots</h3>
+<p>
+An anchor slot may appear in a theorem's outer <code>&gt;[…]</code> bound
+list or not. In the example body of §9.1, every anchor slot —
+<code>N, i0, s, +, *, i1</code> — is bound, in occurrence order: the theorem
+reads as “for any <i>N, i0, s, +, *, i1</i> satisfying the Peano axioms, the
+conclusion holds.” The conjecturer binds <b>every</b>
+non-<code>u_</code> variable, including every anchor argument, in the outer
+<code>&gt;[…]</code> at its left-most mention — there is no longer a
+“bind only the body-referenced subset” carve-out.
+</p>
+<div class="key">
+<b>History of the binding rule.</b> Two earlier shapes existed and were
+unified. <b>(a)</b> An even earlier version forbade anchor-slot names from
+appearing in <i>inner</i> <code>&gt;[…]</code> lists at all: binding them
+inner would have turned “for the Peano integers” into “for arbitrary
+structures.” <b>(b)</b> A later sparse rule had theorems bind only the
+anchor slots that occurred at least twice in the body, while every other
+implication bound all of its non-<code>u_</code> variables — two
+inconsistent shapes the verifier had to special-case. The 2026 inversion
+folded both into one rule: every non-<code>u_</code> variable, anchor or
+not, binds at its left-most premise, everywhere
+(<code>reconstructImplication</code> collapses to a thin forwarder around
+<code>reconstructImplicationFullBind</code>). The reformulation chapter
+(§10) covers the equivalent mechanic for non-anchor variables.
+</div>
+
+<!-- ===================== 9.3 ===================== -->
+<h2 id="types">9.3 &nbsp;Slot types — the <code>(1)</code> / <code>P(1)</code> / <code>P(x(1)(1))</code> lattice</h2>
+<p>
+Each anchor slot has a fixed <b>type</b> declared in
+<code>Config&lt;Tag&gt;.json</code>'s <code>definition_sets</code> table. The
+type is a string in a small, regular grammar.
+</p>
+<table>
+<tr><th>Type</th><th>Means</th><th>Anchor slots that have it</th></tr>
+<tr><td><code>(1)</code></td><td>An element of the base domain (a natural number)</td><td><code>i0, i1, i2, i3, …</code></td></tr>
+<tr><td><code>P(1)</code></td><td>A set over the base domain (a subset of ℕ)</td><td><code>N</code></td></tr>
+<tr><td><code>P(x(1)(1))</code></td><td>A relation over pairs, used as a unary function</td><td><code>s</code> (successor), <code>id</code> (identity)</td></tr>
+<tr><td><code>P(x(1)(x(1)(1)))</code></td><td>A relation over triples, used as a binary function</td><td><code>+</code>, <code>*</code></td></tr>
+</table>
+
+<figure>
+<svg viewBox="0 0 760 230" role="img" aria-label="The type lattice: base element, set, unary function, binary function">
+  <defs><marker id="ty-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="40" y="56" width="160" height="100" rx="10" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <text x="120" y="78" fill="#5DCAA5" font-size="11.5" font-weight="bold" text-anchor="middle">(1)</text>
+  <text x="120" y="98" fill="#F0E8DC" font-size="10" text-anchor="middle">a number</text>
+  <text x="120" y="118" fill="#8B8FA5" font-size="9.5" text-anchor="middle">i0, i1, i2, …</text>
+  <text x="120" y="138" fill="#8B8FA5" font-size="9.5" text-anchor="middle">also: v0, v1 in theorems</text>
+
+  <path d="M200 106 L236 106" stroke="#5DCAA5" stroke-width="1.4" marker-end="url(#ty-ar)"/>
+  <text x="218" y="98" fill="#8B8FA5" font-size="9.5" text-anchor="middle">∈</text>
+
+  <rect x="236" y="56" width="160" height="100" rx="10" fill="#1C1F2B" stroke="#B084EB"/>
+  <text x="316" y="78" fill="#B084EB" font-size="11.5" font-weight="bold" text-anchor="middle">P(1)</text>
+  <text x="316" y="98" fill="#F0E8DC" font-size="10" text-anchor="middle">a set of numbers</text>
+  <text x="316" y="118" fill="#8B8FA5" font-size="9.5" text-anchor="middle">N — the naturals</text>
+
+  <path d="M396 106 L432 106" stroke="#5DCAA5" stroke-width="1.4" marker-end="url(#ty-ar)"/>
+
+  <rect x="432" y="56" width="160" height="100" rx="10" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <text x="512" y="78" fill="#5DCAA5" font-size="11.5" font-weight="bold" text-anchor="middle">P(x(1)(1))</text>
+  <text x="512" y="98" fill="#F0E8DC" font-size="10" text-anchor="middle">unary fn</text>
+  <text x="512" y="118" fill="#8B8FA5" font-size="9.5" text-anchor="middle">s — successor</text>
+  <text x="512" y="138" fill="#8B8FA5" font-size="9.5" text-anchor="middle">id — identity</text>
+
+  <path d="M592 106 L628 106" stroke="#5DCAA5" stroke-width="1.4" marker-end="url(#ty-ar)"/>
+
+  <rect x="628" y="56" width="100" height="100" rx="10" fill="#1C1F2B" stroke="#EF9F27" stroke-width="2"/>
+  <text x="678" y="78" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">P(x(1)(x(1)(1)))</text>
+  <text x="678" y="98" fill="#F0E8DC" font-size="10" text-anchor="middle">binary fn</text>
+  <text x="678" y="118" fill="#8B8FA5" font-size="9.5" text-anchor="middle">+, *</text>
+
+  <text x="380" y="194" fill="#8B8FA5" font-size="11" text-anchor="middle">The conjecturer enumerates by type-matching: an `in3` cell whose output type is (1) wants its function in</text>
+  <text x="380" y="210" fill="#8B8FA5" font-size="11" text-anchor="middle">P(x(1)(x(1)(1))) — so it tries `+` and `*`, never `N` or `i0`. Typing is what keeps the search tractable.</text>
+</svg>
+<figcaption><b>A tiny lattice that does heavy lifting.</b> Four type
+constructors are enough for everything Peano and Gauss need; the FTA ladder
+extends the same lattice rather than replacing it.</figcaption>
+</figure>
+
+<h3>9.3.1 &nbsp;Reading the type grammar</h3>
+<p>
+The grammar is small and regular:
+</p>
+<ul class="inv">
+<li><b><code>(1)</code></b> — “element of the base domain.”</li>
+<li><b><code>P(T)</code></b> — “predicate / set over <code>T</code>.”</li>
+<li><b><code>x(T₁)(T₂)</code></b> — “tuple of <code>T₁, T₂</code>.”</li>
+</ul>
+<p>
+So <code>P(x(1)(x(1)(1)))</code> reads, right-to-left, “tuple of (number,
+tuple of (number, number)), set of” — i.e. a set of triples (a, (b, c)),
+which is exactly the shape of a binary function written as a ternary relation.
+GL avoids built-in “function” types because the prover's hash engine sees
+relations more naturally; the type system reflects that choice.
+</p>
+
+<!-- ===================== 9.4 ===================== -->
+<h2 id="handling">9.4 &nbsp;Anchor handling — <code>prehandleAnchor</code></h2>
+<p>
+Anchor handling is the runtime stage that resolves <i>raw bound-variable
+indices</i> (the conjecturer emits <code>1, 2, 3, …</code>) to <i>axed-anchor
+shapes</i> that the proof graph can render. It runs once, at the top of
+<code>analyzeExpressions</code>, before the first prove cycle.
+</p>
+
+<figure>
+<svg viewBox="0 0 760 230" role="img" aria-label="prehandleAnchor walks the LB tree once, registers axed-anchor shapes">
+  <defs><marker id="ha-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="40" y="20" width="200" height="40" rx="8" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="140" y="44" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">analyzeExpressions start</text>
+
+  <path d="M140 60 L140 88" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ha-ar)"/>
+  <rect x="40" y="92" width="200" height="46" rx="9" fill="#262938" stroke="#5DCAA5"/>
+  <text x="140" y="114" fill="#5DCAA5" font-size="11.5" font-weight="bold" text-anchor="middle">prehandleAnchor</text>
+  <text x="140" y="130" fill="#8B8FA5" font-size="9.5" text-anchor="middle">one pass over every LB</text>
+
+  <path d="M240 116 L290 116" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ha-ar)"/>
+
+  <rect x="290" y="84" width="436" height="124" rx="9" fill="#1C1F2B" stroke="#B084EB"/>
+  <text x="508" y="106" fill="#B084EB" font-size="11.5" font-weight="bold" text-anchor="middle">per non-anchor LB whose ancestry reaches Anchor*</text>
+  <g font-size="10" fill="#F0E8DC">
+    <text x="306" y="126" text-anchor="start">▸ compute the axed-anchor expression</text>
+    <text x="320" y="140" text-anchor="start">replace each <tspan fill="#5DCAA5">(1)</tspan>-typed slot whose original arg appears down the LB chain</text>
+    <text x="320" y="154" text-anchor="start">with a fresh <tspan fill="#EF9F27">x&lt;i&gt;</tspan> name</text>
+    <text x="306" y="172" text-anchor="start">▸ only replace slot vars that appear in the trace (avoid hallucinating)</text>
+    <text x="306" y="186" text-anchor="start">▸ register the axed form as a statement: + intKnownStatements, etc.</text>
+    <text x="306" y="200" text-anchor="start">▸ write an <tspan fill="#EF9F27">anchor handling</tspan> origin entry to the local map</text>
+  </g>
+
+  <path d="M140 138 L140 168" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ha-ar)"/>
+  <rect x="40" y="172" width="200" height="36" rx="8" fill="#262938" stroke="#5DCAA5"/>
+  <text x="140" y="194" fill="#F0E8DC" font-size="10.5" text-anchor="middle">main prove loop starts</text>
+</svg>
+<figcaption><b>One pass, before proving.</b> By the time the first cycle runs,
+every LB that needs the axed-anchor view of itself has it as a statement and
+as a recorded origin.</figcaption>
+</figure>
+
+<h3>9.4.1 &nbsp;The trace-variable filter</h3>
+<p>
+Not every <code>(1)</code>-typed slot of an ancestor anchor gets axed at every
+descendant LB — only those whose original argument <i>actually appears</i> in
+the chain of LB <code>exprKey</code>s between the anchor LB and the current
+one. The function collects the chain's variables into a
+<code>traceVariables</code> set as it walks upward, and the slot-replacement
+step skips any slot whose original argument isn't in that set. The effect is
+that the axed expression is minimally specialised — adding fresh
+<code>x</code>-names only for slots the current LB actually mentions.
+</p>
+
+<h3>9.4.2 &nbsp;The recursion-LB special case</h3>
+<p>
+A recursion LB (an induction-hypothesis stub) gets an <i>early return</i>:
+<code>prehandleAnchor</code> does <i>not</i> register the axed-anchor
+expression as a statement on a recursion stub. Reason: an induction hypothesis
+must not see the axed variables as derivable facts; the induction would over-
+or under-fire. <b>But the history entry must still travel.</b> Without an
+<code>exprOriginMap</code> entry, an implication firing inside the recursion
+LB and citing the axed form as an antecedent leaves the chapter walker with
+no origin to chain to — <code>buildStack</code> asserts.
+</p>
+<p>
+The mechanism: <code>prehandleAnchor</code> records the history line with a
+single <code>addOriginEncoded</code> to the local map on the producing LB. The
+standard cycle-boundary mail propagation carries that history line into
+descendants — including the recursion stub — so the recursion stub ends up with
+the origin recorded but the statement never installed.
+</p>
+
+<!-- ===================== 9.5 ===================== -->
+<h2 id="copy">9.5 &nbsp;The <code>_copy</code> machinery</h2>
+<p>
+When the prover needs a <i>fresh distinct</i> copy of an integer anchor slot — distinct
+in identity but constrained to equal the original — it mints an <code>x</code>-
+prefixed name during proof. <code>x5</code> means “a fresh copy of <code>i1</code>.”
+Stage&nbsp;6 (the proof-graph processor, <code>process_proof_graphs.py</code>)
+renames <code>x&lt;N&gt;</code> to <code>&lt;digit&gt;_copy</code> where the
+digit is the integer slot's own index (<code>i0</code>→<code>0</code>, <code>i1</code>→<code>1</code>). Two copies of the same slot become
+<code>0_copy</code> and <code>0_copy_copy</code> (no observed three-level
+nesting in practice).
+</p>
+
+<figure>
+<svg viewBox="0 0 760 200" role="img" aria-label="The x-prefix to _copy rename pipeline">
+  <defs><marker id="cp-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="20" y="40" width="220" height="120" rx="10" fill="#1C1F2B" stroke="#EF9F27"/>
+  <text x="130" y="62" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">prover-side</text>
+  <text x="130" y="84" fill="#F0E8DC" font-size="10.5" text-anchor="middle">mints x5 as a fresh copy</text>
+  <text x="130" y="104" fill="#F0E8DC" font-size="10.5" text-anchor="middle">of i1 (an integer slot)</text>
+  <text x="130" y="124" fill="#8B8FA5" font-size="9.5" text-anchor="middle">raw axed form:</text>
+  <text x="130" y="142" fill="#F0E8DC" font-size="10" text-anchor="middle">(AnchorPeano[N,x1,x2,x3,x4,x5])</text>
+
+  <path d="M240 100 L270 100" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#cp-ar)"/>
+
+  <rect x="270" y="40" width="220" height="120" rx="10" fill="#1C1F2B" stroke="#B084EB"/>
+  <text x="380" y="62" fill="#B084EB" font-size="11.5" font-weight="bold" text-anchor="middle">stage 6 — Priority 2.5</text>
+  <text x="380" y="84" fill="#F0E8DC" font-size="10.5" text-anchor="middle">rewrites x&lt;i&gt; → slot_copy</text>
+  <text x="380" y="104" fill="#8B8FA5" font-size="10" text-anchor="middle">x1 → 0_copy</text>
+  <text x="380" y="120" fill="#8B8FA5" font-size="10" text-anchor="middle">x5 → 1_copy</text>
+  <text x="380" y="136" fill="#8B8FA5" font-size="10" text-anchor="middle">…</text>
+
+  <path d="M490 100 L520 100" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#cp-ar)"/>
+
+  <rect x="520" y="40" width="220" height="120" rx="10" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <text x="630" y="62" fill="#5DCAA5" font-size="11.5" font-weight="bold" text-anchor="middle">chapter row</text>
+  <text x="630" y="84" fill="#F0E8DC" font-size="10.5" text-anchor="middle">human-readable</text>
+  <text x="630" y="104" fill="#F0E8DC" font-size="10" text-anchor="middle">(AnchorPeano[N,</text>
+  <text x="630" y="120" fill="#F0E8DC" font-size="10" text-anchor="middle">0_copy,s,+,*,1_copy])</text>
+  <text x="630" y="140" fill="#8B8FA5" font-size="9.5" text-anchor="middle">verifier reads this form</text>
+</svg>
+<figcaption><b>Three layers, one substitution chain.</b> The raw form is
+compact; the human form is readable; both describe the same fresh-copy
+event.</figcaption>
+</figure>
+
+<!-- ===================== 9.6 ===================== -->
+<h2 id="tag">9.6 &nbsp;The <code>anchor handling</code> proof-graph row</h2>
+<p>
+Each chapter contains <b>at most one</b> <code>anchor handling</code> row.
+The row is the bridge between the original anchor expression (with its
+declared slot names) and the axed form (with <code>_copy</code> rewrites).
+Example:
+</p>
+<pre><code>(AnchorPeano[N,0_copy,s,+,*,i1])    main    anchor handling    (AnchorPeano[N,i0,s,+,*,i1])    main</code></pre>
+<p>
+Read: the expression on the left (axed: <code>0_copy</code> in slot 2, i0's slot) was
+derived by anchor handling from the original (right). The verifier's
+<code>check_anchor_handling</code> validates three things:
+</p>
+<ul class="inv">
+<li><b>Shape.</b> Both sides must be anchor atoms whose head matches.</li>
+<li><b>Type consistency.</b> Every substitution must respect the slot's
+declared type (see §9.3 / §9.7).</li>
+<li><b>Uniqueness.</b> At most one anchor-handling row per chapter.</li>
+</ul>
+<p>
+Following an <code>anchor handling</code> row, zero or more
+<code>anchor handling trace</code> rows record one step of the <code>_copy</code>
+substitution chain each. The verifier counts these but does not deeply
+validate them — they exist for human auditability.
+</p>
+
+<!-- ===================== 9.7 ===================== -->
+<h2 id="i29">9.7 &nbsp;Variable-port type consistency — <b>I-29</b></h2>
+<p>
+The hash engine wires expressions together by argument position. Within a
+single chapter-row expression, a variable that appears in argument slot 2 of
+<code>in3</code> and in argument slot 1 of <code>in2</code> is the same
+variable: the two operator atoms share that <i>port</i>. <b>I-29</b> says that
+every such shared port must carry the <i>same declared type</i> everywhere it
+appears in that expression. The scope is exactly that one expression — two
+same-named variables in alpha-distinct <code>&gt;[…]</code> scopes are
+independent ports, and I-29 never reaches across that boundary.
+</p>
+
+<figure>
+<svg viewBox="0 0 760 240" role="img" aria-label="A variable's ports across rows must all carry the same type">
+  <defs><marker id="vp-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#B084EB"/></marker></defs>
+  <text x="380" y="22" fill="#5DCAA5" font-size="12.5" font-weight="bold" text-anchor="middle">variable v1 — its ports within one expression</text>
+
+  <rect x="22" y="50" width="340" height="78" rx="10" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <text x="192" y="72" fill="#5DCAA5" font-size="11.5" font-weight="bold" text-anchor="middle">atom 1</text>
+  <text x="192" y="92" fill="#F0E8DC" font-size="10.5" text-anchor="middle">(in2[i0, <tspan fill="#EF9F27">v1</tspan>, s])</text>
+  <text x="192" y="112" fill="#8B8FA5" font-size="9.5" text-anchor="middle">port: in2 slot 1 — type <tspan fill="#5DCAA5">(1)</tspan></text>
+
+  <rect x="398" y="50" width="340" height="78" rx="10" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <text x="568" y="72" fill="#5DCAA5" font-size="11.5" font-weight="bold" text-anchor="middle">atom 2</text>
+  <text x="568" y="92" fill="#F0E8DC" font-size="10.5" text-anchor="middle">(in3[i0, i1, <tspan fill="#EF9F27">v1</tspan>, +])</text>
+  <text x="568" y="112" fill="#8B8FA5" font-size="9.5" text-anchor="middle">port: in3 slot 2 — type <tspan fill="#5DCAA5">(1)</tspan></text>
+
+  <path d="M192 128 L380 162" stroke="#B084EB" stroke-width="1.5" marker-end="url(#vp-ar)"/>
+  <path d="M568 128 L380 162" stroke="#B084EB" stroke-width="1.5" marker-end="url(#vp-ar)"/>
+
+  <rect x="222" y="166" width="316" height="50" rx="9" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="380" y="188" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">both ports must carry the same type</text>
+  <text x="380" y="206" fill="#8B8FA5" font-size="9.5" text-anchor="middle">a clash = a verifier failure in `definition set consistency`</text>
+
+  <text x="380" y="232" fill="#8B8FA5" font-size="10.5" text-anchor="middle">If one atom said `(1)` and the other `P(1)` for the same v1, the operator definitions in the config disagree.</text>
+</svg>
+<figcaption><b>Type-consistency is the static check that wires the dynamic
+hash engine to a sound type system.</b> Without it, the engine could
+silently fire a rule on a value of the wrong category.</figcaption>
+</figure>
+
+<div class="key">
+<b>Why I-29 was added.</b> Before D-41, the verifier did not cross-check type
+labels at port boundaries. A misconfigured operator (an <code>in3</code>
+declaration saying its second slot is <code>P(1)</code>, while the rest of
+the codebase treats it as <code>(1)</code>) would produce technically-valid
+chapter rows whose underlying semantics had silently shifted. I-29 is the
+verifier-side check that makes the discrepancy observable. The producer side
+(the operator declarations and the conjecturer's enumeration filters) is not
+yet self-validating; the in-flight check is the load-bearing safeguard.
+</div>
+
+<h3>9.7.1 &nbsp;Where the types come from</h3>
+<p>
+The single source of truth is <code>Config&lt;Tag&gt;.json</code>'s
+<code>definition_sets</code> field. Every operator declaration in
+<code>files/definitions/</code> must agree with it; every chapter row inherits
+its port types from it via the operator's signature; every variable inherits
+its type from the ports it touches. The verifier's <code>definition set
+consistency</code> meta-check is the catch-all.
+</p>
+
+<!-- ===================== 9.8 ===================== -->
+<h2 id="bridge">9.8 &nbsp;Cross-anchor theorems &amp; the FTA bridge</h2>
+<p>
+A theorem can reference <i>two</i> anchors. Specifically, the cross-anchor
+bridge theorem
+</p>
+<pre><code>(&gt;[N,i0,s,+,*,i1]
+    (AnchorGauss[N,i0,s,+,*,i1,i2,id])
+    (AnchorPeano[N,i0,s,+,*,i1]))</code></pre>
+<p>
+expresses the trivial-but-load-bearing claim “any structure satisfying the
+Gauss anchor also satisfies the Peano anchor” (via the shared first six
+slots). The bridge lets a Gauss-batch proof cite a Peano-batch theorem as a
+given: the Peano theorem's premise <code>AnchorPeano</code> is discharged by
+the bridge from the Gauss context.
+</p>
+<p>
+This bridge is an externally-supplied <code>direct</code> theorem, not
+conjecturer output, so its outer binder need not follow the full-bind rule of
+§9.2.1 — <code>i2</code> and <code>id</code> stay free even though they appear
+in the <code>AnchorGauss</code> premise.
+</p>
+
+<figure>
+<svg viewBox="0 0 760 200" role="img" aria-label="Cross-anchor bridge theorem connecting Peano and Gauss batches">
+  <defs><marker id="cb-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="24" y="32" width="200" height="60" rx="10" fill="#262938" stroke="#5DCAA5"/>
+  <text x="124" y="56" fill="#5DCAA5" font-size="11.5" font-weight="bold" text-anchor="middle">Peano batch</text>
+  <text x="124" y="76" fill="#8B8FA5" font-size="10" text-anchor="middle">∀ Peano structures: commute, …</text>
+
+  <rect x="266" y="22" width="228" height="80" rx="10" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="380" y="48" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">bridge — direct theorem</text>
+  <text x="380" y="68" fill="#F0E8DC" font-size="10" text-anchor="middle">Gauss ⊨ AnchorGauss</text>
+  <text x="380" y="84" fill="#F0E8DC" font-size="10" text-anchor="middle">→ Gauss ⊨ AnchorPeano</text>
+
+  <rect x="536" y="32" width="200" height="60" rx="10" fill="#262938" stroke="#5DCAA5"/>
+  <text x="636" y="56" fill="#5DCAA5" font-size="11.5" font-weight="bold" text-anchor="middle">Gauss batch</text>
+  <text x="636" y="76" fill="#8B8FA5" font-size="10" text-anchor="middle">sum-zero, Σi, …</text>
+
+  <path d="M224 62 L262 62" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#cb-ar)"/>
+  <path d="M494 62 L532 62" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#cb-ar)"/>
+
+  <text x="380" y="138" fill="#8B8FA5" font-size="11" text-anchor="middle">A Gauss proof citing a Peano theorem discharges the AnchorPeano premise via the bridge.</text>
+  <text x="380" y="158" fill="#8B8FA5" font-size="11" text-anchor="middle">The FTA-ladder rungs are built the same way — each rung introduces a new anchor + bridge.</text>
+</svg>
+<figcaption><b>Bridges compose batches.</b> Without the bridge theorem, the
+Gauss batch could not cite Peano theorems at all — each batch would be a
+sealed universe.</figcaption>
+</figure>
+
+<h3>9.8.1 &nbsp;Anchor vs scope — not the same thing</h3>
+<p>
+A common confusion (worth stating sharply): the <i>anchor</i> is a content
+commitment (which mathematics); the <i>scope</i> (a.k.a. <code>validityName</code>)
+is a provenance marker (where a statement is asserted). A theorem under
+<code>AnchorGauss</code> is still proved at <code>v=main</code> by default —
+the anchor does not open a scope. Scopes open for hypothetical reasoning
+(<a href="substrate.html#scope">§3.4</a>); anchors fix axiomatic content.
+</p>
+
+<!-- ===================== 9.9 ===================== -->
+<h2 id="fail">9.9 &nbsp;Failure modes</h2>
+<dl class="terms">
+<dt>“buildStack asserts at validity=main, exprKey=(in2[rec0,7,3])”</dt>
+<dd>Most often: an axed-anchor expression reached a recursion LB without the
+history entry propagating. The <code>addOriginEncoded</code> write in
+<code>prehandleAnchor</code>, carried to the stub by mail, is the fix; if the
+history line never reaches the stub, the recursion chain breaks. <em>Check</em>:
+the producing non-recursion LB records the origin in its local map.</dd>
+
+<dt>“Verifier reports anchor handling row count = 2 in chapter X”</dt>
+<dd>The chapter has two distinct anchor-handling expressions — almost always
+a bug in stage 6's <code>Priority 2.5</code> rename or in the prover's
+<code>prehandleAnchor</code>. <em>Check</em>: every chapter has at most one
+anchor-handling target.</dd>
+
+<dt>“A theorem under <code>AnchorGauss</code> is silently treated as
+<code>AnchorPeano</code>”</dt>
+<dd>Anchor detection in the verifier and stage 6 is a substring search for
+<code>"Anchor"</code>. If an unrelated string happened to contain the
+substring, the dispatcher misroutes. <em>Check</em>: no MPL definition
+introduces an operator name containing <code>Anchor</code> outside the
+designated anchor atoms.</dd>
+
+<dt>“Adding a new anchor (FTA) — one of the hardcoded sites missed”</dt>
+<dd>Anchor slot count is implicit across about a dozen places: conjecturer
+filters, verifier logic, rename priorities, stage-6 anchor rename, several
+prover sites. There is no single source of truth. <em>Check</em>: the recipe
+in the project's anchor-change reference; every site that hardcodes the count
+must change in the same commit.</dd>
+
+<dt>“Type mismatch silently passes”</dt>
+<dd>If the operator definition file says <code>(1)</code> in a slot the
+config says <code>P(1)</code>, and a chapter row uses the variable there, the
+verifier's <code>definition set consistency</code> meta-check should fail —
+but only checks the in-flight artefact, not the producer side.
+<em>Check</em>: <code>Config&lt;Tag&gt;.json</code>'s
+<code>definition_sets</code> table against every operator's slot signature.</dd>
+</dl>
+
+<div class="note">
+The next chapter is about a class of mechanism the prover uses to <i>get more
+mileage</i> out of each proved theorem — head switching, two-directional proof,
+back-reformulation, and the contradiction-theorem reconstruction. All four
+rest on the canonicality this chapter and Chapter&nbsp;8 establish.
+</div>
+
+<div class="pager">
+  <a href="compilation.html">&larr; 8 · Compilation &amp; names</a>
+  <a href="reformulation.html">10 · Reformulation &amp; head switch &rarr;</a>
+</div>
+
+<div class="foot">
+<b>License.</b> Generative Logic prover reference. © 2025-2026 Generative Logic UG
+(haftungsbeschränkt). Dual-licensed under the <b>GNU Affero General Public License
+v3 or later</b> and a <b>commercial license</b>; this document and the proof
+artefacts it describes inherit the same terms — commercial terms at
+<a href="https://generative-logic.com/license">generative-logic.com/license</a>.
+</div>
+
+</main>
+</body>
+</html>

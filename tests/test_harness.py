@@ -61,6 +61,7 @@ only the per-test mutable fields (``tag_counters``, ``goal_reached``,
 
 import importlib
 import os
+import re
 import sys
 from typing import Callable, List, Optional, Sequence, Tuple
 
@@ -105,7 +106,7 @@ from verifier import (  # noqa: E402
     check_reformulation_for_integration_empty,
     check_expansion_for_integration, check_premise_element,
     check_validity_name, check_anchor_handling,
-    check_mirrored_from, check_reformulated_from,
+    check_reformulated_from,
     check_variable_copy, check_externally_provided_theorem,
     check_incubator_back_reformulation, check_equalize_variable,
     check_contradiction, check_or_disintegration,
@@ -114,6 +115,7 @@ from verifier import (  # noqa: E402
     check_defset_consistency,
     load_gl_binaries, load_output_indices, load_input_indices,
     load_definition_sets, build_resolved_defsets_per_tag,
+    disintegrate_implication_full,
 )
 
 
@@ -142,10 +144,18 @@ _STATE_PROTOTYPE: Optional[VerifierState] = None
 
 def _build_state_prototype() -> VerifierState:
     """Load every read-only fixture field once. Subsequent fixture calls
-    share these by reference (test convention: do not mutate)."""
+    share these by reference (test convention: do not mutate).
+
+    All inputs come from the test-owned, frozen ``tests/fixtures/`` tree — a
+    minimal independent copy of the binaries + config, NOT the live
+    ``files/GL_binaries`` / ``files/config`` data the pipeline regenerates.
+    This makes the suite standalone: it runs before any pipeline work and is
+    immune to a CLEAN_RUN wipe of ``files/GL_binaries/``. To add coverage for
+    a new operator, extend the fixture under ``tests/fixtures/``."""
     proto = VerifierState()
-    config_dir = os.path.join(_REPO_ROOT, "files", "config")
-    binaries_dir = os.path.join(_REPO_ROOT, "files", "GL_binaries")
+    fixtures_dir = os.path.join(_TESTS_DIR, "fixtures")
+    config_dir = fixtures_dir                       # tests/fixtures/ConfigVisu.json
+    binaries_dir = os.path.join(fixtures_dir, "GL_binaries")
     proto.gl_binaries = load_gl_binaries(binaries_dir)
     proto.output_indices = load_output_indices(config_dir)
     proto.input_indices = load_input_indices(config_dir)
@@ -174,23 +184,37 @@ def make_state_minimal() -> VerifierState:
 
 
 def make_state_with_binaries(tags: Sequence[str] = ("Peano",)) -> VerifierState:
-    """Fresh state with every loader bootstrapped. Read-only fields share by
-    reference with the prototype; mutable fields (counters, global registries,
-    current_*) are fresh per call. The first tag in ``tags`` (if present in
-    ``gl_binaries``) sets ``current_gl_binary`` + ``current_resolved_defsets``;
-    that matches verify_chapter's anchor-substring resolution for tests that
-    bypass the dispatcher."""
+    """Fresh state with every loader bootstrapped from ``tests/fixtures/``.
+    Read-only fields share by reference with the prototype; mutable fields
+    (counters, global registries, current_*) are fresh per call. The first
+    tag in ``tags`` sets ``current_gl_binary`` + ``current_resolved_defsets``,
+    matching verify_chapter's anchor-substring resolution for tests that
+    bypass the dispatcher.
+
+    Every requested tag must exist in the frozen fixture (a fixed, complete
+    copy — not a run-dependent subset), so a missing tag is a fixture-setup
+    bug and asserts rather than silently aliasing to another batch. A test
+    that needs a new tag adds it under ``tests/fixtures/GL_binaries/``. The
+    per-tag binary dict is shared by reference until a test does the standard
+    ``dict(state.gl_binaries[t])`` deep-copy-before-mutate dance, so the proto
+    is never polluted.
+    """
     proto = _get_prototype()
     state = VerifierState()
-    state.gl_binaries = proto.gl_binaries
+    state.gl_binaries = dict(proto.gl_binaries)
     state.output_indices = proto.output_indices
     state.input_indices = proto.input_indices
     state.definition_sets = proto.definition_sets
-    state.resolved_defsets_per_tag = proto.resolved_defsets_per_tag
+    state.resolved_defsets_per_tag = dict(proto.resolved_defsets_per_tag)
     state.resolved_defsets_atomic_only = proto.resolved_defsets_atomic_only
-    if tags and tags[0] in state.gl_binaries:
-        state.current_gl_binary = state.gl_binaries[tags[0]]
-        state.current_resolved_defsets = state.resolved_defsets_per_tag.get(tags[0])
+    assert tags, "make_state_with_binaries requires at least one tag"
+    for t in tags:
+        assert t in state.gl_binaries, (
+            f"fixture GL_binaries has no tag {t!r}; add the operators this "
+            f"test needs under tests/fixtures/GL_binaries/GL_binary_{t}.json"
+        )
+    state.current_gl_binary = state.gl_binaries[tags[0]]
+    state.current_resolved_defsets = state.resolved_defsets_per_tag.get(tags[0])
     if state.current_resolved_defsets is None:
         state.current_resolved_defsets = state.resolved_defsets_atomic_only
     return state
@@ -241,6 +265,11 @@ def set_chapter_context(state: VerifierState,
     that bypass ``verify_chapter`` use this so checkers that read
     ``state.current_chapter_thm`` / ``state.current_gl_binary`` /
     ``state.current_resolved_defsets`` see the right values.
+
+    Premise-anchor binding: the binary is selected from the
+    ``Anchor<Tag>`` substring in the theorem's outer-implication premise
+    (the world the proof's assumptions live in), not by iteration over
+    ``gl_binaries``. Order-independent by construction.
     """
     state.current_chapter_thm = thm
     state.current_chapter_type = chapter_type
@@ -248,17 +277,16 @@ def set_chapter_context(state: VerifierState,
     state.current_resolved_defsets = None
     if thm is not None:
         thm_expr = thm[0]
-        if "AnchorIncubator" in thm_expr:
-            tag_iter = ((t, b) for t, b in state.gl_binaries.items()
-                        if t.startswith("Incubator"))
-        else:
-            tag_iter = state.gl_binaries.items()
-        for tag, binary in tag_iter:
-            if f'Anchor{tag}' in thm_expr:
+        premises, _head = disintegrate_implication_full(thm_expr)
+        premise_expr = premises[0] if premises else thm_expr  # naked-anchor fallback
+        m = re.search(r'Anchor([A-Za-z0-9_]+)', premise_expr)
+        if m is not None:
+            tag = m.group(1)
+            binary = state.gl_binaries.get(tag)
+            if binary is not None:
                 state.current_gl_binary = binary
                 state.current_resolved_defsets = \
                     state.resolved_defsets_per_tag.get(tag)
-                break
     if state.current_resolved_defsets is None:
         state.current_resolved_defsets = state.resolved_defsets_atomic_only
 

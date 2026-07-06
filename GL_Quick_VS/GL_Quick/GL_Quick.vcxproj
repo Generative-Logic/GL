@@ -68,6 +68,7 @@
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <StackReserveSize>16777216</StackReserveSize>
       <AdditionalLibraryDirectories>$(ProjectDir)\..\..\vcpkg_installed\x64-windows\debug\lib</AdditionalLibraryDirectories>
       <AdditionalDependencies>mimalloc.dll.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
@@ -95,6 +96,7 @@
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <StackReserveSize>16777216</StackReserveSize>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>DebugFastLink</GenerateDebugInformation>
@@ -112,19 +114,78 @@
     <ClCompile Include="src\compressor.cpp" />
     <ClCompile Include="src\run_modes.cpp" />
     <ClCompile Include="src\conjecturer.cpp" />
+    <ClCompile Include="src\infra\hashburst_dump.cpp" />
+    <ClCompile Include="src\infra\rt_tracker.cpp" />
+    <ClCompile Include="src\memory_infra\global_memory_manager.cpp" />
+    <ClCompile Include="src\memory_infra\lb_arena.cpp" />
+    <ClCompile Include="src\memory_infra\lb_store.cpp" />
+    <ClCompile Include="src\memory_infra\lb_deload.cpp" />
+    <ClCompile Include="src\memory_infra\steward.cpp" />
+    <ClCompile Include="src\memory_infra\scratch_arena.cpp" />
+    <ClCompile Include="src\memory_infra\sealed_pages.cpp" />
     <ClCompile Include="src\tests\test_harness.cpp" />
     <ClCompile Include="src\tests\test_memory.cpp" />
+    <ClCompile Include="src\tests\test_mail_log.cpp" />
     <ClCompile Include="src\tests\test_compiler.cpp" />
     <ClCompile Include="src\tests\test_filter.cpp" />
     <ClCompile Include="src\tests\test_compressor.cpp" />
     <ClCompile Include="src\tests\test_conjecturer.cpp" />
+    <ClCompile Include="src\tests\test_equi_reshuffle.cpp" />
+    <ClCompile Include="src\tests\test_admission_reshuffle.cpp" />
+    <ClCompile Include="src\tests\test_admission_integration_reshuffle.cpp" />
+    <ClCompile Include="src\tests\test_lb_split.cpp" />
+    <ClCompile Include="src\tests\test_static_memory.cpp" />
+    <ClCompile Include="src\tests\test_lb_arena.cpp" />
+    <ClCompile Include="src\tests\test_arena_stack.cpp" />
+    <ClCompile Include="src\tests\test_arena_vector.cpp" />
+    <ClCompile Include="src\tests\test_paged_vector.cpp" />
+    <ClCompile Include="src\tests\test_lb_deload.cpp" />
+    <ClCompile Include="src\tests\test_steward.cpp" />
+    <ClCompile Include="src\tests\test_scratch_arena.cpp" />
+    <ClCompile Include="src\tests\test_scratch_string.cpp" />
+    <ClCompile Include="src\tests\test_sealed_pages.cpp" />
+    <ClCompile Include="src\tests\test_str_ops.cpp" />
+    <ClCompile Include="src\tests\test_cold_string_table.cpp" />
+    <ClCompile Include="src\tests\test_cold_hash_map.cpp" />
+    <ClCompile Include="src\tests\test_typed_cold_map.cpp" />
+    <ClCompile Include="src\tests\test_cold_mail.cpp" />
+    <ClCompile Include="src\tests\test_lb_store.cpp" />
+    <ClCompile Include="src\tests\test_simple_map_store.cpp" />
+    <ClCompile Include="src\tests\test_reconstruct_implication.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\compiler.hpp" />
     <ClInclude Include="src\memory.hpp" />
+    <ClInclude Include="src\mail_log.hpp" />
+    <ClInclude Include="src\simple_map_store.hpp" />
     <ClInclude Include="src\prover.hpp" />
     <ClInclude Include="src\filter.hpp" />
     <ClInclude Include="src\conjecturer.hpp" />
+    <ClInclude Include="src\infra\hashburst_dump.hpp" />
+    <ClInclude Include="src\infra\rt_tracker.hpp" />
+    <ClInclude Include="src\memory_infra\dirty_state.hpp" />
+    <ClInclude Include="src\memory_infra\global_memory_manager.hpp" />
+    <ClInclude Include="src\memory_infra\lb_arena.hpp" />
+    <ClInclude Include="src\memory_infra\arena_stack.hpp" />
+    <ClInclude Include="src\memory_infra\lb_store.hpp" />
+    <ClInclude Include="src\memory_infra\arena_vector.hpp" />
+    <ClInclude Include="src\memory_infra\paged_vector.hpp" />
+    <ClInclude Include="src\memory_infra\int_encoded_expr.hpp" />
+    <ClInclude Include="src\memory_infra\lb_memory.hpp" />
+    <ClInclude Include="src\memory_infra\lb_deload.hpp" />
+    <ClInclude Include="src\memory_infra\steward.hpp" />
+    <ClInclude Include="src\memory_infra\scratch_arena.hpp" />
+    <ClInclude Include="src\memory_infra\scratch_string.hpp" />
+    <ClInclude Include="src\memory_infra\sealed_pages.hpp" />
+    <ClInclude Include="src\memory_infra\str_ops.hpp" />
+    <ClInclude Include="src\memory_infra\cold_hash_map.hpp" />
+    <ClInclude Include="src\memory_infra\typed_cold_map.hpp" />
+    <ClInclude Include="src\memory_infra\hash_memory.hpp" />
+    <ClInclude Include="src\memory_infra\mail_types.hpp" />
+    <ClInclude Include="src\memory_infra\cold_mail.hpp" />
+    <ClInclude Include="src\memory_infra\paged_hash_index.hpp" />
+    <ClInclude Include="src\memory_infra\ptr_directory.hpp" />
+    <ClInclude Include="src\memory_infra\cold_string_table.hpp" />
     <ClInclude Include="src\json.hpp" />
     <ClInclude Include="src\parameters.hpp" />
     <ClInclude Include="src\compressor.hpp" />

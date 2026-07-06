@@ -1,0 +1,574 @@
+<!--
+Generative Logic: A deterministic reasoning and knowledge generation engine.
+Copyright (C) 2025-2026 Generative Logic UG (haftungsbeschränkt).
+Dual-licensed under the GNU Affero General Public License v3 or later
+and a commercial license — see https://generative-logic.com/license.
+
+User-oriented SwDD — Chapter 7: Provenance (reference-level).
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GL Prover User SwDD — 7 · Provenance</title>
+<meta name="copyright" content="© 2025-2026 Generative Logic UG">
+<meta name="license" content="AGPL-3.0-or-later">
+<meta name="robots" content="noindex, nofollow, noai, noimageai">
+<link rel="stylesheet" href="assets/swdd.css">
+</head>
+<body>
+
+<nav id="side">
+  <div class="brand">GL · <span>User SwDD</span></div>
+  <div class="tag">The prover subsystem — reference concepts &amp; diagrams</div>
+  <ol>
+    <li><a href="index.html">Overview</a>
+      <ul>
+        <li><a href="index.html#what">What GL is</a></li>
+        <li><a href="index.html#pipeline">The pipeline</a></li>
+        <li><a href="index.html#deductive">Deductive neighbourhood</a></li>
+        <li><a href="index.html#artefacts">Artefacts on disk</a></li>
+        <li><a href="index.html#read">How to read this</a></li>
+        <li><a href="index.html#glossary">Quick glossary</a></li>
+        <li><a href="index.html#bounds">What is &amp; isn't in this doc</a></li>
+      </ul>
+    </li>
+    <li><a href="prover.html">The prover at a glance</a>
+      <ul>
+        <li><a href="prover.html#life">Life of a run</a></li>
+        <li><a href="prover.html#cycles">Cycles</a></li>
+        <li><a href="prover.html#enter">How a theorem enters</a></li>
+        <li><a href="prover.html#status">Status modes</a></li>
+        <li><a href="prover.html#deactivate">Deactivation cascade</a></li>
+        <li><a href="prover.html#dump">The hashburst dump</a></li>
+      </ul>
+    </li>
+    <li><a href="substrate.html">The substrate</a>
+      <ul>
+        <li><a href="substrate.html#lb">Logic blocks</a></li>
+        <li><a href="substrate.html#hash">Hash engine</a></li>
+        <li><a href="substrate.html#mail">Mail</a></li>
+        <li><a href="substrate.html#scope">Scope &amp; validity</a></li>
+        <li><a href="substrate.html#compile">Compilation</a></li>
+        <li><a href="substrate.html#delta">Delta machinery</a></li>
+        <li><a href="substrate.html#wipe">Subtree wipe</a></li>
+      </ul>
+    </li>
+    <li><a href="mechanisms.html">Proof mechanisms</a>
+      <ul>
+        <li><a href="mechanisms.html#disint">Disintegration</a></li>
+        <li><a href="mechanisms.html#admit">Admission, rejection &amp; equi-classes</a></li>
+        <li><a href="mechanisms.html#integ">Integration</a></li>
+        <li><a href="mechanisms.html#branch">Branching &amp; contradiction</a></li>
+        <li><a href="mechanisms.html#induct">Induction</a></li>
+        <li><a href="mechanisms.html#fan5">5-batch fan-out</a></li>
+        <li><a href="mechanisms.html#cascade">Pending-rejection cascade</a></li>
+      </ul>
+    </li>
+    <li><a href="parallel.html">Parallel execution</a>
+      <ul>
+        <li><a href="parallel.html#pool">The worker pool</a></li>
+        <li><a href="parallel.html#barrier">The join barrier</a></li>
+        <li><a href="parallel.html#collect">Serial collectors</a></li>
+        <li><a href="parallel.html#why">Why deferral — a race</a></li>
+        <li><a href="parallel.html#asic">The silicon mapping</a></li>
+        <li><a href="parallel.html#mailbox">Per-LB mailbox geometry</a></li>
+        <li><a href="parallel.html#cycleN">The cycle-N rule</a></li>
+      </ul>
+    </li>
+    <li><a href="memory.html">Static memory</a>
+      <ul>
+        <li><a href="memory.html#why">Why static</a></li>
+        <li><a href="memory.html#hierarchy">The memory hierarchy</a></li>
+        <li><a href="memory.html#virtual">The page tier</a></li>
+        <li><a href="memory.html#aggregate">LbMemory — the aggregate</a></li>
+        <li><a href="memory.html#deload">Deload / reload</a></li>
+        <li><a href="memory.html#scope">Scope</a></li>
+      </ul>
+    </li>
+    <li><a href="provenance.html" class="current">Provenance</a>
+      <ul>
+        <li><a href="provenance.html#record">Recording an origin</a></li>
+        <li><a href="provenance.html#local">Locality</a></li>
+        <li><a href="provenance.html#lift">The chapter walker</a></li>
+        <li><a href="provenance.html#lift-mech">Lift — soundness</a></li>
+        <li><a href="provenance.html#barrier">OR-branch barrier</a></li>
+        <li><a href="provenance.html#cycle">Path-cycle filter</a></li>
+        <li><a href="provenance.html#contraswitch">Contradiction fallback</a></li>
+        <li><a href="provenance.html#notinput">Never a proof input</a></li>
+      </ul>
+    </li>
+    <li><a href="compilation.html">Compilation &amp; names</a>
+      <ul>
+        <li><a href="compilation.html#why">Two canonical forms</a></li>
+        <li><a href="compilation.html#pre">Precompilation</a></li>
+        <li><a href="compilation.html#names">The five name families</a></li>
+        <li><a href="compilation.html#counters">Counters &amp; registry</a></li>
+        <li><a href="compilation.html#namemap">NameMap &amp; scopes</a></li>
+        <li><a href="compilation.html#encoded">EncodedExpression → IntNormalizedKey</a></li>
+        <li><a href="compilation.html#pool">The static-memory floor</a></li>
+        <li><a href="compilation.html#fail">Failure modes</a></li>
+      </ul>
+    </li>
+    <li><a href="anchors.html">Anchors &amp; types</a>
+      <ul>
+        <li><a href="anchors.html#what">What an anchor is</a></li>
+        <li><a href="anchors.html#three">The four anchors</a></li>
+        <li><a href="anchors.html#types">Slot types</a></li>
+        <li><a href="anchors.html#handling">Anchor handling</a></li>
+        <li><a href="anchors.html#copy">The <code>_copy</code> machinery</a></li>
+        <li><a href="anchors.html#tag">The proof-graph row</a></li>
+        <li><a href="anchors.html#i29">Variable-port consistency</a></li>
+        <li><a href="anchors.html#bridge">Cross-anchor bridges</a></li>
+      </ul>
+    </li>
+    <li><a href="reformulation.html">Reformulation &amp; head switch</a>
+      <ul>
+        <li><a href="reformulation.html#why">Why reformulation</a></li>
+        <li><a href="reformulation.html#switch">Head switch — the walk</a></li>
+        <li><a href="reformulation.html#sites">Two call sites</a></li>
+        <li><a href="reformulation.html#mirror">Both directions proved</a></li>
+        <li><a href="reformulation.html#back">Back-reformulation</a></li>
+        <li><a href="reformulation.html#contra">Contradiction reconstruction</a></li>
+        <li><a href="reformulation.html#orthm">OR-theorem assembly</a></li>
+        <li><a href="reformulation.html#methods">The five method tags</a></li>
+      </ul>
+    </li>
+    <li><a href="auxiliary.html">CE filter &amp; compressor</a>
+      <ul>
+        <li><a href="auxiliary.html#engine">Same engine, two modes</a></li>
+        <li><a href="auxiliary.html#ce">Counterexample filter</a></li>
+        <li><a href="auxiliary.html#j">The j-copy trick</a></li>
+        <li><a href="auxiliary.html#comp">Compressor — throwaway trees</a></li>
+        <li><a href="auxiliary.html#p1">Phase 1 — dependency graphs</a></li>
+        <li><a href="auxiliary.html#p2">Phase 2 — greedy elimination</a></li>
+        <li><a href="auxiliary.html#out">What lands on disk</a></li>
+      </ul>
+    </li>
+  </ol>
+</nav>
+
+<main>
+<h1><span class="num">7 ·</span> Provenance</h1>
+<p class="lede">Every fact GL emits remembers where it came from. That record is the
+deliverable — and it is held to one firm rule: it is documentation, never an input
+to the proof.</p>
+
+<div class="toc">
+  <strong>On this page</strong>
+  <ol>
+    <li><a href="#record">7.1 &nbsp;Recording an origin</a></li>
+    <li><a href="#local">7.2 &nbsp;Locality</a></li>
+    <li><a href="#lift">7.3 &nbsp;The chapter walker — overview</a></li>
+    <li><a href="#lift-mech">7.4 &nbsp;Mechanism 1 — ancestor lifting</a></li>
+    <li><a href="#barrier">7.5 &nbsp;Mechanism 2 — the OR-branch barrier</a></li>
+    <li><a href="#cycle">7.6 &nbsp;Mechanism 3 — path-cycle filter</a></li>
+    <li><a href="#contraswitch">7.7 &nbsp;Mechanism 4 — the <code>__contradiction__</code> fallback</a></li>
+    <li><a href="#notinput">7.8 &nbsp;Provenance is never a proof input</a></li>
+  </ol>
+</div>
+
+<h2 id="record">7.1 &nbsp;Recording an origin</h2>
+<p>
+Every fire writes an entry into the producing block's <code>exprOriginMap</code>:
+keyed by the emitted <code>(expression, validity)</code>, valued by a list of
+<code>Origin</code> records. Each <code>Origin</code> names what justified the step.
+This map is the raw material of every proof chapter and the basis of every
+auditability claim — what the verifier can re-check depends entirely on what
+it can read out of the proof graph the prover emits.
+</p>
+
+<p>
+There are three failure modes worth distinguishing, because they have
+different observability:
+</p>
+<ul class="inv">
+<li><b>Malformed dependency inside an emitted chapter row.</b> The row
+claims a citation the verifier cannot reconcile against the rule's
+shape — the verifier <b>fails</b> the row, and the theorem with it.</li>
+<li><b>Missing origin for an emitted derived expression.</b> The chapter
+walker (§7.3) cannot extend the dependency chain backward; the chapter is
+truncated or the cited row references something with no provenance entry
+— again <b>visible</b>, again caught.</li>
+<li><b>A theorem or chapter that never enters the verifier's input.</b>
+The verifier reads the processed proof graph; anything filtered out
+upstream (or never registered in the global theorem index) is invisible
+unless a separate registry-to-chapter completeness check exists. This is
+why the prover side maintains <code>exprOriginMap</code> conservatively:
+the better protection is to never let a derived fact escape without its
+origin alongside.</li>
+</ul>
+<p>
+The stored record is two fields — <code>IdOrigin = (tag, dependency-list)</code> —
+with the fired rule as the <i>first</i> dependency and the matched premises after
+it. The chapter row decodes that record into the components below.
+</p>
+<table>
+<tr><th>Decoded row component</th><th>Holds</th></tr>
+<tr><td>justification (the tag)</td><td>the tag category — becomes the proof-graph row tag (<code>implication</code>, <code>theorem</code>, <code>equality1</code>, <code>disintegration</code>, …)</td></tr>
+<tr><td>rule</td><td>the encoded implication key that fired — the first entry in the dependency-list</td></tr>
+<tr><td>antecedents</td><td>the matched premises — the remaining dependency-list entries, each an <code>(expression, validity)</code> pair</td></tr>
+</table>
+<figure>
+<svg viewBox="0 0 760 200" role="img" aria-label="An origin record written on every fire">
+  <defs><marker id="o-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="30" y="76" width="150" height="48" rx="9" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/><text x="105" y="97" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">a rule fires</text><text x="105" y="114" fill="#8B8FA5" font-size="9" text-anchor="middle">emits an expression</text>
+  <path d="M180 100 L216 100" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#o-ar)"/>
+  <rect x="216" y="42" width="324" height="116" rx="10" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <text x="378" y="64" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">exprOriginMap entry</text>
+  <rect x="232" y="74"  width="292" height="24" rx="5" fill="#262938" stroke="#3A3D4A"/><text x="378" y="91"  fill="#F0E8DC" font-size="10" text-anchor="middle">key: (expression, validity)</text>
+  <rect x="232" y="102" width="292" height="24" rx="5" fill="#262938" stroke="#3A3D4A"/><text x="378" y="119" fill="#8B8FA5" font-size="9.5" text-anchor="middle">Origin: tag · rule fired · matched antecedents</text>
+  <rect x="232" y="130" width="292" height="22" rx="5" fill="#262938" stroke="#3A3D4A"/><text x="378" y="146" fill="#8B8FA5" font-size="9" text-anchor="middle">…possibly several Origins per key…</text>
+  <path d="M540 100 L576 100" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#o-ar)"/>
+  <rect x="576" y="76" width="156" height="48" rx="9" fill="#262938" stroke="#B084EB"/><text x="654" y="97" fill="#B084EB" font-size="11" font-weight="bold" text-anchor="middle">proof graph</text><text x="654" y="114" fill="#8B8FA5" font-size="9" text-anchor="middle">one row per step</text>
+  <text x="378" y="186" fill="#8B8FA5" font-size="11" text-anchor="middle">Not a debugging extra — this is the artefact the pipeline packages and the verifier independently re-checks.</text>
+</svg>
+<figcaption><b>Every fire is logged.</b> The origin map is the product, recorded as
+the proof runs.</figcaption>
+</figure>
+
+<h2 id="local">7.2 &nbsp;Locality</h2>
+<p>
+Every origin record is <b>local to the block that produced it</b>. Mail transports
+provenance <i>downward only</i> — parent → children, via
+<code>mailOut</code> → <code>mergeBatchInto</code> → child <code>mailIn</code> → child
+<code>exprOriginMap</code> next cycle. There is no upward propagation: a child's
+records never reach the parent's map. The earlier
+<code>pendingAncestorOrigins</code> queue (which once wrote a contradiction block's
+record into every ancestor) was fully removed — no field, no drain remains. The
+practical consequence: a contradiction's recipe lives <i>only</i> inside its own
+<code>"__contradiction__" + head</code> block, which the chapter walker enters
+deliberately when it needs it.
+</p>
+
+<h2 id="lift">7.3 &nbsp;The chapter walker — four mechanisms</h2>
+<p>
+<code>buildStack</code> walks the origin map backward from the proved theorem,
+emitting one chapter row per visited expression. It is a backtracking walk
+(<code>false</code> → caller rolls back its snapshots and tries the next candidate;
+per-key candidates are ordered non-equality tags first, then
+<code>equality1</code>/<code>equality2</code>). Four mechanisms keep the chapter both
+truthful and re-checkable:
+</p>
+<ul class="inv">
+<li><b>1 · Ancestor lifting.</b> <code>liftToShallowestOriginAncestor</code> reports
+each expression at the <i>closest-to-<code>main</code></i> scope that still has an
+origin for it. Sound because ancestor facts are universally visible — and lifting
+moves only toward <code>main</code>, never away (descendant-only facts aren't
+universally available). The row then truthfully states where the derivation lives.</li>
+<li><b>2 · OR-branch barrier.</b> The lift may not cross a
+<code>_boundary_orint_</code> / <code>_boundary_ordis_</code> delimiter. OR-branch
+scopes are conditional on a disjunct hypothesis; the OR-family verifier checkers
+need them kept branch-distinct, or both branches collapse to the same parent cell.</li>
+<li><b>3 · Path-cycle filter.</b> A <code>thread_local</code> path set rejects any
+candidate whose (lifted) dependencies are already on the recursion path — no chapter
+row can form a cycle the <code>origin chain termination</code> check would flag.
+The chapter goal itself is inserted into the path at entry, which rejects the
+prover's self-applying forward-inference origin (prevents a self-reference leaf).</li>
+<li><b>4 · <code>__contradiction__</code> fallback.</b> When a negated head has no
+acyclic direct origin, the walker switches into the matching
+<code>"__contradiction__" + positive</code> block and resolves it there. This is the
+<i>only</i> block switch <code>buildStack</code> ever makes; that block is a dedicated
+<i>child</i> of the LB that proved the contradiction — what is independent is its
+<i>provenance</i> (no upward propagation), not its tree position.</li>
+</ul>
+<p>
+A hard <b>TRIPWIRE</b> at entry asserts if the
+<code>hypothetical_disintegration</code> sentinel scope ever reaches the walker — it
+is a throwaway structural probe and must never appear in a chapter.
+</p>
+<figure>
+<svg viewBox="0 0 760 230" role="img" aria-label="The chapter walker: lift, barrier, cycle filter, contradiction fallback">
+  <defs><marker id="bs-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="34" y="92" width="148" height="48" rx="9" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/><text x="108" y="113" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">chapter goal</text><text x="108" y="130" fill="#8B8FA5" font-size="9" text-anchor="middle">proved theorem</text>
+  <path d="M182 116 L216 116" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#bs-ar)"/>
+  <rect x="216" y="70" width="312" height="92" rx="10" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <text x="372" y="92" fill="#5DCAA5" font-size="11.5" font-weight="bold" text-anchor="middle">buildStack — walk origins backward</text>
+  <text x="372" y="113" fill="#8B8FA5" font-size="9" text-anchor="middle">① lift to shallowest-with-origin   ② OR-branch barrier</text>
+  <text x="372" y="129" fill="#8B8FA5" font-size="9" text-anchor="middle">③ path-cycle filter (+ goal in path)</text>
+  <text x="372" y="148" fill="#8B8FA5" font-size="9" text-anchor="middle">④ no origin? → __contradiction__ block (only LB switch)</text>
+  <path d="M528 116 L562 116" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#bs-ar)"/>
+  <rect x="562" y="92" width="170" height="48" rx="9" fill="#262938" stroke="#5DCAA5"/><text x="647" y="113" fill="#F0E8DC" font-size="10.5" text-anchor="middle">chapter rows</text><text x="647" y="130" fill="#8B8FA5" font-size="9" text-anchor="middle">truthful scope, no cycles</text>
+  <text x="372" y="42" fill="#8B8FA5" font-size="10.5" text-anchor="middle">Backtracking: a failed candidate rolls back; TRIPWIRE asserts on the hypothetical-disintegration sentinel.</text>
+  <text x="372" y="200" fill="#8B8FA5" font-size="10.5" text-anchor="middle">Soundness of lifting: an origin at (expr,V) means the rule fired with every premise available at V;</text>
+  <text x="372" y="216" fill="#8B8FA5" font-size="10.5" text-anchor="middle">non-root scopes inherit all parent facts, so lifting toward main stays truthful.</text>
+</svg>
+<figcaption><b>From map to chapter.</b> Lifting makes each row claim the scope the
+derivation truly holds at; the barrier and cycle filter keep the verifier able to
+re-check it.</figcaption>
+</figure>
+
+<!-- ===================== 7.4 ===================== -->
+<h2 id="lift-mech">7.4 &nbsp;Mechanism 1 — ancestor lifting</h2>
+<p>
+A fact <code>(expr, V)</code> has its origin recorded at scope
+<code>V</code>, but the same fact often carries an independently recorded
+origin at an <i>ancestor</i> of <code>V</code> as well. Inheritance runs one
+way: a <i>descendant</i> scope sees every fact its ancestors (and
+<code>main</code>) installed, but an ancestor does <b>not</b> see a fact
+installed only in a descendant scope. So the walker cannot simply assume an
+ancestor proves the fact — <code>liftToShallowestOriginAncestor</code> reports a
+scope only if <i>that</i> scope has its own recorded origin for the fact. It
+prefers the <b>shallowest</b> (closest to <code>main</code>) such scope —
+closer to <code>main</code> means more universally true.
+</p>
+
+<figure>
+<svg viewBox="0 0 760 230" role="img" aria-label="Lifting: report an origin at the shallowest scope it still holds">
+  <defs><marker id="lf-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="40" y="24" width="120" height="34" rx="6" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="100" y="46" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">main</text>
+
+  <line x1="100" y1="58" x2="100" y2="78" stroke="#5DCAA5" stroke-width="1.4"/>
+  <rect x="40" y="80" width="200" height="34" rx="6" fill="#262938" stroke="#B084EB"/>
+  <text x="140" y="102" fill="#B084EB" font-size="10.5" text-anchor="middle">hypo_v0</text>
+
+  <line x1="140" y1="114" x2="140" y2="134" stroke="#5DCAA5" stroke-width="1.4"/>
+  <rect x="60" y="136" width="200" height="34" rx="6" fill="#262938" stroke="#B084EB"/>
+  <text x="160" y="158" fill="#B084EB" font-size="10.5" text-anchor="middle">int_lev2</text>
+
+  <line x1="160" y1="170" x2="160" y2="190" stroke="#5DCAA5" stroke-width="1.4"/>
+  <rect x="80" y="192" width="240" height="34" rx="6" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <text x="200" y="214" fill="#5DCAA5" font-size="10.5" text-anchor="middle">where (expr, V) was emitted</text>
+
+  <text x="400" y="44" fill="#8B8FA5" font-size="11">Origins recorded at every scope:</text>
+  <text x="400" y="64" fill="#8B8FA5" font-size="10">at main          → ✗ (none)</text>
+  <text x="400" y="80" fill="#8B8FA5" font-size="10">at hypo_v0       → ✓ (own origin)</text>
+  <text x="400" y="96" fill="#8B8FA5" font-size="10">at int_lev2      → ✓ (own origin)</text>
+  <text x="400" y="112" fill="#5DCAA5" font-size="10">at original v=V  → ✓</text>
+
+  <text x="400" y="144" fill="#5DCAA5" font-size="11" font-weight="bold">lift to: hypo_v0</text>
+  <text x="400" y="162" fill="#8B8FA5" font-size="10">— the shallowest with an origin</text>
+
+  <text x="400" y="194" fill="#EF9F27" font-size="11">Sound: the rule fired with premises at hypo_v0 too;</text>
+  <text x="400" y="212" fill="#EF9F27" font-size="11">descendant-emitted state is just a closer-to-leaf copy.</text>
+</svg>
+<figcaption><b>Closer to main = more universally true.</b> The lift never
+moves a row to a scope at which it would not have proved.</figcaption>
+</figure>
+
+<div class="key">
+<b>Why lifting is sound.</b> An origin at <code>(expr, V)</code> records
+that the producing rule fired with every premise available at scope
+<code>V</code>. Non-root scopes inherit all of <code>main</code>'s and
+every ancestor's facts. If the premises were available at scope <code>V</code>,
+they were available at every ancestor of <code>V</code> too. So the rule
+fired soundly at any ancestor — provided the origin chain (the rule's
+upstream premises) exists at that ancestor. Lifting follows the origin
+chain upward until it runs out of ancestor-side origin entries.
+</div>
+
+<!-- ===================== 7.5 ===================== -->
+<h2 id="barrier">7.5 &nbsp;Mechanism 2 — the OR-branch barrier</h2>
+<p>
+The lift may not cross a <code>_boundary_orint_</code> or
+<code>_boundary_ordis_</code> delimiter. OR-branch scopes are
+<i>conditional</i> on a disjunct hypothesis; an origin recorded inside a
+branch is sound only under that hypothesis. Lifting it out of the branch
+would assert it unconditionally, which it isn't.
+</p>
+
+<figure>
+<svg viewBox="0 0 760 230" role="img" aria-label="OR-branch barrier — lift stops at the orint / ordis delimiter">
+  <defs><marker id="br-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="40" y="24" width="120" height="34" rx="6" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="100" y="46" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">main</text>
+
+  <line x1="100" y1="58" x2="100" y2="74" stroke="#5DCAA5" stroke-width="1.4"/>
+
+  <rect x="40" y="76" width="600" height="6" rx="0" fill="#EF9F27"/>
+  <text x="748" y="96" text-anchor="end" fill="#EF9F27" font-size="11" font-weight="bold">barrier — lift forbidden across</text>
+
+  <line x1="100" y1="82" x2="100" y2="98" stroke="#5DCAA5" stroke-width="1.4"/>
+  <rect x="40" y="100" width="200" height="34" rx="6" fill="#262938" stroke="#B084EB"/>
+  <text x="140" y="122" fill="#B084EB" font-size="10.5" text-anchor="middle">ordis_branchA</text>
+
+  <line x1="140" y1="134" x2="140" y2="154" stroke="#5DCAA5" stroke-width="1.4"/>
+  <rect x="60" y="156" width="200" height="34" rx="6" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <text x="160" y="178" fill="#5DCAA5" font-size="10" text-anchor="middle">origin recorded here</text>
+
+  <text x="400" y="142" fill="#8B8FA5" font-size="11">▸ origin (expr, V) lifts to ordis_branchA</text>
+  <text x="400" y="160" fill="#EF9F27" font-size="11">▸ STOPS at the barrier</text>
+  <text x="400" y="178" fill="#8B8FA5" font-size="11">▸ never crosses up to main</text>
+  <text x="400" y="200" fill="#8B8FA5" font-size="10">Branch-internal fact only — its truth depends on</text>
+  <text x="400" y="216" fill="#8B8FA5" font-size="10">the branch hypothesis. Verifier needs it scoped.</text>
+</svg>
+<figcaption><b>The barrier preserves conditionality.</b> Without it, a
+branch-local derivation would silently appear in the chapter as a global
+fact.</figcaption>
+</figure>
+
+<!-- ===================== 7.6 ===================== -->
+<h2 id="cycle">7.6 &nbsp;Mechanism 3 — the path-cycle filter</h2>
+<p>
+The chapter walker is recursive — it visits an expression, looks up its
+origin, recurses into each antecedent, looks up <i>their</i> origins, and so
+on. Without a cycle filter, a chain that loops back on itself (an origin
+graph with a cycle) would walk forever. The filter is a
+<code>thread_local</code> set of expressions currently on the recursion
+path; any candidate whose lifted dependencies overlap the path is rejected.
+</p>
+
+<figure>
+<svg viewBox="0 0 760 220" role="img" aria-label="Path-cycle filter: thread-local recursion path rejects loops">
+  <defs><marker id="pc-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="22" y="24" width="160" height="42" rx="8" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="102" y="48" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">chapter goal G</text>
+
+  <path d="M182 46 L218 46" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#pc-ar)"/>
+
+  <rect x="218" y="24" width="140" height="42" rx="8" fill="#262938" stroke="#5DCAA5"/>
+  <text x="288" y="48" fill="#F0E8DC" font-size="11" text-anchor="middle">walk antecedent</text>
+
+  <path d="M358 46 L394 46" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#pc-ar)"/>
+
+  <rect x="394" y="24" width="140" height="42" rx="8" fill="#262938" stroke="#5DCAA5"/>
+  <text x="464" y="48" fill="#F0E8DC" font-size="11" text-anchor="middle">walk antecedent</text>
+
+  <path d="M534 46 L570 46" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#pc-ar)"/>
+
+  <rect x="570" y="24" width="170" height="42" rx="8" fill="#262938" stroke="#5DCAA5"/>
+  <text x="655" y="48" fill="#F0E8DC" font-size="11" text-anchor="middle">candidate cites G again</text>
+
+  <path d="M655 66 L655 100 L350 100" stroke="#E879F9" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#pc-ar)"/>
+  <text x="500" y="120" fill="#E879F9" font-size="11">cycle detected (G is on the path set)</text>
+
+  <rect x="220" y="138" width="320" height="40" rx="8" fill="#1C1F2B" stroke="#EF9F27"/>
+  <text x="380" y="160" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">candidate rejected → try next alternative</text>
+  <text x="380" y="174" fill="#8B8FA5" font-size="8" text-anchor="middle">backtrack the snapshot, attempt the next origin for the same key</text>
+
+  <text x="380" y="208" fill="#8B8FA5" font-size="9.5" text-anchor="middle">The goal G is inserted into the path set at entry — so the prover's forward-inference origin (G citing itself) is rejected too.</text>
+</svg>
+<figcaption><b>Cycles surfaced and rejected.</b> Any origin chain that
+loops fails the filter and the walker tries an alternative origin for the
+same key.</figcaption>
+</figure>
+
+<!-- ===================== 7.7 ===================== -->
+<h2 id="contraswitch">7.7 &nbsp;Mechanism 4 — the <code>__contradiction__</code> fallback</h2>
+<p>
+When a chapter row's expression is a <i>negation</i> with no acyclic direct
+origin in the current LB, the walker switches into the dedicated <i>child</i> LB
+whose <code>exprKey</code> is <code>"__contradiction__" + positive form</code>
+— located by walking the ancestor chain with <code>findChild</code> — and resolves
+the chain there. That block is a true child of the LB that proved the contradiction
+(its <code>parentMemory</code> points back at it); what is independent is the
+<i>provenance</i> (no upward propagation), not the tree position. This is the
+<b>only</b> block switch <code>buildStack</code> ever performs; every other walk
+stays inside one LB's origin map.
+</p>
+
+<figure>
+<svg viewBox="0 0 760 220" role="img" aria-label="Contradiction fallback: switch to the matching __contradiction__ LB">
+  <defs><marker id="cf-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="22" y="42" width="220" height="80" rx="9" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <text x="132" y="62" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">main LB</text>
+  <text x="132" y="82" fill="#F0E8DC" font-size="10" text-anchor="middle">walking !D₁ — no origin</text>
+  <text x="132" y="100" fill="#F0E8DC" font-size="10" text-anchor="middle">(every direct origin is on the path)</text>
+
+  <path d="M242 82 L278 82" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#cf-ar)"/>
+
+  <rect x="278" y="42" width="240" height="80" rx="9" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="398" y="62" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">__contradiction__ LB for D₁</text>
+  <text x="398" y="82" fill="#F0E8DC" font-size="10" text-anchor="middle">contains the rebuilt impl: P_i… → !D₁</text>
+  <text x="398" y="100" fill="#F0E8DC" font-size="10" text-anchor="middle">discharge origin recorded here</text>
+
+  <path d="M518 82 L554 82" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#cf-ar)"/>
+
+  <rect x="554" y="42" width="180" height="80" rx="9" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <text x="644" y="62" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">resolved</text>
+  <text x="644" y="82" fill="#F0E8DC" font-size="10" text-anchor="middle">chapter row emitted</text>
+  <text x="644" y="100" fill="#F0E8DC" font-size="10" text-anchor="middle">with rule + premises</text>
+
+  <text x="380" y="156" fill="#8B8FA5" font-size="11" text-anchor="middle">A dedicated child LB — independent is its provenance (no upward propagation), not its tree position.</text>
+  <text x="380" y="174" fill="#8B8FA5" font-size="11" text-anchor="middle">TRIPWIRE: hypothetical_disintegration sentinel scope must never reach buildStack — asserts at entry.</text>
+  <text x="380" y="200" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">This is the only LB switch buildStack ever performs.</text>
+</svg>
+<figcaption><b>One switch, deliberate.</b> Every other walk stays inside the
+same LB's origin map; the contradiction switch is the one carefully-marked
+exception.</figcaption>
+</figure>
+
+<div class="key">
+<b>The TRIPWIRE.</b> The sentinel scope
+<code>hypothetical_disintegration</code> is a throwaway used by structural
+probing inside the prover. It must never appear in a chapter row — if
+<code>buildStack</code> ever encounters it on the recursion path, it
+asserts at the function's entry. The assert is load-bearing: a sentinel
+leaking into the chapter would silently corrupt the verifier's scope
+walk.
+</div>
+
+<h2 id="notinput">7.8 &nbsp;Provenance is never a proof input</h2>
+<p>This is the single firmest rule about the origin map, worth stating plainly.</p>
+<div class="key">
+<b>The proving logic does not branch on the origin map.</b>
+No rule fires, no admission is granted, no branch is taken because of what is — or
+isn't — in <code>exprOriginMap</code>: no proof <i>decision</i> turns on the map's
+contents. One redundant dedup gate inside <code>applyEquivalenceClass</code> still
+reads the map, but it duplicates a statement-level check, so no theorem depends on
+it — and it is slated for removal. This is what
+makes the forthcoming origin-map-free silicon build possible as a <i>design target</i>
+— the same theorems are intended to prove without the map present — though the
+silicon path is a design consequence of this contract, not a currently-implemented
+check. Provenance is an output that rides alongside the proof, not a wheel it turns
+on.
+</div>
+<p>
+The flip side is an obligation: precisely because nothing re-derives it, every state
+change that alters a derived fact <b>must</b> emit the matching origin line, or the
+audit graph silently rots. Concretely: when an equivalence-class rewrite touches an
+expression that already has a history line and is <i>not</i> a goal in
+<code>intToBeProved</code>, it must emit a fresh <code>equality1</code> line for the
+rewritten form (goals are exempt — they have no upstream line to extend). “Write it,
+never branch on it, always keep it complete” is the whole contract — and it is what
+lets an independent verifier re-check every theorem <i>that reaches its processed
+proof-graph input</i>, plus the auxiliary files it explicitly consumes, without
+trusting the prover at all (the <code>equality1</code> row at the end of the
+<a href="mechanisms.html#admit-rev">§4.2.5</a> Gauss trace is exactly such a
+re-checked line). Anything filtered upstream of that input is outside the
+verifier's sight by construction — see <a href="#record">§7.1</a> for the three
+visibility cases.
+</p>
+<figure>
+<svg viewBox="0 0 760 180" role="img" aria-label="Proving logic writes provenance but never reads it">
+  <defs>
+    <marker id="ni-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker>
+    <marker id="ni-no" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 L10 10 M10 0 L0 10" stroke="#E879F9" stroke-width="2"/></marker>
+  </defs>
+  <rect x="60" y="62" width="200" height="60" rx="10" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/><text x="160" y="88" fill="#EF9F27" font-size="12.5" font-weight="bold" text-anchor="middle">proving logic</text><text x="160" y="106" fill="#8B8FA5" font-size="9.5" text-anchor="middle">rules · admission · branching</text>
+  <path d="M260 80 L494 80" stroke="#5DCAA5" stroke-width="1.6" marker-end="url(#ni-ar)"/><text x="377" y="70" fill="#5DCAA5" font-size="11" text-anchor="middle">writes (always, completely)</text>
+  <path d="M494 108 L260 108" stroke="#E879F9" stroke-width="1.6" stroke-dasharray="5 4" marker-start="url(#ni-no)"/><text x="377" y="128" fill="#E879F9" font-size="11" text-anchor="middle">never reads to decide</text>
+  <rect x="498" y="62" width="200" height="60" rx="10" fill="#1C1F2B" stroke="#B084EB"/><text x="598" y="88" fill="#B084EB" font-size="12.5" font-weight="bold" text-anchor="middle">exprOriginMap</text><text x="598" y="106" fill="#8B8FA5" font-size="9.5" text-anchor="middle">documentation only</text>
+  <text x="377" y="160" fill="#8B8FA5" font-size="11" text-anchor="middle">Remove the map entirely and the same theorems still prove — that is the test of this rule.</text>
+</svg>
+<figcaption><b>One-way.</b> The arrow only goes out. The day a proof decision
+depends on the origin map, the map has stopped being documentation.</figcaption>
+</figure>
+
+<div class="note">
+That closes the prover subsystem: the <a href="substrate.html#lb">block</a> it runs
+in, the <a href="substrate.html#hash">engine</a> that fires, the
+<a href="substrate.html#compile">compilation</a> that makes it canonical, the
+<a href="mechanisms.html">mechanisms</a> that reason, the
+<a href="parallel.html">parallelism</a> that scales it, and the provenance that
+makes all of it checkable.
+</div>
+
+<div class="pager">
+  <a href="memory.html">&larr; 6 · Static memory</a>
+  <a href="index.html">↑ Overview</a>
+</div>
+
+<div class="foot">
+<b>License.</b> Generative Logic prover reference. © 2025-2026 Generative Logic UG
+(haftungsbeschränkt). Dual-licensed under the <b>GNU Affero General Public License
+v3 or later</b> and a <b>commercial license</b>; this document and the proof
+artefacts it describes inherit the same terms — commercial terms at
+<a href="https://generative-logic.com/license">generative-logic.com/license</a>.
+</div>
+
+</main>
+</body>
+</html>

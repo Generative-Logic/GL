@@ -105,7 +105,17 @@ def _mint_typed_var(arg: str, arg_type: dict[str, str], counters: dict[str, int]
     counters is a mutable dict with keys 'digit' and 'set'; both start at 1.
     'unknown' falls back to 'digit' (lowercase v) since most undeducible
     args turn out to be digits in practice.
+
+    Recursion-variable preservation: `rec` (and `rec<N>` for nested
+    inductions) is the prover's free recursion-step variable and must
+    not be renamed — it is the conceptual placeholder for "the
+    predecessor witness" in induction-step rows (e.g. `(in2[rec, v1, s])`).
+    Renaming it to a generic `v<N>` loses the visual cue that the row
+    is the induction-step hypothesis. Counters are not bumped for
+    preserved names.
     """
+    if arg == "rec" or re.fullmatch(r"rec\d+", arg):
+        return arg
     tag = arg_type.get(arg, "unknown")
     if tag == "set":
         name = f"V{counters['set']}"
@@ -399,9 +409,6 @@ def _build_fname_list(theorems):
         elif method == "debug":
             fnames = [f"{idx}_debug.txt"]
             idx += 1
-        elif method == "mirrored statement":
-            fnames = [f"{idx}_mirrored_statement.txt"]
-            idx += 1
         elif method == "reformulated statement":
             fnames = [f"{idx}_reformulated_statement.txt"]
             idx += 1
@@ -428,7 +435,7 @@ def _prune_proof_graph(raw_theorems, raw_stacks, theorems_dir=None):
     """
     if theorems_dir is None:
         theorems_dir = PROJECT_ROOT / "files" / "theorems"
-    proved_file = theorems_dir / "compiled_proved_theorems.txt"
+    proved_file = theorems_dir / "compiled_theorems.txt"
     essential = set()
     if proved_file.exists():
         with open(proved_file, "r", encoding="utf-8") as f:
@@ -448,13 +455,13 @@ def _prune_proof_graph(raw_theorems, raw_stacks, theorems_dir=None):
     for i, parts in enumerate(raw_theorems):
         expr_to_old_fnames.setdefault(parts[0], []).extend(fname_lists[i])
 
-    # Precompute var-field deps (mirrored/reformulated → source theorem)
+    # Precompute var-field deps (reformulated → source theorem)
     var_deps: dict[str, set[str]] = {}
     for parts in raw_theorems:
         expr = parts[0]
         method = parts[1].lower() if len(parts) > 1 else ""
         var_field = parts[2] if len(parts) > 2 else ""
-        if method in ("mirrored statement", "reformulated statement") and var_field in all_thm_exprs:
+        if method == "reformulated statement" and var_field in all_thm_exprs:
             var_deps.setdefault(expr, set()).add(var_field)
 
     # ---- Collect dependencies from proof stacks (exact match) ----
@@ -484,7 +491,7 @@ def _prune_proof_graph(raw_theorems, raw_stacks, theorems_dir=None):
                 visited.add(dep)
                 queue.append(dep)
 
-    # ---- Remove external theorems and their mirrored variants ----
+    # ---- Remove external theorems (imported, not proved here) ----
     ext_file = theorems_dir / "compressed_external_theorems.txt"
     external_theorems = set()
     if ext_file.exists():
@@ -495,15 +502,7 @@ def _prune_proof_graph(raw_theorems, raw_stacks, theorems_dir=None):
                     external_theorems.add(line)
 
     if external_theorems:
-        mirrored_of_external = set()
-        for parts in raw_theorems:
-            expr = parts[0]
-            method = parts[1].lower() if len(parts) > 1 else ""
-            ref = parts[2] if len(parts) > 2 else ""
-            if method == "mirrored statement" and ref in external_theorems:
-                mirrored_of_external.add(expr)
-
-        to_remove = (external_theorems | mirrored_of_external) & all_thm_exprs
+        to_remove = external_theorems & all_thm_exprs
         needed -= to_remove
 
     # ---- Filter theorems and re-index stack files ----
@@ -622,9 +621,6 @@ def create_processed_proof_graph(config: configuration_reader,
             file_idx += 1
         elif method == "debug":
             fname_to_raw_thm[f"{file_idx}_debug.txt"] = thm_expr
-            file_idx += 1
-        elif method == "mirrored statement":
-            fname_to_raw_thm[f"{file_idx}_mirrored_statement.txt"] = thm_expr
             file_idx += 1
         elif method == "reformulated statement":
             fname_to_raw_thm[f"{file_idx}_reformulated_statement.txt"] = thm_expr
@@ -930,10 +926,12 @@ def create_processed_proof_graph(config: configuration_reader,
                     if expr in all_external and tag in ("theorem", "broadcast"):
                         ram_stacks[fname][r_idx][2] = "externally provided theorem"
 
-    # Write renamed external theorems for verifier consumption
+    # Write renamed external theorems for verifier consumption.
+    # sorted() because all_external is a set; iterating it directly would emit
+    # rows in per-process hash order, making the file differ run to run.
     processed_ext_path = proc_dir / "external_theorems.txt"
     with open(processed_ext_path, "w", encoding="utf-8") as f:
-        for expr in all_external:
+        for expr in sorted(all_external):
             f.write(expr + "\n")
 
     # -------------------------------------------------------------------------

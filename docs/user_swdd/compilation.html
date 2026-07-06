@@ -1,0 +1,837 @@
+<!--
+Generative Logic: A deterministic reasoning and knowledge generation engine.
+Copyright (C) 2025-2026 Generative Logic UG (haftungsbeschränkt).
+Dual-licensed under the GNU Affero General Public License v3 or later
+and a commercial license — see https://generative-logic.com/license.
+
+User-oriented SwDD — Chapter 8: Compilation & names (deep dive).
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GL Prover User SwDD — 8 · Compilation &amp; names</title>
+<meta name="copyright" content="© 2025-2026 Generative Logic UG">
+<meta name="license" content="AGPL-3.0-or-later">
+<meta name="robots" content="noindex, nofollow, noai, noimageai">
+<link rel="stylesheet" href="assets/swdd.css">
+</head>
+<body>
+
+<nav id="side">
+  <div class="brand">GL · <span>User SwDD</span></div>
+  <div class="tag">The prover subsystem — reference concepts &amp; diagrams</div>
+  <ol>
+    <li><a href="index.html">Overview</a>
+      <ul>
+        <li><a href="index.html#what">What GL is</a></li>
+        <li><a href="index.html#pipeline">The pipeline</a></li>
+        <li><a href="index.html#deductive">Deductive neighbourhood</a></li>
+        <li><a href="index.html#artefacts">Artefacts on disk</a></li>
+        <li><a href="index.html#read">How to read this</a></li>
+        <li><a href="index.html#glossary">Quick glossary</a></li>
+        <li><a href="index.html#bounds">What is &amp; isn't in this doc</a></li>
+      </ul>
+    </li>
+    <li><a href="prover.html">The prover at a glance</a>
+      <ul>
+        <li><a href="prover.html#life">Life of a run</a></li>
+        <li><a href="prover.html#cycles">Cycles</a></li>
+        <li><a href="prover.html#enter">How a theorem enters</a></li>
+        <li><a href="prover.html#status">Status modes</a></li>
+        <li><a href="prover.html#deactivate">Deactivation cascade</a></li>
+        <li><a href="prover.html#dump">The hashburst dump</a></li>
+      </ul>
+    </li>
+    <li><a href="substrate.html">The substrate</a>
+      <ul>
+        <li><a href="substrate.html#lb">Logic blocks</a></li>
+        <li><a href="substrate.html#hash">Hash engine</a></li>
+        <li><a href="substrate.html#mail">Mail</a></li>
+        <li><a href="substrate.html#scope">Scope &amp; validity</a></li>
+        <li><a href="substrate.html#compile">Compilation</a></li>
+        <li><a href="substrate.html#delta">Delta machinery</a></li>
+        <li><a href="substrate.html#wipe">Subtree wipe</a></li>
+      </ul>
+    </li>
+    <li><a href="mechanisms.html">Proof mechanisms</a>
+      <ul>
+        <li><a href="mechanisms.html#disint">Disintegration</a></li>
+        <li><a href="mechanisms.html#admit">Admission, rejection &amp; equi-classes</a></li>
+        <li><a href="mechanisms.html#integ">Integration</a></li>
+        <li><a href="mechanisms.html#branch">Branching &amp; contradiction</a></li>
+        <li><a href="mechanisms.html#induct">Induction</a></li>
+        <li><a href="mechanisms.html#fan5">5-batch fan-out</a></li>
+        <li><a href="mechanisms.html#cascade">Pending-rejection cascade</a></li>
+      </ul>
+    </li>
+    <li><a href="parallel.html">Parallel execution</a>
+      <ul>
+        <li><a href="parallel.html#pool">The worker pool</a></li>
+        <li><a href="parallel.html#barrier">The join barrier</a></li>
+        <li><a href="parallel.html#collect">Serial collectors</a></li>
+        <li><a href="parallel.html#why">Why deferral — a race</a></li>
+        <li><a href="parallel.html#asic">The silicon mapping</a></li>
+        <li><a href="parallel.html#mailbox">Per-LB mailbox geometry</a></li>
+        <li><a href="parallel.html#cycleN">The cycle-N rule</a></li>
+      </ul>
+    </li>
+    <li><a href="memory.html">Static memory</a>
+      <ul>
+        <li><a href="memory.html#why">Why static</a></li>
+        <li><a href="memory.html#hierarchy">The memory hierarchy</a></li>
+        <li><a href="memory.html#virtual">The page tier</a></li>
+        <li><a href="memory.html#aggregate">LbMemory — the aggregate</a></li>
+        <li><a href="memory.html#deload">Deload / reload</a></li>
+        <li><a href="memory.html#scope">Scope</a></li>
+      </ul>
+    </li>
+    <li><a href="provenance.html">Provenance</a>
+      <ul>
+        <li><a href="provenance.html#record">Recording an origin</a></li>
+        <li><a href="provenance.html#local">Locality</a></li>
+        <li><a href="provenance.html#lift">The chapter walker</a></li>
+        <li><a href="provenance.html#lift-mech">Lift — soundness</a></li>
+        <li><a href="provenance.html#barrier">OR-branch barrier</a></li>
+        <li><a href="provenance.html#cycle">Path-cycle filter</a></li>
+        <li><a href="provenance.html#contraswitch">Contradiction fallback</a></li>
+        <li><a href="provenance.html#notinput">Never a proof input</a></li>
+      </ul>
+    </li>
+    <li><a href="compilation.html" class="current">Compilation &amp; names</a>
+      <ul>
+        <li><a href="compilation.html#why">Two canonical forms</a></li>
+        <li><a href="compilation.html#pre">Precompilation</a></li>
+        <li><a href="compilation.html#names">The five name families</a></li>
+        <li><a href="compilation.html#counters">Counters &amp; registry</a></li>
+        <li><a href="compilation.html#namemap">NameMap &amp; scopes</a></li>
+        <li><a href="compilation.html#encoded">EncodedExpression → IntNormalizedKey</a></li>
+        <li><a href="compilation.html#pool">The static-memory floor</a></li>
+        <li><a href="compilation.html#fail">Failure modes</a></li>
+      </ul>
+    </li>
+    <li><a href="anchors.html">Anchors &amp; types</a>
+      <ul>
+        <li><a href="anchors.html#what">What an anchor is</a></li>
+        <li><a href="anchors.html#three">The four anchors</a></li>
+        <li><a href="anchors.html#types">Slot types</a></li>
+        <li><a href="anchors.html#handling">Anchor handling</a></li>
+        <li><a href="anchors.html#copy">The <code>_copy</code> machinery</a></li>
+        <li><a href="anchors.html#tag">The proof-graph row</a></li>
+        <li><a href="anchors.html#i29">Variable-port consistency</a></li>
+        <li><a href="anchors.html#bridge">Cross-anchor bridges</a></li>
+      </ul>
+    </li>
+    <li><a href="reformulation.html">Reformulation &amp; head switch</a>
+      <ul>
+        <li><a href="reformulation.html#why">Why reformulation</a></li>
+        <li><a href="reformulation.html#switch">Head switch — the walk</a></li>
+        <li><a href="reformulation.html#sites">Two call sites</a></li>
+        <li><a href="reformulation.html#mirror">Both directions proved</a></li>
+        <li><a href="reformulation.html#back">Back-reformulation</a></li>
+        <li><a href="reformulation.html#contra">Contradiction reconstruction</a></li>
+        <li><a href="reformulation.html#orthm">OR-theorem assembly</a></li>
+        <li><a href="reformulation.html#methods">The five method tags</a></li>
+      </ul>
+    </li>
+    <li><a href="auxiliary.html">CE filter &amp; compressor</a>
+      <ul>
+        <li><a href="auxiliary.html#engine">Same engine, two modes</a></li>
+        <li><a href="auxiliary.html#ce">Counterexample filter</a></li>
+        <li><a href="auxiliary.html#j">The j-copy trick</a></li>
+        <li><a href="auxiliary.html#comp">Compressor — throwaway trees</a></li>
+        <li><a href="auxiliary.html#p1">Phase 1 — dependency graphs</a></li>
+        <li><a href="auxiliary.html#p2">Phase 2 — greedy elimination</a></li>
+        <li><a href="auxiliary.html#out">What lands on disk</a></li>
+      </ul>
+    </li>
+  </ol>
+</nav>
+
+<main>
+<h1><span class="num">8 ·</span> Compilation &amp; names</h1>
+<p class="lede">The prover hashes expressions. For that to be sound, two
+syntactically-different writings of the same idea must hash <i>identically</i>. This
+chapter is everything that makes that true: the structural-operator compile, the
+five name families, the counters that keep names unique, the encoder that packs a
+string into a 16-bit integer key, and the static memory pool the hot path lives in.</p>
+
+<div class="toc">
+  <strong>On this page</strong>
+  <ol>
+    <li><a href="#why">8.1 &nbsp;Two canonical forms — why compile at all</a></li>
+    <li><a href="#pre">8.2 &nbsp;Precompilation — <b>I-1</b></a></li>
+    <li><a href="#names">8.3 &nbsp;The five name families</a></li>
+    <li><a href="#counters">8.4 &nbsp;Counters &amp; the singleton registry — <b>I-23</b></a></li>
+    <li><a href="#namemap">8.5 &nbsp;<code>NameMap</code>, <code>encodePush</code>, scope comparison — <b>I-2 · I-3</b></a></li>
+    <li><a href="#encoded">8.6 &nbsp;<code>EncodedExpression</code> → <code>IntNormalizedKey</code></a></li>
+    <li><a href="#pool">8.7 &nbsp;The static-memory floor — <b>I-95</b></a></li>
+    <li><a href="#fail">8.8 &nbsp;Failure modes</a></li>
+  </ol>
+</div>
+
+<div class="deep">
+<b>Why this chapter is separate.</b> Compilation appears as a single subsection of
+<a href="substrate.html#compile">§3.5</a> in the substrate chapter, but most of GL's
+soundness arguments — and most of the “quiet” bugs that have ever crossed the
+boundary between cycles — live here. The substrate section is the survey; this is
+the reference.
+</div>
+
+<!-- ===================== 8.1 ===================== -->
+<h2 id="why">8.1 &nbsp;Two canonical forms — why compile at all</h2>
+<p>
+GL keeps every expression in <b>two</b> canonical forms simultaneously: a human
+form (MPL string) and a machine form (a packed integer key). The string is
+canonical so a maintainer can <code>grep</code> a proof graph; the integer is
+canonical so the hash engine can decide “does any known rule fire on this fact”
+in O(1) instead of O(<i>|rules|</i>). The compiler's whole job is to keep those
+two layers in lock-step — so the same idea always picks up the same string
+<i>and</i> the same integer key.
+</p>
+
+<figure>
+<svg viewBox="0 0 760 200" role="img" aria-label="Two canonical forms — string for humans, integer for the hash engine">
+  <defs><marker id="cf-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="250" y="14" width="260" height="40" rx="8" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="380" y="40" fill="#EF9F27" font-size="12.5" font-weight="bold" text-anchor="middle">a single idea: ∀n. n+0 = n</text>
+  <path d="M340 54 L150 86" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#cf-ar)"/>
+  <path d="M420 54 L610 86" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#cf-ar)"/>
+  <rect x="36" y="90" width="228" height="98" rx="10" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <text x="150" y="111" fill="#5DCAA5" font-size="11.5" font-weight="bold" text-anchor="middle">MPL string</text>
+  <text x="150" y="131" fill="#F0E8DC" font-size="9.5" text-anchor="middle">(in3[v1,zero,v1,+])</text>
+  <text x="150" y="148" fill="#8B8FA5" font-size="9.5" text-anchor="middle">human-readable, audit-friendly</text>
+  <text x="150" y="166" fill="#8B8FA5" font-size="9.5" text-anchor="middle">used by: chapters, verifier, files</text>
+  <rect x="496" y="90" width="228" height="98" rx="10" fill="#1C1F2B" stroke="#EF9F27"/>
+  <text x="610" y="111" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">IntNormalizedKey</text>
+  <text x="610" y="131" fill="#F0E8DC" font-size="9.5" text-anchor="middle">[ headId · arg₀ · arg₁ · arg₂ · arg₃ ]</text>
+  <text x="610" y="148" fill="#8B8FA5" font-size="9.5" text-anchor="middle">packed int16_t array</text>
+  <text x="610" y="166" fill="#8B8FA5" font-size="9.5" text-anchor="middle">used by: encodedMap, hot path</text>
+</svg>
+<figcaption><b>Two faces, one expression.</b> Every fact in the prover is in both
+forms at the same time. The compile keeps them aligned.</figcaption>
+</figure>
+
+<p>
+“Aligned” means three concrete things, all of which the rest of this chapter
+delivers:
+</p>
+<ul class="inv">
+<li><b>Structural normalisation.</b> <code>!(&amp;X)</code> and the pre-compiled
+<code>or&lt;N&gt;[X]</code> mean the same thing — but only the second can be
+hashed soundly. Precompilation (§8.2) rewrites the first into the second.</li>
+<li><b>Name stability.</b> If two distinct runs allocate <code>existence3</code>
+to two different logical shapes, the rest of the pipeline (chapter walker,
+verifier) sees a phantom theorem. Counters + the shared registry (§8.4) keep
+names stable across batches.</li>
+<li><b>Cheap equality.</b> The hash engine asks “same expression?” millions of
+times per second; a <code>strcmp</code> on a tree-shaped string would dominate.
+The encoded form (§8.6) makes that an integer-array compare.</li>
+</ul>
+
+<!-- ===================== 8.2 ===================== -->
+<h2 id="pre">8.2 &nbsp;Precompilation — <b>I-1</b></h2>
+<p>
+<code>precompileStructuralOperators</code> is the first thing every theorem-load
+path runs (<b>I-1</b>). It walks the expression tree once, in place, and rewrites
+the <i>negated</i> structural forms into their compiled atomic names. The
+<i>positive</i> structural forms are left alone — they are still legitimate
+MPL bodies and remain meaningful as they stand.
+</p>
+
+<table>
+<tr><th>Input shape</th><th>Output shape</th><th>Why compiled</th></tr>
+<tr><td><code>!(&amp;X₁X₂…X_K)</code></td><td><code>or&lt;N&gt;[args]</code></td><td>De Morgan turns <code>!(&amp;)</code> into a disjunction; OR is the load-bearing branching form (Chapter&nbsp;4) and needs a single canonical name to dispatch against.</td></tr>
+<tr><td><code>!(&gt;[bound](body))</code></td><td><code>existence&lt;N&gt;[args]</code></td><td>De Morgan turns a negated universal into an existential. Existentials must hash by their <i>shape</i>, not by the names of their witnesses.</td></tr>
+<tr><td><code>(=[a,b])</code> with <code>a==b</code></td><td>(trivial — pruned in head only, <b>I-8</b>)</td><td>Trivial reflexive equalities clutter the index without contributing.</td></tr>
+<tr><td><code>(>[](…)…)</code> top-level</td><td>(unchanged — never compiled to <code>implication&lt;N&gt;</code> on load)</td><td>A top-level implication is the theorem itself; compaction (§3.5.3) runs <i>after</i> proof, never before.</td></tr>
+</table>
+
+<figure>
+<svg viewBox="0 0 760 230" role="img" aria-label="The precompilation walk: in-place rewrite of negated structural shapes">
+  <defs><marker id="p-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="22" y="56" width="200" height="98" rx="10" fill="#1C1F2B" stroke="#EF9F27"/>
+  <text x="122" y="80" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">raw MPL tree</text>
+  <text x="122" y="104" fill="#F0E8DC" font-size="10.5" text-anchor="middle">(&gt;[]…!(&amp;X1 X2)…)</text>
+  <text x="122" y="124" fill="#8B8FA5" font-size="9.5" text-anchor="middle">written by user / conjecturer</text>
+  <text x="122" y="142" fill="#8B8FA5" font-size="9.5" text-anchor="middle">would hash unsoundly</text>
+
+  <path d="M222 105 L256 105" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#p-ar)"/>
+
+  <rect x="256" y="40" width="248" height="130" rx="10" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="380" y="62" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">precompileStructuralOperators</text>
+  <g font-size="10" fill="#F0E8DC">
+    <text x="270" y="85" text-anchor="start">▸ walk every sub-expression</text>
+    <text x="270" y="100" text-anchor="start">▸ at every <tspan fill="#EF9F27">!(&amp;…)</tspan> →
+      <tspan fill="#5DCAA5">or&lt;N&gt;[args]</tspan></text>
+    <text x="270" y="115" text-anchor="start">▸ at every <tspan fill="#EF9F27">!(&gt;[](…))</tspan> →
+      <tspan fill="#5DCAA5">existence&lt;N&gt;[args]</tspan></text>
+    <text x="270" y="130" text-anchor="start">▸ register <tspan fill="#B084EB">compiledExpressions[N]</tspan></text>
+    <text x="270" y="145" text-anchor="start">▸ recurse into sub-trees</text>
+  </g>
+
+  <path d="M504 105 L538 105" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#p-ar)"/>
+
+  <rect x="538" y="56" width="200" height="98" rx="10" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <text x="638" y="80" fill="#5DCAA5" font-size="11.5" font-weight="bold" text-anchor="middle">compiled tree</text>
+  <text x="638" y="104" fill="#F0E8DC" font-size="10.5" text-anchor="middle">(&gt;[]…or&lt;7&gt;[X1,X2]…)</text>
+  <text x="638" y="124" fill="#8B8FA5" font-size="9.5" text-anchor="middle">safe to hash</text>
+  <text x="638" y="142" fill="#8B8FA5" font-size="9.5" text-anchor="middle">addToHashMemory accepts it</text>
+
+  <text x="380" y="200" fill="#8B8FA5" font-size="11" text-anchor="middle">Forget this step and an assert fires inside disintegrateExprCore2 — it refuses an exprKey containing raw "!(&amp;".</text>
+</svg>
+<figcaption><b>One pass, before every load.</b> The compile is idempotent — a
+second pass on already-compiled input is a no-op — but it must run.</figcaption>
+</figure>
+
+<div class="key">
+<b>I-1, expanded.</b> The three places this fires are: (1) at the top of
+<code>addTheoremToMemory</code> on every external/conjecture load; (2) on the
+sender side as a logic block prepares its broadcast — every body placed into
+<code>mailOut.statements</code> is precompiled before it is mailed, never on the
+receiver's <code>addStatement</code>; (3) inside the compressor and CE-filter
+ingestion. A future load path that bypasses <code>addTheoremToMemory</code> must
+add the call itself — there is no central guard. The assert that catches the
+omission lives deep inside disintegration; by then the originating site is
+several stack frames removed.
+</div>
+
+<h3>8.2.1 &nbsp;The compiled-expressions registry</h3>
+<p>
+Every successful compile inserts (or finds) a row in <code>compiledExpressions</code>,
+the analyzer-level table mapping a compact name (<code>or7</code>,
+<code>existence2</code>, …) to the structural template it stands for: head shape,
+arity, the bound-variable signature, the original MPL body, a <code>category</code>
+label (<code>or</code> / <code>existence</code> / <code>and</code> /
+<code>implication</code>). Every later mechanism that needs to know “what is
+<code>or7</code>, really?” reads it from this registry — never from the string.
+</p>
+<p>
+Compaction (§3.5.3) of <i>proved</i> implications, run after the worker join,
+deposits its compact <code>implication&lt;N&gt;[…]</code> atoms into the same
+table. The registry is therefore the single source of truth for every synthetic
+operator the prover ever invented during a run.
+</p>
+
+<!-- ===================== 8.3 ===================== -->
+<h2 id="names">8.3 &nbsp;The five name families</h2>
+<p>
+Variables and witnesses are not strings drawn from an open vocabulary — every
+name belongs to one of five families, and the family tells every downstream
+machine how to treat it. The prefix is the family.
+</p>
+
+<dl class="terms">
+<dt>u_&lt;k&gt;</dt>
+<dd><em>Universal-template variable.</em> Appears in compiled definitions and
+admission-map templates. Behaves like a free variable: it is <i>not</i> bound by
+any enclosing <code>(>[…])</code>, and it pattern-matches anything when a rule
+fires. Used as the canonical placeholder in <code>admissionMap</code> /
+<code>admissionMapIntegration</code> keys (§4.2.3).</dd>
+
+<dt>v&lt;k&gt; (no underscore)</dt>
+<dd><em>Theorem-level bound variable.</em> A renaming pass at theorem ingest
+seeds <code>v0, v1, v2, …</code> in a deterministic left-to-right scan, replacing
+whatever the conjecturer/user wrote. This is the form that appears in
+<code>files/theorems/theorems.txt</code> and in chapter rows. The
+deterministic naming is why two semantically-identical theorems generated by
+different paths still compare equal as strings.</dd>
+
+<dt>it_&lt;k&gt;_lev_&lt;L&gt;_&lt;S&gt;</dt>
+<dd><em>Pass&nbsp;B iteration variable, algebra side.</em> Minted by
+<code>disintegrateExpr2</code> to stand for an as-yet-unknown value when an
+implication's premise contains a structural hole. Subject to the algebra-side
+admission gate (<code>isAdmitted</code> against <code>admissionMap</code>,
+fallback <code>isAllowedAsOperatorInput</code>, §4.2.1).</dd>
+
+<dt>int_lev_&lt;N&gt;_&lt;M&gt;</dt>
+<dd><em>Pass&nbsp;B iteration variable, integration side.</em> Same role as
+<code>it_</code>, but consumed by the integration path; admission is by
+<code>isAdmittedIntegration</code> against
+<code>admissionMapIntegration</code>, with the bare
+<code>admissionSetIntegration</code> as a fallback.</dd>
+
+<dt>repl_lev_&lt;N&gt;_&lt;M&gt;</dt>
+<dd><em>Substitution placeholder.</em> Used during anchor handling and
+substitution chains to mark “the M-th replacement at iteration level N.” These
+names are deliberately not stripped on the integration probe (the
+<code>removeUPrefixFromArguments</code> helper takes off <code>u_</code> but
+keeps <code>repl_</code>), so a substitution chain crosses the
+template/concrete boundary intact.</dd>
+
+</dl>
+
+<p>
+A sixth marker, the <code>_copy</code> suffix, is <i>not</i> a family of its
+own — it is a disambiguator that can attach to a name in any family. When a
+hypothesis is opened or an OR branch is seeded, the new scope sometimes needs a
+fresh copy of a variable that already exists in the parent; <code>_copy</code>
+keeps that copy syntactically distinct from the original. Two copies (e.g.
+<code>v1_copy_copy</code>) are possible and harmless.
+</p>
+
+<figure>
+<svg viewBox="0 0 860 250" role="img" aria-label="The five name families and how they cross between forms">
+  <defs><marker id="nf-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#B084EB"/></marker></defs>
+  <text x="430" y="22" fill="#5DCAA5" font-size="12.5" font-weight="bold" text-anchor="middle">family ↔ machine that consumes it</text>
+  <g font-size="10.5">
+    <rect x="16" y="44" width="120" height="42" rx="7" fill="#262938" stroke="#5DCAA5"/><text x="76" y="60" fill="#5DCAA5" text-anchor="middle">u_&lt;k&gt;</text><text x="76" y="76" fill="#8B8FA5" font-size="9" text-anchor="middle">template</text>
+    <rect x="16" y="94" width="120" height="42" rx="7" fill="#262938" stroke="#5DCAA5"/><text x="76" y="110" fill="#5DCAA5" text-anchor="middle">v&lt;k&gt;</text><text x="76" y="126" fill="#8B8FA5" font-size="9" text-anchor="middle">theorem-bound</text>
+    <rect x="16" y="144" width="120" height="42" rx="7" fill="#262938" stroke="#EF9F27"/><text x="76" y="160" fill="#EF9F27" text-anchor="middle">it_&lt;k&gt;</text><text x="76" y="176" fill="#8B8FA5" font-size="9" text-anchor="middle">algebra Pass B</text>
+    <rect x="16" y="194" width="120" height="42" rx="7" fill="#262938" stroke="#EF9F27"/><text x="76" y="210" fill="#EF9F27" text-anchor="middle">int_&lt;k&gt;</text><text x="76" y="226" fill="#8B8FA5" font-size="9" text-anchor="middle">integration Pass B</text>
+
+    <rect x="160" y="244" width="120" height="0" rx="0" fill="none"/>
+    <rect x="16" y="244" width="0" height="0" rx="0" fill="none"/>
+  </g>
+
+  <rect x="200" y="44"  width="170" height="42" rx="7" fill="#1C1F2B" stroke="#B084EB"/><text x="285" y="60" fill="#B084EB" font-size="10.5" text-anchor="middle">admissionMap key</text><text x="285" y="76" fill="#8B8FA5" font-size="9" text-anchor="middle">u_-prefixed template</text>
+  <rect x="200" y="94"  width="170" height="42" rx="7" fill="#1C1F2B" stroke="#B084EB"/><text x="285" y="110" fill="#B084EB" font-size="10.5" text-anchor="middle">chapter row variable</text><text x="285" y="126" fill="#8B8FA5" font-size="9" text-anchor="middle">verifier &amp; HTML</text>
+  <rect x="200" y="144" width="170" height="42" rx="7" fill="#1C1F2B" stroke="#B084EB"/><text x="285" y="160" fill="#B084EB" font-size="10.5" text-anchor="middle">isAdmitted gate</text><text x="285" y="176" fill="#8B8FA5" font-size="9" text-anchor="middle">algebra map probe</text>
+  <rect x="200" y="194" width="170" height="42" rx="7" fill="#1C1F2B" stroke="#B084EB"/><text x="285" y="210" fill="#B084EB" font-size="10.5" text-anchor="middle">isAdmittedIntegration</text><text x="285" y="226" fill="#8B8FA5" font-size="9" text-anchor="middle">integration map + set</text>
+
+  <path d="M136 64 L196 64" stroke="#B084EB" stroke-width="1.4" marker-end="url(#nf-ar)"/>
+  <path d="M136 114 L196 114" stroke="#B084EB" stroke-width="1.4" marker-end="url(#nf-ar)"/>
+  <path d="M136 164 L196 164" stroke="#B084EB" stroke-width="1.4" marker-end="url(#nf-ar)"/>
+  <path d="M136 214 L196 214" stroke="#B084EB" stroke-width="1.4" marker-end="url(#nf-ar)"/>
+
+  <rect x="404" y="44" width="440" height="192" rx="9" fill="#1C1F2B" stroke="#3A3D4A"/>
+  <text x="624" y="66" fill="#F0E8DC" font-size="11.5" font-weight="bold" text-anchor="middle">crossings between families</text>
+  <g font-size="10" fill="#F0E8DC">
+    <text x="418" y="90" text-anchor="start">▸ <tspan fill="#5DCAA5">u_</tspan> ↔ bare:
+      <tspan fill="#8B8FA5">removeUPrefixFromArguments (drops u_, keeps repl_)</tspan></text>
+    <text x="418" y="110" text-anchor="start">▸ <tspan fill="#EF9F27">it_</tspan> ↔
+      <tspan fill="#5DCAA5">u_</tspan>:
+      <tspan fill="#8B8FA5">isAdmitted probe rewrites on the fly</tspan></text>
+    <text x="418" y="130" text-anchor="start">▸ <tspan fill="#EF9F27">int_</tspan> ↔
+      <tspan fill="#5DCAA5">u_</tspan>:
+      <tspan fill="#8B8FA5">same, integration variant</tspan></text>
+    <text x="418" y="150" text-anchor="start">▸ <tspan fill="#5DCAA5">v</tspan> ↔
+      raw user/conjecturer name:
+      <tspan fill="#8B8FA5">renaming pass at theorem ingest</tspan></text>
+    <text x="418" y="170" text-anchor="start">▸ <tspan fill="#B084EB">repl_lev_N_M</tspan>:
+      <tspan fill="#8B8FA5">crosses template ↔ concrete intact</tspan></text>
+    <text x="418" y="190" text-anchor="start">▸ <tspan fill="#B084EB">_copy</tspan> suffix:
+      <tspan fill="#8B8FA5">copies are syntactically distinct, no semantic flag</tspan></text>
+    <text x="418" y="216" text-anchor="start"><tspan fill="#EF9F27">A wrong family at a probe boundary = silent miss.</tspan></text>
+  </g>
+</svg>
+<figcaption><b>Family is destiny.</b> The prefix decides which machine accepts
+the name. Cross a boundary without translating, and the lookup quietly returns
+nothing.</figcaption>
+</figure>
+
+<div class="note">
+<b>Reading rule.</b> When you (future agent) see a name in a dump, the prefix
+already tells you what the prover thinks it is — you don't need to track back
+to where it was minted. <code>it_5_lev_1_2</code> is an algebra Pass&nbsp;B witness;
+<code>repl_lev_2_0</code> is a substitution chain at depth 2, slot 0;
+<code>v3</code> is the third bound variable in this theorem's left-to-right
+scan, and so on. The five-family discipline is the single biggest cognitive
+win in the codebase.
+</div>
+
+<!-- ===================== 8.4 ===================== -->
+<h2 id="counters">8.4 &nbsp;Counters &amp; the singleton registry — <b>I-23</b></h2>
+<p>
+GL is run-deterministic: <i>the same configuration plus the same inputs always
+produces the same proof artefacts</i>. Names that look spontaneous —
+<code>or7</code>, <code>existence2</code>, <code>implication1359</code> — are
+the load-bearing test of that promise. They are not random; they are minted by
+five monotonic counters, seeded once at the start of every run and kept stable
+across batches by a single on-disk file.
+</p>
+
+<table>
+<tr><th>Counter</th><th>Mints</th><th>Lifetime</th></tr>
+<tr><td><code>implCounter</code></td><td><code>implication&lt;N&gt;</code> — compact-form proved implications (§3.5.3)</td><td>monotonic across batches; persists via the shared registry</td></tr>
+<tr><td><code>existenceCounter</code></td><td><code>existence&lt;N&gt;</code> — De-Morgan'd negated universals</td><td>monotonic across batches; persists via the shared registry</td></tr>
+<tr><td><code>andCounter</code></td><td><code>and&lt;N&gt;</code> — explicit conjunction operators created by the conjecturer</td><td>monotonic across batches; persists via the shared registry</td></tr>
+<tr><td><code>orCounter</code></td><td><code>or&lt;N&gt;</code> — De-Morgan'd negated conjunctions (the branching workhorses)</td><td>monotonic across batches; persists via the shared registry</td></tr>
+<tr><td><code>variableCounter</code></td><td><code>v&lt;k&gt;</code> — theorem bound variables, plus internal scope minting</td><td><i>resets</i> at the start of every batch; the only counter that does</td></tr>
+</table>
+
+<figure>
+<svg viewBox="0 0 760 240" role="img" aria-label="Counter lifecycle: read at startup, mint, save back at end of batch">
+  <defs><marker id="ct-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="228" y="14" width="304" height="40" rx="8" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="380" y="32" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">files/GL_binaries/GL_binary_shared.json</text>
+  <text x="380" y="48" fill="#8B8FA5" font-size="9.5" text-anchor="middle">the singleton registry</text>
+
+  <path d="M340 54 L160 92" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ct-ar)"/>
+  <text x="190" y="80" fill="#8B8FA5" font-size="10" text-anchor="start">load at startup</text>
+  <path d="M540 92 L420 54" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ct-ar)"/>
+  <text x="500" y="80" fill="#8B8FA5" font-size="10" text-anchor="start">save on shutdown</text>
+
+  <rect x="40" y="94" width="220" height="120" rx="9" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <text x="150" y="116" fill="#5DCAA5" font-size="11.5" font-weight="bold" text-anchor="middle">startup — seed</text>
+  <text x="150" y="138" fill="#F0E8DC" font-size="10" text-anchor="middle">implCounter   ← max+1</text>
+  <text x="150" y="154" fill="#F0E8DC" font-size="10" text-anchor="middle">existenceCounter ← max+1</text>
+  <text x="150" y="170" fill="#F0E8DC" font-size="10" text-anchor="middle">andCounter    ← max+1</text>
+  <text x="150" y="186" fill="#F0E8DC" font-size="10" text-anchor="middle">orCounter     ← max+1</text>
+  <text x="150" y="202" fill="#EF9F27" font-size="10" text-anchor="middle">variableCounter ← 0  (per batch)</text>
+
+  <path d="M260 154 L300 154" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ct-ar)"/>
+
+  <rect x="300" y="94" width="220" height="120" rx="9" fill="#1C1F2B" stroke="#EF9F27"/>
+  <text x="410" y="116" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">run — mint, never collide</text>
+  <text x="410" y="138" fill="#F0E8DC" font-size="10" text-anchor="middle">orCounter.fetch_add(1)</text>
+  <text x="410" y="154" fill="#F0E8DC" font-size="10" text-anchor="middle">→ or&lt;N&gt;</text>
+  <text x="410" y="174" fill="#8B8FA5" font-size="9.5" text-anchor="middle">register in compiledExpressions[N]</text>
+  <text x="410" y="190" fill="#8B8FA5" font-size="9.5" text-anchor="middle">deferred for implication</text>
+
+  <path d="M520 154 L560 154" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ct-ar)"/>
+
+  <rect x="560" y="94" width="180" height="120" rx="9" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <text x="650" y="116" fill="#5DCAA5" font-size="11.5" font-weight="bold" text-anchor="middle">end — persist</text>
+  <text x="650" y="140" fill="#F0E8DC" font-size="10" text-anchor="middle">merge maxima back</text>
+  <text x="650" y="156" fill="#F0E8DC" font-size="10" text-anchor="middle">into shared.json</text>
+  <text x="650" y="180" fill="#8B8FA5" font-size="9.5" text-anchor="middle">next batch sees</text>
+  <text x="650" y="194" fill="#8B8FA5" font-size="9.5" text-anchor="middle">the same maxima</text>
+</svg>
+<figcaption><b>The cross-batch stability mechanism.</b> The shared
+registry is the only piece of state that survives between batches; the four
+spontaneous-name counters are seeded from it and saved back into it.</figcaption>
+</figure>
+
+<h3>8.4.1 &nbsp;Why <code>variableCounter</code> is the odd one out</h3>
+<p>
+<code>v&lt;k&gt;</code> names are <i>local</i> to a theorem — there is no
+semantic reason for <code>v1</code> in theorem A to mean the same thing as
+<code>v1</code> in theorem B. Resetting per batch keeps the names compact;
+nothing depends on global uniqueness. The other four counters mint names that
+<i>do</i> need global uniqueness (a chapter referring to <code>or7</code> means
+exactly the <code>or7</code> registered in <code>compiledExpressions[7]</code>),
+so they monotonically grow.
+</p>
+
+<h3>8.4.2 &nbsp;The race that <code>implCounter</code> nearly lost</h3>
+<p>
+Inline calls to <code>compileImplicationToCompact</code> during proof — one of
+the eight broadcast sites — used to mutate <code>implCounter</code> from
+worker threads. Two runs on the same input minted <code>implication1359</code>
+and <code>implication1361</code> respectively. The fix (D-76, see
+<a href="parallel.html#why">§5.4</a>) defers every compaction to a sorted
+single-threaded pass after the worker join. The race illustrates the rule the
+rest of this chapter rests on: <i>names are part of the proof; they must be
+deterministic; therefore minting them is a serialised post-join activity, never
+an inline worker activity</i>.
+</p>
+
+<!-- ===================== 8.5 ===================== -->
+<h2 id="namemap">8.5 &nbsp;<code>NameMap</code>, <code>encodePush</code>, scope comparison — <b>I-2 · I-3</b></h2>
+<p>
+The four counters in §8.4 mint <i>operator</i> names. <code>NameMap</code> mints
+<i>scope</i> names — the IDs that show up in every fact's
+<code>validityName</code>. The two systems are independent on purpose: a name
+like <code>or7</code> is global and grows across batches; a scope ID like
+<code>17</code> (decoding to <code>main_boundary_hypo_v0</code>) is per-prover
+and recycled on demand.
+</p>
+
+<h3>8.5.1 &nbsp;The one and only mint path</h3>
+<p>
+<code>NameMap::encodePush(parentId, payload)</code> is the single function that
+creates a non-<code>"main"</code> scope. It does three things in one atomic step:
+returns a fresh <code>int16_t</code>; interns the canonical string
+<code>parent + "_boundary_" + payload</code> into the cold name table; records
+its parent ID and own payload sub-id in <code>validityNodes</code> (the scope
+forest) so <code>comparable</code> and <code>deeperOf</code> can answer ancestor
+queries by walking the parent chain. The forest (<code>validityNodes</code>) is
+paged on the block's arena and deloads with it; an
+ID equals its cold-table ID directly (<code>"main"</code> is lazily interned as
+ID&nbsp;1 on first use — no offset).
+</p>
+<ul class="inv">
+<li><b>I-2.</b> No non-root scope may be created by concatenating strings.
+Raw <code>parent + "_boundary_" + payload</code> outside <code>encodePush</code>
+yields the right <i>string</i> but no <code>validityNodes</code> entry, so
+<code>comparable</code> sees the new scope as unrelated to its parent — and the
+mail router silently drops messages for it.</li>
+</ul>
+
+<h3>8.5.2 &nbsp;The reference hazard — <b>I-3</b></h3>
+<p>
+<code>NameMap::decode(id)</code> now returns an <i>owned</i> string (the bytes
+live on cold pages), so it is always safe. The hazard survives only for the
+zero-copy views: <code>decodeView(id)</code> hands back a span over the cold
+bytes, and an element read of the paged scope metadata aliases page memory. A
+nested mint (or a deload) can grow or relocate a page and dangle such a view —
+the bug appears as garbled scope names in dumps, or a string compare that
+<i>used to match</i> failing two cycles later.
+</p>
+<div class="key">
+<b>Pattern.</b> If you (future agent) hold a <code>decodeView</code> span (or a
+paged-metadata element) and then mint another scope (or anything that might
+transitively mint), copy it out first — or use the owning <code>decode</code>.
+The old <code>stackOf</code> reference into the metadata is retired; callers use
+the element accessors, so no long-lived reference into paged storage escapes.
+</div>
+
+<h3>8.5.3 &nbsp;The scope forest and the ancestor query</h3>
+<p>
+The scopes form a forest: every non-root ID descends from one parent, rooted at
+<code>"main"</code>. Each scope stores just its parent ID (one
+<code>ValidityNode</code> in <code>validityNodes</code>); the full ancestor
+chain is walked on demand. To answer <code>comparable(a, b)</code> (“is one an
+ancestor of the other?”) the runtime walks <code>b</code>'s parent chain looking
+for <code>a</code>, and vice versa;
+<code>deeperOf(a, b)</code> is the same test with a different return shape. The
+checks are O(scope depth), which in practice never exceeds the depth of nested
+hypotheses inside one theorem — a small constant. <i>There is no separate
+<code>pairMap</code> cache</i>: it was dropped because the per-scope ancestor
+list already holds everything <code>comparable</code> needs.
+</p>
+
+<figure>
+<svg viewBox="0 0 760 240" role="img" aria-label="the scope ancestor forest, encodePush as the sole mint">
+  <defs><marker id="pm-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="320" y="14" width="120" height="36" rx="7" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="380" y="36" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">id 1 — "main"</text>
+
+  <line x1="380" y1="50" x2="160" y2="84" stroke="#5DCAA5" stroke-width="1.2"/>
+  <line x1="380" y1="50" x2="380" y2="84" stroke="#5DCAA5" stroke-width="1.2"/>
+  <line x1="380" y1="50" x2="600" y2="84" stroke="#5DCAA5" stroke-width="1.2"/>
+
+  <rect x="100" y="86" width="120" height="36" rx="7" fill="#262938" stroke="#5DCAA5"/><text x="160" y="108" fill="#F0E8DC" font-size="10.5" text-anchor="middle">id 12 — hypo_v0</text>
+  <rect x="320" y="86" width="120" height="36" rx="7" fill="#262938" stroke="#5DCAA5"/><text x="380" y="108" fill="#F0E8DC" font-size="10.5" text-anchor="middle">id 13 — int_lev2</text>
+  <rect x="540" y="86" width="120" height="36" rx="7" fill="#262938" stroke="#5DCAA5"/><text x="600" y="108" fill="#F0E8DC" font-size="10.5" text-anchor="middle">id 14 — ordis_A</text>
+
+  <line x1="160" y1="122" x2="100" y2="156" stroke="#5DCAA5" stroke-width="1.2"/>
+  <line x1="160" y1="122" x2="220" y2="156" stroke="#5DCAA5" stroke-width="1.2"/>
+  <line x1="600" y1="122" x2="540" y2="156" stroke="#5DCAA5" stroke-width="1.2"/>
+  <line x1="600" y1="122" x2="660" y2="156" stroke="#5DCAA5" stroke-width="1.2"/>
+
+  <rect x="40"  y="158" width="120" height="34" rx="7" fill="#1C1F2B" stroke="#B084EB"/><text x="100" y="178" fill="#B084EB" font-size="10" text-anchor="middle">id 22 — orint_X</text>
+  <rect x="164" y="158" width="120" height="34" rx="7" fill="#1C1F2B" stroke="#B084EB"/><text x="224" y="178" fill="#B084EB" font-size="10" text-anchor="middle">id 23 — orint_Y</text>
+  <rect x="478" y="158" width="120" height="34" rx="7" fill="#1C1F2B" stroke="#B084EB"/><text x="538" y="178" fill="#B084EB" font-size="10" text-anchor="middle">id 26 — hypo_v1</text>
+  <rect x="600" y="158" width="124" height="34" rx="7" fill="#1C1F2B" stroke="#B084EB"/><text x="662" y="178" fill="#B084EB" font-size="10" text-anchor="middle">id 27 — hypo_v2</text>
+
+  <text x="380" y="222" fill="#8B8FA5" font-size="11" text-anchor="middle">comparable(22, 14) → walk 22→12→1, walk 14→1; no overlap below main → not comparable.</text>
+  <text x="380" y="236" fill="#8B8FA5" font-size="11" text-anchor="middle">comparable(22, 12) → 22's chain hits 12 → true; deeperOf returns 22.</text>
+</svg>
+<figcaption><b>One forest, two queries.</b> Each scope records just its parent
+edge (<code>validityNodes</code>); a walk up the chain answers every cross-scope
+question the runtime asks — no full lists, no separate cache.</figcaption>
+</figure>
+
+<h3>8.5.4 &nbsp;Why the canonical string carries the chain</h3>
+<p>
+The runtime uses the <i>numeric</i> ID for every fast operation. But the
+canonical <i>string</i> — <code>main_boundary_hypo_v0_boundary_int_lev2_boundary_orint_X</code> —
+is what gets written into chapter rows and into <code>theorems.txt</code>.
+The string carries the whole ancestor chain so the exporter and the verifier
+can recover the scope structure without shipping the <code>validityNodes</code>
+runtime forest. Two-track redundancy: fast at runtime, self-describing on disk.
+</p>
+
+<!-- ===================== 8.6 ===================== -->
+<h2 id="encoded">8.6 &nbsp;<code>EncodedExpression</code> → <code>IntNormalizedKey</code></h2>
+<p>
+A compiled string is canonical for humans. <code>EncodedExpression</code> is
+the in-memory wrapper that pairs it with everything needed for the hash engine:
+the head name, the argument list, top-level negation, iteration/level metadata,
+the <code>validityName</code>. <code>IntNormalizedKey</code> is the packed
+integer projection of that wrapper — the actual key into
+<code>encodedMap</code>.
+</p>
+
+<table>
+<tr><th>Wrapper</th><th>What it adds</th></tr>
+<tr><td><code>EncodedExpression</code></td><td>The full pair: original MPL string + the parsed head/args + top-level negation flag + iteration level + the <code>validityName</code>. Used by emit paths that need the string and the structure.</td></tr>
+<tr><td><code>ExpressionWithValidity</code></td><td>A lighter pair — just <code>(expression, validityName)</code>. The currency of <code>newStatements</code>, of mail, and of the chapter walker.</td></tr>
+<tr><td><code>IntNormalizedKey</code></td><td>A pointer+length view — <code>numberExpressions</code>, <code>length</code>, and a non-owning <code>const int16_t* data</code> into <code>KeyArena</code> — over the packed run <code>[ headId, arg0Id, arg1Id, … ]</code>. Cheap to hash, cheap to compare. The hot-path key.</td></tr>
+<tr><td><code>NameMap-Id</code></td><td>The <code>int16_t</code> a string lives at in the active name registry. Up to <code>MAX_NAME_IDS</code> (32000, near the <code>int16_t</code> ceiling 32767) names per registry — large enough for every spontaneous and bound name in a run.</td></tr>
+</table>
+
+<figure>
+<svg viewBox="0 0 760 230" role="img" aria-label="EncodedExpression and its projection into IntNormalizedKey">
+  <defs><marker id="ie-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+
+  <rect x="22" y="30" width="280" height="184" rx="10" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <text x="162" y="52" fill="#5DCAA5" font-size="11.5" font-weight="bold" text-anchor="middle">EncodedExpression</text>
+
+  <rect x="36"  y="62"  width="252" height="22" rx="4" fill="#262938" stroke="#3A3D4A"/><text x="46"  y="78"  fill="#F0E8DC" font-size="10">original   "(in3[v1,zero,v1,+])"</text>
+  <rect x="36"  y="86"  width="252" height="22" rx="4" fill="#262938" stroke="#3A3D4A"/><text x="46"  y="102" fill="#F0E8DC" font-size="10">headName   "in3"</text>
+  <rect x="36"  y="110" width="252" height="22" rx="4" fill="#262938" stroke="#3A3D4A"/><text x="46"  y="126" fill="#F0E8DC" font-size="10">args       ["v1","zero","v1","+"]</text>
+  <rect x="36"  y="134" width="252" height="22" rx="4" fill="#262938" stroke="#3A3D4A"/><text x="46"  y="150" fill="#F0E8DC" font-size="10">negation   false</text>
+  <rect x="36"  y="158" width="252" height="22" rx="4" fill="#262938" stroke="#3A3D4A"/><text x="46"  y="174" fill="#F0E8DC" font-size="10">level      0</text>
+  <rect x="36"  y="182" width="252" height="22" rx="4" fill="#262938" stroke="#3A3D4A"/><text x="46"  y="198" fill="#F0E8DC" font-size="10">validity   id 1  ("main")</text>
+
+  <path d="M302 130 L348 130" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ie-ar)"/>
+  <text x="324" y="120" fill="#8B8FA5" font-size="10" text-anchor="middle">NameMap::encode</text>
+
+  <rect x="348" y="60"  width="392" height="148" rx="10" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="544" y="82" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">IntNormalizedKey  (packed int16_t)</text>
+  <rect x="364" y="94"  width="86" height="38" rx="5" fill="#262938" stroke="#3A3D4A"/><text x="407" y="118" fill="#F0E8DC" font-size="10.5" text-anchor="middle">[0]&nbsp;in3 → 71</text>
+  <rect x="454" y="94"  width="86" height="38" rx="5" fill="#262938" stroke="#3A3D4A"/><text x="497" y="118" fill="#F0E8DC" font-size="10.5" text-anchor="middle">[1]&nbsp;v1 → 14</text>
+  <rect x="544" y="94"  width="86" height="38" rx="5" fill="#262938" stroke="#3A3D4A"/><text x="587" y="118" fill="#F0E8DC" font-size="10.5" text-anchor="middle">[2]&nbsp;zero → 5</text>
+  <rect x="634" y="94"  width="86" height="38" rx="5" fill="#262938" stroke="#3A3D4A"/><text x="677" y="118" fill="#F0E8DC" font-size="10.5" text-anchor="middle">[3]&nbsp;v1 → 14</text>
+  <rect x="454" y="134" width="86" height="38" rx="5" fill="#262938" stroke="#3A3D4A"/><text x="497" y="158" fill="#F0E8DC" font-size="10.5" text-anchor="middle">[4]&nbsp;+ → 3</text>
+  <text x="544" y="194" fill="#8B8FA5" font-size="10" text-anchor="middle">hash(key) → encodedMap.lookup → list&lt;LMV&gt;</text>
+</svg>
+<figcaption><b>One expression, two views.</b> The full structured form is kept
+for emit; the packed integer form is what the hot path keys on.</figcaption>
+</figure>
+
+<h3>8.6.1 &nbsp;Why hashing is sound on the integer projection</h3>
+<p>
+Two expressions that should fire the same rule must produce the same
+<code>IntNormalizedKey</code>. That is guaranteed by three properties working
+together:
+</p>
+<ul class="inv">
+<li><b>Structural normalisation.</b> <code>!(&amp;X)</code> never reaches the
+encoder; it has been rewritten to <code>or&lt;N&gt;</code> by §8.2.</li>
+<li><b>Deterministic bound-variable renaming.</b> <code>v0..v&lt;k&gt;</code> are
+assigned by a fixed left-to-right walk, so two alpha-equivalent theorems pick
+the same names.</li>
+<li><b>Single name registry.</b> Every name passes through
+<code>NameMap::encode</code>, which returns the same <code>int16_t</code> for
+the same string — the second character of the proof.</li>
+</ul>
+
+<h3>8.6.2 &nbsp;The owner-set existence index</h3>
+<p>
+<code>HashMemory</code> is the umbrella that owns the firing index. Alongside
+<code>encodedMap</code> (the premise-key → fireable-rules map) it carries
+<code>normalizedEncodedKeys</code>: an existence index keyed on the same
+<code>IntNormalizedKey</code>, whose value is the set of
+<i>(implication, scope)</i> owners that installed a marker rule for that key.
+When a firing rule retires or is shadowed by an equivalence-class rewrite,
+<code>normalizedEncodedKeys</code> drops that owner; only when the owner-set
+becomes empty does the <code>encodedMap</code> entry itself shrink. The pattern
+is refcount-by-owner rather than naked refcount — it lets the runtime answer
+“does any rule for this shape still exist?” in O(1) without a full sweep.
+</p>
+
+<!-- ===================== 8.7 ===================== -->
+<h2 id="pool">8.7 &nbsp;The static-memory floor — <b>I-95</b></h2>
+<p>
+The hot path allocates millions of small objects per second — every hash
+request, every fired emission, every mail message, every cold-map entry.
+Routing those through the general allocator (<code>malloc</code> /
+<code>new</code> / <code>std::vector</code>) means contending with mimalloc's
+caches, walking free-lists, and occasionally hitting the OS allocator at a
+millisecond cost; worse, it leaves the working set unbounded and the layout
+non-deterministic — neither acceptable for the silicon target, where the prover
+must run inside a fixed on-die store. GL's answer is to make <i>all</i> prover
+memory static: one large reservation, taken once at program start, never grown,
+never returned to the OS during the run.
+</p>
+<p>
+That reservation is owned by <code>GlobalMemoryManager</code> — the root of the
+statification memory hierarchy detailed in
+<a href="memory.html#hierarchy">Chapter&nbsp;6</a>. It carves the pool into
+equal fixed-size <i>blocks</i> and hands them out on demand: a per-logic-block
+memory manager calls <code>acquireBlock</code> when it needs storage and
+<code>releaseBlock</code> when its logic block deloads to SSD or is destroyed.
+Both run under one internal mutex, because logic blocks are processed in
+parallel; recycled blocks are re-granted before fresh ones, so the carve cursor
+tracks the high-water mark of simultaneous demand rather than total allocations.
+</p>
+
+<figure>
+<svg viewBox="0 0 760 196" role="img" aria-label="GlobalMemoryManager — one static reservation carved into fixed-size blocks, granted and recycled under a mutex">
+  <text x="380" y="22" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">GlobalMemoryManager — one ::operator new reservation, never grown</text>
+  <rect x="40" y="36" width="680" height="56" rx="10" fill="#1C1F2B" stroke="#EF9F27" stroke-width="2"/>
+  <rect x="50"  y="48" width="78" height="32" rx="4" fill="#24382C" stroke="#5DCAA5"/><text x="89"  y="68" fill="#F0E8DC" font-size="9" text-anchor="middle">LB 4 · in use</text>
+  <rect x="134" y="48" width="78" height="32" rx="4" fill="#24382C" stroke="#5DCAA5"/><text x="173" y="68" fill="#F0E8DC" font-size="9" text-anchor="middle">LB 7 · in use</text>
+  <rect x="218" y="48" width="78" height="32" rx="4" fill="#262938" stroke="#8B8FA5" stroke-dasharray="3 2"/><text x="257" y="68" fill="#8B8FA5" font-size="9" text-anchor="middle">free</text>
+  <rect x="302" y="48" width="78" height="32" rx="4" fill="#24382C" stroke="#5DCAA5"/><text x="341" y="68" fill="#F0E8DC" font-size="9" text-anchor="middle">LB 1 · in use</text>
+  <rect x="386" y="48" width="78" height="32" rx="4" fill="#262938" stroke="#8B8FA5" stroke-dasharray="3 2"/><text x="425" y="68" fill="#8B8FA5" font-size="9" text-anchor="middle">recycled</text>
+  <rect x="470" y="48" width="78" height="32" rx="4" fill="#24382C" stroke="#5DCAA5"/><text x="509" y="68" fill="#F0E8DC" font-size="9" text-anchor="middle">LB 2 · in use</text>
+  <rect x="554" y="48" width="78" height="32" rx="4" fill="#262938" stroke="#8B8FA5" stroke-dasharray="3 2"/><text x="593" y="68" fill="#8B8FA5" font-size="9" text-anchor="middle">free</text>
+  <rect x="638" y="48" width="72" height="32" rx="4" fill="#262938" stroke="#8B8FA5" stroke-dasharray="3 2"/><text x="674" y="68" fill="#8B8FA5" font-size="9" text-anchor="middle">free</text>
+  <text x="380" y="118" fill="#5DCAA5" font-size="10.5" text-anchor="middle">acquireBlock / releaseBlock — one mutex (logic blocks run in parallel)</text>
+  <text x="380" y="140" fill="#8B8FA5" font-size="10" text-anchor="middle">deload returns an idle LB's blocks to the pool; reload re-grants them on next access</text>
+  <text x="380" y="168" fill="#EF9F27" font-size="10.5" text-anchor="middle">No heap fallback — pool exhaustion is an assert on static_pool_bytes.</text>
+</svg>
+<figcaption><b>One reservation, fixed-size blocks.</b> The pool is taken once
+and never grows; blocks are granted on demand and recycled on deload, all under
+a single mutex. Physical block identity is never observable.</figcaption>
+</figure>
+
+<ul class="inv">
+<li><b>I-95.</b> Every prover allocation comes from a pool block, never the
+general allocator. Pool exhaustion is an <code>assert</code> naming the
+configured pool size (<code>static_pool_bytes</code> and its siblings), never a
+fallback heap allocation — a sizing problem must surface at its origin, not be
+papered over.</li>
+<li><b>Deload / reload.</b> When the pool fills, the largest idle logic block is
+written to SSD and its blocks return to the dispenser; the bytes are re-read on
+the next access. The round-trip is a pure function of logical content — physical
+block identity and grant order are never observable
+(<a href="memory.html#deload">§6.5</a>).</li>
+<li><b>Nothing escapes to the heap.</b> Under MPU&nbsp;0.1 <i>all</i> prover
+state is static — the cold string tables, the encoded maps, the validity forest,
+the cross-LB mail log, even the logic-block object shells each draw from a pool.
+There is no “long-lived containers use ordinary heap” tier; the only heap left
+is start-up scaffolding outside the proof loop.</li>
+</ul>
+
+<!-- ===================== 8.8 ===================== -->
+<h2 id="fail">8.8 &nbsp;Failure modes</h2>
+<p>
+Compilation is the layer where mistakes are hardest to notice — the bug is a
+hash that <i>silently</i> fails to match. The patterns below have all bitten
+in practice; treat them as the canonical things to check first.
+</p>
+
+<dl class="terms">
+<dt>“This rule never fires.”</dt>
+<dd>Raw <code>!(&amp;…)</code> reached <code>addToHashMemory</code> without
+being precompiled. The rule got installed under one key, the requesting
+expression hashes under another. <em>Check</em>: the load path; was
+<code>precompileStructuralOperators</code> called first?</dd>
+
+<dt>“Two runs produced different <code>implication&lt;N&gt;</code> numbers.”</dt>
+<dd>A worker thread mutated <code>implCounter</code>. <em>Check</em>: every
+new compaction site goes through <code>recordPendingCompaction</code>, not
+inline compile.</dd>
+
+<dt>“The scope name string is right but <code>comparable</code> returns
+false.”</dt>
+<dd>The scope was created by string concatenation, bypassing
+<code>encodePush</code>. <em>Check</em>: every non-<code>main</code> scope is
+minted via <code>encodePush(parent, payload)</code>.</dd>
+
+<dt>“A scope name in a dump is garbled.”</dt>
+<dd>A reference into <code>NameMap</code>'s internal vector survived a nested
+mint. <em>Check</em>: every <code>decode</code> / <code>idToSub[]</code> result
+is copied into a local <code>std::string</code> before any further mint.</dd>
+
+<dt>“Wall-clock has a long tail with stalls.”</dt>
+<dd>A refactor introduced dynamic allocation in the hot loop. <em>Check</em>:
+no <code>malloc</code> / <code>new</code> / dynamically-grown
+<code>std::vector&lt;char&gt;</code> on any per-step path.</dd>
+
+<dt>“A chapter row references an operator the registry doesn't know.”</dt>
+<dd>A spontaneous name was minted but never registered into
+<code>compiledExpressions</code>; or the registry was reseeded from the wrong
+shared file. <em>Check</em>: <code>files/GL_binaries/GL_binary_shared.json</code>
+is the canonical maxima source; counters seed from it.</dd>
+</dl>
+
+<div class="note">
+The next chapter takes a different cut at canonicality — not the syntactic
+shape of an expression but its <b>type</b>: which variables can stand for what
+kind of value, and how anchors tie that information into every theorem.
+</div>
+
+<div class="pager">
+  <a href="provenance.html">&larr; 7 · Provenance</a>
+  <a href="anchors.html">9 · Anchors &amp; types &rarr;</a>
+</div>
+
+<div class="foot">
+<b>License.</b> Generative Logic prover reference. © 2025-2026 Generative Logic UG
+(haftungsbeschränkt). Dual-licensed under the <b>GNU Affero General Public License
+v3 or later</b> and a <b>commercial license</b>; this document and the proof
+artefacts it describes inherit the same terms — commercial terms at
+<a href="https://generative-logic.com/license">generative-logic.com/license</a>.
+</div>
+
+</main>
+</body>
+</html>

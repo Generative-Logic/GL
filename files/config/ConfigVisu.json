@@ -51,7 +51,7 @@
     "definition_sets": {
       "1": ["P(x(1)(1))", true], "2": ["P(1)", true], "3": ["P(1)", false]
     },
-    "full_mpl": "fXY.txt",
+    "full_mpl": "fXY.mpl",
 	"short_mpl": "(fXY[f,X,Y])",
 	"max_count_per_conjecture": 0,
 	"input_args": [],
@@ -63,7 +63,7 @@
     "definition_sets": {
       "1": ["P(x(1)(x(1)(1)))", false], "2": ["P(1)", false], "3": ["P(1)", false], "4": ["P(1)", false]
     },
-    "full_mpl": "fXYZ.txt",
+    "full_mpl": "fXYZ.mpl",
 	"short_mpl": "(fXYZ[f,X,Y,Z])",
 	"max_count_per_conjecture": 0,
 	"input_args": [],
@@ -79,7 +79,7 @@
       "4": ["P(x(1)(x(1)(1)))", true],
       "5": ["P(x(1)(x(1)(1)))", true]
     },
-    "full_mpl": "NaturalNumbers.txt",
+    "full_mpl": "NaturalNumbers.mpl",
 	"short_mpl": "(NaturalNumbers[N,i0,s,+,*])",
 	"max_count_per_conjecture": 0,
 	"input_args": [],
@@ -91,7 +91,7 @@
     "definition_sets": {
       "1": ["(1)", true], "2": ["(1)", true], "3": ["(1)", true], "4": ["P(x(1)(x(1)(1)))", false]
     },
-    "full_mpl": "residual.txt",
+    "full_mpl": "residual.mpl",
 	"short_mpl": "(residual[n,m,p,+])",
 	"max_count_per_conjecture": 0,
 	"input_args": ["n", "m"],
@@ -103,7 +103,7 @@
     "definition_sets": {
       "1": ["P(1)", false], "2": ["P(x(1)(x(1)(1)))", false], "3": ["(1)", false], "4": ["(1)", true], "5": ["P(1)", true]
     },
-    "full_mpl": "interval.txt",
+    "full_mpl": "interval.mpl",
 	"short_mpl": "(interval[N,+,n,m,M])",
 	"max_count_per_conjecture": 0,
 	"input_args": ["n", "m"],
@@ -115,7 +115,7 @@
     "definition_sets": {
       "1": ["P(x(1)(1))", false], "2": ["P(1)", false]
     },
-    "full_mpl": "infiniteSequence.txt",
+    "full_mpl": "infiniteSequence.mpl",
 	"short_mpl": "(infiniteSequence[f,N])",
 	"max_count_per_conjecture": 0,
 	"input_args": [],
@@ -127,7 +127,7 @@
     "definition_sets": {
       "1": ["P(1)", false], "2": ["P(x(1)(x(1)(1)))", false], "3": ["(1)", true], "4": ["P(x(1)(1))", true], "5": ["P(x(1)(1))", true]
     },
-    "full_mpl": "limitSequence.txt",
+    "full_mpl": "limitSequence.mpl",
 	"short_mpl": "(limitSequence[N,+,n,f,g])",
 	"max_count_per_conjecture": 0,
 	"input_args": ["n"],
@@ -139,7 +139,7 @@
     "definition_sets": {
       "1": ["P(1)", false], "2": ["P(x(1)(x(1)(1)))", false], "3": ["P(1)", true], "4": ["(1)", true], "5": ["P(1)", true]
     },
-    "full_mpl": "limitSet.txt",
+    "full_mpl": "limitSet.mpl",
 	"short_mpl": "(limitSet[N,+,M,n,L])",
 	"max_count_per_conjecture": 0,
 	"input_args": [],
@@ -151,7 +151,7 @@
     "definition_sets": {
       "1": ["P(1)", false], "2": ["P(x(1)(x(1)(1)))", false], "3": ["P(x(1)(1))", true], "4": ["(1)", false], "5": ["(1)", true], "6": ["P(1)", true], "7": ["(1)", true]
     },
-    "full_mpl": "constSeq.txt",
+    "full_mpl": "constSeq.mpl",
 	"short_mpl": "(constSeq[N,+,f,c,n,M,m])",
 	"max_count_per_conjecture": 0,
 	"input_args": [],
@@ -163,7 +163,7 @@
     "definition_sets": {
       "1": ["P(1)", false], "2": ["P(x(1)(1))", false], "3": ["P(x(1)(x(1)(1)))", false], "4": ["P(1)", true], "5": ["(1)", true], "6": ["P(1)", true], "7": ["(1)", true], "8": ["(1)", true]
     },
-    "full_mpl": "nonInterval.txt",
+    "full_mpl": "nonInterval.mpl",
 	"short_mpl": "(nonInterval[N,s,+,M,n,L,m,k])",
 	"max_count_per_conjecture": 0,
 	"input_args": [],
@@ -175,7 +175,7 @@
     "definition_sets": {
       "1": ["P(1)", false], "2": ["P(x(1)(1))", false], "3": ["P(x(1)(x(1)(1)))", false], "4": ["P(x(1)(1))", true], "5": ["(1)", true], "6": ["P(x(1)(1))", true], "7": ["(1)", false], "8": ["(1)", false], "9": ["(1)", true]
     },
-    "full_mpl": "nonSequence.txt",
+    "full_mpl": "nonSequence.mpl",
 	"short_mpl": "(nonSequence[N,s,+,f,n,g,m,k,c])",
 	"max_count_per_conjecture": 0,
 	"input_args": [],
@@ -188,7 +188,7 @@
       "1": ["P(1)", false], "2": ["P(x(1)(x(1)(1)))", false], "3": ["(1)", true],
       "4": ["(1)", true], "5": ["P(x(1)(1))", true], "6": ["P(x(1)(1))", true]
     },
-    "full_mpl": "split.txt",
+    "full_mpl": "split.mpl",
 	"short_mpl": "(split[N,+,n,m,f,g])",
 	"max_count_per_conjecture": 0,
 	"input_args": ["n", "m"],
@@ -201,7 +201,7 @@
       "1": ["P(1)", false], "2": ["P(x(1)(1))", false], "3": ["P(x(1)(x(1)(1)))", false],
       "4": ["P(x(1)(1))", false], "5": ["(1)", true], "6": ["(1)", true], "7": ["(1)", true]
     },
-    "full_mpl": "fold.txt",
+    "full_mpl": "fold.mpl",
 	"short_mpl": "(fold[N,s,+,f,n,m,p])",
 	"max_count_per_conjecture": 0,
 	"input_args": ["n", "m"],
@@ -213,7 +213,7 @@
     "definition_sets": {
       "1": ["P(1)", false], "2": ["P(x(1)(x(1)(1)))", false], "3": ["(1)", true], "4": ["(1)", true]
     },
-    "full_mpl": "preorder.txt",
+    "full_mpl": "preorder.mpl",
 	"short_mpl": "(preorder[N,+,n,m])",
 	"max_count_per_conjecture": 0,
 	"input_args": ["n", "m"],
@@ -225,7 +225,7 @@
     "definition_sets": {
       "1": ["P(1)", false], "2": ["P(x(1)(1))", false]
     },
-    "full_mpl": "identity.txt",
+    "full_mpl": "identity.mpl",
 	"short_mpl": "(identity[X,id])",
 	"max_count_per_conjecture": 0,
 	"input_args": [],
@@ -237,7 +237,7 @@
     "definition_sets": {
       "1": ["P(1)", false], "2": ["P(x(1)(x(1)(1)))", false], "3": ["(1)", true], "4": ["(1)", true], "5": ["P(x(1)(1))", true]
     },
-    "full_mpl": "sequence.txt",
+    "full_mpl": "sequence.mpl",
 	"short_mpl": "(sequence[N,+,n,m,seq])",
 	"max_count_per_conjecture": 0,
 	"input_args": [],
@@ -250,7 +250,7 @@
       "1": ["(1)", true], "2": ["(1)", true],
       "3": ["P(1)", true]
     },
-    "full_mpl": "EnumerationSet2.txt",
+    "full_mpl": "EnumerationSet2.mpl",
     "short_mpl": "(EnumerationSet2[a,b,M])",
     "max_count_per_conjecture": 0,
     "input_args": [],
@@ -263,7 +263,7 @@
       "1": ["(1)", true], "2": ["(1)", true], "3": ["(1)", true],
       "4": ["P(1)", true]
     },
-    "full_mpl": "EnumerationSet3.txt",
+    "full_mpl": "EnumerationSet3.mpl",
     "short_mpl": "(EnumerationSet3[a,b,c,M])",
     "max_count_per_conjecture": 0,
     "input_args": [],
@@ -285,7 +285,7 @@
 	  "7": ["(1)", true],
 	  "8": ["P(x(1)(1))", true]
     },
-    "full_mpl": "AnchorGauss.txt",
+    "full_mpl": "AnchorGauss.mpl",
 	"short_mpl": "(AnchorGauss[N,i0,s,+,*,i1,i2,id])",
 	"max_count_per_conjecture": 0,
 	"input_args": [],
@@ -302,14 +302,14 @@
       "5": ["P(x(1)(x(1)(1)))", true],
 	  "6": ["(1)", true]
     },
-    "full_mpl": "AnchorPeano.txt",
+    "full_mpl": "AnchorPeano.mpl",
 	"short_mpl": "(AnchorPeano[N,i0,s,+,*,i1])",
 	"max_count_per_conjecture": 0,
 	"input_args": [],
 	"output_args": [],
 	"max_size_expression": 5
   },
-  "AnchorIncubator": {
+  "AnchorIncubator8": {
     "arity": 14,
     "definition_sets": {
       "1": ["P(1)", true],
@@ -327,8 +327,28 @@
       "13": ["(1)", true],
       "14": ["(1)", true]
     },
-    "full_mpl": "AnchorIncubator.txt",
-	"short_mpl": "(AnchorIncubator[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])",
+    "full_mpl": "AnchorIncubator8.mpl",
+	"short_mpl": "(AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])",
+	"max_count_per_conjecture": 0,
+	"input_args": [],
+	"output_args": [],
+	"max_size_expression": 6
+  },
+  "AnchorIncubator3": {
+    "arity": 9,
+    "definition_sets": {
+      "1": ["P(1)", true],
+      "2": ["(1)", true],
+      "3": ["P(x(1)(1))", true],
+      "4": ["P(x(1)(x(1)(1)))", true],
+      "5": ["P(x(1)(x(1)(1)))", true],
+      "6": ["(1)", true],
+      "7": ["(1)", true],
+      "8": ["P(x(1)(1))", true],
+      "9": ["(1)", true]
+    },
+    "full_mpl": "AnchorIncubator3.mpl",
+	"short_mpl": "(AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])",
 	"max_count_per_conjecture": 0,
 	"input_args": [],
 	"output_args": [],

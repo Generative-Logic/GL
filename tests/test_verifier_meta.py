@@ -41,7 +41,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests.test_harness import (  # noqa: E402
     register, make_state_with_binaries, make_proof_line,
-    assert_chapter_meta_fail, run_all_tests,
+    assert_chapter_meta_fail, assert_chapter_meta_pass, run_all_tests,
 )
 
 
@@ -151,7 +151,7 @@ def test_self_reference_via_two_rows():
 def test_self_reference_chapter_type_irrelevant():
     """Self-reference fires irrespective of chapter_type."""
     chapter = [
-        make_proof_line("(in[v1,N])", "main", "mirrored from",
+        make_proof_line("(in[v1,N])", "main", "reformulated from",
                         "(>[v1](AnchorPeano[N,s,p,zero,one,two])"
                         "(in[v1,N]))", "main"),
         make_proof_line(
@@ -161,7 +161,7 @@ def test_self_reference_chapter_type_irrelevant():
     ]
     assert_chapter_meta_fail(
         chapter, "self-reference",
-        chapter_thm=_GOAL_THM, chapter_type="mirrored_statement",
+        chapter_thm=_GOAL_THM, chapter_type="reformulated_statement",
     )
 
 
@@ -502,6 +502,18 @@ def test_contradiction_trace_seed_in_wrong_namespace():
 # ===========================================================================
 #  meta: vacuous truth trace
 # ===========================================================================
+#
+# The check used to require that at least one of the contradicting
+# ingredients trace back through the chapter's origin graph to the LB
+# expression at rest[4]. That requirement was dropped on
+# 2026-05-26 evening (D-99) because
+# it rejected legitimate vacuous discharges where the theorem's own
+# premise is impossible — there the contradiction is rooted in the
+# theorem's outer premise + axioms, not in the inner recursion step's
+# hypothesis. The check is now shape-only: at least six rest fields.
+# Tests that previously expected failure under the trace requirement
+# now expect pass; only the malformed-row case remains a failure.
+
 
 def _build_unreachable_vacuous(lb_key: str = "(lb_key)"):
     vac = make_proof_line(
@@ -514,9 +526,12 @@ def _build_unreachable_vacuous(lb_key: str = "(lb_key)"):
 
 
 @register
-def test_vacuous_truth_trace_no_paths_to_lb_key():
+def test_vacuous_truth_trace_well_formed_row_passes():
+    """Well-formed vacuous-truth row passes the shape-only check even
+    when no chapter row traces back to rest[4]. Pre-relaxation this was
+    a failure; post-relaxation it is accepted."""
     chapter = [_goal_passing_first_line()] + _build_unreachable_vacuous()
-    assert_chapter_meta_fail(
+    assert_chapter_meta_pass(
         chapter, "vacuous truth trace",
         chapter_thm=_GOAL_THM, chapter_type="direct_proof",
     )
@@ -524,6 +539,8 @@ def test_vacuous_truth_trace_no_paths_to_lb_key():
 
 @register
 def test_vacuous_truth_trace_rest_too_short():
+    """A vacuous-truth row with fewer than six rest fields is malformed
+    and still records a failure under the shape-only check."""
     vac = make_proof_line(
         "(eq[v1,v1])", "main", "vacuous truth",
         "(in[v1,N])", "main",
@@ -538,21 +555,24 @@ def test_vacuous_truth_trace_rest_too_short():
 
 
 @register
-def test_vacuous_truth_trace_two_rows_both_failing():
+def test_vacuous_truth_trace_two_well_formed_rows_both_pass():
+    """Two well-formed vacuous-truth rows in the same chapter, each
+    naming a distinct lb_key. Both pass the shape-only check."""
     chapter = [_goal_passing_first_line()]
     chapter.extend(_build_unreachable_vacuous("(lb_key_A)"))
     chapter.extend(_build_unreachable_vacuous("(lb_key_B)"))
-    assert_chapter_meta_fail(
+    assert_chapter_meta_pass(
         chapter, "vacuous truth trace",
         chapter_thm=_GOAL_THM, chapter_type="direct_proof",
-        expected_failures=2,
     )
 
 
 @register
-def test_vacuous_truth_trace_lb_key_present_but_unreachable():
-    """The lb_key expression exists in chapter, but trace from
-    contradicting ingredients can't reach it."""
+def test_vacuous_truth_trace_lb_key_present_but_unreachable_passes():
+    """The lb_key expression exists in chapter but no origin path from
+    the contradicting ingredients reaches it. Pre-relaxation this was a
+    failure; post-relaxation it passes (the soundness argument relies
+    on axiom consistency, not on the rest[4]-trace requirement)."""
     vac = make_proof_line(
         "(eq[v1,v1])", "main", "vacuous truth",
         "(in[v1,N])", "main",
@@ -566,14 +586,17 @@ def test_vacuous_truth_trace_lb_key_present_but_unreachable():
     neg_in_line = make_proof_line("!(in[v1,N])", "main", "task formulation")
     chapter = [_goal_passing_first_line(), vac,
                in_line, neg_in_line, lb_present]
-    assert_chapter_meta_fail(
+    assert_chapter_meta_pass(
         chapter, "vacuous truth trace",
         chapter_thm=_GOAL_THM, chapter_type="direct_proof",
     )
 
 
 @register
-def test_vacuous_truth_trace_lb_key_completely_absent():
+def test_vacuous_truth_trace_lb_key_completely_absent_passes():
+    """rest[4] names an expression that does not appear anywhere else
+    in the chapter. Post-relaxation passes (the third dep is now
+    informational, not enforced)."""
     vac = make_proof_line(
         "(eq[v1,v1])", "main", "vacuous truth",
         "(in[v1,N])", "main",
@@ -581,14 +604,16 @@ def test_vacuous_truth_trace_lb_key_completely_absent():
         "(lb_key_never_present)", "main",
     )
     chapter = [_goal_passing_first_line(), vac]
-    assert_chapter_meta_fail(
+    assert_chapter_meta_pass(
         chapter, "vacuous truth trace",
         chapter_thm=_GOAL_THM, chapter_type="direct_proof",
     )
 
 
 @register
-def test_vacuous_truth_trace_with_dangling_sources():
+def test_vacuous_truth_trace_with_dangling_sources_passes():
+    """The contradicting ingredients have origin rows that terminate at
+    dangling sources (never reach the lb_key). Post-relaxation passes."""
     vac = make_proof_line(
         "(eq[v1,v1])", "main", "vacuous truth",
         "(in[v1,N])", "main",
@@ -606,7 +631,7 @@ def test_vacuous_truth_trace_with_dangling_sources():
         "(dangling_B)", "main",
     )
     chapter = [_goal_passing_first_line(), vac, in_line, neg_line]
-    assert_chapter_meta_fail(
+    assert_chapter_meta_pass(
         chapter, "vacuous truth trace",
         chapter_thm=_GOAL_THM, chapter_type="direct_proof",
     )
@@ -670,19 +695,6 @@ def test_origin_multiplied_from_bad_rest0():
     line = make_proof_line(
         "(>[v1](in[v1,N])(in[v1,N]))", "main", "multiplied from",
         "(>[v1,v2](in[v1,unknown_M])(in[v2,unknown_M])(eq[v1,v2]))", "main",
-    )
-    chapter = [_goal_passing_first_line(), line]
-    assert_chapter_meta_fail(
-        chapter, "origin",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
-    )
-
-
-@register
-def test_origin_mirrored_from_bad_rest0():
-    line = make_proof_line(
-        "(in[a,N])", "main", "mirrored from",
-        "(>[v1](AnchorPeano[N,s,p,zero,one,two])(unknown_op[v1]))", "main",
     )
     chapter = [_goal_passing_first_line(), line]
     assert_chapter_meta_fail(
@@ -1113,6 +1125,147 @@ def test_cycle_dual_pair():
         chapter_thm=_GOAL_THM, chapter_type="direct_proof",
         expected_failures=4,
     )
+
+
+# ===========================================================================
+#  meta: operator registry consistency (I-23, cross-batch name uniqueness)
+# ===========================================================================
+
+def _make_registry_state(binaries):
+    """Synthetic VerifierState with hand-crafted gl_binaries for the
+    duplicity check. Bypasses load_gl_binaries entirely so tests can
+    construct arbitrary collisions."""
+    from verifier import VerifierState
+    state = VerifierState()
+    state.gl_binaries = binaries
+    return state
+
+
+def _entry(category, signature, arity, elements):
+    return {"category": category, "signature": signature,
+            "arity": arity, "elements": list(elements),
+            "definedSet": ""}
+
+
+def _silent_check_registry_consistency(state):
+    """Run the duplicity check with stderr captured. Used by negative-
+    path tests that deliberately feed divergent synthetic binaries —
+    the check's per-name stderr report is verified by inspecting
+    ``state.tag_counters``, and bleeding the report into the surrounding
+    log (e.g. main.py's verifier unit-test gate) creates false-alarm
+    output that looks like a production I-23 violation."""
+    import contextlib, io
+    from verifier import check_operator_registry_consistency
+    with contextlib.redirect_stderr(io.StringIO()):
+        check_operator_registry_consistency(state)
+
+
+@register
+def test_registry_consistency_clean_run():
+    """Two binaries carrying byte-identical existence2 → success, no failure."""
+    shared_e2 = _entry("existence", "(existence2[u_1,u_2,u_3])", 3,
+                       ["(in[1,u_1])", "(in2[1,u_2,u_3])"])
+    state = _make_registry_state({
+        "shared": {"existence2": shared_e2},
+        "Peano":  {"existence2": dict(shared_e2)},
+    })
+    _silent_check_registry_consistency(state)
+    c = state.tag_counters["operator registry consistency"]
+    assert c.success == 1 and c.failure == 0, (
+        f"consistent existence2 must record success only; got "
+        f"success={c.success} failure={c.failure}")
+
+
+@register
+def test_registry_consistency_surface_divergence_existence2():
+    """The actual production divergence: IncubatorPeano existence2[8-arg]
+    vs shared/Peano existence2[3-arg]. Recorded as 1 failure."""
+    shared_e2 = _entry("existence", "(existence2[u_1,u_2,u_3])", 3,
+                       ["(in[1,u_1])", "(in2[1,u_2,u_3])"])
+    incub_e2 = _entry("existence",
+                      "(existence2[u_1,u_2,u_3,u_4,u_5,u_6,u_7,u_8])", 8,
+                      ["(fXY[1,u_1,u_2])",
+                       "(and0[u_3,u_4,1,u_5,u_6,u_1,u_7,u_8])"])
+    state = _make_registry_state({
+        "shared":         {"existence2": shared_e2},
+        "Peano":          {"existence2": dict(shared_e2)},
+        "IncubatorPeano": {"existence2": incub_e2},
+    })
+    _silent_check_registry_consistency(state)
+    c = state.tag_counters["operator registry consistency"]
+    assert c.failure == 1 and c.success == 0, (
+        f"divergent existence2 must record failure; got "
+        f"success={c.success} failure={c.failure}")
+
+
+@register
+def test_registry_consistency_recursive_divergence_via_cited_op():
+    """Surface-identical existence2 across two binaries, but the cited
+    operator and0 diverges between them → recursive check catches it."""
+    e2 = _entry("existence", "(existence2[u_1,u_2,u_3])", 3,
+                ["(in[1,u_1])", "(and0[u_2,u_3,1])"])
+    and0_a = _entry("and", "(and0[u_1,u_2,u_3])", 3,
+                    ["(in[1,u_1])", "(in[1,u_2])", "(in[1,u_3])"])
+    and0_b = _entry("and", "(and0[u_1,u_2,u_3])", 3,
+                    ["(in2[1,u_1,u_2])", "(in[1,u_3])"])  # different elements
+    state = _make_registry_state({
+        "Peano":          {"existence2": dict(e2), "and0": and0_a},
+        "IncubatorPeano": {"existence2": dict(e2), "and0": and0_b},
+    })
+    _silent_check_registry_consistency(state)
+    c = state.tag_counters["operator registry consistency"]
+    # existence2 is identical at the surface but its cited operator
+    # diverges; the deep check rolls that up as a failure on existence2.
+    # and0 is also checked top-level → another failure.
+    assert c.failure == 2 and c.success == 0, (
+        f"recursive divergence (existence2 cites diverging and0) must "
+        f"record 2 failures (existence2 + and0); got "
+        f"success={c.success} failure={c.failure}")
+
+
+@register
+def test_registry_consistency_single_binary_skipped():
+    """A name present in only ONE binary contributes neither success nor
+    failure — the check only fires on cross-batch presence."""
+    e2 = _entry("existence", "(existence2[u_1,u_2,u_3])", 3,
+                ["(in[1,u_1])", "(in2[1,u_2,u_3])"])
+    state = _make_registry_state({
+        "IncubatorPeano": {"existence2": e2},
+    })
+    _silent_check_registry_consistency(state)
+    c = state.tag_counters.get("operator registry consistency")
+    success = c.success if c is not None else 0
+    failure = c.failure if c is not None else 0
+    assert success == 0 and failure == 0, (
+        f"single-binary name must not record any consistency event; got "
+        f"success={success} failure={failure}")
+
+
+@register
+def test_registry_consistency_atomic_entries_ignored():
+    """Atomic entries (category outside the spontaneous set, e.g. anchor
+    operators) are skipped — they're batch-local by design."""
+    anchor_a = {"category": "anchor",
+                "signature": "(AnchorPeano[N,i0,s,+,*,i1])",
+                "arity": 6,
+                "elements": ["(>[N,i0,s,+,*,i1](NaturalNumbers[...])(...))"],
+                "definedSet": ""}
+    anchor_b = {"category": "anchor",
+                "signature": "(AnchorPeano[N,i0,s,+,*,i1])",
+                "arity": 6,
+                "elements": ["completely different body"],  # would fail surface
+                "definedSet": ""}
+    state = _make_registry_state({
+        "Peano":          {"AnchorPeano": anchor_a},
+        "IncubatorPeano": {"AnchorPeano": anchor_b},
+    })
+    _silent_check_registry_consistency(state)
+    c = state.tag_counters.get("operator registry consistency")
+    success = c.success if c is not None else 0
+    failure = c.failure if c is not None else 0
+    assert success == 0 and failure == 0, (
+        f"anchor entries (category != spontaneous) must not be checked; "
+        f"got success={success} failure={failure}")
 
 
 if __name__ == "__main__":

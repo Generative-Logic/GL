@@ -1,1 +1,1 @@
-(>[8,11](AnchorIncubator[1,2,3,4,5,6,7,8,9,10,11,12,13,14])(in2[11,11,8]))	main	incubator back reformulation	(>[8,11](AnchorIncubator[1,2,3,4,5,6,7,8,9,10,11,12,13,14])(>[15](in2[11,15,8])(=[15,11])))	main
+(>[1,2,3,4,5,6,7,8,9](AnchorIncubator3[1,2,3,4,5,6,7,8,9])(in3[9,2,9,4]))	main	incubator back reformulation	(>[1,2,3,4,5,6,7,8,9](AnchorIncubator3[1,2,3,4,5,6,7,8,9])(>[10](in3[9,2,10,4])(=[10,9])))	main

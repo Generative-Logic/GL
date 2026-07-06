@@ -43,6 +43,58 @@
 #include "../compiler.hpp"
 
 #include <cstddef>
+#include <utility>
+
+namespace {
+    // 1 MiB pool / 256 KiB block for the scratch-arena twin tests.
+    const gl::StaticMemoryConfig kCompilerTestCfg{ 1 << 20, 1 << 18 };
+}
+
+/// @brief Verbatim retained oracle for the deleted `ce::extractKeyValue`
+///        (pair-producing), still calling the surviving `ce::parseExpr` /
+///        `ce::treeToExpr` / `ce::deleteTree`.
+///
+/// @details
+/// Byte-identity reference for `extract_key_value_key_scratch_matches_heap`
+/// (per D-193 a prover-only heap `ce::` function is
+/// deleted, its Rule-18 oracle retained test-locally). The original's unused
+/// `coreExpressionMap` parameter is dropped — the body never referenced it.
+///
+/// @param expr2 Canonical MPL implication text.
+/// @return The `(key, value)` pair; only `.first` is compared by the twin test.
+inline std::pair<std::string, std::string>
+extractKeyValueOracle(const std::string& expr2) {
+    ce::TreeNode1* root = ce::parseExpr(expr2);
+
+    std::string value;
+    ce::TreeNode1* node = root;
+    while (node != NULL) {
+        if (!node->value.empty() && node->value[0] == '>') {
+            node = node->right;
+        }
+        else {
+            value = ce::treeToExpr(node);
+            break;
+        }
+    }
+
+    std::string key;
+    if (value.empty()) {
+        key = expr2;
+    }
+    else {
+        const std::size_t pos = expr2.rfind(value);
+        if (pos != std::string::npos) {
+            key = expr2.substr(0, pos) + expr2.substr(pos + value.size());
+        }
+        else {
+            key = expr2;
+        }
+    }
+
+    ce::deleteTree(root);
+    return std::make_pair(key, value);
+}
 
 TEST(compiler, generate_binary_sequences_zero_has_one_empty) {
     const auto seqs = ce::generateBinarySequencesAsLists(0);
@@ -136,9 +188,74 @@ TEST(compiler, extractexpressionfromnegation) {
 
 TEST(compiler, extractexpressionuniversal_dispatches_correctly) {
     // Not-negated dispatches to extractExpression.
-    ASSERT_EQ(ce::extractExpressionUniversal("(p[a])"), std::string("p"));
+    ASSERT_EQ(extractExpressionUniversalOracle("(p[a])"), std::string("p"));
     // Negated dispatches to extractExpressionFromNegation.
-    ASSERT_EQ(ce::extractExpressionUniversal("!(p[a])"), std::string("p"));
+    ASSERT_EQ(extractExpressionUniversalOracle("!(p[a])"), std::string("p"));
+}
+
+// Row 238: the span twin disintegrateImplicationSpans reproduces the heap
+// disintegrateImplication's head and each triple's key (get<0>) + bound vars
+// (get<1>) byte-for-byte, across positive/negated premises, nested implications,
+// multi/empty bound-var lists, and a bare head. get<2> (leftArgs) is
+// intentionally not compared (never read in-tree).
+TEST(compiler, disintegrate_implication_spans_matches_heap) {
+    ce::CoreExpressionMap cem;  // unused by both iterative walkers
+    const std::vector<std::string> cases = {
+        "(>[a,b](P[a,b])(Q[a]))",                    // one layer, positive premise
+        "(>[x](>[y](R[x,y])(S[y]))(T[x]))",          // nested implication
+        "(>[a,b]!(P[a,b])(=[a,b]))",                 // negated premise, equality head
+        "(P[a])",                                     // bare head, no layers
+        "(>[m,n,o](A[m,n,o])(>[p](B[p])(C[m,p])))",  // multi-bv + nested
+        "(>[](Z[])(H[]))",                            // empty bound-var list
+    };
+    for (const std::string& expr : cases) {
+        std::vector<std::tuple<std::string, std::vector<std::string>,
+            std::set<std::string>>> oracleChain;
+        const std::string oracleHead =
+            ce::disintegrateImplication(expr, oracleChain, cem);
+
+        std::vector<std::string> twinKeys;
+        std::vector<std::vector<std::string>> twinBvs;
+        gl::StrSpan twinHeadSpan;
+        ce::disintegrateImplicationSpans(gl::StrSpan(expr), twinHeadSpan,
+            [&twinKeys, &twinBvs](gl::StrSpan keySpan,
+                const gl::StrSpan* bvSpans, int32_t bvN) {
+                twinKeys.push_back(keySpan.toStdString());
+                std::vector<std::string> bv;
+                for (int32_t k = 0; k < bvN; ++k) bv.push_back(bvSpans[k].toStdString());
+                twinBvs.push_back(std::move(bv));
+            });
+
+        ASSERT_EQ(twinHeadSpan.toStdString(), oracleHead);
+        ASSERT_EQ(twinKeys.size(), oracleChain.size());
+        ASSERT_EQ(twinBvs.size(), oracleChain.size());
+        for (std::size_t i = 0; i < oracleChain.size(); ++i) {
+            ASSERT_EQ(twinKeys[i], std::get<0>(oracleChain[i]));
+            ASSERT_EQ(twinBvs[i], std::get<1>(oracleChain[i]));
+        }
+    }
+}
+
+TEST(compiler, extract_key_value_key_scratch_matches_heap) {
+    gl::GlobalMemoryManager m;
+    m.init(kCompilerTestCfg);
+    gl::ScratchArena sa; sa.bind(&m);
+
+    const std::vector<std::string> cases = {
+        "(>[a,b](P[a,b])(Q[a]))",                    // single implication
+        "(>[x](>[y](R[x,y])(S[y]))(T[x]))",          // multi-rung chain (nested)
+        "(>[a,b]!(P[a,b])(=[a,b]))",                 // negated premise
+        "(>[m,n,o](A[m,n,o])(>[p](B[p])(C[m,p])))",  // nested consequent
+        "(>[a](P[a])(P[a]))",                        // head substring also in a premise -> rfind LAST occurrence
+        "(P[a])",                                     // bare non-implication atom -> empty key
+    };
+    for (const std::string& expr : cases) {
+        const std::pair<std::string, std::string> oracle = extractKeyValueOracle(expr);
+        gl::ScratchScope scope(sa);
+        const gl::ScratchString twin =
+            ce::extractKeyValueKeyScratch(gl::StrSpan(expr), sa);
+        ASSERT_EQ(gl::StrSpan(twin).toStdString(), oracle.first);
+    }
 }
 
 TEST(compiler, makeanchorsignature_shape) {
@@ -156,7 +273,7 @@ TEST(compiler, makeanchorsignature_negative_throws) {
 }
 
 TEST(compiler, findanchorkey_on_synthetic_map) {
-    std::map<std::string, ce::CoreExpressionConfig> m;
+    ce::CoreExpressionMap m;
     m["="]       = ce::CoreExpressionConfig(2, std::string{}, "(=[1,2])");
     m["AnchorX"] = ce::CoreExpressionConfig(3, std::string{}, "(AnchorX[1,2,3])");
     m["in"]      = ce::CoreExpressionConfig(2, std::string{}, "(in[1,2])");
@@ -164,7 +281,7 @@ TEST(compiler, findanchorkey_on_synthetic_map) {
 }
 
 TEST(compiler, findanchorkey_returns_empty_when_no_anchor) {
-    std::map<std::string, ce::CoreExpressionConfig> m;
+    ce::CoreExpressionMap m;
     m["="]  = ce::CoreExpressionConfig(2, std::string{}, "(=[1,2])");
     m["in"] = ce::CoreExpressionConfig(2, std::string{}, "(in[1,2])");
     ASSERT_EQ(ce::findAnchorKey(m), std::string(""));
@@ -260,15 +377,15 @@ TEST(compiler, extractexpressionfromnegation_long_name) {
               std::string("EnumerationSet2"));
 }
 
-// ---------- ce::extractExpressionUniversal ----------
+// ---------- extractExpressionUniversalOracle (retired ce:: function) ----------
 TEST(compiler, extractexpressionuniversal_zero_arity_negated) {
-    ASSERT_EQ(ce::extractExpressionUniversal("!(zero[])"),
+    ASSERT_EQ(extractExpressionUniversalOracle("!(zero[])"),
               std::string("zero"));
 }
 
 TEST(compiler, extractexpressionuniversal_anchor_form) {
     // Anchor expression — non-negated dispatch path.
-    ASSERT_EQ(ce::extractExpressionUniversal("(AnchorPeano[1,2,3])"),
+    ASSERT_EQ(extractExpressionUniversalOracle("(AnchorPeano[1,2,3])"),
               std::string("AnchorPeano"));
 }
 
@@ -293,7 +410,7 @@ TEST(compiler, makeanchorsignature_idempotent_on_round_trip) {
 // ---------- ce::findAnchorKey ----------
 TEST(compiler, findanchorkey_picks_first_in_lexicographic_order) {
     // std::map iterates sorted; "Anchor1" sorts before "AnchorZ".
-    std::map<std::string, ce::CoreExpressionConfig> m;
+    ce::CoreExpressionMap m;
     m["AnchorZ"] = ce::CoreExpressionConfig(2, std::string{}, "(AnchorZ[1,2])");
     m["Anchor1"] = ce::CoreExpressionConfig(2, std::string{}, "(Anchor1[1,2])");
     ASSERT_EQ(ce::findAnchorKey(m), std::string("Anchor1"));
@@ -301,7 +418,7 @@ TEST(compiler, findanchorkey_picks_first_in_lexicographic_order) {
 
 TEST(compiler, findanchorkey_ignores_anchor_substring_in_middle) {
     // findAnchorKey requires the prefix to start with "Anchor", not contain it.
-    std::map<std::string, ce::CoreExpressionConfig> m;
+    ce::CoreExpressionMap m;
     m["myAnchorThing"] = ce::CoreExpressionConfig(1, std::string{}, "(myAnchorThing[1])");
     ASSERT_EQ(ce::findAnchorKey(m), std::string(""));
 }

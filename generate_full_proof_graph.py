@@ -99,7 +99,7 @@ LICENSE_FOOTER = """  <div style="margin-top:2em; padding-top:1em; border-top:1p
   </div>"""
 
 import visu_helpers
-from visu_helpers import format_mirroring, expand_expr
+from visu_helpers import expand_expr
 from pathlib import Path
 
 # wherever this file lives, assume the project root is its parent folder
@@ -151,6 +151,17 @@ TAG_DESCRIPTIONS = {
         "A named compound expression (e.g. NaturalNumbers, fXY) was expanded "
         "into its compiled definition structure from the GL binary. "
         "The dependency is the named expression that was expanded."
+    ),
+    "compilation": (
+        "Implication compiled to compact form",
+        "An implication entering the mail broadcast channel was also "
+        "compiled to its compact named form "
+        "<code>(implication&lt;N&gt;[args])</code>. The row's expression is "
+        "the compact form; the single dependency is the original expanded "
+        "implication it was compiled from. The compact name's GL-binary "
+        "definition, instantiated with its arguments, reconstructs the "
+        "original. Preparatory provenance for the ASIC build; it does not "
+        "change which theorems are proved."
     ),
     "disintegration": (
         "Compound expression decomposed",
@@ -266,14 +277,6 @@ TAG_DESCRIPTIONS = {
         "becomes <code>0_copy</code>). At most one emission per chapter; subsequent "
         "occurrences of the same slot are tracked through <i>_copy</i> substitutions, "
         "not through additional anchor-handling rows."
-    ),
-    "mirrored from": (
-        "Mirror of source theorem",
-        "This theorem is the mirror of the cited source &mdash; the output-variable "
-        "premise is swapped with the head (conclusion), and non-anchor premises "
-        "are permuted. The dependency links to the original source theorem; "
-        "the verifier disintegrates both sides, performs the swap and "
-        "permutation, normalises bound-variable names, and compares."
     ),
     "reformulated from": (
         "Reformulation of source theorem",
@@ -617,7 +620,7 @@ def _htmlify_readable(text):
         for p in parts
     )
     # Add breathing room around scaffolding keywords
-    for kw in ['RULE:', 'IMPLIES:', 'from', 'follows', 'and', 'mirrored from',
+    for kw in ['RULE:', 'IMPLIES:', 'from', 'follows', 'and',
                'reformulated from', 'back-reformulated from', 'is a sequence']:
         h = h.replace(kw, f'&ensp;{kw}&ensp;')
     return h
@@ -913,16 +916,6 @@ def format_stack_entries(stack, prefix='', cursor_index=None, reverse_entries=Tr
                         f"{_htmlify_readable(_strip_i_prefix(impl_text))}</div>"
                     )
                     lines.append(impl_html)
-
-        if len(entry) > 2 and entry[2] == 'mirrored from':
-            if len(entry) > 3:
-                helper_list = [entry[0], "mirrored from", entry[3]]
-                mirrored_text = format_mirroring(helper_list)
-                mirrored_html = (
-                    f"<div class='mirrored readable-grey'>"
-                    f"{_htmlify_readable(_strip_i_prefix(mirrored_text))}</div>"
-                )
-                lines.append(mirrored_html)
 
         if len(entry) > 2 and entry[2] == 'reformulated from':
             if len(entry) > 3:
@@ -2174,13 +2167,6 @@ def debugging(path_plus_end, file_path, prefix=''):
     return render_stack_with_subproofs(stack, prefix)
 
 
-def mirrored(theorem, file_path, prefix=''):
-    # Actually read the beautifully processed file instead of hardcoding a fake stack!
-    stack = read_stack(file_path, "mirrored statement")
-    rename_stack(stack, theorem)
-    return render_stack_with_subproofs(stack, prefix, main_goal=theorem)
-
-
 def reformulated(theorem, file_path, prefix=''):
     stack = read_stack(file_path, "reformulated statement")
     rename_stack(stack, theorem)
@@ -2259,7 +2245,6 @@ def makes_file_path_map(theorem_list, base_dir=None):
       - induction  -> two files:  <i>_check_zero.txt, <i+1>_check_induction_condition.txt
       - direct     -> one file:   <i>_direct_proof.txt
       - debug      -> one file:   <i>_debug.txt
-      - mirrored statement (if present) -> one file: <i>_mirrored_statement.txt
       - unknown method -> one file: <i>_unknown_<sanitized>.txt
 
     Args:
@@ -2291,9 +2276,6 @@ def makes_file_path_map(theorem_list, base_dir=None):
             idx += 1
         elif m == "debug":
             files.append(base_dir / f"{idx}_debug.txt")
-            idx += 1
-        elif m == "mirrored statement":
-            files.append(base_dir / f"{idx}_mirrored_statement.txt")
             idx += 1
         elif m == "reformulated statement":
             files.append(base_dir / f"{idx}_reformulated_statement.txt")
@@ -2972,10 +2954,6 @@ def generate_proof_graph_pages(config: configuration_reader,
      a.theorem-link[href$=".html"] .clickable {
      color: #5DCAA5 !important;
      }
-     /* 2) but inside our .mirrored block use amber */
-     .mirrored a.theorem-link[href$=".html"] .clickable {
-     color: #EF9F27 !important;
-     }
      /* cross-batch external-theorem links open in a new tab; render in
         a distinct lavender so the reader sees at a glance it goes to a
         sibling pipeline (e.g. incubator -> main, or main -> incubator) */
@@ -3457,14 +3435,6 @@ def generate_proof_graph_pages(config: configuration_reader,
             body.extend([
                 "  <h2>Debugging</h2>",
                 "  <div class='step-output'>", debugging(name, file_path_map[name][0]), "  </div>",
-            ])
-        elif method.lower() == "mirrored statement":
-            body.extend([
-                "  <h2>Mirrored</h2>",
-                "  <div class='step-output'>",
-                # Pass the file path from the map instead of the raw 'var' string
-                mirrored(name, file_path_map[name][0]),
-                "  </div>",
             ])
         elif method.lower() == "reformulated statement":
             body.extend([

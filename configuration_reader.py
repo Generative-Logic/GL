@@ -529,7 +529,7 @@ class configuration_reader(MappingABC):
         """
         if not raw:
             return ""
-        looks_like_file = raw.endswith(".txt") or ("/" in raw) or ("\\" in raw)
+        looks_like_file = raw.endswith(".mpl") or ("/" in raw) or ("\\" in raw)
         if not looks_like_file:
             return raw  # inline MPL text
 

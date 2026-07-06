@@ -23,6 +23,7 @@
  Contributor License Agreement(CLA).See the project's CONTRIBUTING.md file.*/
 
 #include "prover.hpp"
+#include "memory_infra/lb_deload.hpp"
 #include <numeric>
 
 namespace gl {
@@ -127,10 +128,13 @@ static ExpressionWithValidity liftToShallowestOriginAncestor(
         }
     }
     for (std::size_t i = minLift; i < ancestors.size(); ++i) {
-        ExpressionWithValidity probe(v.original, ancestors[i]);
-        auto it = mb.exprOriginMap.find(probe);
-        if (it != mb.exprOriginMap.end() && !it->second.empty()) {
-            return probe;
+        int64_t pk = 0;
+        if (!lookupOriginKey(mb.originInterner, v.original, ancestors[i], pk)) {
+            continue;
+        }
+        const int32_t oid = mb.exprOriginMap.lookup(pk);
+        if (oid != 0 && mb.exprOriginMap.runLen(oid) > 0) {
+            return ExpressionWithValidity(v.original, ancestors[i]);
         }
     }
     return v;
@@ -140,6 +144,32 @@ bool ExpressionAnalyzer::buildStack(Memory& memoryBlock,
     const ExpressionWithValidity& provedIn,
     std::vector<std::vector<std::string>>& stack,
     std::set<ExpressionWithValidity>& covered) {
+    // Abortion trap — buildStack call counter. The chapter-export
+    // hang on this branch is exponential candidate exploration (not
+    // a real recursion cycle — verified 2026-05-25 with a depth +
+    // revisit tripwire that never fired). Cap calls at 5M so the
+    // process exits with a clear signal instead of hanging
+    // indefinitely.
+    static std::atomic<std::size_t> s_buildStackCalls{0};
+    const std::size_t myCall = ++s_buildStackCalls;
+    if ((myCall % 100000) == 0) {
+        std::cerr << "[buildStack] call #" << myCall
+                  << " LB=" << memoryBlock.exprKey()
+                  << " proved=" << provedIn.original << std::endl;
+    }
+
+    if (myCall > 5000000) {
+        std::cerr << "[buildStack] call cap 5M reached — aborting" << std::endl;
+        std::abort();
+    }
+
+    // Post-prove READ reload (D-158): the chapter walk
+    // reads this LB's origin history through its cold string tables; a
+    // pressure-drained LB — discharged ones included — comes back here.
+    // Defined no-op when resident. This is the sanctioned export-side
+    // entry of the reload touch-point list.
+    memoryBlock.ensureLoadedForRead(lbdeload::kDeloadDirectory);
+
     // TRIPWIRE: sentinel validity used by disintegrateExprHypothetically.
     // Hypothetical disintegration products must never reach buildStack —
     // they are throw-away structural probes and the lambda no-track path
@@ -162,8 +192,14 @@ bool ExpressionAnalyzer::buildStack(Memory& memoryBlock,
     // so duplicates collapse to a single (expr, lifted_v) row per chapter.
     const ExpressionWithValidity proved = liftToShallowestOriginAncestor(memoryBlock, provedIn);
 
-    auto it = memoryBlock.exprOriginMap.find(proved);
-    if (it == memoryBlock.exprOriginMap.end() || it->second.empty()) {
+    int64_t pkProved = 0;
+    bool hasOrigins = false;
+    if (lookupOriginKey(memoryBlock.originInterner, proved.original,
+                        proved.validityName, pkProved)) {
+        const int32_t oid = memoryBlock.exprOriginMap.lookup(pkProved);
+        hasOrigins = oid != 0 && memoryBlock.exprOriginMap.runLen(oid) > 0;
+    }
+    if (!hasOrigins) {
         // _integration_goal expressions are synthetic markers — no origin expected.
         if (proved.original.find("_integration_goal") != std::string::npos) {
             return true;
@@ -177,25 +213,48 @@ bool ExpressionAnalyzer::buildStack(Memory& memoryBlock,
             std::string contraKey = "__contradiction__" + positive;
             Memory* contraLB = nullptr;
             for (Memory* anc = &memoryBlock; anc != nullptr; anc = anc->parentMemory) {
-                auto sit = anc->simpleMap.find(contraKey);
-                if (sit != anc->simpleMap.end() && sit->second != nullptr) {
-                    contraLB = sit->second;
+                Memory* sc = simpleMapStore.findChild(anc, contraKey);
+                if (sc != nullptr) {
+                    contraLB = sc;
                     break;
                 }
             }
-            if (contraLB != nullptr) {
+            // Self-guard (mirrors the post-candidate fallback below): when
+            // the contradiction LB ITSELF lacks the record, re-entering it
+            // is an infinite recursion, not a resolution — fall through to
+            // the loud no-origin assert instead.
+            if (contraLB != nullptr && contraLB != &memoryBlock) {
                 return buildStack(*contraLB, proved, stack, covered);
             }
         }
         std::cerr << "[buildStack] no origin for: " << proved.original
                   << " | validity=" << proved.validityName
-                  << " | exprKey=" << memoryBlock.exprKey << "\n";
+                  << " | exprKey=" << memoryBlock.exprKey() << "\n";
         assert(false && "buildStack: no origin found");
     }
 
-    g_buildStackPath.insert(proved);
+    // Path-stack invariant fix: g_buildStackPath has no refcount.
+    // If an OUTER scope already inserted `proved` (because this is a
+    // recursive re-entry on a node further up the proof-tree path),
+    // the inner scope MUST NOT erase on exit — that would wipe the
+    // outer scope's entry too and break the cycle filter for the
+    // outer's subsequent candidates. Track whether THIS invocation
+    // is the inserter and only erase if so.
+    const bool insertedHere = g_buildStackPath.insert(proved).second;
 
-    const auto& origins = it->second;
+    // Decoded owned copy — every downstream consumer (D-49 candidate
+    // sort, cycle filter, emitRow, the last-resort fallback) keeps its
+    // historical string form.
+    std::vector<std::pair<std::string, std::vector<ExpressionWithValidity>>> origins;
+    {
+        const std::vector<IdOrigin> idOrigins =
+            memoryBlock.exprOriginMap.recordsAt(
+                memoryBlock.exprOriginMap.lookup(pkProved));
+        origins.reserve(idOrigins.size());
+        for (const IdOrigin& o : idOrigins) {
+            origins.push_back(decodeOrigin(o, memoryBlock.originInterner));
+        }
+    }
     auto candidateOrder = sortedOriginIndicesD49(origins);
 
     auto emitRow = [&](const std::pair<std::string, std::vector<ExpressionWithValidity>>& origin,
@@ -232,7 +291,7 @@ bool ExpressionAnalyzer::buildStack(Memory& memoryBlock,
 
         // Early-return tags: theorem proved in previous batch / external — no row, success.
         if (origin.first == "broadcast" || origin.first == "externally provided theorem") {
-            g_buildStackPath.erase(proved);
+            if (insertedHere) g_buildStackPath.erase(proved);
             return true;
         }
 
@@ -251,7 +310,7 @@ bool ExpressionAnalyzer::buildStack(Memory& memoryBlock,
         }
 
         if (subtreeOk) {
-            g_buildStackPath.erase(proved);
+            if (insertedHere) g_buildStackPath.erase(proved);
             return true;
         }
 
@@ -268,14 +327,14 @@ bool ExpressionAnalyzer::buildStack(Memory& memoryBlock,
         std::string contraKey = "__contradiction__" + positive;
         Memory* contraLB = nullptr;
         for (Memory* anc = &memoryBlock; anc != nullptr; anc = anc->parentMemory) {
-            auto sit = anc->simpleMap.find(contraKey);
-            if (sit != anc->simpleMap.end() && sit->second != nullptr) {
-                contraLB = sit->second;
+            Memory* sc = simpleMapStore.findChild(anc, contraKey);
+            if (sc != nullptr) {
+                contraLB = sc;
                 break;
             }
         }
         if (contraLB != nullptr && contraLB != &memoryBlock) {
-            g_buildStackPath.erase(proved);
+            if (insertedHere) g_buildStackPath.erase(proved);
             return buildStack(*contraLB, proved, stack, covered);
         }
     }
@@ -286,7 +345,7 @@ bool ExpressionAnalyzer::buildStack(Memory& memoryBlock,
     if (!origins.empty()) {
         const auto& fb = origins.front();
         if (fb.first == "broadcast" || fb.first == "externally provided theorem") {
-            g_buildStackPath.erase(proved);
+            if (insertedHere) g_buildStackPath.erase(proved);
             return false;
         }
         std::vector<ExpressionWithValidity> liftedDeps;
@@ -301,7 +360,7 @@ bool ExpressionAnalyzer::buildStack(Memory& memoryBlock,
             }
         }
     }
-    g_buildStackPath.erase(proved);
+    if (insertedHere) g_buildStackPath.erase(proved);
     return false;
 }
 
@@ -355,18 +414,21 @@ void gl::ExpressionAnalyzer::findEnds(const std::vector<std::string>& path, cons
     Memory* memoryBlock = &this->body;
     for (std::size_t i = 0; i < path.size(); ++i) {
         const std::string& elt = path[i];
-        std::map<std::string, Memory*>::iterator it = memoryBlock->simpleMap.find(elt);
-        if (it == memoryBlock->simpleMap.end() || it->second == NULL) {
+        Memory* child = simpleMapStore.findChild(memoryBlock, elt);
+        if (child == NULL) {
             return; // path invalid
         }
-        memoryBlock = it->second;
+        memoryBlock = child;
     }
 
     // ---- collect candidate ends (keys of exprOriginMap) ----
     std::set<ExpressionWithValidity> allExprs;
-    auto itE = memoryBlock->exprOriginMap.begin();
-    for (; itE != memoryBlock->exprOriginMap.end(); ++itE) {
-        allExprs.insert(itE->first);
+    for (int32_t oid = 1; oid <= memoryBlock->exprOriginMap.count(); ++oid) {
+        auto [endExpr, endValidity] = decodeOriginKey(
+            memoryBlock->exprOriginMap.decodeKey(oid),
+            memoryBlock->originInterner);
+        allExprs.insert(ExpressionWithValidity(std::move(endExpr),
+                                               std::move(endValidity)));
     }
 
     // ---- compute stack sizes for sorting ----
@@ -468,11 +530,11 @@ void gl::ExpressionAnalyzer::findEnds(const std::vector<std::string>& path, cons
                     ? pathPart.substr(start)
                     : pathPart.substr(start, pos - start);
                 if (!node.empty()) {
-                    std::map<std::string, Memory*>::iterator itChild = mb->simpleMap.find(node);
-                    if (itChild == mb->simpleMap.end() || itChild->second == NULL) {
+                    Memory* child = simpleMapStore.findChild(mb, node);
+                    if (child == NULL) {
                         mb = NULL; break;
                     }
-                    mb = itChild->second;
+                    mb = child;
                 }
                 if (pos == std::string::npos) break;
                 start = pos + 1;
@@ -605,7 +667,12 @@ void ExpressionAnalyzer::loadGlBinary(const std::filesystem::path& jsonPath) {
             const std::string uN = "u_" + std::to_string(i);
             reverseUnchMap[uN] = uN;
         }
-        repetitionExclusionMap[elements] = std::make_tuple(reverseUnchMap, name, elements);
+        // Category included in the key so a cross-batch load can carry, e.g.,
+        // an incubator-allocated implication with elements E and a main-batch
+        // existence with the same elements E without the existence reusing the
+        // implication's name. See repetitionExclusionMap declaration in
+        // prover.hpp for the full rationale.
+        repetitionExclusionMap[std::make_pair(elements, category)] = std::make_tuple(reverseUnchMap, name, elements);
         ++loadedSpontaneous;
     }
 
@@ -669,6 +736,16 @@ void ExpressionAnalyzer::generateRawProofGraph(
     // belt-and-suspenders against any leak across runs.
     clearBuildStackPath();
 
+    // Per-chapter reload release (G-53): the export
+    // reloads LBs from their SSD images on demand; without releasing them the
+    // resident block set grows monotonically across the walk to static-pool
+    // exhaustion. Every reload appends to this sink (Memory::reloadFromImage);
+    // each theorem's reloaded LBs are released after its chapters are written
+    // (loop below). The on-disk image stays, so a later theorem that revisits
+    // an LB reloads it again on demand.
+    std::vector<Memory*> exportReloaded;
+    g_exportReloadSink = &exportReloaded;
+
     std::cout << "Number proven theorems: "
         << theoremList.size() / 2 << "\n";
 
@@ -727,10 +804,19 @@ void ExpressionAnalyzer::generateRawProofGraph(
         return s.size() >= suf.size() && std::equal(s.end() - suf.size(), s.end(), suf.begin());
         };
 
-    auto containsEncoded = [](const std::vector<EncodedExpression>& vec, const std::string& expr) -> bool {
-        EncodedExpression needle(expr, "main");
-        for (std::size_t i = 0; i < vec.size(); ++i) {
-            if (vec[i] == needle) return true;
+    // Generic over the statement-container type: the statified registry and
+    // its sibling vectors (ArenaVector) all pass through; each exposes
+    // size() + operator[].
+    auto containsEncoded = [](const auto& vec,
+                              const NameMap& nm, const std::string& expr) -> bool {
+        // Stored rows are canonical-pipeline encodings, so full struct
+        // equality collapses to the (originalId, validityId) pair. lookup is
+        // non-minting: a never-interned needle cannot be a stored statement.
+        const int16_t origId = nm.lookup(expr);
+        if (origId == 0) return false;
+        for (int32_t i = 0; i < static_cast<int32_t>(vec.size()); ++i) {
+            if (vec[i].originalId == origId
+                && vec[i].validityId == NameMap::MAIN_ID) return true;
         }
         return false;
         };
@@ -775,9 +861,9 @@ void ExpressionAnalyzer::generateRawProofGraph(
 
         Memory* mb = &body;
         for (std::size_t i = 0; i < chain.size(); ++i) {
-            std::map<std::string, Memory*>::iterator it = mb->simpleMap.find(chain[i]);
-            if (it == mb->simpleMap.end() || it->second == NULL) return std::vector<std::vector<std::string> >();
-            mb = it->second;
+            Memory* child = simpleMapStore.findChild(mb, chain[i]);
+            if (child == NULL) return std::vector<std::vector<std::string> >();
+            mb = child;
         }
 
         std::vector<std::vector<std::string> > stack;
@@ -811,11 +897,11 @@ void ExpressionAnalyzer::generateRawProofGraph(
 
             Memory* mb = &body;
             for (std::size_t i = 0; i < chain.size(); ++i) {
-                std::map<std::string, Memory*>::iterator it = mb->simpleMap.find(chain[i]);
-                if (it == mb->simpleMap.end() || it->second == NULL) {
+                Memory* child = simpleMapStore.findChild(mb, chain[i]);
+                if (child == NULL) {
                     return std::vector<std::vector<std::string> >();
                 }
-                mb = it->second;
+                mb = child;
             }
 
             std::vector<std::string> args0 = ce::getArgs(chain[0]);
@@ -824,28 +910,57 @@ void ExpressionAnalyzer::generateRawProofGraph(
             }
             const std::string zeroName = args0[1];
 
-            for (std::map<std::string, Memory*>::iterator it = mb->simpleMap.begin();
-                it != mb->simpleMap.end(); ++it) {
-                const std::string& key = it->first;
+            std::vector<std::pair<std::string, Memory*>> eqChildren;
+            simpleMapStore.forEachChild(mb, [&](const gl::StrSpan& k, Memory* c) {
+                eqChildren.emplace_back(std::string(k.ptr, static_cast<std::size_t>(k.len)), c);
+            });
+            for (const std::pair<std::string, Memory*>& kv : eqChildren) {
+                const std::string& key = kv.first;
                 if (!startsWith(key, std::string("(=[s(rec") + recCounter)
                     || !endsWith(key, std::string(",") + zeroName + "])")) {
                     continue;
                 }
 
-                Memory* eqNode = it->second;
+                Memory* eqNode = kv.second;
                 if (eqNode == NULL) {
                     continue;
                 }
 
-                // Relaxed: head may live in eqNode->encodedStatements
-                // without being in localEncodedStatements when it arrived
-                // via mailIn (status=3, isLocal=false). The original
-                // localEncodedStatements gate missed this case after the
-                // symmetry-disabling sequence.
-                bool inLocal = containsEncoded(eqNode->encodedStatements, head);
-                if (!inLocal) continue;
+                // Relaxed: head may live in the LB's full statement registry
+                // (intEncodedStatements) without being in the local-origin
+                // registry when it arrived via mailIn (status=3,
+                // isLocal=false). A local-only gate misses this case after
+                // the symmetry-disabling sequence.
+                //
+                // A DISCHARGED node emptied its registry at discharge —
+                // the probe target is the exact captured pair set
+                // (D-157). A live node (parked-
+                // never-woken, or an active the final barrier's pressure
+                // path dumped) reloads and walks the registry as before.
+                bool inRegistry;
+                if (eqNode->dischargedForever) {
+                    // dischargedRegistryKeys (heap) is the probe target, but
+                    // the nameMap lookup that forms its key needs the cold
+                    // string tables resident; a discharged node may have been
+                    // drained to SSD under pressure, so reload-for-read first
+                    // (no-op if resident; sanctioned on discharged LBs,
+                    // D-158). The registry stays empty.
+                    eqNode->ensureLoadedForRead(lbdeload::kDeloadDirectory);
+                    const int16_t origId = eqNode->nameMap.lookup(head);
+                    inRegistry = origId != 0
+                        && eqNode->dischargedRegistryKeys.count(
+                               packStatementKey(origId,
+                                                NameMap::MAIN_ID)) > 0;
+                }
+                else {
+                    eqNode->ensureLoaded(lbdeload::kDeloadDirectory);
+                    inRegistry =
+                        containsEncoded(eqNode->intEncodedStatements,
+                                        eqNode->nameMap, head);
+                }
+                if (!inRegistry) continue;
 
-                std::vector<std::string> ev = ce::getArgs(eqNode->exprKey);
+                std::vector<std::string> ev = ce::getArgs(eqNode->exprKey());
                 if (ev.empty() || ev[0] != inductionVar) {
                     continue;
                 }
@@ -857,12 +972,10 @@ void ExpressionAnalyzer::generateRawProofGraph(
                 const std::string recName = keyArgs[0];
 
                 const std::string tempExpr = std::string("(=[") + recName + "," + zeroName + "])";
-                std::map<std::string, Memory*>::iterator it2 = mb->simpleMap.find(tempExpr);
-                if (it2 == mb->simpleMap.end() || it2->second == NULL) {
+                Memory* mbTarget = simpleMapStore.findChild(mb, tempExpr);
+                if (mbTarget == NULL) {
                     continue;
                 }
-
-                Memory* mbTarget = it2->second;
                 std::vector<std::vector<std::string> > stack;
                 std::set<ExpressionWithValidity> covered;
                 this->buildStack(*mbTarget, ExpressionWithValidity(head, "main"), stack, covered);
@@ -883,24 +996,38 @@ void ExpressionAnalyzer::generateRawProofGraph(
 
             Memory* mb = &body;
             for (std::size_t i = 0; i < chain.size(); ++i) {
-                std::map<std::string, Memory*>::iterator it = mb->simpleMap.find(chain[i]);
-                if (it == mb->simpleMap.end() || it->second == NULL) return std::vector<std::vector<std::string> >();
-                mb = it->second;
+                Memory* child = simpleMapStore.findChild(mb, chain[i]);
+                if (child == NULL) return std::vector<std::vector<std::string> >();
+                mb = child;
             }
 
             std::vector<std::string> args0 = ce::getArgs(chain[0]);
             if (args0.size() < 4) return std::vector<std::vector<std::string> >();
             const std::string sName = args0[2];
 
-            for (std::map<std::string, Memory*>::iterator it = mb->simpleMap.begin();
-                it != mb->simpleMap.end(); ++it) {
-                const std::string& key = it->first;
+            std::vector<std::pair<std::string, Memory*>> in2Children;
+            simpleMapStore.forEachChild(mb, [&](const gl::StrSpan& k, Memory* c) {
+                in2Children.emplace_back(std::string(k.ptr, static_cast<std::size_t>(k.len)), c);
+            });
+            for (const std::pair<std::string, Memory*>& kv : in2Children) {
+                const std::string& key = kv.first;
                 if (!startsWith(key, std::string("(in2[rec") + recCounter)) continue;
                 if (!endsWith(key, std::string("") + inductionVar + "," + sName + "])")) continue;
 
-                Memory* node = it->second;
+                Memory* node = kv.second;
                 if (node == NULL) continue;
-                if (!containsEncoded(node->localEncodedStatements, head)) continue;
+                // The intLocalEncodedStatementsSet probe is a heap mirror
+                // (maintained at every mutation site — I-86) valid on
+                // deloaded/discharged nodes, but the nameMap lookup that
+                // forms its key needs the cold string tables resident —
+                // reload-for-read first (no-op if resident; sanctioned on
+                // discharged LBs, D-158). buildStack below
+                // reads only RAM state (exprOriginMap, Rule 16).
+                node->ensureLoadedForRead(lbdeload::kDeloadDirectory);
+                const int16_t locOrigId = node->nameMap.lookup(head);
+                if (locOrigId == 0) continue;
+                if (!node->intLocalEncodedStatementsSet.contains(
+                        packStatementKey(locOrigId, NameMap::MAIN_ID))) continue;
 
                 std::vector<std::vector<std::string> > stack;
                 std::set<ExpressionWithValidity> covered;
@@ -917,7 +1044,7 @@ void ExpressionAnalyzer::generateRawProofGraph(
     // there (mail propagates statements to sub-blocks but the origin record
     // stays with the block where the rule fired). The chapter corresponds to
     // the typing sub-proof that gates induction promotion in updateGlobal.
-    // See docs/induction_typing_plan.md.
+    // See docs/agentic_swdd/induction_typing_plan.md.
     auto inductionTypingStack = [&](const std::string& theorem,
         const std::string& inductionVar,
         const std::string& /*recCounter*/) -> std::vector<std::vector<std::string> > {
@@ -930,9 +1057,9 @@ void ExpressionAnalyzer::generateRawProofGraph(
 
             Memory* mb = &body;
             for (std::size_t i = 0; i < chain.size(); ++i) {
-                std::map<std::string, Memory*>::iterator it = mb->simpleMap.find(chain[i]);
-                if (it == mb->simpleMap.end() || it->second == NULL) return std::vector<std::vector<std::string> >();
-                mb = it->second;
+                Memory* child = simpleMapStore.findChild(mb, chain[i]);
+                if (child == NULL) return std::vector<std::vector<std::string> >();
+                mb = child;
             }
 
             // Anchor N slot (args[0] of the anchor expression in chain[0])
@@ -972,10 +1099,10 @@ void ExpressionAnalyzer::generateRawProofGraph(
             for (std::size_t i = 0; i <= pathPart.size(); ++i) {
                 if (i == pathPart.size() || pathPart[i] == ';') {
                     if (!token.empty()) {
-                        auto it = mb->simpleMap.find(token);
-                        if (it == mb->simpleMap.end() || it->second == NULL)
+                        Memory* child = simpleMapStore.findChild(mb, token);
+                        if (child == NULL)
                             return std::vector<std::vector<std::string>>();
-                        mb = it->second;
+                        mb = child;
                         token.clear();
                     }
                 }
@@ -1050,18 +1177,6 @@ void ExpressionAnalyzer::generateRawProofGraph(
             mapping << name << '\t' << methodOrig << '\t' << var << '\n';
             ++idx;
         }
-        else if (method == "mirrored statement") {
-            std::vector<std::vector<std::string> > st;
-            st.push_back(std::vector<std::string>());
-            st.back().push_back(name);
-            st.back().push_back("main");
-            st.back().push_back("mirrored from");
-            st.back().push_back(var);
-            st.back().push_back("main");
-            writeStackIndexed(idx, "mirrored_statement", st);
-            mapping << name << '\t' << methodOrig << '\t' << var << '\n';
-            ++idx;
-        }
         else if (method == "reformulated statement") {
             std::vector<std::vector<std::string> > st;
             st.push_back(std::vector<std::string>());
@@ -1106,7 +1221,16 @@ void ExpressionAnalyzer::generateRawProofGraph(
             mapping << name << '\t' << methodOrig << '\t' << var << '\n';
             ++idx;
         }
+
+        // Release the LBs this theorem's chapters reloaded from SSD images.
+        // The read-only export brought them back on demand; their on-disk
+        // images stay, so a later theorem revisiting an LB reloads it again.
+        // Without this, the reloads accumulate across theorems to static-pool
+        // exhaustion (G-53).
+        for (Memory* lb : exportReloaded) lb->releaseStaticBlocks();
+        exportReloaded.clear();
     }
+    g_exportReloadSink = nullptr;
     mapping.close();
 }
 

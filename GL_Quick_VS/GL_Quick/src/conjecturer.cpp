@@ -282,6 +282,48 @@ bool repetitionsExist(const std::string& s) {
     return count != (int)seen.size();
 }
 
+/// @brief Append the reverse-direction mirror conjectures into the prove
+///        pool, de-duplicated, so each is genuinely proved.
+///
+/// @details
+/// The conjecturer computes, for every conjecture, the mirror that swaps the
+/// head with the premise sharing the head's output variable (see
+/// `Conjecturer::createReshuffledMirrored`). Those mirrors were historically
+/// written only to the archival `reshuffled_mirrored_conjectures.txt`, and the
+/// prover fabricated the reverse direction post-proof as an unproved
+/// `mirrored statement` row. This helper instead folds the mirrors into the
+/// actual prove pool (`conjectures.txt`), exactly as the OR existence/companion
+/// pairs are folded in, so each mirror passes through the counterexample
+/// filter — a false mirror is discarded there — and is proved by the normal
+/// engine. The reverse direction therefore becomes an explicit, genuine proof
+/// rather than an assertion.
+///
+/// Entries are appended in input order, skipping two defined cases that are
+/// part of the contract (not failure fallbacks): an empty string — the mirror
+/// of a conjecture whose head is symmetric collapses to nothing under I-9, a
+/// defined "no distinct reverse direction" result — and any mirror already
+/// present in `pool` (or repeated within `mirrors`). The caller sorts `pool`
+/// afterwards for deterministic output.
+///
+/// @param pool    The prove-pool conjecture list, appended to in place.
+/// @param mirrors Mirror conjectures; may contain empties and duplicates.
+/// @return Number of mirror conjectures actually appended to `pool`.
+/// @see Conjecturer::createReshuffledMirrored — produces the mirror strings.
+/// @see D-112 — the decision this helper implements.
+int mergeMirrorConjecturesIntoPool(std::vector<std::string>& pool,
+                                   const std::vector<std::string>& mirrors) {
+    std::set<std::string> present(pool.begin(), pool.end());
+    int added = 0;
+    for (const std::string& mirror : mirrors) {
+        if (mirror.empty()) continue;
+        if (present.insert(mirror).second) {
+            pool.push_back(mirror);
+            ++added;
+        }
+    }
+    return added;
+}
+
 // ---- TreeNode1-based def-set parsing ----
 
 std::pair<ce::TreeNode1*, std::vector<int>> parseDefSet(const std::string& s) {
@@ -901,7 +943,7 @@ ConfigurationData Conjecturer::loadConfiguration(const std::string& anchorId) {
         // full_mpl
         std::string fullMplRaw = spec.value("full_mpl", std::string{});
         bool looksLikeFile = !fullMplRaw.empty() &&
-            (fullMplRaw.size() >= 4 && fullMplRaw.substr(fullMplRaw.size()-4) == ".txt"
+            (fullMplRaw.size() >= 4 && fullMplRaw.substr(fullMplRaw.size()-4) == ".mpl"
              || fullMplRaw.find('/') != std::string::npos
              || fullMplRaw.find('\\') != std::string::npos);
         if (looksLikeFile) {
@@ -1955,6 +1997,17 @@ Conjecturer::connectExpressions(const std::string& expr1, const std::string& exp
                                 const DefSetMap& map1, const DefSetMap& map2,
                                 const std::map<std::string,std::string>& subMap,
                                 const std::vector<int>& binaryList, bool connectToAnchor) const {
+    // Precondition (D-75): when
+    // connectToAnchor is true, expr1 MUST be the anchor — every production
+    // anchor-attach call site passes the anchor signature as expr1
+    // (`connectExpressions(anchor_…, …)`). The unified binder reads expr1's
+    // outermost atom as the Anchor atom; a non-anchor expr1 here is a
+    // caller bug. First-class assert per CLAUDE.md "asserts are first-class".
+    assert((!connectToAnchor ||
+            (expr1.size() >= 7 && expr1.compare(0, 7, "(Anchor") == 0))
+           && "connectExpressions: connectToAnchor=true requires expr1 to be "
+              "the anchor atom (expression beginning \"(Anchor\")");
+
     auto checkMaps = [&](const std::vector<std::string>& atr,
                          const DefSetMap& mp1, const DefSetMap& mp2) -> bool {
         for (auto& [arg, val] : mp1) {
@@ -2019,7 +2072,20 @@ Conjecturer::connectExpressions(const std::string& expr1, const std::string& exp
     std::string newExpr1 = ce::replaceKeysInString(expr1, subMap);
     newExpr2 = ce::replaceKeysInString(newExpr2, subMap);
 
-    std::string connectedExpr = "(>[" + ce::joinWithComma(argsToRemove) + "]"
+    // Unified binder (D-75): when attaching
+    // the anchor, the outer >[...] binds EVERY anchor-atom argument, not just
+    // the body-referenced removable subset. Conjecturer args carry no u_
+    // prefix, so every anchor slot is bound. `argsToRemove` still drives
+    // connectedMap erase / checkMaps / negation-variant enumeration above
+    // (unchanged); only the emitted binder string widens. reshuffle
+    // re-derives binder placement from each entry's parsed >[...] ∩ leftArgs,
+    // so the change is confined to >[...] content — byte-stable elsewhere.
+    // Must stay byte-identical to connectExpressionsInt's binder (worker_*
+    // parity); both emit the anchor-atom args in anchor-atom order.
+    const std::vector<std::string> binderArgs =
+        connectToAnchor ? ce::getArgs(newExpr1) : argsToRemove;
+
+    std::string connectedExpr = "(>[" + ce::joinWithComma(binderArgs) + "]"
         + newExpr1 + newExpr2 + ")";
 
     if (newExpr1 == newExpr2) success = false;
@@ -2136,6 +2202,22 @@ bool Conjecturer::connectExpressionsInt(
     IntConjBuf& outExpr, IntDefSetMap& outMap) const
 {
     prof::Scope _prof_connE(prof::g_connectExprInt);
+
+    // Precondition (D-75): when
+    // connectToAnchor is true, expr1 MUST be the anchor — every production
+    // anchor-attach call site passes `anchorInt_` as expr1
+    // (`connectExpressionsInt(anchorInt_, …)`). The unified binder reads
+    // expr1's first block as the Anchor atom; a non-anchor expr1 here is a
+    // caller bug. First-class assert per CLAUDE.md "asserts are first-class".
+    // Block layout: [bc, bv_0..bv_{bc-1}, nameId, arity, args…] — the first
+    // block's nameId is at index 1 + bc.
+    assert((!connectToAnchor ||
+            (expr1.len > 0 && anchorInt_.len > 0 &&
+             expr1.data[1 + expr1.data[0]] ==
+                 anchorInt_.data[1 + anchorInt_.data[0]]))
+           && "connectExpressionsInt: connectToAnchor=true requires expr1 to "
+              "be the anchor (first block must be the Anchor atom)");
+
     // Find shiftNum = max argId in map1
     int16_t shiftNum = 0;
     for (int i = 0; i < map1.count; ++i)
@@ -2288,14 +2370,44 @@ bool Conjecturer::connectExpressionsInt(
         while (pos < expr1.len) {
             int16_t bc = expr1.data[pos++];
             if (firstBlock) {
-                // Merge outer bound vars + expr1's first block's bound vars
-                outExpr.data[outExpr.len++] = (int16_t)(numToRemove + bc);
-                for (int i = 0; i < numToRemove; ++i)
-                    outExpr.data[outExpr.len++] = argsToRemove[i];
-                for (int i = 0; i < bc; ++i) {
-                    int16_t bv = expr1.data[pos++];
-                    int16_t mapped = (bv <= subMap.maxArg && subMap.map[bv] != 0) ? subMap.map[bv] : bv;
-                    outExpr.data[outExpr.len++] = mapped;
+                if (connectToAnchor) {
+                    // Unified binder (D-75):
+                    // bind EVERY anchor-atom argument in the outer >[...],
+                    // not just the body-referenced removable subset.
+                    // Conjecturer args carry no u_ prefix, so every anchor
+                    // slot is bound. `argsToRemove` still drives the
+                    // connectedMap erase / def-set checks / negation-variant
+                    // enumeration (unchanged); only the emitted binder widens.
+                    // The anchor is the first premise, so its args first
+                    // occur here in anchor-atom order — that IS occurrence
+                    // order (GL >[...] convention). Byte-identical to the
+                    // string lane's `ce::getArgs(newExpr1)` (worker_* parity).
+                    // First block layout after bc:
+                    //   [bv_0..bv_{bc-1}, nameId, arity, arg_0..arg_{arity-1}]
+                    int peek = pos + bc;            // skip first-block bvs
+                    int16_t anchorArity = expr1.data[peek + 1];
+                    int anchorArgsStart = peek + 2;
+                    outExpr.data[outExpr.len++] = (int16_t)(anchorArity + bc);
+                    for (int i = 0; i < anchorArity; ++i) {
+                        int16_t a = expr1.data[anchorArgsStart + i];
+                        int16_t m = (a <= subMap.maxArg && subMap.map[a] != 0) ? subMap.map[a] : a;
+                        outExpr.data[outExpr.len++] = m;
+                    }
+                    for (int i = 0; i < bc; ++i) {
+                        int16_t bv = expr1.data[pos++];
+                        int16_t mapped = (bv <= subMap.maxArg && subMap.map[bv] != 0) ? subMap.map[bv] : bv;
+                        outExpr.data[outExpr.len++] = mapped;
+                    }
+                } else {
+                    // Merge outer bound vars + expr1's first block's bound vars
+                    outExpr.data[outExpr.len++] = (int16_t)(numToRemove + bc);
+                    for (int i = 0; i < numToRemove; ++i)
+                        outExpr.data[outExpr.len++] = argsToRemove[i];
+                    for (int i = 0; i < bc; ++i) {
+                        int16_t bv = expr1.data[pos++];
+                        int16_t mapped = (bv <= subMap.maxArg && subMap.map[bv] != 0) ? subMap.map[bv] : bv;
+                        outExpr.data[outExpr.len++] = mapped;
+                    }
                 }
                 firstBlock = false;
             } else {
@@ -2384,7 +2496,7 @@ bool Conjecturer::connectExpressionsInt(
     // first-occurrence order (atom args only, bvs skipped), matching
     // reshuffle's canonicalization rule. Merges via subMap may have left
     // holes in the shifted range; this pass closes them so downstream
-    // consumers (theorems.txt, anchor-connect inputs) see a contiguous
+    // consumers (conjectures.txt, anchor-connect inputs) see a contiguous
     // arg-ID space.
     {
         std::map<int16_t, int16_t> renumber;
@@ -3565,14 +3677,14 @@ bool Conjecturer::checkMinSizeExpression(const std::string& conjecture) const {
 ///
 /// @details
 /// Rejects `(=[x, x])` heads (per
-/// [I-8](../../docs/30_invariants.md#i-8)) and descending-ordered
+/// [I-8](../../docs/agentic_swdd/30_invariants.md#i-8)) and descending-ordered
 /// `(=[a, b])` with `stoi(a) > stoi(b)` to keep only one orientation
 /// of the symmetric pair. The descending-rejection rule is the
 /// post-D-23 form; the pre-D-23 `nse <= 3` exception was reverted at
-/// [D-23](../../docs/40_decisions.md#d-23). See SwDD chapter
+/// [D-23](../../docs/agentic_swdd/40_decisions.md#d-23). See SwDD chapter
 /// `02_conjecturer.md` section *controlEquality* for history.
 ///
-/// @invariant [I-8](../../docs/30_invariants.md#i-8) — trivial
+/// @invariant [I-8](../../docs/agentic_swdd/30_invariants.md#i-8) — trivial
 ///            equality forbidden in head.
 bool Conjecturer::controlEquality(const std::string& conjecture) const {
     prof::Scope _p(prof::g_controlEquality);
@@ -4354,7 +4466,7 @@ bool Conjecturer::checkTertiaries(const std::vector<std::string>& leftChain, con
 /// gate. Reduces the permutation surface — otherwise
 /// trivially-rearranged variants would all pass filtering.
 ///
-/// @invariant [I-10](../../docs/30_invariants.md#i-10) — bound
+/// @invariant [I-10](../../docs/agentic_swdd/30_invariants.md#i-10) — bound
 ///            variables appear left-to-right in input-arg
 ///            positions.
 bool Conjecturer::checkInputVariablesOrder(const std::string& theorem) const {
@@ -4566,8 +4678,8 @@ bool Conjecturer::staysOutputVariable(const std::string& fullExpr, const std::st
     return false;
 }
 
-/// @brief Canonicalise a conjecture into its `theorems.txt` /
-///        `reshuffled_theorems.txt` form.
+/// @brief Canonicalise a conjecture into its `conjectures.txt` /
+///        `reshuffled_conjectures.txt` form.
 ///
 /// @details
 /// Pipeline (per SwDD chapter `02_conjecturer.md` section
@@ -4589,7 +4701,7 @@ bool Conjecturer::staysOutputVariable(const std::string& fullExpr, const std::st
 /// Each stage's output feeds the next; skipping any stage
 /// produces drift in the canonical form vs the `_mirrored`
 /// companion. See decision
-/// [D-20](../../docs/40_decisions.md#d-20) for the int-path
+/// [D-20](../../docs/agentic_swdd/40_decisions.md#d-20) for the int-path
 /// acceleration history.
 ///
 /// @param expr Source expression.
@@ -4984,7 +5096,7 @@ Conjecturer::reshuffle(const std::string& expr, bool deep) const {
 /// equality heads the mirror is the symmetric orientation. The
 /// pipeline is reshuffle-then-mirror-then-reshuffle so the
 /// mirror is itself in canonical form. Per
-/// [I-9](../../docs/30_invariants.md#i-9), a mirror is dropped
+/// [I-9](../../docs/agentic_swdd/30_invariants.md#i-9), a mirror is dropped
 /// when it equals its source (i.e. the conjecture is its own
 /// mirror) — keeping it would emit a duplicate.
 ///
@@ -4994,7 +5106,7 @@ Conjecturer::reshuffle(const std::string& expr, bool deep) const {
 ///                     not yet anchor-pinned the input.
 /// @return Mirror variant in canonical form, or empty when the
 ///         distinctness guard rejects.
-/// @invariant [I-9](../../docs/30_invariants.md#i-9) — equality
+/// @invariant [I-9](../../docs/agentic_swdd/30_invariants.md#i-9) — equality
 ///            mirror guarded by distinctness.
 std::string Conjecturer::createReshuffledMirrored(const std::string& expr, bool anchorFirst) const {
     prof::Scope _prof_mirrored(prof::g_mirrored);
@@ -5217,10 +5329,10 @@ WorkerResult Conjecturer::singleThreadCalculationInt(
                         // For existence-head cases the reformulated `finalExpr`
                         // retains the original permutation with arg-IDs from
                         // the pre-reshuffle intermediate. Push the pinned/
-                        // reshuffled form to theorems.txt so the canonical
+                        // reshuffled form to conjectures.txt so the canonical
                         // existence-wrapped structure carries a first-
                         // occurrence numbering that reshuffle produces for
-                        // reshuffled_theorems.txt.
+                        // reshuffled_conjectures.txt.
                         const std::string& pushed = isExHead ? reshExpr2 : finalExpr;
                         result.connected_list2.push_back(pushed);
                         result.reshuffled_list.push_back(reshExpr2);
@@ -5236,8 +5348,8 @@ WorkerResult Conjecturer::singleThreadCalculationInt(
                         auto [reshN, _n1, _n2] = reshuffle(negVariant, true);
                         // negVariants of existence-head conjectures inherit the
                         // `!(>[bv](L)(R))` head from finalExpr; push the
-                        // reshuffled (pinning-canonical) form to theorems.txt
-                        // so the numbering matches the reshuffled_theorems.txt
+                        // reshuffled (pinning-canonical) form to conjectures.txt
+                        // so the numbering matches the reshuffled_conjectures.txt
                         // canonical form for those cases.
                         const std::string& pushedNeg = isExHead ? reshN : negVariant;
                         result.connected_list2.push_back(pushedNeg);
@@ -5588,7 +5700,7 @@ struct Disassembled {
 };
 
 Disassembled disassemble(const std::string& candidate,
-                         const std::map<std::string, ce::CoreExpressionConfig>& coreExprMap) {
+                         const ce::CoreExpressionMap& coreExprMap) {
     using CE = std::tuple<std::string, std::vector<std::string>, std::set<std::string>>;
     std::vector<CE> tempChain;
     std::string head = ce::disintegrateImplication(candidate, tempChain, coreExprMap);
@@ -6068,7 +6180,7 @@ bool Conjecturer::passesMaxDistinctAnchorValuesPerType(const std::string& conj) 
 ///
 /// @details
 /// Top-of-function gate: anchor-membership-axiom rejection
-/// ([D-23](../../docs/40_decisions.md#d-23)). Walk the chain and
+/// ([D-23](../../docs/agentic_swdd/40_decisions.md#d-23)). Walk the chain and
 /// reject any `(in[v, X])` premise (positive or negated) where
 /// BOTH `v` AND `X` are anchor-slot values, since the anchor's
 /// own axioms already entail it.
@@ -6330,7 +6442,7 @@ Conjecturer::Conjecturer(const std::string& anchorId)
 // ============================================================================
 
 /// @brief Generate conjectures for the loaded batch and write
-///        `theorems.txt` plus the canonical-form / mirror-form
+///        `conjectures.txt` plus the canonical-form / mirror-form
 ///        companion files.
 ///
 /// @details
@@ -6356,9 +6468,9 @@ Conjecturer::Conjecturer(const std::string& anchorId)
 /// 5. (Optionally) emit OR conjectures via
 ///    `generateOrConjectures`.
 /// 6. Write the survivors to:
-///    - `theorems.txt` — raw survivors.
-///    - `reshuffled_theorems.txt` — canonical-form survivors.
-///    - `reshuffled_mirrored_theorems.txt` — mirror variants.
+///    - `conjectures.txt` — raw survivors.
+///    - `reshuffled_conjectures.txt` — canonical-form survivors.
+///    - `reshuffled_mirrored_conjectures.txt` — mirror variants.
 ///    - `or_pairs.txt` — OUTPUT artefact recording the
 ///      `(existence, companion)` pairs emitted this run; opened
 ///      with `std::ios::out` so it is overwritten each invocation.
@@ -6568,6 +6680,18 @@ void Conjecturer::run() {
     std::sort(reshuffledSortedList.begin(), reshuffledSortedList.end());
     std::sort(reshuffledMirroredSortedList.begin(), reshuffledMirroredSortedList.end());
 
+    // ---- Mirror conjectures: prove the reverse direction for real ----
+    // Fold each conjecture's reverse-direction mirror into the prove pool so it
+    // is counterexample-filtered and genuinely proved, replacing the prover's
+    // former post-proof `mirrored statement` fabrication (D-112).
+    {
+        const int addedMirrors =
+            mergeMirrorConjecturesIntoPool(sortedList, reshuffledMirroredSortedList);
+        std::sort(sortedList.begin(), sortedList.end());
+        std::cout << "Mirror addon: " << addedMirrors
+                  << " mirror conjectures added to conjectures.txt\n";
+    }
+
     // Incubator: reformulate operator-headed conjectures
     if (config_.parameters.incubator_mode) {
         for (auto& expr : sortedList) expr = reformulateOperatorHead(expr);
@@ -6584,7 +6708,7 @@ void Conjecturer::run() {
             sortedList.push_back(companion);
         }
         std::sort(sortedList.begin(), sortedList.end());
-        std::cout << "OR addon: " << orPairs.size() << " OR pairs (" << orPairs.size() * 2 << " conjectures added to theorems.txt)\n";
+        std::cout << "OR addon: " << orPairs.size() << " OR pairs (" << orPairs.size() * 2 << " conjectures added to conjectures.txt)\n";
     }
 
     // Determine output folder
@@ -6596,7 +6720,7 @@ void Conjecturer::run() {
     }
 
     // Clean folder (preserve special files)
-    std::set<std::string> preserve = {"proved_theorems.txt", "externally_provided_theorems.txt",
+    std::set<std::string> preserve = {"theorems.txt", "externally_provided_theorems.txt",
         "compressed_external_theorems.txt", "or_pairs.txt"};
     if (std::filesystem::is_directory(theoremsFolder)) {
         for (auto& entry : std::filesystem::directory_iterator(theoremsFolder)) {
@@ -6614,9 +6738,9 @@ void Conjecturer::run() {
         for (auto& line : lines) out << line << "\n";
     };
 
-    writeFile(theoremsFolder / "theorems.txt", sortedList);
-    writeFile(theoremsFolder / "reshuffled_theorems.txt", reshuffledSortedList);
-    writeFile(theoremsFolder / "reshuffled_mirrored_theorems.txt", reshuffledMirroredSortedList);
+    writeFile(theoremsFolder / "conjectures.txt", sortedList);
+    writeFile(theoremsFolder / "reshuffled_conjectures.txt", reshuffledSortedList);
+    writeFile(theoremsFolder / "reshuffled_mirrored_conjectures.txt", reshuffledMirroredSortedList);
 
     // Write OR pairs metadata (which existence+companion form an OR theorem)
     if (!orPairs.empty()) {
@@ -6703,10 +6827,10 @@ void Conjecturer::run() {
 /// `or_pairs.txt`. The current implementation derives pairs
 /// directly from per-expression
 /// `allow_to_constitute_existence` flags. Pairs are emitted into
-/// `theorems.txt` alongside ordinary conjectures and the prover
+/// `conjectures.txt` alongside ordinary conjectures and the prover
 /// treats them via the `or disintegration` /
 /// `or convergence` tags. See SwDD chapter
-/// [`07_or_branching.md`](../../docs/20_core_concepts/07_or_branching.md)
+/// [`07_or_branching.md`](../../docs/agentic_swdd/20_core_concepts/07_or_branching.md)
 /// for downstream prover behaviour.
 ///
 /// @return Pairs of `(existence_conjecture, companion_conjecture)`.
