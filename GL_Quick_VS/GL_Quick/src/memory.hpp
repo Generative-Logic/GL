@@ -790,6 +790,20 @@ namespace gl {
     extern thread_local int g_splitProcessID;
     extern thread_local int g_splitCount;
 
+    /// @brief Whether the current LB runs as more than one concurrent part this
+    ///        burst — the per-burst "multi-part" signal the burst early-exit gate
+    ///        (I-76) reads instead of `g_splitCount`.
+    ///
+    /// @details `g_splitCount` is the RULE dimension alone; the expression/bucket
+    /// split runs a whole LB as several parts at `g_splitCount == 1` (so
+    /// `partitionAccepts` still accepts every rule). The early-exit must be off
+    /// whenever an LB runs as > 1 part in EITHER dimension — a sibling bailing on
+    /// another part's `stop` is a scheduling race (D-121) — so the gate keys on
+    /// this flag, set in `performElem2` from its `partCount` argument
+    /// (`= partCount > 1`). Default `false` (unsplit identity); thread-local,
+    /// mirroring `g_splitProcessID` / `g_splitCount`.
+    extern thread_local bool g_isMultiPart;
+
     /// @brief Whether the current LB-split executor handles a (sub)key carrying
     ///        the given owner partition ids.
     ///
@@ -2258,7 +2272,7 @@ namespace gl {
     ///
     /// @details
     /// Used to back the static-request pipeline's per-thread storage of
-    /// `IntEncodedExpr`, `StaticRequest`, `MandatoryPair`, and `int16_t` index
+    /// `IntEncodedExpr`, `StaticRequest`, `Stump`, and `int16_t` index
     /// arrays. The contract is:
     ///
     /// - Construction with `cap` slots allocates `cap * sizeof(T)` bytes via
@@ -2313,20 +2327,26 @@ namespace gl {
         ~TypedArena() { if (buf) ::operator delete(buf); }
     };
 
-    /// @brief Index pair used by the static `makeMandatory2` pass.
+    /// @brief One obligatory stump — the already-known statements that every
+    ///        request generated from a base candidate must contain.
     ///
     /// @details
-    /// `makeMandatory2` filters statement pairs whose hash keys are mutually
-    /// mandatory (one's key is a strict subset of the other's, modulo
-    /// remainingArgs). Each surviving pair is recorded as a `MandatoryPair`
-    /// (`idx1`, `idx2` are indices into the per-LB `intEncodedStatements`
-    /// vector). The struct is plain pair arithmetic; no ordering or hashing
-    /// because consumers walk the array sequentially.
+    /// The request generator grows base candidates to `maxKeyLength - stumpLength`
+    /// elements and then attaches a stump of `stumpLength` statements. A stump of
+    /// one element carries an index in `idx0` only; a stump of two carries an index
+    /// into each of the generator's two source views. A stump of zero elements has
+    /// no instances at all — that is the counter-example filter, where no statement
+    /// is obligatory and the base candidate is already the whole request.
     ///
-    /// @see `memory.cpp::makeMandatoryEncodedStatementLists2Static` — emits these.
-    struct MandatoryPair {
+    /// Plain index arithmetic; no ordering or hashing, because consumers walk the
+    /// array sequentially.
+    ///
+    /// @see `memory.cpp::makeMandatoryEncodedStatementLists1Static` — emits one-element stumps.
+    /// @see `memory.cpp::makeMandatoryEncodedStatementLists2Static` — emits two-element stumps.
+    /// @see `memory.cpp::generateEncodedRequestsStatic` — the consumer.
+    struct Stump {
+        int16_t idx0;
         int16_t idx1;
-        int16_t idx2;
     };
 
     /// @brief Fully-static request — no string data, no heap allocations.
@@ -4976,6 +4996,77 @@ namespace gl {
         int16_t validityId;
     };
 
+    /// @brief One stump of the LB split's second (expression) dimension.
+    ///
+    /// @details
+    /// A straggler's producer returns a list of these for `proveKernel` to deal
+    /// into expression buckets. Every request a bucket generates contains one
+    /// stump: the request generator attaches the stump's expressions to each
+    /// growing candidate for the owner-set probes and materialises the union
+    /// into a `BaseCandidate` only where the record probe passes.
+    ///
+    /// A regular stump is both probed on its own and used as a depth-first-search
+    /// seed. A terminal stump preserves a recordable candidate from a shallower
+    /// producer level that was replaced by its children: it is probed on its own
+    /// against the request batch's actual hash memory, then stops. Its children
+    /// remain in the producer frontier and cover every larger base candidate.
+    ///
+    /// `allIdx[0..count)` are indices into `Memory::intEncodedStatements` — not
+    /// into any filtered list, whose contents differ per request batch — held in
+    /// the generator's own candidate order: ascending decoded name, ties broken
+    /// by ascending statement index. The expressions carry their own scope, so
+    /// no validity id is stored; the consumer folds them with `deeperOf`.
+    ///
+    /// Trivially copyable: it rides the producing task's `SealedPageSet` record
+    /// chain and is read back after the pool join
+    /// ([I-135](../../docs/agentic_swdd/30_invariants.md#i-135)).
+    ///
+    /// @see `ExpressionAnalyzer::produceExpressionStumps` — the producer.
+    /// @see `ExpressionAnalyzer::generateEncodedRequestsStatic` — the consumer.
+    struct ExpressionStump {
+        int16_t allIdx[ExecutionParameters::MAX_EXPRESSIONS];
+        int16_t count;
+        uint8_t terminalOnly;
+    };
+
+    /// @brief What one phase-2 sub-part knows about the LB's stump split.
+    ///
+    /// @details
+    /// `stumps[0..count)` is this sub-part's **bucket**: the search runs once per
+    /// stump in it, and every request the sub-part emits contains one of them.
+    ///
+    /// A bucket, rather than a single stump, is what bounds the fan-out. A
+    /// rule-part returns one stump per expression surviving its request filter —
+    /// hundreds — and one sub-part per stump multiplied against the rule dimension
+    /// into thousands of parts, each paying the same fixed setup: the statement
+    /// filter and the obligatory-stump builders, rebuilt from scratch, five
+    /// batches over. Dealing the stumps into `total` buckets pays that setup once
+    /// per bucket. It also lets the emitter's dedup collapse a request that two
+    /// stumps of the same bucket both reach, which two separate sub-parts would
+    /// each have fired.
+    ///
+    /// `ordinal` and `total` place the sub-part among its siblings. Besides sizing
+    /// the deal they do one job: the generator's seed phase emits requests that are
+    /// nothing but the obligatory stump, which contain no split stump at all and
+    /// would otherwise be emitted once per sub-part. They are dealt out by
+    /// obligatory-stump index, so each is emitted exactly once. The stump dimension
+    /// is orthogonal to the rule dimension, which the thread-locals
+    /// `g_splitProcessID` / `g_splitCount` carry and `partitionAccepts` reads.
+    ///
+    /// A default-constructed value means *no stump split*: the generator is then
+    /// line-for-line the unsplit one.
+    ///
+    /// @invariant `(count == 0) == (stumps == nullptr)`.
+    /// @invariant `count > 0` implies `total >= 1` and `0 <= ordinal < total`.
+    /// @see `ExpressionAnalyzer::produceExpressionStumps`,
+    ///      `ExpressionAnalyzer::generateEncodedRequestsStatic`.
+    struct SplitStumpRef {
+        const ExpressionStump* stumps = nullptr;
+        int16_t count = 0;
+        int16_t ordinal = 0;
+        int16_t total = 0;
+    };
+
     /// @brief Per-thread bundle of typed arenas backing one thread's slice of
     /// the static request pipeline.
     ///
@@ -4985,7 +5076,7 @@ namespace gl {
     ///
     /// - `requests`     (capacity 4096) — `StaticRequest` storage.
     /// - `encodedExprs` (capacity 2048) — `IntEncodedExpr` copies.
-    /// - `pairs`        (capacity 8192) — `MandatoryPair`s.
+    /// - `pairs`        (capacity 8192) — `Stump`s.
     /// - `indices`      (capacity 4096) — `int16_t` index arrays.
     ///
     /// `reset()` rewinds all four arenas to zero use; called once per LB-
@@ -4999,7 +5090,7 @@ namespace gl {
     struct ThreadArenas {
         TypedArena<StaticRequest>   requests;
         TypedArena<IntEncodedExpr>  encodedExprs;
-        TypedArena<MandatoryPair>   pairs;
+        TypedArena<Stump>           pairs;
         TypedArena<int16_t>         indices;
 
         ThreadArenas()
@@ -6789,7 +6880,7 @@ namespace gl {
 
     /// @brief The shared D-49 cap-full preference RMW on an id-form mail origin
     ///        run — the engine behind `addInternalMailOrigin` /
-    ///        `addRoutingMailOrigin` / the `deserializeInto` origin fold.
+    ///        `addDeloadableMailOutOrigin` / the `deserializeInto` origin fold.
     ///
     /// @details Below the cap, append `record` if absent; at the cap, a new
     /// non-`equality1`/`equality2` record displaces the first equality-convenience
@@ -7098,24 +7189,21 @@ namespace gl {
             maxOrigins);
     }
 
-    /// @brief Append a history line to a routing `mailOut`'s origin run — encodes
-    ///        `(ev, origin)` into the SENDER `originInterner`, then the shared
-    ///        cap-full RMW. The routing twin of `addInternalMailOrigin`; mailOut
-    ///        origins ride the `originInterner` id-space and the commit seam
-    ///        translates them to global.
+    /// @brief Append a history line to a deloadable `mailOut` origin run.
     ///
-    /// @param mo         The routing outbox.
-    /// @param oi         The producing LB's `originInterner`.
+    /// @details Encodes the key and dependencies into the mailbox's dedicated
+    /// per-LB interner, then applies the shared cap-full RMW. The commit seam
+    /// later translates this private id space into global mail ids.
+    ///
+    /// @param mo         The deloadable routing outbox.
+    /// @param oi         The outbox's dedicated `mailOutInterner`.
     /// @param ev         `(expression, scope)` key.
     /// @param origin     `(tag, antecedents)` string record.
     /// @param maxOrigins Cap.
-    inline void addRoutingMailOrigin(RoutingColdMail& mo, ValueInterner& oi,
+    inline void addDeloadableMailOutOrigin(DeloadableMailOut& mo,
+        ValueInterner& oi,
         const ExpressionWithValidity& ev, const OriginLine& origin,
         int maxOrigins) {
-        // ensureArena FIRST (statement order), then key-first, then tag (span
-        // twin, interns nothing), then the EWV antecedents positionally — no
-        // IdOrigin / IntMailOrigin materialized.
-        mo.ensureArena();
         const int64_t key = mintOriginKey(oi, ev.original, ev.validityName);
         const OriginTag tag = originTagFromString(StrSpan(origin.first));
         int64_t d[ExecutionParameters::kMaxOriginDeps];
@@ -7125,7 +7213,7 @@ namespace gl {
             maxOrigins);
     }
 
-    /// @brief Span-antecedent twin of @ref addRoutingMailOrigin — key AND record
+    /// @brief Span-antecedent twin of @ref addDeloadableMailOutOrigin — key and record
     ///        built from spans + an `OriginTag`, no transient
     ///        `ExpressionWithValidity` / `OriginLine` materialized.
     ///
@@ -7135,13 +7223,11 @@ namespace gl {
     /// then the same key mint (`mintOriginKey` span twin, so the mint sequence
     /// is preserved), then the dependency ids minted positionally via
     /// `mintOriginDepsInto` and fed to the POD cap-full `addMailOriginRecord`
-    /// RMW — no transient `IdOrigin` / `IntMailOrigin` materialized. The mailOut
-    /// origins ride the SENDER `originInterner` id-space and the commit seam
-    /// translates them to global — unchanged by the span flip. The routing twin
-    /// of the span-record `addInternalMailOrigin`.
+    /// RMW — no transient `IdOrigin` / `IntMailOrigin` materialized. Every id
+    /// belongs to the mailbox's private deloadable interner.
     ///
     /// @param mo           The routing outbox.
-    /// @param oi           The producing LB's `originInterner`.
+    /// @param oi           The producing LB's `mailOutInterner`.
     /// @param original     Span over the key expression bytes.
     /// @param validityName Span over the key scope bytes.
     /// @param tag          The history-line tag (the enumerator the site names).
@@ -7150,15 +7236,13 @@ namespace gl {
     /// @param maxOrigins   Cap.
     /// @invariant The spans must alias buffers OTHER than @p oi's own byte store
     ///            ([I-3](../../docs/agentic_swdd/30_invariants.md#i-3)).
-    /// @see addRoutingMailOrigin(RoutingColdMail&, ValueInterner&, const ExpressionWithValidity&, const OriginLine&, int)
+    /// @see addDeloadableMailOutOrigin(DeloadableMailOut&, ValueInterner&, const ExpressionWithValidity&, const OriginLine&, int)
     ///      — the owning-string overload this reproduces byte-for-byte;
     ///      encodeOriginSpans.
-    inline void addRoutingMailOrigin(RoutingColdMail& mo, ValueInterner& oi,
+    inline void addDeloadableMailOutOrigin(DeloadableMailOut& mo,
+        ValueInterner& oi,
         const StrSpan& original, const StrSpan& validityName,
         OriginTag tag, const OriginDep* deps, int depN, int maxOrigins) {
-        // ensureArena FIRST (statement order), then key-first, then deps —
-        // no IdOrigin / IntMailOrigin materialized.
-        mo.ensureArena();
         const int64_t key = mintOriginKey(oi, original, validityName);
         int64_t d[ExecutionParameters::kMaxOriginDeps];
         const int32_t n = mintOriginDepsInto(deps, depN, oi, d,
@@ -9725,9 +9809,8 @@ namespace gl {
     // (they intern / decode mail statements through the global interner).
     ColdStringTable& mailInterner();
 
-    // RoutingColdMail (Memory::mailIn / mailOut; Codec<Mail>'s routing-mailbox
-    // overloads declared below) is complete from routing_cold_mail.hpp, pulled in
-    // via lb_memory.hpp above.
+    // RoutingColdMail (Memory::mailIn) and DeloadableMailOut (Memory::mailOut)
+    // are complete through lb_memory.hpp; their Codec doors are declared below.
     template <>
     struct Codec<Mail> {
         /// @brief Serialize a batch's statements + exprOriginMap to a blob.
@@ -9840,28 +9923,20 @@ namespace gl {
             return batch;
         }
 
-        /// @brief Serialize a `RoutingColdMail`'s statements + exprOriginMap to a blob —
+        /// @brief Serialize a `DeloadableMailOut` to a committed mail blob.
         ///        byte-identical to `serialize(hm.toHeapMail())`, no transient
         ///        heap `Mail`.
         ///
-        /// @details Reads the routing mailbox's canonical sorted snapshots
-        /// (`sortedStatements` / `sortedOrigins`) directly and emits the exact
-        /// wire layout `serialize(const Mail&)` produces: the heap `Mail` that
-        /// `toHeapMail` would build is populated FROM those same snapshots, and
-        /// `serialize` iterates its `std::set` / `std::map` in the same order, so
-        /// the bytes match for equal content (pinned byte-for-byte by
-        /// `test_mail_log.cpp`). Defined out-of-line below `RoutingColdMail`.
+        /// @details Reads both id-form columns through the mailbox's dedicated
+        /// per-LB interner, canonical-sorts their decoded rows, and emits the
+        /// exact `serialize(const Mail&)` layout with global mail ids. Defined
+        /// out-of-line after the mail decode helpers.
         ///
-        /// @param hm       The routing mailbox (`mailOut`) being committed.
-        /// @param senderNm The producing LB's `NameMap` — decodes `hm`'s
-        ///                 sender-id statements so they can be re-interned into the
-        ///                 global `mailInterner` for the blob.
-        /// @param senderOi The producing LB's `originInterner` — decodes `hm`'s
-        ///                 sender-id origins for the same global re-interning.
+        /// @param hm The deloadable mailbox being committed.
+        /// @param senderMi The mailbox's dedicated per-LB interner.
         /// @return The byte blob; `deserializeInto` is its inverse.
-        static std::vector<char> serialize(const RoutingColdMail& hm,
-                                           const NameMap& senderNm,
-                                           const ValueInterner& senderOi);
+        static std::vector<char> serialize(const DeloadableMailOut& hm,
+                                           const ValueInterner& senderMi);
 
         /// @brief Decode a blob straight into a `RoutingColdMail` inbox via its write
         ///        doors — the fused `deserialize` + `mergeBatchInto(const Mail&,
@@ -11310,15 +11385,21 @@ namespace gl {
     /// and the append door's byte-identity to a one-shot `assignRun`.
     ///
     /// @param ra          The remaining-args secondary index.
+    /// @param rev         The derived reverse membership index for @p ra;
+    ///                    rebuilt wholesale from the pruned forward map after the
+    ///                    survivor reinstall (the survivor key ids are reassigned
+    ///                    by the resetToFresh+reinstall, so an incremental edit
+    ///                    cannot track them — I-154).
     /// @param droppedKeys The 10b-collected dropped `NormKey` byte set.
     /// @param gArena      The per-slot gen-scratch arena (`cursor`/`popTo`
     ///                    framed).
     /// @invariant `I-139`; the serialize==encode
     ///            identity of `Codec<NormKey>` is the membership lever.
     /// @see `wipeOwnerSetMapForClosed`, `Codec<NormKey>`,
-    ///      `Memory::wipeSubtree`.
+    ///      `Memory::wipeSubtree`, `ReverseArgsIndex`.
     inline void wipeRemainingArgsForClosed(
         TypedColdBlobMap<Int16SetKey, NormKey>& ra,
+        ReverseArgsIndex& rev,
         const ColdHashSet<BytesKeyStore>& droppedKeys,
         ScratchArena& gArena) {
         if (droppedKeys.count() == 0) return;
@@ -11372,6 +11453,11 @@ namespace gl {
                 }
             }
         }
+        // Re-derive the reverse index from the pruned forward map: the survivor
+        // key ids were reassigned by the resetToFresh + reinstall above, so an
+        // incremental edit cannot track them (I-154). The
+        // early return above skips this when nothing was dropped (ra unchanged).
+        rev.rebuildReverseIndex(ra, gArena);
         gArena.popTo(mark);
     }
 
@@ -14314,52 +14400,50 @@ namespace gl {
         return out;
     }
 
-    /// @brief Decode a routing mailOut's id-form statements (SENDER NameMap ids)
+    /// @brief Decode a deloadable mailOut's private-id statements
     ///        into the canonical-sorted string snapshot.
     ///
     /// @param mo The routing outbox (`mailOut`).
-    /// @param nm The producing LB's `NameMap` (the mailOut statements id-space).
+    /// @param mi The producing LB's dedicated `mailOutInterner`.
     /// @return The statements `(expression+scope, levels)`, key-sorted.
     inline std::vector<std::pair<ExpressionWithValidity, std::set<int>>>
-    decodeMailOutStatements(const RoutingColdMail& mo, const NameMap& nm) {
+    decodeMailOutStatements(const DeloadableMailOut& mo,
+        const ValueInterner& mi) {
         std::vector<std::pair<ExpressionWithValidity, std::set<int>>> out;
-        if (!mo.arenaInited_) return out;
         out.reserve(static_cast<size_t>(mo.statements_.count()));
         for (int32_t id = 1; id <= mo.statements_.count(); ++id) {
             const IntMailStatementKey k = mo.statements_.decodeKey(id);
             out.emplace_back(
                 ExpressionWithValidity(
-                    std::string(nm.decode(static_cast<int16_t>(k.originalId))),
-                    std::string(nm.decode(static_cast<int16_t>(k.validityId)))),
+                    mi.decode(k.originalId), mi.decode(k.validityId)),
                 std::set<int>(k.levels.begin(), k.levels.end()));
         }
         std::sort(out.begin(), out.end());
         return out;
     }
 
-    /// @brief Decode a routing mailOut's id-form origins (SENDER originInterner
-    ///        ids) into the canonical-sorted string snapshot.
+    /// @brief Decode a deloadable mailOut's private-id origins into the
+    ///        canonical-sorted string snapshot.
     ///
     /// @param mo The routing outbox.
-    /// @param oi The producing LB's `originInterner` (the mailOut origins id-space).
+    /// @param mi The producing LB's dedicated `mailOutInterner`.
     /// @return The origin rows `(expression+scope, history lines)`, key-sorted.
     inline std::vector<std::pair<ExpressionWithValidity, std::vector<OriginLine>>>
-    decodeMailOutOrigins(const RoutingColdMail& mo, const ValueInterner& oi) {
+    decodeMailOutOrigins(const DeloadableMailOut& mo, const ValueInterner& mi) {
         std::vector<std::pair<ExpressionWithValidity,
             std::vector<OriginLine>>> out;
-        if (!mo.arenaInited_) return out;
         out.reserve(static_cast<size_t>(mo.origins_.count()));
         for (int32_t id = 1; id <= mo.origins_.count(); ++id) {
             const int64_t key = mo.origins_.decodeKey(id);
             StrSpan eSpan, vSpan;
-            decodeOriginKeyView(key, oi, eSpan, vSpan);
+            decodeOriginKeyView(key, mi, eSpan, vSpan);
             std::pair<std::string, std::string> ev(eSpan.toStdString(), vSpan.toStdString());
             const std::vector<IntMailOrigin> recs = mo.origins_.recordsAt(id);
             std::vector<OriginLine> lines;
             lines.reserve(recs.size());
             for (const IntMailOrigin& r : recs)
                 lines.push_back(decodeOrigin(
-                    IdOrigin{ static_cast<OriginTag>(r.tag), r.deps }, oi));
+                    IdOrigin{ static_cast<OriginTag>(r.tag), r.deps }, mi));
             out.emplace_back(
                 ExpressionWithValidity(std::move(ev.first), std::move(ev.second)),
                 std::move(lines));
@@ -14407,21 +14491,19 @@ namespace gl {
         return out;
     }
 
-    /// @brief Materialize the heap `Mail` of a routing `mailOut` (SENDER ids) —
-    ///        the dump / test boundary (statements via `nm`, origins via `oi`).
+    /// @brief Materialize one deloadable `mailOut` as a heap `Mail`.
     ///
     /// @param mo The routing outbox.
-    /// @param nm The producing LB's `NameMap` (statements id-space).
-    /// @param oi The producing LB's `originInterner` (origins id-space).
+    /// @param mi The producing LB's dedicated `mailOutInterner`.
     /// @return The equivalent heap `Mail`.
-    inline Mail routingMailOutToHeap(const RoutingColdMail& mo, const NameMap& nm,
-        const ValueInterner& oi) {
+    inline Mail routingMailOutToHeap(const DeloadableMailOut& mo,
+        const ValueInterner& mi) {
         Mail m;
         for (const std::pair<ExpressionWithValidity, std::set<int>>& st
-             : decodeMailOutStatements(mo, nm))
+             : decodeMailOutStatements(mo, mi))
             m.statements.insert(st);
         for (std::pair<ExpressionWithValidity, std::vector<OriginLine>>& og
-             : decodeMailOutOrigins(mo, oi))
+             : decodeMailOutOrigins(mo, mi))
             m.exprOriginMap.emplace(og.first, std::move(og.second));
         return m;
     }
@@ -14443,10 +14525,9 @@ namespace gl {
         return m;
     }
 
-    /// @brief Out-of-line `Codec<Mail>::serialize(const RoutingColdMail&)` — declared in
-    ///        `Codec<Mail>`, defined here so `RoutingColdMail` is complete.
-    inline std::vector<char> Codec<Mail>::serialize(const RoutingColdMail& hm,
-        const NameMap& senderNm, const ValueInterner& senderOi) {
+    /// @brief Out-of-line `Codec<Mail>::serialize(const DeloadableMailOut&)`.
+    inline std::vector<char> Codec<Mail>::serialize(const DeloadableMailOut& hm,
+        const ValueInterner& senderMi) {
         std::vector<char> out;
         const auto putPod = [&out](const auto& x) {
             const char* p = reinterpret_cast<const char*>(&x);
@@ -14458,21 +14539,21 @@ namespace gl {
             putPod(mailInterner().intern(e.original));
             putPod(mailInterner().intern(e.validityName));
         };
-        // statements: decode hm's SENDER NameMap ids -> strings (canonical sorted),
+        // statements: decode private mailbox ids -> strings (canonical sorted),
         // then emit as global ids. Byte-identical to
-        // serialize(routingMailOutToHeap(hm, senderNm, senderOi)).
+        // serialize(routingMailOutToHeap(hm, senderMi)).
         const std::vector<std::pair<ExpressionWithValidity, std::set<int>>>
-            stmts = decodeMailOutStatements(hm, senderNm);
+            stmts = decodeMailOutStatements(hm, senderMi);
         putPod(static_cast<int32_t>(stmts.size()));
         for (const std::pair<ExpressionWithValidity, std::set<int>>& st : stmts) {
             putGlobalEwv(st.first);
             putPod(static_cast<int32_t>(st.second.size()));
             for (const int lv : st.second) putPod(static_cast<int32_t>(lv));
         }
-        // exprOriginMap: decode hm's SENDER originInterner ids -> strings, emit
+        // exprOriginMap: decode private mailbox ids -> strings, emit
         // each EWV / dep as global ids and the tag as its OriginTag byte.
         const std::vector<std::pair<ExpressionWithValidity,
-            std::vector<OriginLine>>> origins = decodeMailOutOrigins(hm, senderOi);
+            std::vector<OriginLine>>> origins = decodeMailOutOrigins(hm, senderMi);
         putPod(static_cast<int32_t>(origins.size()));
         for (const std::pair<ExpressionWithValidity,
                  std::vector<OriginLine>>& keyed : origins) {
@@ -14851,8 +14932,12 @@ namespace gl {
     /// **State flags**
     /// - `isActive`                 — set to `false` by `deactivate*` paths
     ///   when this LB has been retired.
-    /// - `deltaNumberStatements`    — count of statements added since the
-    ///   last burst boundary; used to short-circuit no-op iterations.
+    /// - `hasWork`                  — quiescence latch: `true` when this LB's
+    ///   next burst may produce work. Cleared at `performElemPhase3` exit on a
+    ///   provable no-op burst, set by every cross-LB wake door
+    ///   (`D-194`); the burst-skip predicate reads it.
+    /// - `deltaNumberStatements`    — VESTIGIAL (never incremented); the no-op
+    ///   short-circuit it was reserved for is now carried by `hasWork`.
     ///
     /// **Static hot path**
     /// - `nameMap`                  — per-LB `NameMap` (see
@@ -15042,14 +15127,12 @@ namespace gl {
         ColdHashMap<PodKeyStore<int16_t>, int>& integrationStartIntMap =
             lbMemory.integrationStartIntMap;
 
-        // Routing mailboxes on the never-deloaded mail pool. Each owns a per-LB
-        // cold arena drawn from mailMemory() (RoutingColdMail), NOT deload-
-        // registered: the commit barrier reads every body's mailOut (incl.
-        // evicted LBs), which a deloadable arena could not serve. Their blocks are
-        // freed back to the pool the moment the content is read out (mailOut at
-        // the commit barrier, mailIn after the phase-1 absorb) -- no retention.
+        // Routing mailIn uses a dedicated transient mail-pool arena that is
+        // filled, absorbed, and released within the phase-1 worker claim.
+        // Outgoing mail lives inside LbMemory and is claim/reloaded only when
+        // `mailOutPending` is set.
         RoutingColdMail mailIn;
-        RoutingColdMail mailOut;
+        DeloadableMailOut& mailOut = lbMemory.mailOut;
         // Two-channel internal-mail split (sandbox/equi_reshuffle
         // follow-up consolidation, 2026-05-24). `sameIter` is the
         // ephemeral hashburst-output channel: filled by
@@ -15144,19 +15227,124 @@ namespace gl {
             equivalenceClassesMap.assignRun(validityId, classes);
         }
         bool isActive;
-        /// LB-split adaptive part count. The elementary step's hashburst runs
-        /// this many executors over the LB, each handling its
-        /// `id % numberOfParts == processID` slice of the rules. `1` is the
-        /// unsplit identity (byte-identical to no split). Two-state per LB: starts
-        /// at `1` and escalates to `fixed_number_splits` the moment an unsplit
-        /// part hits the submatch cap (its truncated burst discarded and re-run at
-        /// the full split in the same iteration), coarsening back to `1` once a
-        /// split LB's busiest part runs below `split_fallback_ratio` of the cap.
-        /// `proveKernel`'s finalize updates it each burst via
-        /// `adaptiveSplitDecision` (D-111). Persists
-        /// across iterations; never reset. Default `1`.
+
+        /// @brief Quiescence latch — `true` when this LB's next burst MAY
+        ///        produce new logical work, `false` when its previous burst
+        ///        provably did nothing and no input has arrived since.
+        ///
+        /// @details
+        /// Producer-side half of the quiescent-burst skip predicate
+        /// (`D-194`). A plain scalar on the `Memory` shell,
+        /// which lives in the never-deloaded LB-body slab (I-109), so
+        /// `proveKernel`'s single-threaded active-build can read it while the
+        /// LB's deloadable arena is cold. SLEEP: cleared at `performElemPhase3`
+        /// exit iff the burst mutated nothing — no statement-count change vs
+        /// `encodedCountAtBurstStart`, `mutatedThisBurst` false, and both
+        /// INTERNAL mail channels (`sameIter` / `nextIter` — inputs this LB's
+        /// own next burst absorbs) empty. `mailOut` is deliberately excluded
+        /// from the SLEEP fold: it is OUTGOING-ONLY under the pull model
+        /// (I-64 — fillMailOut and the deposit doors write it, the commit
+        /// barrier is the sole consumer, no burst path derives local state
+        /// from it), and the barrier's commit sweep iterates `bodies`
+        /// regardless of sweep status, so pending mailOut content ships
+        /// whether or not the LB sweeps and can never make its next burst
+        /// productive. WAKE: set `true` by every cross-LB write door that
+        /// deposits new work into this LB (`I-153`), and at
+        /// birth (default `true`) so an LB's first burst always runs. The skip
+        /// filter reads `hasWork || mailPeek` and NOTHING residency-derived
+        /// (the I-106 / I-108 determinism doctrine). Cross-LB pending mail is the
+        /// one wake polled fresh each iteration via `MailLog::mailPeek`, not
+        /// flagged here (keeps the O(descendants) fan-out off the commit path).
+        /// @invariant A missed wake is a missed theorem (unsound); every deposit
+        ///            door must set it — validated by `QUIESCE_SHADOW_CHECK`.
+        bool hasWork = true;
+
+        /// @brief Always-resident summary bit for the deloadable outgoing
+        ///        mailbox.
+        ///
+        /// @details Every outgoing-mail write door sets this bit. The serial
+        /// commit sweep reads it from the LB shell before deciding whether the
+        /// cold LB must be claimed and loaded; it therefore replaces the old
+        /// never-deloaded mailbox emptiness probe. Clearing a committed mailbox
+        /// clears the bit only after the columns and private interner reset.
+        ///
+        /// @invariant `false` implies `mailOut.empty()`; `true` requires a
+        ///            claim/reload before inspecting the mailbox.
+        ///            [I-163]
+        bool mailOutPending = false;
+
+        /// @brief Always-resident logical live-byte snapshot of `mailOut`.
+        ///
+        /// @details Updated by every outgoing-mail write door and reset with the
+        /// mailbox. Telemetry can therefore sum all LBs after a phase join
+        /// without loading cold mailboxes. This is a logical component size;
+        /// physical main-pool blocks remain accounted by the whole-pool peak.
+        int64_t mailOutLiveBytes = 0;
+
+        /// @brief Per-burst dirty flag for NON-statement mutations (admission
+        ///        churn, subtree wipe) the statement-count diff and the
+        ///        mail-channel belt do not observe.
+        ///
+        /// @details
+        /// `false`-initialised at `performElemPhase1` entry; set `true` by the
+        /// burst's non-statement mutation choke points (the admission-drain site
+        /// in `performElemPhase2` and the pending-wipe-scope drain in
+        /// `performElemPhase3`). Folded into `hasWork` at phase-3 exit. Statement
+        /// deposits / rewrites are caught separately by the
+        /// `intEncodedStatementsCount()` vs `encodedCountAtBurstStart` diff;
+        /// revival / discharge emission by the `sameIter` / `nextIter`
+        /// emptiness belt (`mailOut` deliberately excluded — outgoing-only,
+        /// see `hasWork`). Over-approximating on purpose (Rule 19: when in
+        /// doubt, stay dirty).
+        bool mutatedThisBurst = false;
+
+        /// @brief `intEncodedStatementsCount()` snapshot taken at
+        ///        `performElemPhase1` entry (before the pre-burst mail absorb).
+        ///
+        /// @details
+        /// The SLEEP detector compares it against the count at
+        /// `performElemPhase3` exit: any change — a deposit, an equi-class
+        /// rewrite, or a subtree-wipe erase — keeps `hasWork` set. A cheap,
+        /// deload-tolerant integer read (the count lives with the persistent
+        /// registry, I-108), so it is legal while the main arena is cold.
+        int encodedCountAtBurstStart = 0;
+
+        /// @brief `QUIESCE_SHADOW_CHECK` scratch: whether the skip predicate
+        ///        WOULD have skipped this LB's burst this iteration.
+        ///
+        /// @details
+        /// Meaningful only under the `QUIESCE_SHADOW_CHECK` compile flag: the
+        /// active-build records the predicate's verdict here but still sweeps the
+        /// LB, and `performElemPhase3` asserts a would-skip LB's burst was a
+        /// no-op. Inert (written but never read) in a normal build.
+        bool shadowWouldSkip = false;
+
+        /// LB-split part count = number of EXPRESSION BUCKETS this LB runs as. `1`
+        /// is the unsplit identity (byte-identical to no split). Two-state per LB:
+        /// `1` (not a straggler) or `logicalCores` (a straggler, split into that
+        /// many expression buckets). `proveKernel`'s end-of-iteration stats pass
+        /// sets it for the NEXT iteration from this iteration's total submatch work
+        /// (`isStraggler`, the idle-core fair-share; D-201).
+        /// A value `> 1` also marks the LB an ineligible steward eviction victim.
+        /// Persists across iterations; never reset. Default `1`.
         int numberOfParts = 1;
+
+        /// One-shot "just activated this iteration" flag. A born-parked induction
+        /// zero block that `activateZeroCondition` flips active (the only
+        /// inactive->active transition, I-112) has no prior burst, so the submatch
+        /// straggler stat cannot have flagged it — yet its first active burst
+        /// processes a full backlog. `proveKernel`'s task build splits such an LB
+        /// PREEMPTIVELY this iteration (expression buckets) regardless of
+        /// `numberOfParts`, then clears the flag (one-shot; later iterations fall
+        /// back to the submatch stat). Set single-threaded in
+        /// `activateZeroCondition`, cleared single-threaded at task build.
+        bool justActivated = false;
         bool isPartOfRecursion;
+        // VESTIGIAL (never incremented — no prover increment site exists). The
+        // no-op-iteration short-circuit it was reserved for is now carried by
+        // `hasWork` + the phase-3 SLEEP detector (D-194). Kept
+        // only for the CE-swap / dump / test references that still name it; not a
+        // live counter.
         int deltaNumberStatements;
         // Id-form history map (D-131) on the cold blob map
         // (I-121): packed (expressionId, validityId)
@@ -15242,6 +15430,11 @@ namespace gl {
         // on scope teardown (exprOriginMap itself survives wipeSubtree, so
         // its id space must too).
         ValueInterner originInterner;
+
+        // Dedicated int32 id space for this LB's outgoing routing mailbox.
+        // The table is owned by lbMemory.mailOut and therefore deloads, reloads,
+        // and clears in lockstep with the two id-bearing mailOut columns.
+        ValueInterner mailOutInterner;
 
         // Dedicated int32 id space for the rule-registry strings — LMV head
         // templates, premise-chain elements, original implications,
@@ -15349,6 +15542,70 @@ namespace gl {
         // for every re-dump and tail so a base+tail set shares one
         // identity. -1 = unassigned. Heap skeleton, read while cold.
         int64_t deloadOrdinal = -1;
+
+        /// @brief Which on-disk format the LAST dump wrote — the dispatch key
+        ///        `reloadFromImage` reads to pick the matching loader.
+        ///
+        /// @details
+        /// `Canonical` = the v3 element stream (discharge / chapter-export
+        /// path; the determinism doctrine stays intact there); `Raw` = the v4
+        /// arena image (the near-memcpy eviction path). Set by whichever dump
+        /// ran last (`dumpStaticContainers` -> `Canonical`,
+        /// `dumpStaticContainersRaw` -> `Raw`), so a raw-evicted LB that is
+        /// later discharged flips back to `Canonical` and its next reload uses
+        /// the v3 loader. Recorded, not peeked — the reload needs no extra
+        /// file open. Both loaders still assert their own header version, so a
+        /// field/file mismatch is caught (Rule 19).
+        enum class DeloadKind : uint8_t { Canonical = 0, Raw = 1 };
+        DeloadKind deloadKind = DeloadKind::Canonical;
+
+        // Payload byte count of the LAST raw image this LB wrote (page + byte-
+        // bump bytes). 0 until the first raw dump; stale but harmless after a v3
+        // dump (the pager only consults it on the raw path). Read via the
+        // lastRawImageBytes() accessor.
+        int64_t lastRawImageBytes_ = 0;
+
+        /// @brief Payload byte count of the last v4 raw image this LB wrote —
+        ///        the working-set pager's victim-ranking input.
+        ///
+        /// @details
+        /// The reload cost model is `lastRawImageBytes() / readBW`, with
+        /// `readBW` derived from the aggregate `DeloadStats` raw-load counters:
+        /// ranking eviction victims by ACTUAL image cost (rather than block
+        /// count alone) lets the policy prefer the cheapest-to-reload victims.
+        /// Readable whether the LB is resident or deloaded (a plain scalar in
+        /// the never-deloaded shell, not a container — no residency assert). 0
+        /// before the first raw dump; a v3 dump leaves it stale (the pager only
+        /// consults it for raw-format LBs). Pure telemetry-shaped policy input,
+        /// never a determinism-gated value.
+        ///
+        /// @return Bytes of the last raw image (page + byte-bump); >= 0.
+        int64_t lastRawImageBytes() const { return lastRawImageBytes_; }
+
+        // Extent-file placement of this LB's v4 RAW eviction image
+        // (D-195 extent datapath). REPLACES the raw
+        // path's use of deloadFiles: the LB owns ONE slab in the single
+        // preallocated extent file for its active life. rawExtentOffset_ = the
+        // slab's byte offset (-1 = no slab yet); rawExtentClassBytes_ = the
+        // slab's capacity (the size class), so a stable-size re-dump overwrites
+        // in place and only a growth past the class reallocates. The image
+        // LENGTH needs no metadata — the reload seeks to rawExtentOffset_,
+        // reads the self-describing header, and recovers the geometry, exactly
+        // as the named-file raw path did. Maintained by the extent wiring
+        // (dumpStaticContainersRaw / discharge-free); plain shell scalars,
+        // readable while the LB is cold. Freed to the allocator on discharge
+        // (Raw->Canonical) and at batch-start purge.
+        int64_t rawExtentOffset_ = -1;
+        int32_t rawExtentClassBytes_ = 0;
+        // The extent epoch the slab was allocated in. A slab is valid ONLY
+        // while this equals staticMemory().extentEpoch(); a mismatch means the
+        // slab is from a purged prior batch (offsets recycled from 0) and the
+        // next dump must allocate a fresh slab rather than overwrite in place.
+        int64_t rawExtentEpoch_ = -1;
+        // Image bytes (header + payload) this LB currently occupies in the
+        // extent file — the per-LB term of the extentLiveBytes telemetry, kept
+        // in sync by a delta on each extent dump and zeroed on slab free.
+        int64_t lastExtentLiveBytes_ = 0;
         // Tail-delta bookkeeping (the WAL/threshold pattern): row total
         // of the last FULL dump, rows accumulated across tail files
         // since it, and the number of tail file-sets written (also the
@@ -15523,6 +15780,70 @@ namespace gl {
         /// @param directory The deload directory (production: `.deload`).
         void deloadStaticContainers(const std::string& directory);
 
+        /// @brief Write-through v4 RAW dump: bring the on-disk raw image up to
+        ///        date with the in-memory content WITHOUT releasing any blocks
+        ///        — the near-memcpy eviction dump.
+        ///
+        /// @details
+        /// The eviction twin of `dumpStaticContainers`. Captures the per-
+        /// container `deloadedCounts` (the only legal cold metadata) BEFORE the
+        /// dump, `ensureDeloadOrdinal`, and — unless the LB is `Clean` with a
+        /// fresh raw base (the skip-clean branch, a defined cache-hit result) —
+        /// streams the whole live page tier to `lb<ordinal>_raw.bin` via
+        /// `lbdeload::dumpLbMemoryRaw`, sets `deloadFiles = { rawName }`,
+        /// `deloadKind = Raw`, records `lastRawImageBytes`, and resets the v3
+        /// tail bookkeeping (the raw path never writes tails). Leaves
+        /// `dirty = Clean`. Asserts residency. The bytes are nondeterministic
+        /// (I-103 waived for eviction images) but the restored logical state is
+        /// byte-identical.
+        ///
+        /// @param directory The deload directory (production: `.deload`).
+        void dumpStaticContainersRaw(const std::string& directory);
+
+        /// @brief Return the LB's blocks to the pool and flag it deloaded,
+        ///        WITHOUT the container-release walk — the raw eviction's
+        ///        release step.
+        ///
+        /// @details
+        /// The near-memcpy win: a v3 `releaseStaticBlocks` walks every
+        /// container's `release()` (resetting `rootVid_`/`size_`/`numPages_`)
+        /// so the image can be rebuilt element-by-element; the raw path SKIPS
+        /// that walk entirely — the raw image preserves the vids, so a raw
+        /// reload rebinds the same bookkeeping. Just `manager.releaseAll()` +
+        /// `markDeloaded()`. Asserts residency, a fresh raw image
+        /// (`deloadKind == Raw`, `dirty == Clean`). The container scalars
+        /// survive on the deloaded arena until the raw reload (or the teardown
+        /// residency branch in `~PagedVector` / `~PagedHashIndex` frees
+        /// nothing at destruction; a LIVE `clear()` there still asserts).
+        void releaseStaticBlocksRaw();
+
+        /// @brief Release the LB's blocks through the path matching the
+        ///        recorded on-disk format — the release-side mirror of
+        ///        `reloadFromImage`'s dispatch.
+        ///
+        /// @details
+        /// Dispatches on `deloadKind` exactly as the reload does: `Raw` →
+        /// `releaseStaticBlocksRaw` (NO container-release walk — the raw image
+        /// preserves the vids, so the container bookkeeping MUST survive for
+        /// the raw rebind; a v3 release here would reset
+        /// `rootVid_`/`size_`/`numPages_` and a later raw reload would rebind
+        /// dead bookkeeping), `Canonical` → the v3 `releaseStaticBlocks`
+        /// (container walk, element-by-element rebuild on reload). For callers
+        /// that release an LB they did not dump themselves — the chapter
+        /// export's per-theorem G-53 release of `g_exportReloadSink` entries is
+        /// the production case — and therefore cannot know which format the
+        /// last dump wrote. Callers inside a same-format dump+release
+        /// composition (`deloadStaticContainers` / `deloadStaticContainersRaw`)
+        /// keep calling their own path directly; each path's preconditions stay
+        /// asserted unweakened in the path itself.
+        void releaseStaticBlocksDispatch();
+
+        /// @brief Raw dump + raw release in one call — the unconditional
+        ///        raw-deload composition (tests, the synchronous eviction).
+        ///
+        /// @param directory The deload directory (production: `.deload`).
+        void deloadStaticContainersRaw(const std::string& directory);
+
         /// @brief Bring a deloaded LB's statified containers back from
         ///        the file set recorded at deload; no-op when resident.
         ///
@@ -15636,6 +15957,114 @@ namespace gl {
         ColdHashSet<PodKeyStore<int16_t>>& intAxedVariables =
             lbMemory.intAxedVariables;
 
+        /// @brief Insert an outgoing statement from owned expression strings.
+        ///
+        /// @details Both strings are minted into this LB's dedicated
+        /// `mailOutInterner`; the resulting ids and levels are inserted into the
+        /// deloadable mailbox, then `mailOutPending` is raised for the serial
+        /// commit sweep.
+        ///
+        /// @param ev Outgoing expression and validity.
+        /// @param levels The statement's ascending level set.
+        /// @return Nothing.
+        /// @invariant The LB is resident and claimed by the caller.
+        /// @see clearMailOut, addMailOutOrigin.
+        void insertMailOutStatement(const ExpressionWithValidity& ev,
+            const std::set<int>& levels) {
+            const int32_t originalId = mailOutInterner.encode(ev.original);
+            const int32_t validityId = mailOutInterner.encode(ev.validityName);
+            mailOut.insertStatement(originalId, validityId, levels);
+            mailOutPending = true;
+            mailOutLiveBytes = mailOut.liveBytes();
+        }
+
+        /// @brief Insert an outgoing statement from spans and a level run.
+        ///
+        /// @details This is the heap-free phase-3 twin of the owned-string
+        /// overload: it mints the two spans into the private mailbox interner,
+        /// deposits the ascending-unique level run, and raises the resident
+        /// pending bit.
+        ///
+        /// @param original Outgoing expression bytes.
+        /// @param validityName Outgoing validity bytes.
+        /// @param levels Pointer to `levelCount` ascending-unique levels; null
+        ///               only when `levelCount` is zero.
+        /// @param levelCount Number of levels.
+        /// @return Nothing.
+        /// @invariant Input spans do not alias `mailOutInterner` storage across a
+        ///            mint; the LB is resident and claimed.
+        /// @see insertMailOutStatement(const ExpressionWithValidity&, const std::set<int>&).
+        void insertMailOutStatement(const StrSpan& original,
+            const StrSpan& validityName, const int* levels,
+            int32_t levelCount) {
+            const int32_t originalId = mailOutInterner.encode(original);
+            const int32_t validityId = mailOutInterner.encode(validityName);
+            mailOut.insertStatement(originalId, validityId, levels, levelCount);
+            mailOutPending = true;
+            mailOutLiveBytes = mailOut.liveBytes();
+        }
+
+        /// @brief Append an owned outgoing origin line.
+        ///
+        /// @details The key and every dependency are minted into the same
+        /// private mailbox interner as outgoing statements, then the capped
+        /// origin fold runs and the resident pending bit is raised.
+        ///
+        /// @param ev Origin-map key.
+        /// @param origin Tagged dependency line.
+        /// @param maxOrigins Per-key retained-line cap.
+        /// @return Nothing.
+        /// @invariant The LB is resident and claimed by the caller.
+        /// @see addDeloadableMailOutOrigin, clearMailOut.
+        void addMailOutOrigin(const ExpressionWithValidity& ev,
+            const OriginLine& origin, int maxOrigins) {
+            addDeloadableMailOutOrigin(mailOut, mailOutInterner, ev, origin,
+                                       maxOrigins);
+            mailOutPending = true;
+            mailOutLiveBytes = mailOut.liveBytes();
+        }
+
+        /// @brief Append a span-form outgoing origin line.
+        ///
+        /// @details The heap-free producer door mints the key and dependency
+        /// spans into the private mailbox interner, performs the capped fold,
+        /// and raises the resident pending bit.
+        ///
+        /// @param original Origin-key expression bytes.
+        /// @param validityName Origin-key validity bytes.
+        /// @param tag Origin tag.
+        /// @param deps Pointer to `depN` dependency spans.
+        /// @param depN Dependency count.
+        /// @param maxOrigins Per-key retained-line cap.
+        /// @return Nothing.
+        /// @invariant Input spans do not alias `mailOutInterner` storage across a
+        ///            mint; the LB is resident and claimed.
+        /// @see addMailOutOrigin(const ExpressionWithValidity&, const OriginLine&, int).
+        void addMailOutOrigin(const StrSpan& original,
+            const StrSpan& validityName, OriginTag tag, const OriginDep* deps,
+            int depN, int maxOrigins) {
+            addDeloadableMailOutOrigin(mailOut, mailOutInterner, original,
+                validityName, tag, deps, depN, maxOrigins);
+            mailOutPending = true;
+            mailOutLiveBytes = mailOut.liveBytes();
+        }
+
+        /// @brief Clear a delivered outgoing mailbox and its summary bit.
+        ///
+        /// @details The id-bearing columns and their dedicated interner reset as
+        /// one unit before the shell bit is lowered. A subsequent producer starts
+        /// a fresh private id space and raises the bit through a write door.
+        ///
+        /// @return Nothing.
+        /// @invariant The LB is resident and claimed, or is in single-threaded
+        ///            construction/teardown before steward ownership begins.
+        /// @see insertMailOutStatement, addMailOutOrigin.
+        void clearMailOut() {
+            mailOut.clear();
+            mailOutPending = false;
+            mailOutLiveBytes = 0;
+        }
+
         // No explicit ~Memory: the four HashMemory instances now live in lbMemory
         // (declared after its arena), so they destruct before that arena
         // naturally and the former releaseAllCold teardown-order safeguard is
@@ -15665,6 +16094,7 @@ namespace gl {
             templateInterner.bind(&lbMemory.templateStrings);
             valueInterner.bind(&lbMemory.valueStrings);
             originInterner.bind(&lbMemory.originStrings);
+            mailOutInterner.bind(&lbMemory.mailOut.strings_);
             ruleInterner.bind(&lbMemory.ruleStrings);
             lbStateInterner.bind(&lbMemory.lbStateStrings);
             nameMap.bind(&lbMemory.nameStrings, &lbMemory.subStrings,
@@ -16109,7 +16539,8 @@ namespace gl {
 
     /// @brief The process-wide, never-deloaded GLOBAL mail string interner — the
     ///        home of the statified mail payload strings (expression text,
-    ///        validity-scope names, origin labels) that cross LB boundaries.
+    ///        validity-scope names, origin labels) that cross LB boundaries in
+    ///        the current retained delivery-history window.
     ///
     /// @details
     /// A single `ColdStringTable` (`= ColdHashSet<BytesKeyStore>`) on a
@@ -16133,13 +16564,32 @@ namespace gl {
     /// the discipline the `MailLog` blobs already follow. Ids are never observable
     /// — every compare / sort / dump decodes first
     /// ([I-97](../../docs/agentic_swdd/30_invariants.md#i-97)) — so the mint order
-    /// is invisible to every proof artifact. Never enumerated for deload and never
-    /// reset between batches (each batch is a fresh process; ids never escape, so
-    /// accumulation is bounded by the distinct mail strings).
+    /// is invisible to every proof artifact. Never enumerated for deload. In an
+    /// all-active grid, `resetMailInterner` clears the table after phase 3 has
+    /// consumed every `mailIn` and `MailLog::retireDeliveredBatches` has removed
+    /// every blob carrying its ids; the next commit remints a fresh window. A grid
+    /// with any initially dormant LB preserves both the full mail log and this id
+    /// space for later catch-up.
     ///
     /// @return The singleton mail interner.
     /// @see `skeletonInterner` — the sibling global interner for LB identity
     ///      strings; `mailMemory`, `MailLog`.
     ColdStringTable& mailInterner();
+
+    /// @brief Clear the global mail interner at the rolling-history retirement
+    ///        seam.
+    ///
+    /// @details
+    /// Calls `ColdStringTable::resetToFresh`, invalidating all ids and returning
+    /// the table's pages to its `LbArena` for reuse. This bounds retained interner
+    /// storage by one delivery window. It is forbidden when a dormant LB may later
+    /// decode an older `MailLog` blob.
+    ///
+    /// @return Nothing.
+    /// @invariant No parallel proof phase is running; every routing `mailIn` is
+    ///            empty and delivered `MailLog` blobs were retired first.
+    /// @see mailInterner, MailLog::retireDeliveredBatches,
+    ///      ExpressionAnalyzer::proveKernel.
+    void resetMailInterner();
 
 } // namespace gl

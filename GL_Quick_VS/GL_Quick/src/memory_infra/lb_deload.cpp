@@ -24,8 +24,11 @@
 
 #include "lb_deload.hpp"
 
+#include "deload_stats.hpp"
+
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -234,6 +237,7 @@ namespace gl {
             int32_t maxPayloadBytes,
             const std::vector<const DeloadColumn*>& extraColumns) {
             assert(maxPayloadBytes > 0);
+            const auto dumpStart = std::chrono::steady_clock::now();
             namespace fs = std::filesystem;
             std::error_code ec;
             fs::create_directories(directory, ec);
@@ -263,10 +267,16 @@ namespace gl {
             for (const DeloadColumn* col : extraColumns)
                 col->appendSpanBytes(payload, 0);
 
-            return writeFileSet(payload, entries, chain, ordinal,
-                                /*kind=*/0u, /*tailIndex=*/0u,
-                                lb.manager.blockBytes(), directory,
-                                maxPayloadBytes);
+            std::vector<std::string> files =
+                writeFileSet(payload, entries, chain, ordinal,
+                             /*kind=*/0u, /*tailIndex=*/0u,
+                             lb.manager.blockBytes(), directory,
+                             maxPayloadBytes);
+            deloadStats().recordV3Dump(
+                static_cast<int64_t>(payload.size()),
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - dumpStart).count());
+            return files;
         }
 
         /// @brief Serialize only the rows appended since the last dump —
@@ -302,6 +312,7 @@ namespace gl {
             const std::vector<const DeloadColumn*>& extraColumns) {
             assert(maxPayloadBytes > 0);
             assert(tailIndex >= 1);
+            const auto dumpStart = std::chrono::steady_clock::now();
             namespace fs = std::filesystem;
             std::error_code ec;
             fs::create_directories(directory, ec);
@@ -341,10 +352,16 @@ namespace gl {
             }
             assert(idx == startCounts.size());
 
-            return writeFileSet(payload, entries, chain, ordinal,
-                                /*kind=*/1u, tailIndex,
-                                lb.manager.blockBytes(), directory,
-                                maxPayloadBytes);
+            std::vector<std::string> files =
+                writeFileSet(payload, entries, chain, ordinal,
+                             /*kind=*/1u, tailIndex,
+                             lb.manager.blockBytes(), directory,
+                             maxPayloadBytes);
+            deloadStats().recordV3Dump(
+                static_cast<int64_t>(payload.size()),
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - dumpStart).count());
+            return files;
         }
 
         /// @brief Rebuild an `LbMemory` from its deload file set.
@@ -368,6 +385,8 @@ namespace gl {
                           const std::filesystem::path& directory,
                           const std::vector<DeloadColumn*>& extraColumns) {
             assert(!files.empty());
+            const auto loadStart = std::chrono::steady_clock::now();
+            int64_t totalPayloadBytes = 0;
 
             std::size_t fi = 0;
             bool firstSet = true;
@@ -496,8 +515,457 @@ namespace gl {
                 assert(index == entries.size());
                 assert(offset == payload.size()
                     && "deload payload longer than the directory describes");
+                totalPayloadBytes += static_cast<int64_t>(payload.size());
                 firstSet = false;
             }
+            deloadStats().recordV3Load(
+                totalPayloadBytes,
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - loadStart).count());
+        }
+
+        /// @brief Compose a v4 raw-image file name: `lb<ordinal>_raw.bin`.
+        ///
+        /// @param ordinal The LB's deload ordinal; >= 0.
+        /// @return The file name (no directory).
+        std::string rawFileName(int64_t ordinal) {
+            assert(ordinal >= 0);
+            return "lb" + std::to_string(ordinal) + "_raw.bin";
+        }
+
+        namespace {
+
+            /// @brief The v4 dynamic-header byte layout for a given shape and
+            ///        chain — the prefix + chain + bitmap span and its aligned
+            ///        total.
+            struct RawHeaderLayout {
+                uint32_t chainLen;    ///< Chain byte length.
+                int64_t bmBytes;      ///< Live-vid bitmap byte length.
+                int64_t rawHeader;    ///< prefix + chain + bitmap (unpadded).
+                int64_t headerBytes;  ///< rawHeader rounded up to alignment.
+            };
+
+            /// @brief Compute the dynamic-header layout (pure).
+            ///
+            /// @param shape The arena raw shape (vid count sizes the bitmap).
+            /// @param chain The LB chain string (its length sizes the header).
+            /// @return The layout with the aligned `headerBytes` total.
+            RawHeaderLayout computeRawHeaderLayout(
+                const LbArena::RawShape& shape, const std::string& chain) {
+                RawHeaderLayout L;
+                L.chainLen = static_cast<uint32_t>(chain.size());
+                L.bmBytes = (static_cast<int64_t>(shape.vidCount) + 7) / 8;
+                L.rawHeader = static_cast<int64_t>(kRawHeaderPrefixBytes)
+                    + L.chainLen + L.bmBytes;
+                L.headerBytes = (L.rawHeader + kRawHeaderAlignBytes - 1)
+                    / kRawHeaderAlignBytes * kRawHeaderAlignBytes;
+                return L;
+            }
+
+            /// @brief Stream one v4 raw image to a positioned byte sink — the
+            ///        format core shared by the named-file and extent-file
+            ///        dumps.
+            ///
+            /// @details
+            /// Writes the dynamic header (prefix, chain, live bitmap, zero
+            /// padding) then the raw page payload, each via `writeRel(rel,
+            /// data, len)` at the image-RELATIVE offset `rel` — the named-file
+            /// sink ignores `rel` (sequential `ofstream`), the extent sink adds
+            /// the slab base. Heap-free: the prefix rides a stack buffer, the
+            /// bitmap and padding stream through one bounded stack chunk (a
+            /// shared buffer would need locking — the executor pool dumps
+            /// concurrently). Byte-identical to the pre-refactor inline dump.
+            ///
+            /// @tparam WriteRel `void(int64_t rel, const void* data, int64_t len)`.
+            /// @param lb       The aggregate to image (resident, unchanged).
+            /// @param chain    The full LB chain string (header identity).
+            /// @param ordinal  The LB's deload ordinal (header field).
+            /// @param writeRel The positioned byte sink.
+            /// @return The payload byte count written (page + byte-bump bytes).
+            template <typename WriteRel>
+            int64_t emitRawImageStream(const LbMemory& lb,
+                                       const std::string& chain,
+                                       int64_t ordinal, WriteRel&& writeRel) {
+                const LbArena::RawShape shape = lb.manager.rawShape();
+                const RawHeaderLayout L = computeRawHeaderLayout(shape, chain);
+
+                char prefix[kRawHeaderPrefixBytes];
+                std::size_t hn = 0;
+                const auto put = [&](const void* p, std::size_t n) {
+                    assert(hn + n
+                            <= static_cast<std::size_t>(kRawHeaderPrefixBytes)
+                        && "v4 raw prefix layout out of step with "
+                           "kRawHeaderPrefixBytes");
+                    std::memcpy(prefix + hn, p, n);
+                    hn += n;
+                };
+                put(kMagic, 4);
+                put(&kVersionRaw, sizeof(uint32_t));
+                put(&kKindRaw, sizeof(uint32_t));
+                put(&ordinal, sizeof(int64_t));
+                const uint32_t headerBytes =
+                    static_cast<uint32_t>(L.headerBytes);
+                put(&headerBytes, sizeof(uint32_t));
+                const uint32_t blockBytes =
+                    static_cast<uint32_t>(shape.blockBytes);
+                const uint32_t pageBytes =
+                    static_cast<uint32_t>(shape.pageBytes);
+                const uint32_t byteBumpCursor =
+                    static_cast<uint32_t>(shape.byteBumpCursor);
+                const uint32_t vidCount =
+                    static_cast<uint32_t>(shape.vidCount);
+                const uint32_t livePages =
+                    static_cast<uint32_t>(shape.livePages);
+                put(&blockBytes, sizeof(uint32_t));
+                put(&pageBytes, sizeof(uint32_t));
+                put(&byteBumpCursor, sizeof(uint32_t));
+                put(&L.chainLen, sizeof(uint32_t));
+                put(&vidCount, sizeof(uint32_t));
+                put(&livePages, sizeof(uint32_t));
+                assert(hn == static_cast<std::size_t>(kRawHeaderPrefixBytes)
+                    && "v4 raw prefix layout out of step with "
+                       "kRawHeaderPrefixBytes");
+
+                int64_t rel = 0;
+                writeRel(rel, prefix, kRawHeaderPrefixBytes);
+                rel += kRawHeaderPrefixBytes;
+                writeRel(rel, chain.data(),
+                         static_cast<int64_t>(L.chainLen));
+                rel += L.chainLen;
+                {
+                    unsigned char chunk[kRawHeaderAlignBytes];
+                    const int32_t vidsPerChunk = kRawHeaderAlignBytes * 8;
+                    for (int32_t startVid = 0; startVid < shape.vidCount;
+                         startVid += vidsPerChunk) {
+                        const int32_t vidSpan =
+                            (shape.vidCount - startVid < vidsPerChunk)
+                                ? shape.vidCount - startVid : vidsPerChunk;
+                        lb.manager.fillLiveBitmapRange(chunk, startVid, vidSpan);
+                        const int64_t nb = (vidSpan + 7) / 8;
+                        writeRel(rel, chunk, nb);
+                        rel += nb;
+                    }
+                }
+                {
+                    char zeros[kRawHeaderAlignBytes] = {};
+                    int64_t pad = L.headerBytes - L.rawHeader;
+                    while (pad > 0) {
+                        const int64_t take = pad < kRawHeaderAlignBytes
+                            ? pad : kRawHeaderAlignBytes;
+                        writeRel(rel, zeros, take);
+                        rel += take;
+                        pad -= take;
+                    }
+                }
+                assert(rel == L.headerBytes
+                    && "v4 raw header stream length out of step with "
+                       "headerBytes");
+                int64_t payloadBytes = 0;
+                lb.manager.emitRawImage(
+                    [&](const char* data, int64_t len) {
+                        writeRel(rel, data, len);
+                        rel += len;
+                        payloadBytes += len;
+                    });
+                return payloadBytes;
+            }
+
+            /// @brief Rebuild one `LbMemory` from a v4 raw image read through a
+            ///        positioned byte source — the format core shared by the
+            ///        named-file and extent-file loads.
+            ///
+            /// @details
+            /// Reads and asserts the dynamic header (magic, version, kind, the
+            /// TIGHTENED `ordinal == expectedOrdinal` slab-reuse tripwire,
+            /// geometry, verbatim chain), stages the dense page-tier restore
+            /// through the same bounded bitmap chunks the dump emitted, then
+            /// reads the payload STRAIGHT into the restored pages — each read
+            /// via `readRel(dst, rel, len)` at the image-RELATIVE offset (the
+            /// named-file source seeks in the file; the extent source adds the
+            /// slab base). Heap-free; byte-identical to the pre-refactor inline
+            /// load.
+            ///
+            /// @tparam ReadRel `void(void* dst, int64_t rel, int64_t len)`.
+            /// @param lb              The aggregate to rebuild (resident, empty).
+            /// @param chain           The expected full LB chain string.
+            /// @param expectedOrdinal The LB's deload ordinal — a header
+            ///                        mismatch is a stale-occupant / torn image.
+            /// @param readRel         The positioned byte source.
+            /// @return The payload byte count read.
+            template <typename ReadRel>
+            int64_t consumeRawImageStream(LbMemory& lb,
+                                          const std::string& chain,
+                                          int64_t expectedOrdinal,
+                                          ReadRel&& readRel) {
+                assert(expectedOrdinal >= 0
+                    && "raw deload expected a non-negative ordinal");
+                char prefix[kRawHeaderPrefixBytes];
+                readRel(prefix, 0, kRawHeaderPrefixBytes);
+                std::size_t off = 0;
+                const auto get = [&](void* p, std::size_t n) {
+                    assert(off + n
+                            <= static_cast<std::size_t>(kRawHeaderPrefixBytes));
+                    std::memcpy(p, prefix + off, n);
+                    off += n;
+                };
+                assert(std::memcmp(prefix, kMagic, 4) == 0
+                    && "raw deload magic mismatch");
+                off = 4;
+                uint32_t version = 0;
+                get(&version, sizeof(uint32_t));
+                assert(version == kVersionRaw
+                    && "raw deload version mismatch");
+                uint32_t kind = 0;
+                get(&kind, sizeof(uint32_t));
+                assert(kind == kKindRaw && "raw deload kind mismatch");
+                int64_t ordinal = 0;
+                get(&ordinal, sizeof(int64_t));
+                // TIGHTENED (was `ordinal >= 0`): now that all ordinals share
+                // ONE extent file, a slab reused by a new LB after a torn write
+                // could still hold a previous occupant's valid-looking header —
+                // an exact ordinal match is the direct slab-reuse tripwire
+                // (the chain check below is the second). See
+                // D-195 §4.
+                assert(ordinal == expectedOrdinal
+                    && "raw deload slab holds a different LB's ordinal — stale "
+                       "occupant / torn image");
+                uint32_t headerBytes = 0;
+                get(&headerBytes, sizeof(uint32_t));
+                uint32_t blockBytes = 0;
+                get(&blockBytes, sizeof(uint32_t));
+                assert(blockBytes
+                        == static_cast<uint32_t>(lb.manager.blockBytes())
+                    && "raw deload block-bytes mismatch");
+                uint32_t pageBytes = 0;
+                get(&pageBytes, sizeof(uint32_t));
+                assert(pageBytes
+                        == static_cast<uint32_t>(lb.manager.pageBytes())
+                    && "raw deload page-bytes mismatch");
+                uint32_t byteBumpCursor = 0;
+                get(&byteBumpCursor, sizeof(uint32_t));
+                uint32_t chainLen = 0;
+                get(&chainLen, sizeof(uint32_t));
+                assert(chainLen == static_cast<uint32_t>(chain.size())
+                    && "raw deload chain length mismatch");
+                uint32_t vidCount = 0;
+                get(&vidCount, sizeof(uint32_t));
+                uint32_t livePages = 0;
+                get(&livePages, sizeof(uint32_t));
+                assert(off == static_cast<std::size_t>(kRawHeaderPrefixBytes)
+                    && "v4 raw prefix layout out of step with "
+                       "kRawHeaderPrefixBytes");
+                const int64_t bmBytes64 =
+                    (static_cast<int64_t>(vidCount) + 7) / 8;
+                assert(headerBytes
+                            % static_cast<uint32_t>(kRawHeaderAlignBytes) == 0
+                    && "raw deload headerBytes not header-aligned");
+                assert(static_cast<int64_t>(headerBytes)
+                            >= kRawHeaderPrefixBytes + chainLen + bmBytes64
+                    && "raw deload headerBytes too small for chain + bitmap");
+
+                {
+                    char chunk[kRawHeaderAlignBytes];
+                    uint32_t done = 0;
+                    while (done < chainLen) {
+                        const uint32_t take =
+                            (chainLen - done
+                             < static_cast<uint32_t>(kRawHeaderAlignBytes))
+                                ? chainLen - done
+                                : static_cast<uint32_t>(kRawHeaderAlignBytes);
+                        readRel(chunk,
+                                static_cast<int64_t>(kRawHeaderPrefixBytes)
+                                    + done,
+                                take);
+                        assert(std::memcmp(chunk, chain.data() + done, take)
+                                == 0
+                            && "raw deload chain mismatch");
+                        done += take;
+                    }
+                }
+
+                lb.manager.restoreForRawLoadBegin(
+                    static_cast<int32_t>(vidCount),
+                    static_cast<int32_t>(livePages),
+                    static_cast<ArenaOffset>(byteBumpCursor));
+                {
+                    unsigned char chunk[kRawHeaderAlignBytes];
+                    const int32_t vidsPerChunk = kRawHeaderAlignBytes * 8;
+                    int32_t slot = 0;
+                    const int64_t bmBase =
+                        static_cast<int64_t>(kRawHeaderPrefixBytes) + chainLen;
+                    for (int32_t startVid = 0;
+                         startVid < static_cast<int32_t>(vidCount);
+                         startVid += vidsPerChunk) {
+                        const int32_t vidSpan =
+                            (static_cast<int32_t>(vidCount) - startVid
+                             < vidsPerChunk)
+                                ? static_cast<int32_t>(vidCount) - startVid
+                                : vidsPerChunk;
+                        const int64_t takeBytes = (vidSpan + 7) / 8;
+                        readRel(chunk,
+                                bmBase + static_cast<int64_t>(startVid / 8),
+                                takeBytes);
+                        slot = lb.manager.restoreForRawLoadChunk(
+                            chunk, startVid, vidSpan, slot);
+                    }
+                    lb.manager.restoreForRawLoadEnd(
+                        static_cast<int32_t>(vidCount), slot);
+                }
+                int64_t cursor = static_cast<int64_t>(headerBytes);
+                int64_t payloadBytes = 0;
+                lb.manager.fillRawImage(
+                    [&](char* dst, int64_t len) {
+                        readRel(dst, cursor, len);
+                        cursor += len;
+                        payloadBytes += len;
+                    });
+                return payloadBytes;
+            }
+
+        }
+
+        /// @brief Serialize an `LbMemory` to its v4 RAW arena image — the
+        ///        near-memcpy eviction dump (see the header contract).
+        ///
+        /// @param lb        The aggregate to image (unchanged; resident).
+        /// @param chain     The full LB chain string (header identity).
+        /// @param ordinal   The LB's deload ordinal (file name + header).
+        /// @param directory Target directory (created if absent).
+        /// @return The payload byte count written.
+        int64_t dumpLbMemoryRaw(const LbMemory& lb, const std::string& chain,
+                                int64_t ordinal,
+                                const std::filesystem::path& directory) {
+            const auto dumpStart = std::chrono::steady_clock::now();
+            namespace fs = std::filesystem;
+            std::error_code ec;
+            fs::create_directories(directory, ec);
+            assert(!ec);
+
+            // The named-file sink writes SEQUENTIALLY (one CreateFile/truncate/
+            // close per image); the image-relative offset the core supplies is
+            // unused here (the ofstream cursor already advances in step). The
+            // extent variant `dumpLbMemoryRawAt` shares the SAME core but adds
+            // the slab base — the whole point of the refactor.
+            std::ofstream out(directory / rawFileName(ordinal),
+                              std::ios::binary | std::ios::trunc);
+            assert(out && "raw deload file not writable");
+            const int64_t payloadBytes = emitRawImageStream(
+                lb, chain, ordinal,
+                [&out](int64_t, const void* data, int64_t len) {
+                    out.write(static_cast<const char*>(data),
+                              static_cast<std::streamsize>(len));
+                });
+            assert(out && "raw deload file write failed");
+            deloadStats().recordRawDump(
+                payloadBytes,
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - dumpStart).count());
+            return payloadBytes;
+        }
+
+        /// @brief Rebuild an `LbMemory` from its v4 RAW arena image — the
+        ///        near-memcpy reload (see the header contract).
+        ///
+        /// @param lb        The aggregate to rebuild into (resident, empty).
+        /// @param chain     The expected full LB chain string.
+        /// @param fileName  The single raw file name recorded at dump time.
+        /// @param directory The directory the file lives in.
+        void loadLbMemoryRaw(LbMemory& lb, const std::string& chain,
+                             int64_t expectedOrdinal,
+                             const std::string& fileName,
+                             const std::filesystem::path& directory) {
+            const auto loadStart = std::chrono::steady_clock::now();
+            std::ifstream in(directory / fileName, std::ios::binary);
+            assert(in && "raw deload file not readable");
+            // The named-file source seeks to the image-relative offset; the
+            // extent variant `loadLbMemoryRawAt` shares the SAME core but adds
+            // the slab base.
+            const int64_t payloadBytes = consumeRawImageStream(
+                lb, chain, expectedOrdinal,
+                [&in](void* dst, int64_t rel, int64_t len) {
+                    in.seekg(static_cast<std::streamoff>(rel));
+                    in.read(static_cast<char*>(dst),
+                            static_cast<std::streamsize>(len));
+                    assert(in.gcount() == static_cast<std::streamsize>(len)
+                        && "raw deload short read");
+                });
+            deloadStats().recordRawLoad(
+                payloadBytes,
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - loadStart).count());
+        }
+
+        /// @brief Total v4 raw-image bytes (dynamic header + page payload) for
+        ///        an LB — the extent-slab sizing input (see the declaration).
+        ///
+        /// @param lb    The aggregate to image (resident, unchanged).
+        /// @param chain The full LB chain string (its length sizes the header).
+        /// @return The image byte count the extent slab must hold.
+        int64_t rawImageBytesFor(const LbMemory& lb,
+                                 const std::string& chain) {
+            const LbArena::RawShape shape = lb.manager.rawShape();
+            const RawHeaderLayout L = computeRawHeaderLayout(shape, chain);
+            const int64_t payload =
+                static_cast<int64_t>(shape.livePages)
+                    * static_cast<int64_t>(shape.pageBytes)
+                + static_cast<int64_t>(shape.byteBumpCursor);
+            return L.headerBytes + payload;
+        }
+
+        /// @brief Serialize an `LbMemory` to its v4 raw image IN PLACE inside
+        ///        the extent file at `offset` (see the declaration).
+        ///
+        /// @param lb        The aggregate to image (resident, unchanged).
+        /// @param chain     The full LB chain string (header identity).
+        /// @param ordinal   The LB's deload ordinal (header field).
+        /// @param file      The open extent file (positioned I/O, no open/close).
+        /// @param offset    The LB's slab offset in the extent file; >= 0.
+        /// @param slabBytes The slab's class capacity (the image must fit it).
+        /// @return The payload byte count written (page + byte-bump bytes).
+        int64_t dumpLbMemoryRawAt(const LbMemory& lb, const std::string& chain,
+                                  int64_t ordinal, PositionedFile& file,
+                                  int64_t offset, int64_t slabBytes) {
+            const auto dumpStart = std::chrono::steady_clock::now();
+            assert(offset >= 0 && "raw extent dump at a negative offset");
+            const int64_t total = rawImageBytesFor(lb, chain);
+            assert(total <= slabBytes
+                && "raw image exceeds its extent slab — the caller must promote "
+                   "the slab class before dumping");
+            const int64_t payloadBytes = emitRawImageStream(
+                lb, chain, ordinal,
+                [&file, offset](int64_t rel, const void* data, int64_t len) {
+                    file.writeAt(offset + rel, data, len);
+                });
+            deloadStats().recordRawDump(
+                payloadBytes,
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - dumpStart).count());
+            return payloadBytes;
+        }
+
+        /// @brief Rebuild an `LbMemory` from its v4 raw image at `offset`
+        ///        inside the extent file (see the declaration).
+        ///
+        /// @param lb              The aggregate to rebuild (resident, empty).
+        /// @param chain           The expected full LB chain string.
+        /// @param expectedOrdinal The LB's deload ordinal — the slab-reuse
+        ///                        tripwire (`ordinal == expectedOrdinal`).
+        /// @param file            The open extent file (positioned I/O).
+        /// @param offset          The LB's slab offset in the extent file; >= 0.
+        void loadLbMemoryRawAt(LbMemory& lb, const std::string& chain,
+                               int64_t expectedOrdinal, PositionedFile& file,
+                               int64_t offset) {
+            const auto loadStart = std::chrono::steady_clock::now();
+            assert(offset >= 0 && "raw extent load at a negative offset");
+            const int64_t payloadBytes = consumeRawImageStream(
+                lb, chain, expectedOrdinal,
+                [&file, offset](void* dst, int64_t rel, int64_t len) {
+                    file.readAt(offset + rel, dst, len);
+                });
+            deloadStats().recordRawLoad(
+                payloadBytes,
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - loadStart).count());
         }
 
         /// @brief Empty (or create) a deload directory.
@@ -523,25 +991,29 @@ namespace gl {
             assert(!ec);
         }
 
-        /// @brief Write `registry.txt`: one `<ordinal>\t<full chain>` line
-        ///        per LB, ascending by ordinal.
-        ///
-        /// @details
-        /// The registry resolves the numeric file names (`lb<ordinal>_...`)
-        /// back to LB chains for humans / post-run inspection — reload uses
-        /// the file lists recorded at dump time, never the registry.
-        /// `std::map` ordering makes the output deterministic.
+        /// @brief Write `registry.txt`: one
+        ///        `<ordinal>\t<extentOffset>\t<slabBytes>\t<full chain>`
+        ///        line per LB, ascending by ordinal (see the declaration).
         ///
         /// @param ordinalToChain Deload ordinal → full chain string.
+        /// @param slabByOrdinal  Deload ordinal → current extent slab.
         /// @param directory      The deload directory.
         void rewriteRegistry(
             const std::map<int64_t, std::string>& ordinalToChain,
+            const std::map<int64_t, SlabAllocation>& slabByOrdinal,
             const std::filesystem::path& directory) {
             std::ofstream out(directory / "registry.txt",
                               std::ios::trunc);
             assert(out && "registry not writable");
-            for (const auto& entry : ordinalToChain)
-                out << entry.first << "\t" << entry.second << "\n";
+            for (const auto& entry : ordinalToChain) {
+                const auto slabIt = slabByOrdinal.find(entry.first);
+                const int64_t offset = slabIt != slabByOrdinal.end()
+                    ? slabIt->second.offset : -1;
+                const int64_t slabBytes = slabIt != slabByOrdinal.end()
+                    ? slabIt->second.classBytes : 0;
+                out << entry.first << "\t" << offset << "\t" << slabBytes
+                    << "\t" << entry.second << "\n";
+            }
             assert(out && "registry write failed");
         }
 

@@ -269,6 +269,17 @@ TEST(memory, memory_root_sentinel) {
     ASSERT_TRUE(m.isActive);
 }
 
+// Quiescence latch defaults (D-194): a fresh LB is born
+// dirty (hasWork == true) so its first burst always runs; the per-burst
+// mutation flag starts clean and the statement-count baseline starts at 0.
+TEST(memory, quiescence_latch_defaults) {
+    gl::Memory m;
+    ASSERT_TRUE(m.hasWork);
+    ASSERT_TRUE(!m.mutatedThisBurst);
+    ASSERT_EQ(m.encodedCountAtBurstStart, 0);
+    ASSERT_TRUE(!m.shadowWouldSkip);
+}
+
 TEST(compiler, generate_binary_sequences_three_has_eight) {
     const auto seqs = ce::generateBinarySequencesAsLists(3);
     ASSERT_EQ(seqs.size(), static_cast<std::size_t>(8));
@@ -3541,6 +3552,8 @@ TEST(memory, insert_remaining_args_normkey_raw_matches_owning) {
     gl::DirtyState d = gl::DirtyState::Clean;
     gl::TypedColdBlobMap<gl::Int16SetKey, gl::NormKey> mapOwn(&lb, &d);
     gl::TypedColdBlobMap<gl::Int16SetKey, gl::NormKey> mapRaw(&lb, &d);
+    gl::ReverseArgsIndex revOwn(&lb);
+    gl::ReverseArgsIndex revRaw(&lb);
     gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
         gl::genScratchArenas().slotCount() - 1);
 
@@ -3553,8 +3566,8 @@ TEST(memory, insert_remaining_args_normkey_raw_matches_owning) {
     for (const I& it : is) {
         const std::set<int16_t> argSet(it.arg.begin(), it.arg.end());
         const gl::NormKey nk{ it.ne, it.data };
-        gl::ExpressionAnalyzer::insertRemainingArgsNormKey(mapOwn, argSet, nk, tArena);
-        gl::ExpressionAnalyzer::insertRemainingArgsNormKey(mapRaw,
+        gl::ExpressionAnalyzer::insertRemainingArgsNormKey(mapOwn, revOwn, argSet, nk, tArena);
+        gl::ExpressionAnalyzer::insertRemainingArgsNormKey(mapRaw, revRaw,
             it.arg.data(), static_cast<int32_t>(it.arg.size()), it.ne,
             it.data.empty() ? nullptr : it.data.data(),
             static_cast<int32_t>(it.data.size()), tArena);
@@ -5843,6 +5856,32 @@ TEST(memory, mail_interner_interns_dedups_and_round_trips) {
     ASSERT_EQ(&gl::mailInterner(), &t);       // analyzer-wide singleton
 }
 
+// resetMailInterner() is the rolling-history seam: old ids disappear, and the
+// next delivery window mints again from id 1 in the same singleton table.
+TEST(memory, mail_interner_reset_restarts_the_delivery_window) {
+    gl::resetMailInterner();
+    gl::ColdStringTable& t = gl::mailInterner();
+    const std::string first = "(mail_interner_reset_first)";
+    const std::string second = "mail_interner_reset_second";
+    ASSERT_EQ(t.intern(first), 1);
+    ASSERT_EQ(t.intern(second), 2);
+    ASSERT_EQ(t.count(), 2);
+    ASSERT_TRUE(t.arenaBlocksHeld() > 0);
+
+    gl::resetMailInterner();
+    ASSERT_EQ(t.count(), 0);
+    ASSERT_TRUE(t.arenaBlocksHeld() > 0);  // arena retains blocks for reuse
+    ASSERT_EQ(t.lookup(first), 0);
+    ASSERT_EQ(t.lookup(second), 0);
+    ASSERT_EQ(t.intern(second), 1);
+    ASSERT_EQ(t.decodeString(1), second);
+
+    // Leave no ids live for later tests: a proof seam always starts the next
+    // delivery window from the same fresh state.
+    gl::resetMailInterner();
+    ASSERT_EQ(t.count(), 0);
+}
+
 // Codec<IntMailStatementKey> round-trips the id triple (originalId, validityId,
 // ascending levels) through its canonical byte layout. See mail_types.hpp.
 TEST(memory, int_mail_statement_key_codec_round_trips) {
@@ -6553,6 +6592,7 @@ TEST(memory, insert_remaining_args_norm_key_rmw) {
     gl::LbArena lb(&g);
     gl::DirtyState d = gl::DirtyState::Clean;
     gl::TypedColdBlobMap<gl::Int16SetKey, gl::NormKey> map(&lb, &d);
+    gl::ReverseArgsIndex rev(&lb);
     gl::LbArena scratch(&g);   // separate RMW scratch arena (never the map's own)
 
     const std::set<int16_t> argSetA{ 1, 2 };
@@ -6563,10 +6603,10 @@ TEST(memory, insert_remaining_args_norm_key_rmw) {
     const gl::NormKey nk2{ 1, std::vector<int16_t>(a2, a2 + 1) };
 
     // Insert out of order; the run must come back sorted by (numberExpressions, data).
-    gl::ExpressionAnalyzer::insertRemainingArgsNormKey(map, argSetA, nk2, scratch);
-    gl::ExpressionAnalyzer::insertRemainingArgsNormKey(map, argSetA, nk1, scratch);
-    gl::ExpressionAnalyzer::insertRemainingArgsNormKey(map, argSetA, nk1, scratch);  // duplicate -> no-op
-    gl::ExpressionAnalyzer::insertRemainingArgsNormKey(map, argSetB, nk1, scratch);
+    gl::ExpressionAnalyzer::insertRemainingArgsNormKey(map, rev, argSetA, nk2, scratch);
+    gl::ExpressionAnalyzer::insertRemainingArgsNormKey(map, rev, argSetA, nk1, scratch);
+    gl::ExpressionAnalyzer::insertRemainingArgsNormKey(map, rev, argSetA, nk1, scratch);  // duplicate -> no-op
+    gl::ExpressionAnalyzer::insertRemainingArgsNormKey(map, rev, argSetB, nk1, scratch);
 
     ASSERT_EQ(map.count(), 2);                                       // two arg-set keys
     const int32_t idA = map.lookup(
@@ -6580,6 +6620,162 @@ TEST(memory, insert_remaining_args_norm_key_rmw) {
         gl::Int16SetKey{ std::vector<int16_t>(argSetB.begin(), argSetB.end()) });
     ASSERT_TRUE(idB != 0);
     ASSERT_EQ(static_cast<int>(map.recordsAt(idB).size()), 1);
+}
+
+// insertRemainingArgsNormKeyBatch: a whole batch into one key is byte-identical
+// to N sequential insertRemainingArgsNormKey calls (the retained oracle), for
+// the forward run AND the reverse-index answers — with duplicates in the batch
+// and a pre-existing run.
+TEST(memory, insert_remaining_args_batch_matches_sequential) {
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 16 << 20, 1 << 18 });
+    gl::LbArena lbSeq(&g);
+    gl::LbArena lbBatch(&g);
+    gl::LbArena lbScratch(&g);
+    gl::DirtyState dSeq = gl::DirtyState::Clean;
+    gl::DirtyState dBatch = gl::DirtyState::Clean;
+    gl::TypedColdBlobMap<gl::Int16SetKey, gl::NormKey> mapSeq(&lbSeq, &dSeq);
+    gl::TypedColdBlobMap<gl::Int16SetKey, gl::NormKey> mapBatch(&lbBatch, &dBatch);
+    gl::ReverseArgsIndex revSeq(&lbSeq);
+    gl::ReverseArgsIndex revBatch(&lbBatch);
+
+    const std::set<int16_t> key{ 1, 2 };
+    int16_t keyArr[2] = { 1, 2 };
+
+    // Pre-existing run installed the SAME way into both maps (sequential), so the
+    // batch merges against a non-empty run.
+    const gl::NormKey pre1{ 1, { 30 } };
+    const gl::NormKey pre2{ 2, { 40, 41 } };
+    for (const gl::NormKey* nk : { &pre1, &pre2 }) {
+        gl::ExpressionAnalyzer::insertRemainingArgsNormKey(mapSeq, revSeq, key, *nk, lbScratch);
+        gl::ExpressionAnalyzer::insertRemainingArgsNormKey(mapBatch, revBatch, key, *nk, lbScratch);
+    }
+
+    // The batch, in permutation-ish order with duplicates and one key already
+    // present (pre1) — a mix of new, dup-within-batch, and already-present.
+    const std::vector<gl::NormKey> batchKeys = {
+        gl::NormKey{ 1, { 20 } },        // new
+        gl::NormKey{ 1, { 10 } },        // new (sorts before {20})
+        gl::NormKey{ 1, { 20 } },        // dup within batch -> one edge
+        gl::NormKey{ 1, { 30 } },        // already present (pre1) -> no edge
+        gl::NormKey{ 3, { 5, 6, 7 } },   // new
+    };
+
+    // Oracle: N sequential inserts.
+    for (const gl::NormKey& nk : batchKeys)
+        gl::ExpressionAnalyzer::insertRemainingArgsNormKey(mapSeq, revSeq, key, nk, lbScratch);
+
+    // Batched: accumulate the SAME NormKeys as Codec<NormKey> byte blobs on the
+    // scratch arena, then ONE batched insert.
+    {
+        const gl::ArenaOffset bMark = lbScratch.cursor();
+        gl::DirtyState bDirty = gl::DirtyState::Clean;
+        gl::PagedVector<gl::ExpressionAnalyzer::RemArgsBatchBlob> batch(&lbScratch, &bDirty);
+        for (const gl::NormKey& nk : batchKeys) {
+            const std::vector<char> bytes = gl::Codec<gl::NormKey>::serialize(nk);
+            const int32_t bl = static_cast<int32_t>(bytes.size());
+            const gl::ArenaOffset off = lbScratch.alloc(bl, 1);
+            std::memcpy(lbScratch.resolve(off), bytes.data(),
+                        static_cast<std::size_t>(bl));
+            batch.push_back(gl::ExpressionAnalyzer::RemArgsBatchBlob{ off, bl });
+        }
+        gl::ExpressionAnalyzer::insertRemainingArgsNormKeyBatch(
+            mapBatch, revBatch, keyArr, 2, batch, lbScratch);
+        lbScratch.popTo(bMark);
+    }
+
+    // Forward run byte-identical.
+    const int32_t idSeq = mapSeq.lookup(gl::Int16SetKey{ { 1, 2 } });
+    const int32_t idBatch = mapBatch.lookup(gl::Int16SetKey{ { 1, 2 } });
+    ASSERT_TRUE(idSeq != 0 && idBatch != 0);
+    ASSERT_EQ(mapSeq.runLen(idSeq), mapBatch.runLen(idBatch));
+    for (int32_t j = 0; j < mapSeq.runLen(idSeq); ++j) {
+        const std::vector<gl::NormKey> rs = mapSeq.recordsAt(idSeq);
+        const std::vector<gl::NormKey> rb = mapBatch.recordsAt(idBatch);
+        ASSERT_TRUE(rs[j] == rb[j]);
+    }
+
+    // Reverse-index answers identical for every referenced NormKey (order-free:
+    // sort each owner run before comparing).
+    const std::vector<gl::NormKey> universe = {
+        pre1, pre2, gl::NormKey{ 1, { 10 } }, gl::NormKey{ 1, { 20 } },
+        gl::NormKey{ 3, { 5, 6, 7 } }, gl::NormKey{ 9, { 99 } } /* never stored */ };
+    for (const gl::NormKey& nk : universe) {
+        const std::vector<char> b = gl::Codec<gl::NormKey>::serialize(nk);
+        std::vector<int32_t> os, ob;
+        revSeq.reverseIndexRunOf(gl::StrSpan(b.data(), static_cast<int32_t>(b.size())),
+            [&](int32_t id) { os.push_back(id); });
+        revBatch.reverseIndexRunOf(gl::StrSpan(b.data(), static_cast<int32_t>(b.size())),
+            [&](int32_t id) { ob.push_back(id); });
+        std::sort(os.begin(), os.end());
+        std::sort(ob.begin(), ob.end());
+        ASSERT_TRUE(os == ob);
+    }
+}
+
+// The over-block widening branch must preserve existing pool-backed records
+// before assignRun opens their source run empty. This is the direct regression
+// for retaining those pointers across the mutation.
+TEST(memory, insert_remaining_args_batch_widening_preserves_existing_run) {
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 16 << 20, 1 << 18 });
+    gl::LbArena lbMap(&g);
+    gl::LbArena lbScratch(&g);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::TypedColdBlobMap<gl::Int16SetKey, gl::NormKey> map(&lbMap, &dirty);
+    gl::ReverseArgsIndex rev(&lbMap);
+
+    constexpr int32_t kExisting = 512;
+    std::vector<char> concat;
+    std::vector<int32_t> lens;
+    std::vector<gl::NormKey> expected;
+    for (int32_t i = 0; i < kExisting; ++i) {
+        std::vector<int16_t> data(
+            static_cast<std::size_t>(gl::ExecutionParameters::MAX_KEY_SLOTS),
+            static_cast<int16_t>(0));
+        data[0] = static_cast<int16_t>(i);
+        expected.push_back(gl::NormKey{ 1, std::move(data) });
+        const std::vector<char> bytes =
+            gl::Codec<gl::NormKey>::serialize(expected.back());
+        lens.push_back(static_cast<int32_t>(bytes.size()));
+        concat.insert(concat.end(), bytes.begin(), bytes.end());
+    }
+    ASSERT_TRUE(static_cast<int32_t>(concat.size())
+        > gl::ExecutionParameters::kMaxAdmissionRunBytes);
+
+    const gl::Int16SetKey typedKey{ { 1, 2 } };
+    const std::string keyBytes = gl::Codec<gl::Int16SetKey>::encode(typedKey);
+    map.inner().assignRun(gl::StrSpan(keyBytes), concat.data(), lens.data(),
+                          kExisting);
+
+    std::vector<int16_t> newData(
+        static_cast<std::size_t>(gl::ExecutionParameters::MAX_KEY_SLOTS),
+        static_cast<int16_t>(0));
+    newData[0] = 250;
+    newData[1] = 1;   // sorts between existing [250,0,...] and [251,0,...]
+    const gl::NormKey added{ 1, std::move(newData) };
+    expected.insert(expected.begin() + 251, added);
+    const std::vector<char> addedBytes = gl::Codec<gl::NormKey>::serialize(added);
+
+    const gl::ArenaOffset mark = lbScratch.cursor();
+    gl::DirtyState batchDirty = gl::DirtyState::Clean;
+    gl::PagedVector<gl::ExpressionAnalyzer::RemArgsBatchBlob> batch(
+        &lbScratch, &batchDirty);
+    const gl::ArenaOffset addedOff = lbScratch.alloc(
+        static_cast<int32_t>(addedBytes.size()), 1);
+    std::memcpy(lbScratch.resolve(addedOff), addedBytes.data(), addedBytes.size());
+    batch.push_back(gl::ExpressionAnalyzer::RemArgsBatchBlob{
+        addedOff, static_cast<int32_t>(addedBytes.size()) });
+    int16_t keyArr[2] = { 1, 2 };
+    gl::ExpressionAnalyzer::insertRemainingArgsNormKeyBatch(
+        map, rev, keyArr, 2, batch, lbScratch);
+    lbScratch.popTo(mark);
+
+    const int32_t id = map.lookup(typedKey);
+    ASSERT_TRUE(id != 0);
+    const std::vector<gl::NormKey> actual = map.recordsAt(id);
+    ASSERT_EQ(static_cast<int32_t>(actual.size()), kExisting + 1);
+    ASSERT_TRUE(actual == expected);
 }
 
 // ownerKeyAccepts: a present key at a comparable (main) scope with a loose owner
@@ -6610,6 +6806,745 @@ TEST(memory, owner_key_accepts_lookup_and_prune) {
     int16_t miss[2] = { 9, 9 };
     ASSERT_FALSE(
         gl::ExpressionAnalyzer::ownerKeyAccepts(map, miss, 2, nm, exprs, 1));
+}
+
+// requestGatesPass: the three map-independent gates preEvaluateFromEncoded runs
+// before probing an owner-set map. Split out so the unified request generator can
+// build the key once and probe two maps with it; the gates must keep the exact
+// verdicts the inlined version gave.
+//
+// The secondary-variable gate is not exercised here: it is the only branch that
+// reads the cold productsOfRecursionIds set, and it is unreachable for premises
+// whose args all carry argIteration == -1 (which encodeExpression produces for
+// plain lowercase args).
+TEST(memory, request_gates_pass_hypo_scope_and_length) {
+    // Heavy ExpressionAnalyzer construction is unavoidable: the gates read
+    // `parameters`, which is a member (mirrors the other ea("Peano") tests).
+    gl::ExpressionAnalyzer ea("Peano");
+    gl::Memory m;
+    gl::NameMap& nm = m.nameMap;
+
+    const int16_t kMain = gl::NameMap::MAIN_ID;
+    const int16_t kHypoA = static_cast<int16_t>(kMain + 1);
+    const int16_t kHypoB = static_cast<int16_t>(kMain + 2);
+
+    gl::IntEncodedExpr a =
+        gl::encodeExpression(gl::EncodedExpression("(in[a,b])", "main"), nm);
+    gl::IntEncodedExpr b =
+        gl::encodeExpression(gl::EncodedExpression("(in2[a,b,c])", "main"), nm);
+    a.validityId = kMain;
+    b.validityId = kMain;
+    a.isHypo = 0;  a.isAnchor = 0;
+    b.isHypo = 0;  b.isAnchor = 0;
+
+    const gl::IntEncodedExpr* two[2] = { &a, &b };
+
+    // --- positive: no hypothesis, within length.
+    m.overallHashMemory.maxKeyLength = 2;
+    ASSERT_TRUE(ea.requestGatesPass(two, 2, m, kMain));
+
+    // --- negative: longer than the LB's longest installed key.
+    m.overallHashMemory.maxKeyLength = 1;
+    ASSERT_FALSE(ea.requestGatesPass(two, 2, m, kMain));
+
+    m.overallHashMemory.maxKeyLength = 2;
+
+    // --- negative: two hypothetical premises straddling two hypothesis scopes.
+    a.isHypo = 1;  a.validityId = kHypoA;
+    b.isHypo = 1;  b.validityId = kHypoB;
+    ASSERT_FALSE(ea.requestGatesPass(two, 2, m, kMain));
+
+    // --- positive: one hypothesis scope, both premises inside it.
+    b.validityId = kHypoA;
+    ASSERT_TRUE(ea.requestGatesPass(two, 2, m, kMain));
+
+    // --- negative: a non-hypothetical premise from a foreign scope rides along.
+    b.isHypo = 0;
+    b.validityId = kHypoB;
+    b.isAnchor = 0;
+    ASSERT_FALSE(ea.requestGatesPass(two, 2, m, kMain));
+
+    // --- positive: a main-scope ANCHOR is the sanctioned exception to that rule.
+    b.validityId = kMain;
+    b.isAnchor = 1;
+    ASSERT_TRUE(ea.requestGatesPass(two, 2, m, kMain));
+
+    // --- negative: the same anchor, but the hypothesis key exceeds maxLenHypoKey.
+    const int savedHypoLen = ea.parameters.maxLenHypoKey;
+    ea.parameters.maxLenHypoKey = 1;
+    ASSERT_FALSE(ea.requestGatesPass(two, 2, m, kMain));
+    ea.parameters.maxLenHypoKey = savedHypoLen;
+}
+
+// filterIntEncodedStatements: the alsoAcceptFullKeys flag is the ONLY difference
+// between the main prover's statement universe and the counter-example filter's.
+// A statement whose single-element key exists only as a FULL key is growable by
+// nobody, so a non-empty stump must drop it; an empty stump must keep it, because
+// the statement is already a complete request on its own.
+TEST(memory, filter_int_encoded_statements_also_accept_full_keys) {
+    gl::ExpressionAnalyzer ea("Peano");
+    gl::Memory m;
+    gl::NameMap& nm = m.nameMap;
+
+    const gl::EncodedExpression src("(in[a,b])", "main");
+    m.intEncodedStatements.push_back(gl::encodeExpression(src, nm));
+    const gl::IntStmtView stmts(m.intEncodedStatements);
+
+    // The single-element normalized key the filter builds: name, negation, then
+    // one (varId, changeable) pair per arg with varIds renumbered by first
+    // appearance.
+    const gl::IntEncodedExpr& s = m.intEncodedStatements[0];
+    int16_t keyBuf[6] = { s.nameId, s.negation, 1, 0, 2, 0 };
+    const gl::NormKey key{ 1, std::vector<int16_t>(keyBuf, keyBuf + 6) };
+    std::vector<gl::EncodedExpression> owner = { src };
+
+    int16_t out[8];
+
+    // --- key registered nowhere: dropped under both flags.
+    ASSERT_EQ(ea.filterIntEncodedStatements(stmts, m.overallHashMemory, nm,
+                                            false, out, 8), 0);
+    ASSERT_EQ(ea.filterIntEncodedStatements(stmts, m.overallHashMemory, nm,
+                                            true, out, 8), 0);
+
+    // --- key registered as a FULL key only: the flag decides.
+    gl::ExpressionAnalyzer::mergeOwnerRecord(
+        m.overallHashMemory.normalizedEncodedKeys, key,
+        gl::makePartitionId(3, gl::NameMap::MAIN_ID), owner, nm);
+    ASSERT_EQ(ea.filterIntEncodedStatements(stmts, m.overallHashMemory, nm,
+                                            false, out, 8), 0);
+    ASSERT_EQ(ea.filterIntEncodedStatements(stmts, m.overallHashMemory, nm,
+                                            true, out, 8), 1);
+    ASSERT_EQ(out[0], 0);
+
+    // --- also registered as a SUBKEY: kept under both flags.
+    gl::ExpressionAnalyzer::mergeOwnerRecord(
+        m.overallHashMemory.normalizedEncodedSubkeys, key,
+        gl::makePartitionId(3, gl::NameMap::MAIN_ID), owner, nm);
+    ASSERT_EQ(ea.filterIntEncodedStatements(stmts, m.overallHashMemory, nm,
+                                            false, out, 8), 1);
+    ASSERT_EQ(ea.filterIntEncodedStatements(stmts, m.overallHashMemory, nm,
+                                            true, out, 8), 1);
+}
+
+// generateEncodedRequestsStatic: one function, three stump lengths.
+//
+// The world: two main-scope statements A = (in[a,b]) and B = (in2[a,b,c]), one
+// installed two-element key {A,B} (name order "in" < "in2"), and both of its
+// one-element subkeys registered as subkeys AND as key-minus-one.
+//
+// Every stump length must find the SAME single request {A,B} — but by a different
+// route, which is exactly what makes this a unification test:
+//   stump 2  -> the SEED emits it (the stump alone is already a whole key).
+//   stump 1  -> the MERGE emits it (grow to {A}, attach the stump {B}).
+//   stump 0  -> the GROW emits it (the search reaches {A,B}, which is a whole key).
+//
+// BurstSink is the production consumer. Its dependency skip drops every request
+// before firing, because `intKnownStatements` is empty here — but `produced` is
+// bumped first, so it counts exactly the emitted requests.
+TEST(memory, generate_encoded_requests_static_all_stump_lengths) {
+    gl::ExpressionAnalyzer ea("Peano");
+    gl::Memory m;
+    gl::NameMap& nm = m.nameMap;
+
+    const gl::EncodedExpression srcA("(in[a,b])", "main");
+    const gl::EncodedExpression srcB("(in2[a,b,c])", "main");
+    m.intEncodedStatements.push_back(gl::encodeExpression(srcA, nm));
+    m.intEncodedStatements.push_back(gl::encodeExpression(srcB, nm));
+    const gl::IntStmtView all(m.intEncodedStatements);
+    const gl::IntEncodedExpr* pA = &m.intEncodedStatements[0];
+    const gl::IntEncodedExpr* pB = &m.intEncodedStatements[1];
+
+    m.overallHashMemory.maxKeyLength = static_cast<int16_t>(2);
+
+    // Build the three normalized keys exactly as the generator does.
+    int16_t kb[gl::ExecutionParameters::MAX_KEY_SLOTS];
+    const auto normKey = [&](const gl::IntEncodedExpr* const* ptrs, int16_t n) {
+        const int16_t len = ea.makeIntNormalizedKeyFromEncoded(
+            ptrs, n, kb, gl::ExecutionParameters::MAX_KEY_SLOTS);
+        return gl::NormKey{ n, std::vector<int16_t>(kb, kb + len) };
+    };
+    const gl::IntEncodedExpr* justA[1] = { pA };
+    const gl::IntEncodedExpr* justB[1] = { pB };
+    const gl::IntEncodedExpr* bothAB[2] = { pA, pB };   // "in" sorts before "in2"
+    const gl::NormKey k1A = normKey(justA, 1);
+    const gl::NormKey k1B = normKey(justB, 1);
+    const gl::NormKey k2AB = normKey(bothAB, 2);
+
+    std::vector<gl::EncodedExpression> ownerAB = { srcA, srcB };
+    const auto pid = gl::makePartitionId(3, gl::NameMap::MAIN_ID);
+    gl::ExpressionAnalyzer::mergeOwnerRecord(
+        m.overallHashMemory.normalizedEncodedKeys, k2AB, pid, ownerAB, nm);
+    for (const gl::NormKey* k : { &k1A, &k1B }) {
+        gl::ExpressionAnalyzer::mergeOwnerRecord(
+            m.overallHashMemory.normalizedEncodedSubkeys, *k, pid, ownerAB, nm);
+        gl::ExpressionAnalyzer::mergeOwnerRecord(
+            m.overallHashMemory.normalizedEncodedSubkeysMinusOne, *k, pid, ownerAB, nm);
+    }
+
+    // One unsplit part; the empty-stump path asserts on this.
+    gl::g_splitCount = 1;
+    gl::g_splitProcessID = 0;
+    ea.ceFilteringActive = false;
+
+    gl::SealedPageSet pages;
+    pages.bind(&gl::staticMemory());
+    std::atomic<bool> stop{ false };
+
+    const auto runWith = [&](int16_t stumpLen, const gl::Stump* stumps,
+                             int16_t stumpCount, gl::IntStmtView src1) {
+        gl::ExpressionAnalyzer::g_growthMatchCount = 0;
+        gl::BurstSink sink{ &ea, &m, 0u, &pages, &stop,
+                            gl::SealedRecordCursor<gl::FiringRecord>(pages) };
+        ea.generateEncodedRequestsStatic(m, m.overallHashMemory, stumpLen,
+                                         stumps, stumpCount, all, src1,
+                                         gl::SplitStumpRef{}, 0u, sink);
+        gl::genScratchArenas().forSlot(0).releaseAll();
+        return sink.produced;
+    };
+
+    // --- stump 2: the seed emits {A,B}; grow depth is 0 so nothing else runs.
+    const gl::Stump pair[1] = { { 0, 1 } };
+    ASSERT_EQ(runWith(2, pair, 1, all), 1);
+
+    // --- stump 1 (the stump is B): grow finds {A}, the merge attaches B.
+    // The {B} base candidate merges with stump B and is dropped as a duplicate.
+    const gl::Stump single[1] = { { 1, -1 } };
+    ASSERT_EQ(runWith(1, single, 1, gl::IntStmtView()), 1);
+
+    // --- stump 0: no element is obligatory; the search itself reaches {A,B}.
+    ASSERT_EQ(runWith(0, nullptr, 0, gl::IntStmtView()), 1);
+
+    // --- stump 0 with the whole key un-installed: nothing to find, no request.
+    gl::Memory m2;
+    gl::NameMap& nm2 = m2.nameMap;
+    m2.intEncodedStatements.push_back(gl::encodeExpression(srcA, nm2));
+    m2.overallHashMemory.maxKeyLength = static_cast<int16_t>(2);
+    const gl::IntEncodedExpr* pA2 = &m2.intEncodedStatements[0];
+    const gl::IntEncodedExpr* justA2[1] = { pA2 };
+    const int16_t lenA2 = ea.makeIntNormalizedKeyFromEncoded(
+        justA2, 1, kb, gl::ExecutionParameters::MAX_KEY_SLOTS);
+    const gl::NormKey k1A2{ 1, std::vector<int16_t>(kb, kb + lenA2) };
+    std::vector<gl::EncodedExpression> ownerA = { srcA };
+    gl::ExpressionAnalyzer::mergeOwnerRecord(
+        m2.overallHashMemory.normalizedEncodedSubkeys, k1A2, pid, ownerA, nm2);
+
+    gl::ExpressionAnalyzer::g_growthMatchCount = 0;
+    gl::BurstSink sink2{ &ea, &m2, 0u, &pages, &stop,
+                         gl::SealedRecordCursor<gl::FiringRecord>(pages) };
+    ea.generateEncodedRequestsStatic(m2, m2.overallHashMemory, 0, nullptr, 0,
+                                     gl::IntStmtView(m2.intEncodedStatements),
+                                     gl::IntStmtView(), gl::SplitStumpRef{}, 0u, sink2);
+    gl::genScratchArenas().forSlot(0).releaseAll();
+    ASSERT_EQ(sink2.produced, 0);
+}
+
+namespace {
+
+/// A three-statement world for the stump producer: "in", "in2", "in3" all sort
+/// distinctly by name. Each caller installs whichever owner-set entries its case
+/// needs; nothing is installed here.
+struct StumpWorld {
+    gl::Memory m;
+    gl::EncodedExpression srcA{ "(in[a,b])", "main" };
+    gl::EncodedExpression srcB{ "(in2[a,b,c])", "main" };
+    gl::EncodedExpression srcC{ "(in3[a,b,c,d])", "main" };
+
+    StumpWorld() {
+        m.intEncodedStatements.push_back(gl::encodeExpression(srcA, m.nameMap));
+        m.intEncodedStatements.push_back(gl::encodeExpression(srcB, m.nameMap));
+        m.intEncodedStatements.push_back(gl::encodeExpression(srcC, m.nameMap));
+    }
+
+    const gl::IntEncodedExpr* at(int i) { return &m.intEncodedStatements[i]; }
+
+    /// Install `ptrs[0..n)` as a subkey owned by the rule with `origId`.
+    void installSubkey(gl::ExpressionAnalyzer& ea,
+                       const gl::IntEncodedExpr* const* ptrs, int16_t n,
+                       int16_t origId,
+                       std::vector<gl::EncodedExpression> owner) {
+        int16_t kb[gl::ExecutionParameters::MAX_KEY_SLOTS];
+        const int16_t len = ea.makeIntNormalizedKeyFromEncoded(
+            ptrs, n, kb, gl::ExecutionParameters::MAX_KEY_SLOTS);
+        const gl::NormKey k{ n, std::vector<int16_t>(kb, kb + len) };
+        gl::ExpressionAnalyzer::mergeOwnerRecord(
+            m.overallHashMemory.normalizedEncodedSubkeys, k,
+            gl::makePartitionId(origId, gl::NameMap::MAIN_ID), owner, m.nameMap);
+    }
+};
+
+/// Drain a producer run into a plain vector of (indices, count) pairs.
+std::vector<std::vector<int16_t>> drainStumps(gl::SealedPageSet& pages) {
+    std::vector<std::vector<int16_t>> got;
+    pages.forEachRecord<gl::ExpressionStump>([&](const gl::ExpressionStump& s) {
+        got.emplace_back(s.allIdx, s.allIdx + s.count);
+    });
+    return got;
+}
+
+/// Install one owner record for `ptrs[0..n)` into `map`.
+void putKey(gl::ExpressionAnalyzer& ea, gl::Memory& m,
+            gl::TypedColdBlobMap<gl::NormKey, gl::OwnerSet>& map,
+            const gl::IntEncodedExpr* const* ptrs, int16_t n,
+            const std::vector<gl::EncodedExpression>& owner) {
+    int16_t kb[gl::ExecutionParameters::MAX_KEY_SLOTS];
+    const int16_t len = ea.makeIntNormalizedKeyFromEncoded(
+        ptrs, n, kb, gl::ExecutionParameters::MAX_KEY_SLOTS);
+    gl::ExpressionAnalyzer::mergeOwnerRecord(
+        map, gl::NormKey{ n, std::vector<int16_t>(kb, kb + len) },
+        gl::makePartitionId(3, gl::NameMap::MAIN_ID), owner, m.nameMap);
+}
+
+/// Run one request-generator pass and return the number of requests emitted.
+/// `splitStump` holds the sub-part's stump (statement indices), or is empty.
+/// Build a one-stump bucket from a run of statement indices.
+gl::ExpressionStump makeStump(const std::vector<int16_t>& idx,
+                              bool terminalOnly = false) {
+    gl::ExpressionStump s{};
+    s.count = static_cast<int16_t>(idx.size());
+    s.terminalOnly = terminalOnly ? 1 : 0;
+    for (std::size_t k = 0; k < idx.size(); ++k) s.allIdx[k] = idx[k];
+    return s;
+}
+
+int splitStumpRun(gl::ExpressionAnalyzer& ea, gl::Memory& m, int16_t stumpLen,
+                  const gl::Stump* stumps, int16_t stumpCount,
+                   gl::IntStmtView src1, const std::vector<int16_t>& splitStump,
+                   int16_t ordinal = 0, int16_t total = -1,
+                   bool terminalOnly = false) {
+    gl::g_splitCount = 1;
+    gl::g_splitProcessID = 0;
+    ea.ceFilteringActive = false;
+    gl::SealedPageSet pages;
+    pages.bind(&gl::staticMemory());
+    std::atomic<bool> stop{ false };
+    gl::ExpressionAnalyzer::g_growthMatchCount = 0;
+    gl::BurstSink sink{ &ea, &m, 0u, &pages, &stop,
+                        gl::SealedRecordCursor<gl::FiringRecord>(pages) };
+    if (total < 0) total = static_cast<int16_t>(splitStump.empty() ? 0 : 1);
+    const gl::ExpressionStump one = makeStump(splitStump, terminalOnly);
+    ea.generateEncodedRequestsStatic(
+        m, m.overallHashMemory, stumpLen, stumps, stumpCount,
+        gl::IntStmtView(m.intEncodedStatements), src1,
+        gl::SplitStumpRef{ splitStump.empty() ? nullptr : &one,
+                           static_cast<int16_t>(splitStump.empty() ? 0 : 1),
+                           ordinal, total },
+        0u, sink);
+    gl::genScratchArenas().forSlot(0).releaseAll();
+    const int produced = sink.produced;
+    pages.seal();
+    pages.freePages();
+    return produced;
+}
+
+/// Run the generator with a whole BUCKET of stumps; returns the requests emitted.
+int splitStumpBucketRun(gl::ExpressionAnalyzer& ea, gl::Memory& m, int16_t stumpLen,
+                        const gl::Stump* stumps, int16_t stumpCount,
+                        gl::IntStmtView src1,
+                        const std::vector<std::vector<int16_t>>& bucket) {
+    gl::g_splitCount = 1;
+    gl::g_splitProcessID = 0;
+    ea.ceFilteringActive = false;
+    std::vector<gl::ExpressionStump> run;
+    for (const auto& s : bucket) run.push_back(makeStump(s));
+    gl::SealedPageSet pages;
+    pages.bind(&gl::staticMemory());
+    std::atomic<bool> stop{ false };
+    gl::ExpressionAnalyzer::g_growthMatchCount = 0;
+    gl::BurstSink sink{ &ea, &m, 0u, &pages, &stop,
+                        gl::SealedRecordCursor<gl::FiringRecord>(pages) };
+    ea.generateEncodedRequestsStatic(
+        m, m.overallHashMemory, stumpLen, stumps, stumpCount,
+        gl::IntStmtView(m.intEncodedStatements), src1,
+        gl::SplitStumpRef{ run.data(), static_cast<int16_t>(run.size()), 0, 1 },
+        0u, sink);
+    gl::genScratchArenas().forSlot(0).releaseAll();
+    const int produced = sink.produced;
+    pages.seal();
+    pages.freePages();
+    return produced;
+}
+
+}  // namespace
+
+TEST(memory, split_stump_search_covers_the_unsplit_request_set) {
+    // One 3-premise rule (in, in2, in3). Obligatory stump = "in3"; unsplit, the
+    // search records the three 2-element base candidates and the merge emits the
+    // one whole key. Split on each of the three expressions in turn: every request
+    // the unsplit run emits is emitted by at least one sub-part, and a sub-part
+    // emits only requests containing its own stump.
+    gl::ExpressionAnalyzer ea("Peano");
+    StumpWorld w;
+    w.m.overallHashMemory.maxKeyLength = 3;
+    const std::vector<gl::EncodedExpression> owner = { w.srcA, w.srcB, w.srcC };
+    auto& hm = w.m.overallHashMemory;
+    const gl::IntEncodedExpr* all3[3] = { w.at(0), w.at(1), w.at(2) };
+    putKey(ea, w.m, hm.normalizedEncodedKeys, all3, 3, owner);
+    putKey(ea, w.m, hm.normalizedEncodedSubkeys, all3, 3, owner);
+    for (int i = 0; i < 3; ++i) {
+        const gl::IntEncodedExpr* one[1] = { w.at(i) };
+        putKey(ea, w.m, hm.normalizedEncodedSubkeys, one, 1, owner);
+        for (int j = i + 1; j < 3; ++j) {
+            const gl::IntEncodedExpr* two[2] = { w.at(i), w.at(j) };
+            putKey(ea, w.m, hm.normalizedEncodedSubkeys, two, 2, owner);
+            // A 3-element key's minus-one subkeys are its 2-element subsets.
+            putKey(ea, w.m, hm.normalizedEncodedSubkeysMinusOne, two, 2, owner);
+        }
+    }
+
+    const gl::Stump oblig[1] = { { 2, -1 } };  // the obligatory statement is "in3"
+    const gl::IntStmtView none;
+
+    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 1, none, {}), 1);  // unsplit
+
+    // Stump "in": the search reaches {in,in2} and the merge attaches "in3". Stump
+    // "in2" reaches the same request by the other route — the duplication a stump
+    // split trades for its per-part work. Stump "in3" can only build candidates
+    // already containing "in3", every one of which the merge drops as a repeat of
+    // the obligatory statement.
+    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 1, none, { 0 }), 1);
+    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 1, none, { 1 }), 1);
+    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 1, none, { 2 }), 0);
+
+    // A 2-element stump spends the whole grow depth, so the search adds nothing —
+    // but the stump alone completes the key with the obligatory statement.
+    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 1, none, { 0, 1 }), 1);
+}
+
+TEST(memory, a_stump_bucket_searches_once_per_stump_and_dedups_the_overlap) {
+    // The same 3-premise world. Stumped on "in" the sub-part emits the request;
+    // stumped on "in2" it emits the same request by the other route. Given BOTH as
+    // one bucket, the sub-part searches once per stump over one filtered list and
+    // the emitter collapses the overlap — one request, not two. That collapse is
+    // the reason a bucket beats one sub-part per stump: two separate sub-parts
+    // would each have fired it, and each firing is a record the finalize must sort.
+    gl::ExpressionAnalyzer ea("Peano");
+    StumpWorld w;
+    w.m.overallHashMemory.maxKeyLength = 3;
+    const std::vector<gl::EncodedExpression> owner = { w.srcA, w.srcB, w.srcC };
+    auto& hm = w.m.overallHashMemory;
+    const gl::IntEncodedExpr* all3[3] = { w.at(0), w.at(1), w.at(2) };
+    putKey(ea, w.m, hm.normalizedEncodedKeys, all3, 3, owner);
+    putKey(ea, w.m, hm.normalizedEncodedSubkeys, all3, 3, owner);
+    for (int i = 0; i < 3; ++i) {
+        const gl::IntEncodedExpr* one[1] = { w.at(i) };
+        putKey(ea, w.m, hm.normalizedEncodedSubkeys, one, 1, owner);
+        for (int j = i + 1; j < 3; ++j) {
+            const gl::IntEncodedExpr* two[2] = { w.at(i), w.at(j) };
+            putKey(ea, w.m, hm.normalizedEncodedSubkeys, two, 2, owner);
+            putKey(ea, w.m, hm.normalizedEncodedSubkeysMinusOne, two, 2, owner);
+        }
+    }
+    const gl::Stump oblig[1] = { { 2, -1 } };  // "in3"
+    const gl::IntStmtView none;
+
+    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 1, none, { 0 }), 1);
+    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 1, none, { 1 }), 1);
+    ASSERT_EQ(splitStumpBucketRun(ea, w.m, 1, oblig, 1, none, { {0}, {1} }), 1);
+
+    // A bucket also covers what its stumps cover separately, no more and no less:
+    // adding the stump that emits nothing changes nothing.
+    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 1, none, { 2 }), 0);
+    ASSERT_EQ(splitStumpBucketRun(ea, w.m, 1, oblig, 1, none, { {0}, {1}, {2} }), 1);
+
+    // A stump too long for the grow depth is skipped, and the bucket's others still
+    // run: {in,in2,in3} spends all three slots, leaving no room for a base candidate.
+    ASSERT_EQ(splitStumpBucketRun(ea, w.m, 1, oblig, 1, none, { {0,1,2}, {0} }), 1);
+}
+
+TEST(memory, seed_phase_requests_are_dealt_across_the_stump_sub_parts) {
+    // A seed request IS the obligatory stump — the case where that stump is
+    // already a whole key. It contains no split stump, so without the deal every
+    // sub-part of a rule-part would emit every one of them.
+    //
+    // Three single-expression keys, each its own obligatory stump. maxKeyLength 1
+    // leaves no grow depth, so the seed phase is the whole burst.
+    gl::ExpressionAnalyzer ea("Peano");
+    StumpWorld w;
+    w.m.overallHashMemory.maxKeyLength = 1;
+    for (int i = 0; i < 3; ++i) {
+        const gl::IntEncodedExpr* one[1] = { w.at(i) };
+        const std::vector<gl::EncodedExpression> owner = {
+            i == 0 ? w.srcA : (i == 1 ? w.srcB : w.srcC) };
+        putKey(ea, w.m, w.m.overallHashMemory.normalizedEncodedKeys, one, 1, owner);
+    }
+    const gl::Stump oblig[3] = { { 0, -1 }, { 1, -1 }, { 2, -1 } };
+    const gl::IntStmtView none;
+
+    // Unsplit: all three seeds emitted by the one part.
+    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 3, none, {}), 3);
+
+    // Three sub-parts: obligatory-stump index i goes to sub-part i % 3, so each
+    // sub-part emits exactly one and the three together emit each seed once.
+    int total = 0;
+    for (int16_t p = 0; p < 3; ++p) {
+        const int got = splitStumpRun(ea, w.m, 1, oblig, 3, none, { p }, p, 3);
+        ASSERT_EQ(got, 1);
+        total += got;
+    }
+    ASSERT_EQ(total, 3);
+
+    // A single sub-part owns every seed — the deal is inert at total 1.
+    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 3, none, { 0 }, 0, 1), 3);
+}
+
+TEST(memory, split_stump_alone_is_recorded_as_a_base_candidate) {
+    // The regression this guards: unsplit, the base candidate {in} is recorded
+    // inside the loop of the candidate one level up — the search's root loop. A
+    // sub-part stumped on {in} never runs that loop, so unless the stump is probed
+    // on its own the request {in, in3} disappears.
+    gl::ExpressionAnalyzer ea("Peano");
+    StumpWorld w;
+    w.m.overallHashMemory.maxKeyLength = 2;
+    const std::vector<gl::EncodedExpression> owner = { w.srcA, w.srcC };
+    auto& hm = w.m.overallHashMemory;
+    const gl::IntEncodedExpr* pairAC[2] = { w.at(0), w.at(2) };
+    const gl::IntEncodedExpr* justA[1] = { w.at(0) };
+    const gl::IntEncodedExpr* justC[1] = { w.at(2) };
+    putKey(ea, w.m, hm.normalizedEncodedKeys, pairAC, 2, owner);
+    putKey(ea, w.m, hm.normalizedEncodedSubkeys, pairAC, 2, owner);
+    for (const gl::IntEncodedExpr* const* one : { justA, justC }) {
+        putKey(ea, w.m, hm.normalizedEncodedSubkeys, one, 1, owner);
+        // A 2-element key's minus-one subkeys are its single elements.
+        putKey(ea, w.m, hm.normalizedEncodedSubkeysMinusOne, one, 1, owner);
+    }
+
+    const gl::Stump oblig[1] = { { 2, -1 } };  // "in3"
+    const gl::IntStmtView none;
+
+    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 1, none, {}), 1);     // unsplit
+    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 1, none, { 0 }), 1);  // the C = {} node
+
+    // A stump that IS the obligatory statement: recorded as a base candidate, then
+    // dropped by the merge as a repeat. Nothing is lost — the request {in, in3}
+    // belongs to the sub-part stumped on "in", asserted directly above.
+    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 1, none, { 2 }), 0);
+
+    // A stump the subkey map rejects can neither be recorded nor grow.
+    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 1, none, { 1 }), 0);
+}
+
+TEST(memory, terminal_pre_stump_is_checked_but_does_not_grow) {
+    // With obligatory "in3", base {in} completes the 2-premise request while
+    // growing it with "in2" completes the 3-premise request. A regular stump
+    // reaches both. A terminal pre-stump owns only its shallow node, so it emits
+    // the 2-premise request and leaves the larger one to the producer's children.
+    gl::ExpressionAnalyzer ea("Peano");
+    StumpWorld w;
+    w.m.overallHashMemory.maxKeyLength = 3;
+    auto& hm = w.m.overallHashMemory;
+    const std::vector<gl::EncodedExpression> owner2 = { w.srcA, w.srcC };
+    const std::vector<gl::EncodedExpression> owner3 = { w.srcA, w.srcB, w.srcC };
+    const gl::IntEncodedExpr* oneA[1] = { w.at(0) };
+    const gl::IntEncodedExpr* oneB[1] = { w.at(1) };
+    const gl::IntEncodedExpr* oneC[1] = { w.at(2) };
+    const gl::IntEncodedExpr* pairAB[2] = { w.at(0), w.at(1) };
+    const gl::IntEncodedExpr* pairAC[2] = { w.at(0), w.at(2) };
+    const gl::IntEncodedExpr* pairBC[2] = { w.at(1), w.at(2) };
+    const gl::IntEncodedExpr* all3[3] = { w.at(0), w.at(1), w.at(2) };
+
+    putKey(ea, w.m, hm.normalizedEncodedKeys, pairAC, 2, owner2);
+    putKey(ea, w.m, hm.normalizedEncodedKeys, all3, 3, owner3);
+    for (const gl::IntEncodedExpr* const* one : { oneA, oneB, oneC })
+        putKey(ea, w.m, hm.normalizedEncodedSubkeys, one, 1, owner3);
+    for (const gl::IntEncodedExpr* const* pair : { pairAB, pairAC, pairBC }) {
+        putKey(ea, w.m, hm.normalizedEncodedSubkeys, pair, 2, owner3);
+        putKey(ea, w.m, hm.normalizedEncodedSubkeysMinusOne, pair, 2, owner3);
+    }
+    putKey(ea, w.m, hm.normalizedEncodedSubkeys, all3, 3, owner3);
+    putKey(ea, w.m, hm.normalizedEncodedSubkeysMinusOne, oneA, 1, owner2);
+
+    const gl::Stump oblig[1] = { { 2, -1 } };  // "in3"
+    const gl::IntStmtView none;
+    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 1, none, { 0 }), 2);
+    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 1, none, { 0 }, 0, 1,
+                            /*terminalOnly=*/true), 1);
+}
+
+TEST(memory, produce_expression_stumps_level_one_covers_every_filtered_statement) {
+    // The common case: the filter yields at least `target` expressions, so every
+    // surviving expression is its own 1-stump and no growth runs. The stumps come
+    // out in the search's own candidate order — ascending decoded name — which for
+    // this world is "in" < "in2" < "in3", i.e. statement indices 0, 1, 2.
+    gl::ExpressionAnalyzer ea("Peano");
+    StumpWorld w;
+    w.m.overallHashMemory.maxKeyLength = 3;
+    for (int i = 0; i < 3; ++i) {
+        const gl::IntEncodedExpr* one[1] = { w.at(i) };
+        w.installSubkey(ea, one, 1, 3, { i == 0 ? w.srcA : (i == 1 ? w.srcB : w.srcC) });
+    }
+    gl::g_splitCount = 1;
+    gl::g_splitProcessID = 0;
+
+    gl::SealedPageSet pages;
+    pages.bind(&gl::staticMemory());
+    const int32_t n = ea.produceExpressionStumps(w.m, 0u, /*target=*/3, pages);
+    gl::genScratchArenas().forSlot(0).releaseAll();
+
+    ASSERT_EQ(n, 3);
+    const auto got = drainStumps(pages);
+    ASSERT_EQ(got.size(), 3u);
+    for (int i = 0; i < 3; ++i) {
+        ASSERT_EQ(got[i].size(), 1u);
+        ASSERT_EQ(got[i][0], static_cast<int16_t>(i));
+    }
+    pages.seal();
+    pages.freePages();
+}
+
+TEST(memory, produce_expression_stumps_grows_a_short_list_one_whole_level) {
+    // Three expressions, target 5: level 1 is short, so ALL surviving 2-stumps
+    // replace it wholesale. maxKeyLength 2 stops the fan there, and 3 < 5 does not
+    // make it try a level it cannot reach. No singleton is recordable (neither
+    // minus map is populated), so no terminal pre-stump is retained.
+    gl::ExpressionAnalyzer ea("Peano");
+    StumpWorld w;
+    w.m.overallHashMemory.maxKeyLength = 2;
+    std::vector<gl::EncodedExpression> owner = { w.srcA, w.srcB, w.srcC };
+    for (int i = 0; i < 3; ++i) {
+        const gl::IntEncodedExpr* one[1] = { w.at(i) };
+        w.installSubkey(ea, one, 1, 3, owner);
+    }
+    for (int i = 0; i < 3; ++i)
+        for (int j = i + 1; j < 3; ++j) {
+            const gl::IntEncodedExpr* two[2] = { w.at(i), w.at(j) };
+            w.installSubkey(ea, two, 2, 3, owner);
+        }
+    gl::g_splitCount = 1;
+    gl::g_splitProcessID = 0;
+
+    gl::SealedPageSet pages;
+    pages.bind(&gl::staticMemory());
+    const int32_t n = ea.produceExpressionStumps(w.m, 0u, /*target=*/5, pages);
+    gl::genScratchArenas().forSlot(0).releaseAll();
+
+    ASSERT_EQ(n, 3);  // the three pairs, not the three singletons
+    const auto got = drainStumps(pages);
+    ASSERT_EQ(got.size(), 3u);
+    const std::vector<std::vector<int16_t>> want = { {0,1}, {0,2}, {1,2} };
+    ASSERT_TRUE(got == want);
+    pages.seal();
+    pages.freePages();
+
+    // Same world, target 3: level 1 already suffices, so no fan runs.
+    gl::SealedPageSet pages2;
+    pages2.bind(&gl::staticMemory());
+    ASSERT_EQ(ea.produceExpressionStumps(w.m, 0u, /*target=*/3, pages2), 3);
+    gl::genScratchArenas().forSlot(0).releaseAll();
+    const auto flat = drainStumps(pages2);
+    for (const auto& s : flat) ASSERT_EQ(s.size(), 1u);
+    pages2.seal();
+    pages2.freePages();
+}
+
+TEST(memory, produce_expression_stumps_retains_recordable_dropped_nodes) {
+    // Three expressions and target 5 force the producer from level 1 to level 2.
+    // Singleton "in" is a complete base candidate for an obligatory length-1
+    // request, so it survives as terminal-only work. The three pairs remain the
+    // regular frontier and cover every larger candidate.
+    gl::ExpressionAnalyzer ea("Peano");
+    StumpWorld w;
+    w.m.overallHashMemory.maxKeyLength = 2;
+    auto& hm = w.m.overallHashMemory;
+    const std::vector<gl::EncodedExpression> owner = { w.srcA, w.srcB, w.srcC };
+    for (int i = 0; i < 3; ++i) {
+        const gl::IntEncodedExpr* one[1] = { w.at(i) };
+        w.installSubkey(ea, one, 1, 3, owner);
+    }
+    for (int i = 0; i < 3; ++i)
+        for (int j = i + 1; j < 3; ++j) {
+            const gl::IntEncodedExpr* two[2] = { w.at(i), w.at(j) };
+            w.installSubkey(ea, two, 2, 3, owner);
+        }
+    const gl::IntEncodedExpr* oneA[1] = { w.at(0) };
+    putKey(ea, w.m, hm.normalizedEncodedSubkeysMinusOne, oneA, 1, owner);
+    gl::g_splitCount = 1;
+    gl::g_splitProcessID = 0;
+
+    gl::SealedPageSet pages;
+    pages.bind(&gl::staticMemory());
+    ASSERT_EQ(ea.produceExpressionStumps(w.m, 0u, /*target=*/5, pages), 4);
+    gl::genScratchArenas().forSlot(0).releaseAll();
+
+    std::vector<gl::ExpressionStump> got;
+    pages.forEachRecord<gl::ExpressionStump>(
+        [&got](const gl::ExpressionStump& s) { got.push_back(s); });
+    ASSERT_EQ(got.size(), 4u);
+    ASSERT_EQ(got[0].terminalOnly, 1);
+    ASSERT_EQ(got[0].count, 1);
+    ASSERT_EQ(got[0].allIdx[0], 0);
+    const std::vector<std::vector<int16_t>> wantPairs = { {0,1}, {0,2}, {1,2} };
+    for (std::size_t i = 0; i < wantPairs.size(); ++i) {
+        ASSERT_EQ(got[i + 1].terminalOnly, 0);
+        ASSERT_EQ(std::vector<int16_t>(got[i + 1].allIdx,
+                                      got[i + 1].allIdx + got[i + 1].count),
+                  wantPairs[i]);
+    }
+    pages.seal();
+    pages.freePages();
+}
+
+TEST(memory, produce_expression_stumps_are_rule_specific_and_deterministic) {
+    // The producer runs inside the rule-part that hit the wall, so the split
+    // thread-locals are still that part's: partitionAccepts inside ownerKeyAccepts
+    // prunes the filter to the rules that part owns. Owner ids 3 and 4 at scope
+    // "main" pack to composite ids whose residue mod 3 is 1 and 2, so part 1 sees
+    // only "in", part 2 only "in2", part 0 neither.
+    gl::ExpressionAnalyzer ea("Peano");
+    StumpWorld w;
+    w.m.overallHashMemory.maxKeyLength = 2;
+    const gl::IntEncodedExpr* oneA[1] = { w.at(0) };
+    const gl::IntEncodedExpr* oneB[1] = { w.at(1) };
+    w.installSubkey(ea, oneA, 1, 3, { w.srcA });
+    w.installSubkey(ea, oneB, 1, 4, { w.srcB });
+    ASSERT_EQ(gl::makePartitionId(3, gl::NameMap::MAIN_ID) % 3, 1);
+    ASSERT_EQ(gl::makePartitionId(4, gl::NameMap::MAIN_ID) % 3, 2);
+
+    const auto runPart = [&](int processID) {
+        gl::g_splitCount = 3;
+        gl::g_splitProcessID = processID;
+        gl::SealedPageSet pages;
+        pages.bind(&gl::staticMemory());
+        ea.produceExpressionStumps(w.m, 0u, /*target=*/1, pages);
+        gl::genScratchArenas().forSlot(0).releaseAll();
+        const auto got = drainStumps(pages);
+        pages.seal();
+    pages.freePages();
+        return got;
+    };
+
+    const auto p0 = runPart(0);
+    const auto p1 = runPart(1);
+    const auto p2 = runPart(2);
+    ASSERT_TRUE(p0.empty());
+    ASSERT_EQ(p1.size(), 1u);
+    ASSERT_EQ(p1[0][0], 0);  // "in"
+    ASSERT_EQ(p2.size(), 1u);
+    ASSERT_EQ(p2[0][0], 1);  // "in2"
+
+    // Deterministic: the same part twice yields byte-identical stump runs.
+    ASSERT_TRUE(runPart(1) == p1);
+    ASSERT_TRUE(runPart(2) == p2);
+    gl::g_splitCount = 1;
+    gl::g_splitProcessID = 0;
+}
+
+TEST(memory, produce_expression_stumps_empty_when_nothing_survives_the_filter) {
+    // Nothing installed: no statement is a growable subkey, so the filter empties
+    // and the rule-part has no stumps to split on. A defined zero, not a failure —
+    // the caller keeps the part unsplit.
+    gl::ExpressionAnalyzer ea("Peano");
+    StumpWorld w;
+    w.m.overallHashMemory.maxKeyLength = 2;
+    gl::g_splitCount = 1;
+    gl::g_splitProcessID = 0;
+
+    gl::SealedPageSet pages;
+    pages.bind(&gl::staticMemory());
+    ASSERT_EQ(ea.produceExpressionStumps(w.m, 0u, /*target=*/100, pages), 0);
+    gl::genScratchArenas().forSlot(0).releaseAll();
+    ASSERT_TRUE(drainStumps(pages).empty());
+    pages.seal();
+    pages.freePages();
 }
 
 TEST(memory, owner_set_u_satisfied_any_owner_matches) {
@@ -7314,6 +8249,7 @@ TEST(memory, wipe_remaining_args_pruned_matches_heap_oracle) {
     gl::DirtyState dB = gl::DirtyState::Clean;
     gl::TypedColdBlobMap<gl::Int16SetKey, gl::NormKey> A(&lbA, &dA);
     gl::TypedColdBlobMap<gl::Int16SetKey, gl::NormKey> B(&lbB, &dB);
+    gl::ReverseArgsIndex revB(&lbB);   // wipe rebuilds it; the test checks B only
 
     // Dropped set: {1,{50}} and {2,{60,61}} — and the twin {1,{60,61}}
     // (same data as the second, different numberExpressions) is KEPT.
@@ -7365,7 +8301,7 @@ TEST(memory, wipe_remaining_args_pruned_matches_heap_oracle) {
     }
 
     // Production prune on B.
-    gl::wipeRemainingArgsForClosed(B, droppedKeys, lbScratch);
+    gl::wipeRemainingArgsForClosed(B, revB, droppedKeys, lbScratch);
 
     // Facet equality.
     ASSERT_EQ(A.count(), B.count());
@@ -7399,7 +8335,7 @@ TEST(memory, wipe_remaining_args_pruned_matches_heap_oracle) {
     }
     gl::DirtyState dEmpty = gl::DirtyState::Clean;
     gl::ColdHashSet<gl::BytesKeyStore> emptyDropped(&lbScratch, &dEmpty);
-    gl::wipeRemainingArgsForClosed(B, emptyDropped, lbScratch);
+    gl::wipeRemainingArgsForClosed(B, revB, emptyDropped, lbScratch);
     std::size_t cursor = 0;
     ASSERT_EQ(static_cast<std::size_t>(B.count()), keysBefore.size());
     for (int32_t id = 1; id <= B.count(); ++id) {
@@ -9379,7 +10315,7 @@ TEST(memory, internal_mail_origin_record_span_door_twin) {
               std::string("(=[3,repl_lev_1_0])"));
 }
 
-// addRoutingMailOrigin span-antecedent (L3) door: keys AND records the mailOut
+// Memory::addMailOutOrigin span-antecedent door: keys and records the mailOut
 // deposit byte-identically to the EWV/OriginLine overload. Compared through
 // decodeMailOutOrigins.
 TEST(memory, routing_mail_origin_record_span_door_twin) {
@@ -9391,16 +10327,16 @@ TEST(memory, routing_mail_origin_record_span_door_twin) {
     const gl::OriginLine origin{ "implication",
         std::vector<gl::ExpressionWithValidity>{
             gl::ExpressionWithValidity(a0O, a0V) } };
-    gl::addRoutingMailOrigin(mE.mailOut, mE.originInterner,
-        gl::ExpressionWithValidity(kO, kV), origin, cap);
+    mE.addMailOutOrigin(gl::ExpressionWithValidity(kO, kV), origin, cap);
 
     const gl::OriginDep deps[1] = { { gl::StrSpan(a0O), gl::StrSpan(a0V) } };
-    gl::addRoutingMailOrigin(mS.mailOut, mS.originInterner,
-        gl::StrSpan(kO), gl::StrSpan(kV), gl::OriginTag::implication, deps, 1,
-        cap);
+    mS.addMailOutOrigin(gl::StrSpan(kO), gl::StrSpan(kV),
+        gl::OriginTag::implication, deps, 1, cap);
 
-    const auto rowsE = gl::decodeMailOutOrigins(mE.mailOut, mE.originInterner);
-    const auto rowsS = gl::decodeMailOutOrigins(mS.mailOut, mS.originInterner);
+    const auto rowsE = gl::decodeMailOutOrigins(
+        mE.mailOut, mE.mailOutInterner);
+    const auto rowsS = gl::decodeMailOutOrigins(
+        mS.mailOut, mS.mailOutInterner);
     ASSERT_TRUE(rowsE == rowsS);
     ASSERT_EQ(rowsS.size(), static_cast<std::size_t>(1));
     ASSERT_EQ(rowsS[0].first.original, std::string("(in3[a,b,c,plus])"));

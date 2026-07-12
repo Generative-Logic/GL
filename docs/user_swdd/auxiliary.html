@@ -175,7 +175,7 @@ a Gauss run, since collapsed — no longer a bottleneck).</p>
 <h2 id="engine">11.1 &nbsp;Same engine, three modes</h2>
 <p>
 The hash-engine kernel (<code>performElementaryLogicalStep</code> +
-<code>generateEncodedRequests*</code>) is a single body of code that runs in
+<code>generateEncodedRequestsStatic</code>) is a single body of code that runs in
 three modes determined by parameter flags. All three modes use the same logic-
 block tree, the same mail boundary, the same admission gate; what differs is
 what is fed in as fact, what is asked of the engine, and which iteration
@@ -194,7 +194,7 @@ budget gates progress.
   <defs><marker id="3m-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
   <rect x="270" y="92" width="220" height="60" rx="10" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
   <text x="380" y="116" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">performElementaryLogicalStep</text>
-  <text x="380" y="134" fill="#8B8FA5" font-size="9.5" text-anchor="middle">+ generateEncodedRequests*</text>
+  <text x="380" y="134" fill="#8B8FA5" font-size="9.5" text-anchor="middle">+ generateEncodedRequests</text>
 
   <path d="M280 100 L80 50"   stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#3m-ar)"/>
   <path d="M380 92  L380 30"  stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#3m-ar)"/>
@@ -279,9 +279,10 @@ engine would enumerate the entire Cartesian product. CE mode drops that
 requirement: the model is small enough that brute enumeration is cheap, and
 the goal is to surface <i>any</i> contradiction, including ones that don't
 ride a known fact.</li>
-<li><b>Different request generator.</b> <code>generateEncodedRequestsStaticCE</code>
-fires every rule against every fact; the main pair-mode generator
-(<code>…Pairs</code>) is not used.</li>
+<li><b>Same request generator, empty stump.</b> The one generator
+<code>generateEncodedRequestsStatic</code> runs here with an obligatory-stump
+length of 0, so it fires every rule against every fact instead of anchoring each
+request on a known local one.</li>
 </ul>
 <p>
 Apart from that, the LB tree, mail boundary, scope mechanics, and admission

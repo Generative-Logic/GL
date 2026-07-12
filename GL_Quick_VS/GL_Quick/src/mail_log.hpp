@@ -121,33 +121,28 @@ namespace gl {
         }
     }
 
-    /// @brief Fold a decoded heap batch into a routing `mailOut` (SENDER ids) —
-    ///        statements interned into the producing LB's `NameMap`.
+    /// @brief Fold a decoded heap batch into one LB's deloadable `mailOut`.
     ///
     /// @details
     /// The heap-`Mail` deposit path into a producer's own outbox (the post-join
-    /// `updateGlobal*` / compaction sends — single-threaded, so the `NameMap`
-    /// mint is safe). Statements bulk-mint by the whole `(EWV, levels)` pair (set
-    /// dedup); origins dedup-APPEND per key with NO cap (`addMailOrigin` at
-    /// `INT_MAX` stays in its below-cap dedup-append path). The receiver's absorb
-    /// re-sorts origin runs before the capped fold, so merge order is irrelevant.
+    /// `updateGlobal*` / compaction sends — single-threaded while the producer
+    /// LB is claimed). Every string is minted into the mailbox's private
+    /// deloadable interner through the `Memory` write doors. Statements keep set
+    /// semantics; origins dedup-append with no cap. The receiver re-sorts origin
+    /// runs before its capped fold, so merge order is irrelevant.
     ///
     /// @param batch One stored batch (statements + exprOriginMap only).
-    /// @param inbox The producer's `mailOut` (a `RoutingColdMail`), merged in place.
-    /// @param nm    The producing LB's `NameMap` (statements id-space).
-    /// @param oi    The producing LB's `originInterner` (origins id-space).
-    inline void mergeBatchIntoMailOut(const Mail& batch, RoutingColdMail& inbox,
-                                      NameMap& nm, ValueInterner& oi) {
+    /// @param producer The resident and claimed producing LB.
+    inline void mergeBatchIntoMailOut(const Mail& batch, Memory& producer) {
         for (const std::pair<ExpressionWithValidity, std::set<int>>& st
              : batch.statements) {
-            inbox.insertStatement(nm.encode(st.first.original),
-                                  nm.encode(st.first.validityName), st.second);
+            producer.insertMailOutStatement(st.first, st.second);
         }
         for (const std::pair<const ExpressionWithValidity,
                  std::vector<OriginLine>>& keyed : batch.exprOriginMap) {
             for (const OriginLine& origin : keyed.second) {
-                addRoutingMailOrigin(inbox, oi, keyed.first, origin,
-                                     (std::numeric_limits<int>::max)());
+                producer.addMailOutOrigin(keyed.first, origin,
+                    (std::numeric_limits<int>::max)());
             }
         }
     }
@@ -158,8 +153,8 @@ namespace gl {
     /// @details
     /// The load-time broadcast self-inject into the root's inbox (single-threaded,
     /// so the `mailInterner` mint is safe). Both columns are global-id; the origin
-    /// EWVs are packed through the global interner (so `addRoutingMailOrigin`'s
-    /// originInterner path does not apply — the record is built directly here).
+    /// EWVs are packed directly through the global interner because mailIn owns
+    /// no per-LB private id space.
     ///
     /// @param batch One stored batch (statements + exprOriginMap only).
     /// @param inbox The receiver's `mailIn` (a `RoutingColdMail`), merged in place.
@@ -192,15 +187,14 @@ namespace gl {
         }
     }
 
-    /// @brief One committed batch's location in the shared mail blob pool, plus a
-    ///        back-link forming its producing LB's append-only chain.
+    /// @brief One retained batch's location in the shared mail blob pool, plus a
+    ///        back-link forming its producing LB's current retained chain.
     ///
     /// @details
     /// A trivially-copyable POD so a `PagedVector<BlobRef>` can hold all LBs' refs
-    /// in one shared, append-only column. The `prev` back-link threads each LB's
-    /// batches into an independent newest-first chain — the pool equivalent of the
-    /// heap prototype's per-LB `vector<Mail>`, so a commit never shifts another
-    /// LB's bytes.
+    /// in one shared column. The `prev` back-link threads each LB's retained
+    /// batches into an independent newest-first chain, so a commit never shifts
+    /// another LB's bytes. Rolling retirement clears the column between windows.
     struct BlobRef {
         /// @brief Byte offset of the blob in `mailBlobPool`.
         std::uint32_t start;
@@ -243,23 +237,16 @@ namespace gl {
     /// dirty-tracked / reshuffled (the `intToBeProved` precedent); their
     /// `DirtyState` is never read.
     ///
-    /// **Per-LB independent logs (the heap-faithful structure).** The batch store
-    /// mirrors the heap prototype's `unordered_map<Memory*, vector<Mail>>` — each
-    /// LB's batches grow INDEPENDENTLY, so a commit is O(1) and never touches
-    /// another LB's bytes:
+    /// **Per-LB independent logs.** Each LB's batches grow INDEPENDENTLY, so a
+    /// commit is O(1) and never touches another LB's bytes:
     /// - **`mailBlobPool`** — `PagedVector<char>`: every batch's `Codec<Mail>`
-    ///   blob, APPEND-ONLY (a written blob never moves — no cross-LB shift).
+    ///   blob, append-only inside the current retained-history window.
     /// - **`mailRefs`** — `PagedVector<BlobRef>`: one ref per committed batch,
-    ///   APPEND-ONLY; each LB's refs form a newest-first back-linked chain (the
-    ///   pool equivalent of one LB's `vector<Mail>`).
+    ///   append-only inside that window; each LB's refs form a newest-first
+    ///   back-linked chain.
     /// - **`mailHeads`** — `TypedColdMap<int64, MailHead>`: producing-LB key →
     ///   its chain head (newest ref + batch count). Written single-threaded at
     ///   commit; read at pull.
-    ///
-    /// (An earlier cut stored the batches in a single `TypedColdBlobMap` whose CSR
-    /// concatenates all LBs' runs; a commit to any non-tail LB then `memcpy`-shifts
-    /// every later LB's bytes — superlinear, a massive slowdown. The append-only
-    /// pool + per-LB chain restores the heap's O(1) commit.)
     ///
     /// The routing index is two more cold containers:
     /// - **`mailEdges`** — `ColdMultiMap<int64, int64>`: recipient key → its
@@ -289,6 +276,10 @@ namespace gl {
     ///   commits happen only at the seam (logs frozen), the mail arena is never
     ///   compacted/deloaded (vids resolve stably), every read is pure, and the one
     ///   write per edge is a disjoint no-dirty cursor advance.
+    /// - **Retire** after phase 3 when the grid contained no initially dormant
+    ///   LBs: release delivered blob/ref pages, preserve routing and cumulative
+    ///   cursors/counts, and start each producer's next ref chain at `-1`. A grid
+    ///   with any initially dormant LB retains full history for later catch-up.
     ///
     /// @invariant Commits run only at the single-threaded seam; the parallel
     ///            phase only READS the blob pool / refs / heads / ancestor lists
@@ -318,10 +309,10 @@ namespace gl {
               mailEdges(arena, dirty),
               mailCursor(arena, dirty) {}
 
-        /// Append-only bytes of every committed batch's `Codec<Mail>` blob.
+        /// Append-only bytes of the currently retained `Codec<Mail>` blobs.
         PagedVector<char> mailBlobPool;
 
-        /// Append-only refs; each LB's batches form a newest-first back-linked chain.
+        /// Refs for the retained window; each LB has a newest-first chain.
         PagedVector<BlobRef> mailRefs;
 
         /// Producing-LB key → its chain head (newest ref + batch count).
@@ -332,6 +323,16 @@ namespace gl {
 
         /// (recipient, ancestor) edge → count of batches already ingested.
         TypedColdMap<CursorKey, int32_t> mailCursor;
+
+        /// Total logical bytes committed during this execution batch. Counts
+        /// each serialized mail blob plus its one `BlobRef`; routing indexes are
+        /// reported separately through the mail pool's physical peak telemetry.
+        std::uint64_t totalCommittedHistoryBytes = 0;
+
+        /// Peak logical bytes simultaneously retained by `mailBlobPool` and
+        /// `mailRefs`. In the full-history baseline this equals
+        /// `totalCommittedHistoryBytes`; rolling retirement lowers it.
+        std::uint64_t peakRetainedHistoryBytes = 0;
 
         /// @brief The runtime identity key of an LB — the `uintptr_t` of its
         ///        `const Memory*`, as an `int64_t` (the cold-map family's POD key).
@@ -410,6 +411,13 @@ namespace gl {
             mailRefs.push_back(BlobRef{
                 start, static_cast<std::uint32_t>(bytes.size()), prev });
             mailHeads.upsert(k, MailHead{ refIdx, cnt + 1 });
+            totalCommittedHistoryBytes +=
+                static_cast<std::uint64_t>(bytes.size()) + sizeof(BlobRef);
+            const std::uint64_t retained =
+                static_cast<std::uint64_t>(mailBlobPool.size())
+                + static_cast<std::uint64_t>(mailRefs.size()) * sizeof(BlobRef);
+            if (retained > peakRetainedHistoryBytes)
+                peakRetainedHistoryBytes = retained;
         }
 
         /// @brief Serialize one LB's outgoing routing mailbox (`RoutingColdMail`) and
@@ -417,19 +425,19 @@ namespace gl {
         ///        `commit(const Memory*, Mail)`, with no transient heap `Mail`.
         ///
         /// @details Identical chain bookkeeping to the heap overload; only the
-        /// serializer differs (`Codec<Mail>::serialize(const RoutingColdMail&)`, which
-        /// emits the same bytes as `serialize(src.toHeapMail())`). Called at the
+        /// serializer differs (`Codec<Mail>::serialize(const DeloadableMailOut&)`,
+        /// which emits the same bytes as the equivalent heap `Mail`). Called at the
         /// single-threaded post-join commit barrier + the grid-build startup
         /// commit, once per LB per cycle.
         ///
         /// @param lb   The producing LB.
-        /// @param src  The LB's `mailOut` (a `RoutingColdMail`) for this cycle.
-        void commit(const Memory* lb, const RoutingColdMail& src) {
+        /// @param src  The LB's deloadable `mailOut` for this cycle.
+        void commit(const Memory* lb, const DeloadableMailOut& src) {
             // The blob carries GLOBAL mailInterner ids; serialize decodes src's
-            // SENDER NameMap ids via lb->nameMap and re-interns them globally
+            // private mailbox ids via lb->mailOutInterner and re-interns globally
             // (single-threaded commit seam, so the mint is race-free).
             const std::vector<char> bytes =
-                Codec<Mail>::serialize(src, lb->nameMap, lb->originInterner);
+                Codec<Mail>::serialize(src, lb->mailOutInterner);
             const std::uint32_t start =
                 static_cast<std::uint32_t>(mailBlobPool.size());
             mailBlobPool.appendRun(bytes.data(),
@@ -442,6 +450,13 @@ namespace gl {
             mailRefs.push_back(BlobRef{
                 start, static_cast<std::uint32_t>(bytes.size()), prev });
             mailHeads.upsert(k, MailHead{ refIdx, cnt + 1 });
+            totalCommittedHistoryBytes +=
+                static_cast<std::uint64_t>(bytes.size()) + sizeof(BlobRef);
+            const std::uint64_t retained =
+                static_cast<std::uint64_t>(mailBlobPool.size())
+                + static_cast<std::uint64_t>(mailRefs.size()) * sizeof(BlobRef);
+            if (retained > peakRetainedHistoryBytes)
+                peakRetainedHistoryBytes = retained;
         }
 
         /// @brief Reassemble and decode one blob from the (possibly page-straddling)
@@ -606,6 +621,89 @@ namespace gl {
             }
         }
 
+        /// @brief Release the delivered blob/reference history while preserving
+        ///        the routing graph and cumulative delivery positions.
+        ///
+        /// @details
+        /// Called single-threaded after phase 3 has joined and before the next
+        /// commit sweep, only for a grid whose every LB was active when the grid
+        /// was built. `mailBlobPool` and `mailRefs` return their pages to the mail
+        /// arena for reuse. `mailEdges`, `mailCursor`, and each `MailHead::count`
+        /// remain unchanged; every `MailHead::lastRef` becomes `-1`, so the next
+        /// commit opens a fresh retained chain while cumulative counts continue
+        /// to advance against the preserved cursors.
+        ///
+        /// The caller owns the safety proof: an initially dormant LB may later
+        /// activate and therefore forbids this operation for its entire execution
+        /// batch. LBs that started active may deactivate permanently after their
+        /// last pull and do not require future catch-up history.
+        ///
+        /// @return Exact logical bytes released: serialized blobs plus `BlobRef`
+        ///         records. Routing/index storage is deliberately excluded.
+        /// @invariant No parallel pull or commit is running while pages and chain
+        ///            heads are changed.
+        /// @see ExpressionAnalyzer::proveKernel for the post-phase-3 call site.
+        std::uint64_t retireDeliveredBatches() {
+            const std::uint64_t retiredBytes =
+                static_cast<std::uint64_t>(mailBlobPool.size())
+                + static_cast<std::uint64_t>(mailRefs.size()) * sizeof(BlobRef);
+            mailBlobPool.clear();
+            mailRefs.clear();
+            for (std::int32_t id = 1; id <= mailHeads.count(); ++id) {
+                const MailHead head = mailHeads.valueAt(id);
+                assert(head.count >= 0
+                    && "MailLog::retireDeliveredBatches: negative head count");
+                mailHeads.inner().setValueAt(
+                    id, MailHead{ -1, head.count });
+            }
+            return retiredBytes;
+        }
+
+        /// @brief Poll whether a recipient has any un-ingested ancestor mail —
+        ///        the fold-free twin of @ref pull, for the quiescence wake.
+        ///
+        /// @details
+        /// Walks the recipient's registered ancestor list exactly as `pull` does,
+        /// but performs NO decode / merge and advances NO cursor: it returns
+        /// `true` the instant any ancestor's committed batch count exceeds the
+        /// recipient's cursor for that edge — i.e. `pull` would deliver at least
+        /// one batch. This is case B of the quiescent-burst skip predicate
+        /// (D-194): a converged LB with pending mail must still
+        /// be swept so its phase-1 pull runs and it absorbs the mail in the same
+        /// iteration the reference would (I-55 latency preserved). Evaluated
+        /// single-threaded at `proveKernel`'s active-build, reading ONLY the
+        /// never-deloaded mail pool (`mailHeads` / `mailEdges` / `mailCursor`,
+        /// I-94 / I-101) — so it never forces a reload of a cold recipient and
+        /// never reads residency (the I-106 / I-108 determinism doctrine). A
+        /// handful of integer comparisons per ancestor; the LB tree is shallow.
+        ///
+        /// @param recipient The LB to poll (must be registered; the root, with no
+        ///                  ancestors, always polls `false`).
+        /// @return `true` iff some registered ancestor has a batch the recipient
+        ///         has not yet ingested.
+        /// @invariant Every cursor cell is pre-created at registration; a present
+        ///            ancestor head with an absent cursor cell asserts (Rule 19).
+        /// @see pull — the ingesting walk this mirrors without the fold.
+        bool mailPeek(const Memory* recipient) const {
+            const int64_t r = lbKey(recipient);
+            const int32_t edgesId = mailEdges.lookup(r);
+            if (edgesId == 0) return false;   // no ancestors (e.g. the root)
+            const int32_t ancCount = mailEdges.runLen(edgesId);
+            for (int32_t k = 0; k < ancCount; ++k) {
+                const int64_t a = mailEdges.valueAt(edgesId, k);
+                const MailHead* h = mailHeads.find(a);
+                const int32_t n = (h != nullptr) ? h->count : 0;
+                const CursorKey ck{ static_cast<std::uint64_t>(r),
+                                    static_cast<std::uint64_t>(a) };
+                const int32_t* cp = mailCursor.find(ck);
+                assert(cp != nullptr
+                    && "MailLog::mailPeek: cursor cell missing — every edge is "
+                       "pre-created at registration (Rule 19)");
+                if (n > *cp) return true;
+            }
+            return false;
+        }
+
         /// @brief Drop all batches, refs, heads, edges, and cursors at
         ///        execution-batch teardown (`destroyGrid`).
         ///
@@ -613,7 +711,9 @@ namespace gl {
         /// Empties every cold container and returns its pages to the mail arena
         /// (the arena keeps its blocks for the next batch). The `Memory*` keys are
         /// about to be deleted, so this prevents a stale pointer-keyed entry from
-        /// aliasing a reused address in the next batch's grid.
+        /// aliasing a reused address in the next batch's grid. The two telemetry
+        /// counters deliberately survive so `run_modes::fullRun` can print the
+        /// completed batch's measurement after grid teardown.
         void clear() {
             mailBlobPool.clear();
             mailRefs.clear();

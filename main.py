@@ -44,6 +44,11 @@ import os
 import subprocess
 
 import run_modes
+from frame_timing import (
+    StageTimer,
+    configure_frame_timing,
+    record_frame_timing,
+)
 
 
 # Path to the native gl_quick binary. Resolved relative to this file so
@@ -156,9 +161,29 @@ def _read_version() -> str:
 
 def main():
 
+    run_started_ns = time.perf_counter_ns()
+
     if "--version" in sys.argv[1:]:
         print(f"Generative Logic {_read_version()}")
         return
+
+    descriptor_positions = [
+        index for index, argument in enumerate(sys.argv)
+        if argument == "--run-descriptor"
+    ]
+    assert len(descriptor_positions) <= 1, \
+        "--run-descriptor must be supplied at most once"
+    if descriptor_positions:
+        descriptor_position = descriptor_positions[0]
+        assert descriptor_position + 1 < len(sys.argv), \
+            "--run-descriptor requires a value"
+        run_descriptor = sys.argv[descriptor_position + 1]
+    else:
+        run_descriptor = time.strftime("%Y%m%d_%H%M%S")
+    assert run_descriptor and all(
+        character.isalnum() or character in "-_"
+        for character in run_descriptor
+    ), "run descriptor must contain only letters, digits, hyphens, or underscores"
 
     start_time = time.time()
 
@@ -173,6 +198,25 @@ def main():
     # in main.cpp wiped IncubatorGauss1's trace as soon as the
     # following Gauss-main batch started).
     os.makedirs(".debug", exist_ok=True)
+    frame_timing_path = os.path.abspath(
+        os.path.join(".debug", f"frame_timing_{run_descriptor}.jsonl")
+    )
+    configure_frame_timing(frame_timing_path)
+    print(f"[frame-timing] {frame_timing_path}")
+
+    startup_started_ns = time.perf_counter_ns()
+    memory_log_path = os.path.abspath(
+        os.path.join(".debug", f"memory_{run_descriptor}.log")
+    )
+    os.environ["GL_MEMORY_LOG_PATH"] = memory_log_path
+    with open(memory_log_path, "w", encoding="utf-8") as memory_log:
+        memory_log.write("# GL static-pool memory report\n\n")
+        memory_log.write(f"Run descriptor: `{run_descriptor}`\n\n")
+        memory_log.write(
+            "Each peak is the independent high-water mark of one physical "
+            "pool during one batch. Pool peaks are not additive.\n"
+        )
+    print(f"[memory-log] {memory_log_path}")
     open(".debug/hashburst_trace.txt", "w").close()
     open(".debug/trap.log", "w").close()
 
@@ -188,22 +232,35 @@ def main():
         _stale_path = os.path.join(".rt", _stale)
         if os.path.isfile(_stale_path):
             os.remove(_stale_path)
+    record_frame_timing(
+        "python.startup",
+        (time.perf_counter_ns() - startup_started_ns) / 1_000_000_000.0,
+        parent="run.total",
+    )
 
     # C++ unit-test gate. Synthetic in-memory inputs, no real proof runs;
     # safe to run pre-pipeline. First failure aborts main.py before any
     # 10–60-minute proof work. See _run_unit_test_gate's docstring for budget.
-    _run_unit_test_gate()
+    with StageTimer("python.unit_tests.cpp", parent="run.total"):
+        _run_unit_test_gate()
 
     # Python verifier-side unit-test gate. Runs with the C++ gate, before the
     # pipeline: its fixtures are the frozen, test-owned tests/fixtures/ copies
     # (independent of the live files/GL_binaries/ the pipeline regenerates), so
     # the gate no longer waits on a populated files/GL_binaries/. First failure
     # aborts main.py before any 10-60-minute proof work.
-    _run_verifier_unit_test_gate()
+    with StageTimer("python.unit_tests.verifier", parent="run.total"):
+        _run_verifier_unit_test_gate()
 
-    run_modes.full_run()
+    with StageTimer("python.pipeline", parent="run.total"):
+        run_modes.full_run()
 
     end_time = time.time()
+    record_frame_timing(
+        "run.total",
+        (time.perf_counter_ns() - run_started_ns) / 1_000_000_000.0,
+        parent="root",
+    )
 
     print(f"Overall runtime: {end_time - start_time:.5f} seconds")
 

@@ -24,6 +24,7 @@
 
 #pragma once
 
+#include "deload_stats.hpp"
 #include "dirty_state.hpp"
 #include "lb_arena.hpp"
 #include "paged_hash_index.hpp"
@@ -33,6 +34,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <functional>
@@ -43,8 +45,8 @@
 namespace gl {
 
     /// @brief Location of one cold string in a byte-key store's paged byte
-    ///        pool: the logical byte index where its bytes begin, and the byte
-    ///        length.
+    ///        pool: the logical byte index where its bytes begin, the byte
+    ///        length, and the key's cached FNV-1a digest.
     ///
     /// @details
     /// Element type of a `BytesKeyStore`'s id → location index. `byteStart` is
@@ -52,8 +54,10 @@ namespace gl {
     /// string begins; a string occupies `[byteStart, byteStart + len)` and is
     /// interned WITHIN A SINGLE PAGE (no straddle — the pool carries page-tail
     /// padding the deload never emits). Trivially copyable — the index is itself
-    /// a paged container element. An interned empty string has `len` zero (no
-    /// bytes; `byteStart` is the pool size at intern time).
+    /// a paged container element. `hash` caches the full FNV-1a digest beside
+    /// the location so lookup never re-walks stored bytes merely to place or
+    /// reject a candidate. An interned empty string has `len` zero (no bytes;
+    /// `byteStart` is the pool size at intern time).
     ///
     /// The name keeps the `ColdString*` spelling the byte-key store inherited
     /// from the hand-rolled `ColdStringTable` it generalizes, so the seven
@@ -62,6 +66,7 @@ namespace gl {
     struct ColdStringLocation {
         int32_t byteStart;
         int32_t len;
+        uint64_t hash;
     };
 
     /// @brief Key-store policy for variable-length byte keys — the cold storage
@@ -88,12 +93,15 @@ namespace gl {
     ///    never emitted), so the on-disk image stays dense and byte-identical to
     ///    the pre-paging form.
     /// 2. **Location index** — `PagedVector<ColdStringLocation>`, position
-    ///    `id - 1` holds key `id` (id 0 is the reserved null/absent id).
+    ///    `id - 1` holds key `id` (id 0 is the reserved null/absent id). Each
+    ///    record caches the key's full FNV-1a digest. The digest is runtime
+    ///    derived state: canonical deload still emits only lengths + logical
+    ///    bytes, and reload recomputes it from those bytes.
     ///
     /// Determinism: appending the same key sequence yields the same arena layout
     /// and the same locations; reload re-bumps element-by-element in id order, so
-    /// every (offset, len) reproduces exactly and ids stay valid across the
-    /// deload round trip (I-107).
+    /// every (offset, len, hash) reproduces exactly and ids stay valid across
+    /// the deload round trip (I-107).
     ///
     /// Threading: `appendKey` is single-threaded write side only (I-83); the
     /// hash / equality / decode reads are safe from the parallel burst.
@@ -167,36 +175,24 @@ namespace gl {
         /// @param s Key bytes to store.
         void appendKey(const StrSpan& s) {
             const int32_t start = bytePool_.appendRunNoStraddle(s.ptr, s.len);
-            locations_.push_back(ColdStringLocation{ start, s.len });
+            locations_.push_back(ColdStringLocation{
+                start, s.len, hashSpan(s) });
         }
 
-        /// @brief FNV-1a 64-bit hash of stored key `id`'s bytes, page-aware —
-        ///        the hash the owning set's index places stored ids with.
+        /// @brief Cached FNV-1a 64-bit hash of stored key `id`'s bytes — the
+        ///        hash the owning set's index places stored ids with.
         ///
         /// @details
-        /// Folds the stored bytes in logical order across page spans with the
-        /// same constants as `hashSpan` (offset basis 14695981039346656037,
-        /// prime 1099511628211), so a stored key and a contiguous probe of equal
-        /// bytes hash equal — the dedup correctness condition.
+        /// Read directly from the static paged location record. `appendKey`
+        /// computes it once; `copyKeysFrom` copies it; canonical reload
+        /// recomputes it from the serialized logical bytes. It uses the same
+        /// `hashSpan` digest as a contiguous probe, which is the dedup
+        /// correctness condition.
         ///
         /// @param id A stored id (`1 <= id <= count()`).
         /// @return The key's FNV-1a digest.
         uint64_t hashStored(int32_t id) const {
-            const ColdStringLocation& loc = locations_[id - 1];
-            uint64_t h = 14695981039346656037ULL;
-            int32_t pos = loc.byteStart;
-            const int32_t end = loc.byteStart + loc.len;
-            while (pos < end) {
-                int32_t run = 0;
-                const char* p = bytePool_.contiguousRun(pos, run);
-                if (run > end - pos) run = end - pos;
-                for (int32_t k = 0; k < run; ++k) {
-                    h ^= static_cast<unsigned char>(p[k]);
-                    h *= 1099511628211ULL;
-                }
-                pos += run;
-            }
-            return h;
+            return locations_[id - 1].hash;
         }
 
         /// @brief FNV-1a 64-bit hash of a contiguous probe — the hash the owning
@@ -207,14 +203,17 @@ namespace gl {
         /// @return The probe's FNV-1a digest.
         uint64_t hashProbe(const StrSpan& s) const { return hashSpan(s); }
 
-        /// @brief Byte equality of stored key `id` (paged) against a contiguous
-        ///        probe — page-aware, no materialization.
+        /// @brief Byte equality of stored key `id` against a contiguous probe,
+        ///        with a cached-hash rejection before page resolution.
         ///
-        /// @param id    A stored id (the stored, possibly straddling side).
-        /// @param probe The contiguous lookup bytes.
+        /// @param id        A stored id (the stored side is page-contained).
+        /// @param probe     The contiguous lookup bytes.
+        /// @param probeHash The probe's already-computed FNV-1a digest.
         /// @return `true` when lengths and bytes match.
-        bool equalStored(int32_t id, const StrSpan& probe) const {
+        bool equalStored(int32_t id, const StrSpan& probe,
+                         uint64_t probeHash) const {
             const ColdStringLocation& loc = locations_[id - 1];
+            if (loc.hash != probeHash) return false;
             if (loc.len != probe.len) return false;
             if (loc.len == 0) return true;
             int32_t pos = loc.byteStart;
@@ -369,7 +368,8 @@ namespace gl {
                 } else {
                     start = bytePool_.size();
                 }
-                locations_.push_back(ColdStringLocation{ start, oloc.len });
+                locations_.push_back(ColdStringLocation{
+                    start, oloc.len, oloc.hash });
             }
         }
 
@@ -441,7 +441,8 @@ namespace gl {
         ///        Does NOT rebuild the owning set's index — the set does.
         ///
         /// @details
-        /// Re-bumps element-by-element in id order, so every (offset, len) — and
+        /// Re-bumps element-by-element in id order and recomputes every cached
+        /// digest from the canonical bytes, so every (offset, len, hash) — and
         /// therefore every id — reproduces exactly. Loud on malformed input via
         /// asserts.
         ///
@@ -464,7 +465,9 @@ namespace gl {
                 const int32_t start = (len > 0)
                     ? bytePool_.appendRunNoStraddle(bytes + off, len)
                     : bytePool_.size();
-                locations_.push_back(ColdStringLocation{ start, len });
+                locations_.push_back(ColdStringLocation{
+                    start, len,
+                    hashSpan(StrSpan(bytes + off, len)) });
                 off += len;
             }
             assert(off == byteLen
@@ -649,9 +652,12 @@ namespace gl {
         /// @brief Raw-byte equality of stored key `id` against a probe.
         ///
         /// @param id    A stored id.
-        /// @param probe The probe key.
+        /// @param probe     The probe key.
+        /// @param probeHash The owning lookup's hash (unused: POD equality is a
+        ///                  direct fixed-width byte comparison).
         /// @return `true` when the raw bytes match.
-        bool equalStored(int32_t id, const K& probe) const {
+        bool equalStored(int32_t id, const K& probe, uint64_t probeHash) const {
+            (void)probeHash;
             return std::memcmp(&keys_[id - 1], &probe, sizeof(K)) == 0;
         }
 
@@ -1478,6 +1484,87 @@ namespace gl {
             return run >= len;
         }
 
+        /// @brief Visit a consecutive blob range in order while caching the
+        ///        current blob-index and byte-pool page spans.
+        ///
+        /// @details
+        /// The sequential-scan twin of repeated @ref peekBlob calls. A scan loads
+        /// each `blobStarts_` page once and reuses one resolved `blobPool_` page
+        /// for every small blob it contains. A blob that crosses a byte-pool page
+        /// is assembled once on @p scratch, exactly like the arena-backed
+        /// `HashMap::peekBlobContiguous` fallback. The callback runs once per blob
+        /// in logical order and may retain scratch-backed spans until its caller
+        /// rewinds the arena; direct pool spans obey the normal resident-LB
+        /// lifetime.
+        ///
+        /// Read-only and burst-safe (I-83). This is a scan operation, not a
+        /// materialization: no descriptor list is built.
+        ///
+        /// @tparam Fn Callable `void(const char* bytes, int32_t len)`.
+        /// @param b0      First blob index in `[0, blobCount()]`.
+        /// @param count   Number of consecutive blobs; `b0 + count <= blobCount()`.
+        /// @param scratch Arena used only for page-straddling blob copies.
+        /// @param fn      Consumer invoked once per blob in order.
+        /// @return Nothing.
+        /// @invariant Visited bytes and lengths equal repeated `readBlob` results
+        ///            for the same blob indices.
+        /// @see peekBlob, readBlob.
+        template <typename Fn>
+        void forEachBlobRange(int32_t b0, int32_t count,
+                              ScratchArena& scratch, Fn fn) const {
+            assert(b0 >= 0 && count >= 0
+                && b0 + count <= blobStarts_.size());
+            const int32_t endBlob = b0 + count;
+            const int32_t* startsPage = nullptr;
+            int32_t startsBase = 0, startsCount = 0;
+            const char* bytesPage = nullptr;
+            int32_t bytesBase = 0, bytesCount = 0;
+            const auto startAt = [&](int32_t b) -> int32_t {
+                if (b == blobStarts_.size()) return blobPool_.size();
+                if (startsPage == nullptr || b < startsBase
+                    || b >= startsBase + startsCount) {
+                    startsPage = blobStarts_.contiguousRun(b, startsCount);
+                    startsBase = b;
+                }
+                return startsPage[b - startsBase];
+            };
+            for (int32_t b = b0; b < endBlob; ++b) {
+                const int32_t start = startAt(b);
+                const int32_t end = startAt(b + 1);
+                const int32_t len = end - start;
+                assert(len >= 0);
+                if (len == 0) {
+                    fn(nullptr, 0);
+                    continue;
+                }
+                if (bytesPage != nullptr && start >= bytesBase
+                    && end <= bytesBase + bytesCount) {
+                    fn(bytesPage + (start - bytesBase), len);
+                    continue;
+                }
+                bytesPage = blobPool_.contiguousRun(start, bytesCount);
+                bytesBase = start;
+                if (bytesCount >= len) {
+                    fn(bytesPage, len);
+                    continue;
+                }
+                char* copy = scratch.resolve(scratch.alloc(len, 1));
+                int32_t pos = start, written = 0;
+                while (pos < end) {
+                    bytesPage = blobPool_.contiguousRun(pos, bytesCount);
+                    bytesBase = pos;
+                    const int32_t chunk = std::min(bytesCount, end - pos);
+                    std::memcpy(copy + written, bytesPage,
+                                static_cast<std::size_t>(chunk));
+                    pos += chunk;
+                    written += chunk;
+                }
+                assert(written == len
+                    && "BlobCsrValueStore::forEachBlobRange copy diverged");
+                fn(copy, len);
+            }
+        }
+
         /// @brief Open a fresh empty run for a brand-new key at the current blob
         ///        end — the new-key half of `HashMap::assignRun`.
         void openRun() { runStarts_.push_back(blobStarts_.size()); }
@@ -1512,21 +1599,100 @@ namespace gl {
         /// @param M        New blob count; >= 0.
         void replaceRun(int32_t b0, int32_t oldCount, const char* bytes,
                         const int32_t* lens, int32_t M) {
-            const int32_t y0 = runByteStart(b0);
-            const int32_t oldBytes = runByteStart(b0 + oldCount) - y0;
             int32_t newBytes = 0;
             for (int32_t j = 0; j < M; ++j) newBytes += lens[j];
-            blobPool_.replaceRange(y0, oldBytes, bytes, newBytes);
-            std::vector<int32_t> newStarts(static_cast<size_t>(M));
+            replaceRunGenerated(b0, oldCount, M, newBytes,
+                [&](const auto& sink) {
+                    int32_t offset = 0;
+                    for (int32_t j = 0; j < M; ++j) {
+                        sink(bytes + offset, lens[j]);
+                        offset += lens[j];
+                    }
+                });
+        }
+
+        /// @brief Replace one blob run from a replayable record emitter while
+        ///        moving the byte and blob-index tails exactly once each.
+        ///
+        /// @details
+        /// The segmented-source widening door for runs whose concatenated bytes
+        /// cannot fit one arena block. @p emit is invoked twice: first to stream
+        /// record byte spans directly into `blobPool_` through
+        /// `PagedVector::replaceRangeGenerated`, then to generate the absolute
+        /// `blobStarts_` prefix offsets from the same record lengths. Both dense
+        /// CSR columns therefore retain exactly the bytes and boundaries that
+        /// @ref replaceRun would produce, without a contiguous concat or heap
+        /// prefix-start vector. Each surviving tail moves once.
+        ///
+        /// Any source span backed by this store's current pool must be preserved
+        /// elsewhere before entry because the first generated replacement mutates
+        /// that pool. Single-threaded write side only (I-83).
+        ///
+        /// @tparam Emit Replayable callable accepting a record sink with signature
+        ///              `void(const char* bytes, int32_t len)`.
+        /// @param b0       First blob index of the key's current run.
+        /// @param oldCount Blobs currently in the run.
+        /// @param M        Replacement blob count; >= 0.
+        /// @param newBytes Total replacement byte count; >= 0.
+        /// @param emit     Producer of exactly @p M records totalling
+        ///                 @p newBytes bytes, in final run order.
+        /// @return Nothing.
+        /// @invariant The dense two-level CSR remains canonical: every generated
+        ///            blob start is the prefix sum of the emitted lengths.
+        /// @see replaceRun, PagedVector::replaceRangeGenerated.
+        template <typename Emit>
+        void replaceRunGenerated(int32_t b0, int32_t oldCount, int32_t M,
+                                 int32_t newBytes, Emit emit) {
+            assert(M >= 0 && newBytes >= 0);
+            const int32_t y0 = runByteStart(b0);
+            const int32_t oldBytes = runByteStart(b0 + oldCount) - y0;
+            blobPool_.replaceRangeGenerated(y0, oldBytes, newBytes,
+                [&](const auto& byteSink) {
+                    int32_t emitted = 0, bytesEmitted = 0;
+                    emit([&](const char* bytes, int32_t len) {
+                        assert(len >= 0 && (len == 0 || bytes != nullptr));
+                        byteSink(bytes, len);
+                        ++emitted;
+                        bytesEmitted += len;
+                    });
+                    assert(emitted == M && bytesEmitted == newBytes
+                        && "BlobCsrValueStore::replaceRunGenerated byte emitter "
+                           "shape mismatch");
+                });
             int32_t acc = y0;
-            for (int32_t j = 0; j < M; ++j) { newStarts[j] = acc; acc += lens[j]; }
-            blobStarts_.replaceRange(b0, oldCount, newStarts.data(), M);
+            blobStarts_.replaceRangeGenerated(b0, oldCount, M,
+                [&](const auto& startSink) {
+                    int32_t emitted = 0;
+                    emit([&](const char*, int32_t len) {
+                        startSink(&acc, 1);
+                        acc += len;
+                        ++emitted;
+                    });
+                    assert(emitted == M && acc == y0 + newBytes
+                        && "BlobCsrValueStore::replaceRunGenerated start emitter "
+                           "shape mismatch");
+                });
             const int32_t byteDelta = newBytes - oldBytes;
-            if (byteDelta != 0) {
-                const int32_t bn = blobStarts_.size();
-                for (int32_t b = b0 + M; b < bn; ++b)
-                    blobStarts_.setAt(b, blobStarts_[b] + byteDelta);
-            }
+            if (byteDelta != 0)
+                blobStarts_.addScalarToSuffix(b0 + M, byteDelta);
+        }
+
+        /// @brief Rebase every key-run start from @p first by one blob-count
+        ///        delta using the paged column's bulk suffix door.
+        ///
+        /// @details
+        /// An interior blob-run replacement shifts every later key's first blob
+        /// by the same count. The page-run update is byte-identical to repeated
+        /// `runStartRaw` plus `setRunStartRaw` calls while avoiding two directory
+        /// resolutions per integer.
+        ///
+        /// @param first First zero-based key-run-start slot to change.
+        /// @param delta Blob-count delta added to every suffix slot.
+        /// @return Nothing.
+        /// @invariant Run-start order and differences remain unchanged; only the
+        ///            shared absolute base of the suffix moves by @p delta.
+        void addToRunStartsSuffix(int32_t first, int32_t delta) {
+            runStarts_.addScalarToSuffix(first, delta);
         }
 
         /// @brief Move `n` pool bytes from `srcByte` down to `destByte`
@@ -1792,11 +1958,12 @@ namespace gl {
                    "point first (I-111)");
             if (buckets_.empty()) return 0;
             const uint64_t mask = buckets_.capacity() - 1;
-            uint64_t i = ks_.hashProbe(k) & mask;
+            const uint64_t probeHash = ks_.hashProbe(k);
+            uint64_t i = probeHash & mask;
             while (true) {
                 const int32_t id = buckets_.at(static_cast<int32_t>(i));
                 if (id == 0) return 0;
-                if (ks_.equalStored(id, k)) return id;
+                if (ks_.equalStored(id, k, probeHash)) return id;
                 i = (i + 1) & mask;
             }
         }
@@ -2330,16 +2497,126 @@ namespace gl {
                 }
                 return id;
             }
+            return assignRunAtId(id, bytes, lens, M);
+        }
+
+        /// @brief Replace key @p k's blob run from a replayable segmented record
+        ///        emitter, with one byte-tail move and one blob-tail move.
+        ///
+        /// @details
+        /// The non-contiguous twin of @ref assignRun. A new key opens at the pool
+        /// tail and appends emitted records. An existing key delegates to
+        /// `BlobCsrValueStore::replaceRunGenerated`, then rebases later key-run
+        /// starts once by the blob-count delta. The resulting dense CSR bytes are
+        /// identical to concatenating the same records and calling @ref assignRun,
+        /// but the source may span arbitrarily many arena blocks.
+        ///
+        /// @tparam Emit Replayable callable accepting a record sink with signature
+        ///              `void(const char* bytes, int32_t len)`.
+        /// @tparam VS Value-store selector; instantiated only for
+        ///            `BlobCsrValueStore`.
+        /// @param k        Key view to find or mint.
+        /// @param M        Number of emitted records; >= 0.
+        /// @param newBytes Sum of emitted record lengths; >= 0.
+        /// @param emit     Producer of the final run in canonical order.
+        /// @return The key id; >= 1.
+        /// @invariant Key ids and final run bytes match @ref assignRun for the
+        ///            same ordered record sequence.
+        /// @see BlobCsrValueStore::replaceRunGenerated.
+        template <typename Emit, typename VS = ValueStore>
+        int32_t assignRunGenerated(const KeyView& k, int32_t M,
+                                   int32_t newBytes, Emit emit) {
+            assert(M >= 0 && newBytes >= 0);
+            const int32_t before = ks_.count();
+            const int32_t id = mint(k);
+            if (id == before + 1) {
+                ValueStore::openRun();
+                int32_t emitted = 0, bytesEmitted = 0;
+                emit([&](const char* bytes, int32_t len) {
+                    assert(len >= 0 && (len == 0 || bytes != nullptr));
+                    ValueStore::appendBlob(bytes, len);
+                    ++emitted;
+                    bytesEmitted += len;
+                });
+                assert(emitted == M && bytesEmitted == newBytes
+                    && "HashMap::assignRunGenerated new-run emitter shape "
+                       "mismatch");
+                return id;
+            }
+            return assignRunGeneratedAtId(id, M, newBytes, emit);
+        }
+
+        /// @brief Replace an EXISTING key id's blob run without probing its key
+        ///        again.
+        ///
+        /// @details
+        /// The known-hit twin of @ref assignRun. A caller that has just obtained
+        /// @p id from `lookup(k)` already proved key membership; routing the
+        /// subsequent whole-run write through `mint(k)` would hash and probe the
+        /// same key a second time. This door starts at the stored run descriptor,
+        /// performs the identical dense CSR replacement, and rebases later key
+        /// starts once. It cannot mint and therefore cannot change key ids.
+        ///
+        /// @tparam VS Value-store selector; instantiated only for
+        ///            `BlobCsrValueStore`.
+        /// @param id    Existing key id; `1 <= id <= count()`.
+        /// @param bytes Concatenated replacement blob bytes.
+        /// @param lens  Replacement blob lengths.
+        /// @param M     Replacement blob count; >= 0.
+        /// @return The unchanged @p id.
+        /// @invariant Final value columns are byte-identical to
+        ///            `assignRun(decode(id), bytes, lens, M)`.
+        /// @see assignRun, assignRunGeneratedAtId.
+        template <typename VS = ValueStore>
+        int32_t assignRunAtId(int32_t id, const char* bytes,
+                              const int32_t* lens, int32_t M) {
+            const int32_t keyCount = ks_.count();
+            assert(id >= 1 && id <= keyCount
+                && "HashMap::assignRunAtId on an unstored id");
+            assert(M >= 0 && (M == 0 || lens != nullptr));
             const int32_t b0 = ValueStore::runStartRaw(id - 1);
-            const int32_t oldCount = ValueStore::runLen(id, ks_.count());
+            const int32_t oldCount = ValueStore::runLen(id, keyCount);
             ValueStore::replaceRun(b0, oldCount, bytes, lens, M);
             const int32_t countDelta = M - oldCount;
-            if (countDelta != 0) {
-                const int32_t n = ks_.count();
-                for (int32_t idx = id; idx < n; ++idx)
-                    ValueStore::setRunStartRaw(
-                        idx, ValueStore::runStartRaw(idx) + countDelta);
-            }
+            if (countDelta != 0)
+                ValueStore::addToRunStartsSuffix(id, countDelta);
+            return id;
+        }
+
+        /// @brief Replace an EXISTING key id's blob run from a replayable emitter
+        ///        without probing its key again.
+        ///
+        /// @details
+        /// The generated-source twin of @ref assignRunAtId and known-hit twin of
+        /// @ref assignRunGenerated. It preserves the one-tail-move segmented CSR
+        /// write while eliminating the redundant `mint`/`lookup` performed after
+        /// the caller has already resolved the key id.
+        ///
+        /// @tparam Emit Replayable callable accepting a record sink with signature
+        ///              `void(const char* bytes, int32_t len)`.
+        /// @tparam VS Value-store selector; instantiated only for
+        ///            `BlobCsrValueStore`.
+        /// @param id       Existing key id; `1 <= id <= count()`.
+        /// @param M        Replacement blob count; >= 0.
+        /// @param newBytes Sum of emitted record lengths; >= 0.
+        /// @param emit     Producer of the final run in canonical order.
+        /// @return The unchanged @p id.
+        /// @invariant Final value columns are byte-identical to
+        ///            `assignRunGenerated(decode(id), M, newBytes, emit)`.
+        /// @see assignRunGenerated, assignRunAtId.
+        template <typename Emit, typename VS = ValueStore>
+        int32_t assignRunGeneratedAtId(int32_t id, int32_t M,
+                                       int32_t newBytes, Emit emit) {
+            const int32_t keyCount = ks_.count();
+            assert(id >= 1 && id <= keyCount
+                && "HashMap::assignRunGeneratedAtId on an unstored id");
+            assert(M >= 0 && newBytes >= 0);
+            const int32_t b0 = ValueStore::runStartRaw(id - 1);
+            const int32_t oldCount = ValueStore::runLen(id, keyCount);
+            ValueStore::replaceRunGenerated(b0, oldCount, M, newBytes, emit);
+            const int32_t countDelta = M - oldCount;
+            if (countDelta != 0)
+                ValueStore::addToRunStartsSuffix(id, countDelta);
             return id;
         }
 
@@ -2376,9 +2653,7 @@ namespace gl {
             // insert; the existing blobs are not read).
             ValueStore::replaceRun(b0 + oldCount, 0, blob, &len, 1);
             // One blob was inserted before every later key's run -> +1 each.
-            for (int32_t idx = id; idx < kc; ++idx)
-                ValueStore::setRunStartRaw(
-                    idx, ValueStore::runStartRaw(idx) + 1);
+            ValueStore::addToRunStartsSuffix(id, 1);
         }
 
         /// @brief Copy blob `j` of key `id`'s run into `out` (blob map).
@@ -2510,6 +2785,37 @@ namespace gl {
             char* buf = scratch.resolve(scratch.alloc(len, 1));
             blobAt(id, j, buf);
             return buf;
+        }
+
+        /// @brief Visit every blob in key @p id's run through the value store's
+        ///        page-cached sequential scanner.
+        ///
+        /// @details
+        /// Resolves the run start and length once, then delegates to
+        /// `BlobCsrValueStore::forEachBlobRange`. Compared with calling
+        /// `peekBlobContiguous(id, j, ...)` in a loop, adjacent blob-start entries
+        /// and byte spans reuse their current pages instead of re-entering both
+        /// paged directories for every record. Read-only and burst-safe.
+        ///
+        /// @tparam Fn Callable `void(const char* bytes, int32_t len)`.
+        /// @tparam VS Value-store selector; instantiated only for
+        ///            `BlobCsrValueStore`.
+        /// @param id      A minted id; `1 <= id <= count()`.
+        /// @param scratch Arena used only when a blob straddles a pool page.
+        /// @param fn      Consumer invoked once per record in run order.
+        /// @return Nothing.
+        /// @invariant The callback sequence is byte-identical to calling
+        ///            `blobAt(id, j)` for every `j` in the run.
+        /// @see BlobCsrValueStore::forEachBlobRange.
+        template <typename Fn, typename VS = ValueStore>
+        void forEachBlobContiguous(int32_t id, ScratchArena& scratch,
+                                   Fn fn) const {
+            const int32_t keyCount = ks_.count();
+            assert(id >= 1 && id <= keyCount
+                && "HashMap::forEachBlobContiguous on an unstored id");
+            const int32_t b0 = ValueStore::runStartRaw(id - 1);
+            const int32_t count = ValueStore::runLen(id, keyCount);
+            ValueStore::forEachBlobRange(b0, count, scratch, fn);
         }
 
         /// @brief Contiguous bytes of blob `j` of key `id`'s run — zero-copy
@@ -2711,6 +3017,24 @@ namespace gl {
             // Consistency: a fresh container is fully empty.
             assert(ks_.count() == 0 && buckets_.empty()
                 && "cold-index desync: resetToFresh left state non-empty");
+        }
+
+        /// @brief Report the physical blocks held by this map's owning arena.
+        ///
+        /// @details
+        /// This is arena-level telemetry, not a per-container allocation count:
+        /// when several containers share one `LbArena`, each reports the same
+        /// aggregate. It is exact for an exclusive arena such as the global
+        /// `mailInterner` arena and includes spilled arena-directory blocks.
+        /// The value is never a proof input.
+        ///
+        /// @return Blocks currently granted to the owning arena.
+        /// @invariant The arena pointer supplied at construction remains valid
+        ///            for the map's lifetime.
+        /// @see LbArena::blocksHeld.
+        int64_t arenaBlocksHeld() const {
+            assert(arena_ != nullptr);
+            return arena_->blocksHeld();
         }
 
         /// @brief Drop everything including the hash buckets' pages — the deload
@@ -2995,7 +3319,16 @@ namespace gl {
             /// @param rowCount Keys to append; >= 0.
             void bulkAppendBytes(const char* bytes, int64_t rowCount) {
                 owner_->keyStore().bulkLoadKeyBytes(bytes, rowCount);
+                // Reload-only rebuild of the throw-away index — the sole
+                // rebuildIndex path off the hot mint / growth path, so the
+                // timer read never lands on a fast path.
+                const auto rebuildStart = std::chrono::steady_clock::now();
                 owner_->rebuildIndex();
+                deloadStats().recordIndexRebuild(
+                    owner_->count(),
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - rebuildStart)
+                        .count());
             }
 
             /// @brief Base-image clear: reset the whole container (the value

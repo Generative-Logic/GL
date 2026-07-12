@@ -460,6 +460,286 @@ namespace gl {
         /// @return Number of blocks returned to the global pool.
         int64_t compactPages(LbArena& scr);
 
+        // ---- Raw arena image (the near-memcpy eviction/reload datapath) -----
+        // The page tier IS the entire deloadable state (every cold container
+        // packs its elements into `allocPage` pages of this one arena, and the
+        // throw-away `PagedHashIndex` bucket arrays ride the same page tier). So
+        // a byte image of the live pages, in ascending vid order, plus a bitmap
+        // of which vids are live, restores the arena to a byte-identical logical
+        // state with ZERO container work: vids are position-independent handles
+        // (I-107), so the reload binds the same vids to freshly carved DENSE
+        // pages and every container's scalar bookkeeping (unchanged in the
+        // never-deloaded `Memory` shell) still resolves. No element walk, no
+        // per-key index rebuild. Bytes are NONDETERMINISTIC (I-103 is waived for
+        // eviction images, user-approved) but the restored LOGICAL state is
+        // byte-identical, so proof output stays deterministic.
+
+        /// @brief The scalar shape a raw image records in its header — enough
+        ///        for `restoreForRawLoad` to rebuild the page tier.
+        ///
+        /// @details
+        /// `byteBumpCursor` is the byte-bump tier's used span (`cursor_`),
+        /// EXPECTED 0 for a deloadable LB arena (every deloadable container is
+        /// page-tier — no `ArenaVector` members, no direct `alloc`/`allocBytes`
+        /// on the manager); the v4 format carries a nonzero span raw so a future
+        /// byte-bump container is supported. `vidCount` is the vid high-water
+        /// (`pageTable_.size()`, including any interior dead-vid holes);
+        /// `livePages` is the number of set bits the live bitmap will carry.
+        struct RawShape {
+            int32_t blockBytes;         // grant unit (header sanity field)
+            int32_t pageBytes;          // page unit (header sanity field)
+            ArenaOffset byteBumpCursor; // cursor_ (expected 0 in production)
+            int32_t vidCount;           // pageTable_.size() (holes included)
+            int32_t livePages;          // live (non-null) vids
+        };
+
+        /// @brief The arena's raw-image shape — the header scalars.
+        ///
+        /// @details
+        /// Pure read (telemetry-cheap): reads the cached geometry and the page-
+        /// table high-water / live count. Legal on an empty arena (returns
+        /// zeros for the tier fields), which is the header-only raw image an
+        /// empty aggregate writes. Asserts residency — a deloaded arena has no
+        /// shape to report.
+        ///
+        /// @return The `RawShape` the raw dumper stamps into the v4 header.
+        RawShape rawShape() const;
+
+        /// @brief Fill `bitmap` with one bit per vid — set iff the vid is live.
+        ///
+        /// @details
+        /// The raw header's live-vid bitmap: bit `v` (byte `v/8`, bit `v%8`) is
+        /// set iff `pageTable_[v]` is a live page. Interior holes (dead vids
+        /// freed out of tail order) read 0 and are preserved across the round
+        /// trip, so the reload rebinds exactly the vids that were live. Reads
+        /// only the page table; asserts residency and an exactly-sized buffer.
+        ///
+        /// @param bitmap      Caller buffer of `bitmapBytes` bytes, zeroed then
+        ///                    filled.
+        /// @param bitmapBytes Must equal `ceil(vidCount / 8)`.
+        void fillLiveBitmap(unsigned char* bitmap, int32_t bitmapBytes) const;
+
+        /// @brief Fill a bit-chunk of the live-vid bitmap for vids
+        ///        `[startVid, startVid + vidSpan)` — the dump-side chunk
+        ///        primitive behind the dynamic v4 header.
+        ///
+        /// @details
+        /// Same bit semantics as `fillLiveBitmap` (bit `i` of the chunk =
+        /// vid `startVid + i` live), restricted to a caller-chosen range so
+        /// the raw dumper can stream an arbitrarily large bitmap through one
+        /// bounded stack buffer instead of the single fixed-size buffer the
+        /// old 4 KiB header capped. `startVid` must be a multiple of 8
+        /// (chunks split on byte boundaries, so the chunk bytes concatenate
+        /// to the exact whole-range bitmap). `fillLiveBitmap` is the
+        /// whole-range convenience wrapper over this.
+        ///
+        /// @param bitmap   Caller buffer of `ceil(vidSpan / 8)` bytes, zeroed
+        ///                 then filled.
+        /// @param startVid First vid of the chunk; a multiple of 8; >= 0.
+        /// @param vidSpan  Vids in the chunk; `startVid + vidSpan` must not
+        ///                 exceed the vid high-water; >= 0.
+        void fillLiveBitmapRange(unsigned char* bitmap, int32_t startVid,
+                                 int32_t vidSpan) const;
+
+        /// @brief Stream the arena's raw payload to a byte sink — the byte-bump
+        ///        span (usually absent) then the live pages, ascending vid.
+        ///
+        /// @details
+        /// Heap-free: walks live pages in ascending vid order and COALESCES
+        /// physically-adjacent pages into one `sink` call (fewer file writes),
+        /// which is invisible to the byte stream — the payload is always
+        /// `livePages * pageBytes` bytes in ascending-vid order regardless of
+        /// how the source pages are laid out. The byte-bump span (if
+        /// `cursor_ != 0`) is emitted FIRST, matching the v4 header order.
+        /// Read-only; asserts residency. The `Sink` is any callable
+        /// `void(const char* data, int64_t len)`.
+        ///
+        /// @tparam Sink  A callable `void(const char*, int64_t)`.
+        /// @param  sink  Receives each contiguous run of payload bytes.
+        template <class Sink>
+        void emitRawImage(Sink&& sink) const {
+            assert(resident_ && "emitRawImage on a deloaded arena");
+            // Byte-bump span first (usually absent: cursor_ == 0 in production).
+            if (cursor_ != 0) {
+                ArenaOffset p = 0;
+                while (p < cursor_) {
+                    const int64_t block =
+                        static_cast<int64_t>(p) >> blockShift_;
+                    const int64_t blockEnd =
+                        (block + 1) << static_cast<int64_t>(blockShift_);
+                    const ArenaOffset spanEnd =
+                        (static_cast<int64_t>(cursor_) < blockEnd)
+                            ? cursor_ : static_cast<ArenaOffset>(blockEnd);
+                    sink(blocks_.peek(static_cast<int32_t>(block))
+                             + (p & blockMask_),
+                         static_cast<int64_t>(spanEnd - p));
+                    p = spanEnd;
+                }
+            }
+            // Live pages, ascending vid, coalescing physically-adjacent runs.
+            const int32_t hw = pageTable_.size();
+            const int32_t pb = global_->pageBytes();
+            const char* runStart = nullptr;
+            int64_t runLen = 0;
+            for (int32_t v = 0; v < hw; ++v) {
+                const char* page = pageTable_.peek(v);
+                if (page == nullptr) continue;   // interior dead-vid hole
+                if (runStart != nullptr && page == runStart + runLen) {
+                    runLen += pb;
+                } else {
+                    if (runStart != nullptr) sink(runStart, runLen);
+                    runStart = page;
+                    runLen = pb;
+                }
+            }
+            if (runStart != nullptr) sink(runStart, runLen);
+        }
+
+        /// @brief Rebuild a FRESH page tier that binds ascending live vids to
+        ///        consecutive dense pages — the raw reload's arena side.
+        ///
+        /// @details
+        /// Bulk-acquires the blocks the byte-bump span and the live pages need
+        /// (one mutex batch, `GlobalMemoryManager::acquireBlocks`), binds the
+        /// k-th ascending live vid to slot `k` (dense — the reload self-heals
+        /// fragmentation), nulls the dead vids so interior holes survive, and
+        /// rebuilds the free-list from the tail slots. Leaves the pages
+        /// UNINITIALISED — the caller fills them via `fillRawImage`. Because the
+        /// vids are preserved and pages resolve through `pageAt`, every
+        /// container's scalar state (`size_`/`rootVid_`/`numPages_`, in the
+        /// never-deloaded `Memory` shell) still resolves — no container touch,
+        /// no index rebuild. Asserts the arena is EMPTY (restore on a non-empty
+        /// arena is a bug, Rule 19) and residency (the caller `markResident`s
+        /// first). `assertInvariants` at the end proves the rebuilt shape.
+        ///
+        /// @param vidCount       The vid high-water to reproduce (holes
+        ///                       included); >= 0.
+        /// @param liveBitmap     `ceil(vidCount/8)` bytes; bit `v` set iff vid
+        ///                       `v` is live.
+        /// @param liveCount      Number of set bits in `liveBitmap`; the pages
+        ///                       to carve; `0 <= liveCount <= vidCount`.
+        /// @param byteBumpCursor The byte-bump span to reproduce (expected 0).
+        void restoreForRawLoad(int32_t vidCount,
+                               const unsigned char* liveBitmap,
+                               int32_t liveCount, ArenaOffset byteBumpCursor);
+
+        /// @brief STAGED raw restore, stage 1 of 3: geometry, the byte-bump
+        ///        span, and the bulk block acquisition — the chunked twin of
+        ///        `restoreForRawLoad`'s entry, for a bitmap that streams
+        ///        through a bounded buffer (the dynamic v4 header).
+        ///
+        /// @details
+        /// The loader reads an arbitrarily large live-vid bitmap in bounded
+        /// 4 KiB chunks straight off the file, so the restore is split:
+        /// `restoreForRawLoadBegin` (this) validates the empty-arena
+        /// contract, reproduces the byte-bump span, bulk-acquires the kept
+        /// page blocks, and records `liveCount` as the live-page count;
+        /// `restoreForRawLoadChunk` binds each bitmap chunk's vids in
+        /// ascending order; `restoreForRawLoadEnd` rebuilds the free-list
+        /// and proves the shape. `restoreForRawLoad` is the single-shot
+        /// wrapper (one chunk covering every vid) — same asserts, same
+        /// result, byte-for-byte.
+        ///
+        /// @param vidCount       The vid high-water the chunks will
+        ///                       reproduce; >= 0.
+        /// @param liveCount      Live pages to carve; `0 <= liveCount <=
+        ///                       vidCount`.
+        /// @param byteBumpCursor The byte-bump span to reproduce (expected
+        ///                       0).
+        void restoreForRawLoadBegin(int32_t vidCount, int32_t liveCount,
+                                    ArenaOffset byteBumpCursor);
+
+        /// @brief STAGED raw restore, stage 2 of 3: bind the vids of one
+        ///        bitmap chunk — bit `i` = vid `startVid + i`, live vids to
+        ///        the next dense slots, dead vids to interior holes.
+        ///
+        /// @details
+        /// Chunks must arrive in ascending, gapless order (`startVid` equals
+        /// the vids bound so far — asserted) and split on byte boundaries
+        /// (`startVid` a multiple of 8, mirroring
+        /// `fillLiveBitmapRange`). The running dense-slot cursor travels as
+        /// the caller's `slot` (in) / return value (out), so the arena keeps
+        /// no cross-stage scratch state.
+        ///
+        /// @param bits     `ceil(vidSpan / 8)` bitmap bytes for this chunk.
+        /// @param startVid First vid of the chunk; a multiple of 8; must
+        ///                 equal the number of vids already bound.
+        /// @param vidSpan  Vids in this chunk; >= 0.
+        /// @param slot     Dense slots filled so far (live vids bound).
+        /// @return The updated dense-slot count after this chunk.
+        int32_t restoreForRawLoadChunk(const unsigned char* bits,
+                                       int32_t startVid, int32_t vidSpan,
+                                       int32_t slot);
+
+        /// @brief STAGED raw restore, stage 3 of 3: rebuild the free-list
+        ///        from the tail slots and prove the rebuilt shape.
+        ///
+        /// @details
+        /// Asserts the chunks covered exactly `vidCount` vids, that the
+        /// bound live count matches stage 1's `liveCount` (`slot`), and the
+        /// dump-time last-vid-live invariant (the page-table tail is never a
+        /// freed vid), then `assertInvariants`.
+        ///
+        /// @param vidCount The vid high-water stage 1 announced.
+        /// @param slot     The final dense-slot count from the last chunk.
+        void restoreForRawLoadEnd(int32_t vidCount, int32_t slot);
+
+        /// @brief Fill the pages `restoreForRawLoad` carved with raw bytes from
+        ///        a source — the heap-free read-into-pages mechanism.
+        ///
+        /// @details
+        /// The mirror of `emitRawImage`: walks the byte-bump span (if any) then
+        /// the dense live pages in ascending vid = ascending slot order,
+        /// coalescing physically-adjacent slots into one `fill` call, and hands
+        /// each contiguous DEST run to the source. The source reads the file
+        /// bytes straight into pool memory (one copy total, no staging buffer).
+        /// The run boundaries need not match `emitRawImage`'s — both walk the
+        /// same total byte sequence in ascending-vid order, so the flat file
+        /// payload lands byte-for-byte where it belongs. Asserts residency. The
+        /// `Fill` is any callable `void(char* dst, int64_t len)`.
+        ///
+        /// @tparam Fill A callable `void(char*, int64_t)` filling `len` bytes at
+        ///              `dst`.
+        /// @param  fill Fills each contiguous run of the restored pages.
+        template <class Fill>
+        void fillRawImage(Fill&& fill) {
+            assert(resident_ && "fillRawImage on a deloaded arena");
+            // Byte-bump span first (matches emitRawImage / the header order).
+            if (cursor_ != 0) {
+                ArenaOffset p = 0;
+                while (p < cursor_) {
+                    const int64_t block =
+                        static_cast<int64_t>(p) >> blockShift_;
+                    const int64_t blockEnd =
+                        (block + 1) << static_cast<int64_t>(blockShift_);
+                    const ArenaOffset spanEnd =
+                        (static_cast<int64_t>(cursor_) < blockEnd)
+                            ? cursor_ : static_cast<ArenaOffset>(blockEnd);
+                    fill(blocks_.peek(static_cast<int32_t>(block))
+                             + (p & blockMask_),
+                         static_cast<int64_t>(spanEnd - p));
+                    p = spanEnd;
+                }
+            }
+            // Live pages, ascending vid = ascending dense slot; coalesce runs.
+            const int32_t hw = pageTable_.size();
+            const int32_t pb = global_->pageBytes();
+            char* runStart = nullptr;
+            int64_t runLen = 0;
+            for (int32_t v = 0; v < hw; ++v) {
+                char* page = pageTable_.peek(v);
+                if (page == nullptr) continue;   // interior dead-vid hole
+                if (runStart != nullptr && page == runStart + runLen) {
+                    runLen += pb;
+                } else {
+                    if (runStart != nullptr) fill(runStart, runLen);
+                    runStart = page;
+                    runLen = pb;
+                }
+            }
+            if (runStart != nullptr) fill(runStart, runLen);
+        }
+
         // ---- Byte-bump scratch fill (the per-worker scratch / sealed path) --
         // A per-LB arena does not call these; the scratch arenas and the
         // sealed-page handoff fill bytes via allocBytes (a resolved `alloc`) +
@@ -579,6 +859,40 @@ namespace gl {
         ///
         /// @return A physical page free for binding to a fresh vid.
         char* takePage();
+
+        /// @brief Bulk-acquire `count` blocks into a block directory — the raw
+        ///        reload's one-mutex-per-chunk grant.
+        ///
+        /// @details
+        /// Grants in fixed stack-buffer chunks (`GlobalMemoryManager::
+        /// acquireBlocks`, one mutex acquisition per chunk) and pushes each into
+        /// `dir` AFTER the lock is released (directory spill re-enters the
+        /// manager, so it must not run under the pool mutex). For every real LB
+        /// (< one chunk of blocks) this is a SINGLE mutex acquisition instead
+        /// of one per block — the per-block loop measured ~2000 acquire/release
+        /// round trips per big-LB deload/reload cycle. Heap-free (the chunk
+        /// buffer is on the stack). Asserts residency.
+        ///
+        /// @param dir   The block directory (`blocks_` or `pageBlocks_`).
+        /// @param count Blocks to acquire and append; >= 0 (0 = no-op).
+        void acquireInto(PtrDirectory<kArenaBlockTableInline>& dir,
+                         int32_t count);
+
+        /// @brief Bulk-return every data block a directory holds — the bulk
+        ///        twin of the per-block release loop, one mutex batch per
+        ///        chunk instead of one per block.
+        ///
+        /// @details
+        /// Reads the directory's block pointers in fixed stack-buffer chunks and
+        /// returns each chunk with one `GlobalMemoryManager::releaseBlocks`
+        /// call, so `releaseAll` returns a whole LB's blocks with a handful of
+        /// mutex acquisitions instead of one per block. Does NOT clear `dir` —
+        /// the caller does, which also returns the directory's own spilled
+        /// storage. Release-identical to the former per-block loop.
+        ///
+        /// @param dir The block directory whose entries to return (`blocks_` or
+        ///            `pageBlocks_`).
+        void releaseFrom(PtrDirectory<kArenaBlockTableInline>& dir);
 
         GlobalMemoryManager* global_ = nullptr;  // null until bound
         int32_t blockBytes_ = 0;     // 0 until ensureGeometry; cached after

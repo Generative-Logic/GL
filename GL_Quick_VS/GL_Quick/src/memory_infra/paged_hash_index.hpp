@@ -98,8 +98,29 @@ namespace gl {
         PagedHashIndex(PagedHashIndex&&) = delete;
         PagedHashIndex& operator=(PagedHashIndex&&) = delete;
 
-        /// @brief Frees every held page back to the arena.
-        ~PagedHashIndex() { clear(); }
+        /// @brief Frees every held page back to the arena — with the
+        ///        teardown-only residency branch for a RAW-deloaded LB.
+        ///
+        /// @details
+        /// Teardown-only residency branch, the twin of `~PagedVector`'s: a
+        /// RAW-deloaded LB's throw-away bucket index (`ColdHashSet::buckets_`)
+        /// still holds `rootVid_`/`numPages_` on a DELOADED arena, because
+        /// `Memory::releaseStaticBlocksRaw` skipped the container walk (the raw
+        /// image carries the bucket pages verbatim). Its pages no longer exist
+        /// (the blocks are back in the pool), so `freePage` must not run —
+        /// reset the bookkeeping only. A DEFINED teardown state (Rule 19), not
+        /// a swallowed failure: the branch lives ONLY in the destructor, so a
+        /// LIVE `clear()` / `reset()` on a cold arena still dies loudly on
+        /// `freePage`'s residency assert.
+        ~PagedHashIndex() {
+            if (capacity_ != 0 && !arena_->resident()) {
+                rootVid_ = kNoVid;
+                capacity_ = 0;
+                numPages_ = 0;
+                return;
+            }
+            clear();
+        }
 
         /// @brief Slot capacity (0 before the first `reset`).
         ///
@@ -202,6 +223,15 @@ namespace gl {
 
         /// @brief Free every held page (data, level-1 directory, and L2 root,
         ///        per the directory shape) and reset to empty.
+        ///
+        /// @details
+        /// A LIVE operation — it requires a resident arena, and `freePage`'s
+        /// own residency assert is the tripwire: a `clear` reaching a cold LB
+        /// mid-run is a bug that must die loudly at its origin (Rule 19), never
+        /// silently reset bookkeeping. The one lifecycle that legally meets a
+        /// non-resident arena with live bookkeeping — destroying a RAW-deloaded
+        /// `Memory` — is handled by the residency branch in `~PagedHashIndex`,
+        /// never here.
         void clear() {
             if (capacity_ == 0) return;
             const int32_t dirCap = slotsPerPage_;

@@ -24,11 +24,10 @@
 
 #pragma once
 
-// RoutingColdMail -- the per-LB cross-LB routing mailbox (Memory::mailIn /
-// mailOut), on the never-deloaded MAIL POOL. Each instance owns a per-LB cold
+// RoutingColdMail -- the per-LB cross-LB routing inbox (Memory::mailIn), on the
+// never-deloaded MAIL POOL. Each instance owns a per-LB cold
 // LbArena drawn from the mail pool; its blocks are freed back to the pool the
-// moment its content is read out (mailOut at the commit barrier, mailIn after
-// the phase-1 absorb), so nothing is retained. The richer rationale is on the
+// moment mailIn is absorbed in phase 1, so nothing is retained. The rationale is on the
 // struct below.
 
 #include "dirty_state.hpp"
@@ -49,24 +48,17 @@ namespace gl {
     struct Mail;  // heap mailbox, defined in memory.hpp; `toHeapMail` is declared
                   // here and defined out-of-line there once Mail is complete.
 
-    /// @brief The per-LB cross-LB routing mailbox (`Memory::mailIn` /
-    ///        `Memory::mailOut`) on the never-deloaded MAIL POOL, freed after
-    ///        each read-out.
+    /// @brief The per-LB cross-LB routing inbox (`Memory::mailIn`) on the
+    ///        never-deloaded mail pool, freed after phase-1 read-out.
     ///
     /// @details
-    /// `mailIn`/`mailOut` carry the cross-LB routing traffic — the per-LB
-    /// endpoints of the pull-model mail system. The commit barrier reads every
-    /// LB's `mailOut` (incl. inactive / evicted ones) to decide what to append to
-    /// each `MailLog`; that all-bodies read must never hit a deloaded arena, so
-    /// the storage belongs on the **never-deloaded MAIL POOL** (where the
-    /// `MailLog` it feeds already lives), NOT the per-LB deloadable arena — the
-    /// `MailLog` precedent, and still "0 hot" (the mail pool is a sanctioned cold
-    /// reservation, not a hot arena). Each instance owns a per-LB cold `LbArena`
+    /// `mailIn` is the destination endpoint of the pull-model mail system.
+    /// Phase 1 claim/reloads the destination LB, then pulls, absorbs, and clears
+    /// the inbox under that worker claim. Each inbox owns a cold `LbArena`
     /// drawn from the mail pool (`mailMemory()`), bound LAZILY (`ensureArena` on
     /// first write — the root LB predates the pool init), with a write-only
     /// `dirty_` sink (it never deloads). `clear()` returns the arena's blocks to
-    /// the pool — called the moment the content is read out (`mailOut` at the
-    /// commit barrier, `mailIn` after the phase-1 absorb), so nothing is retained;
+    /// the pool — called after the phase-1 absorb, so nothing is retained;
     /// the next write re-acquires lazily.
     ///
     /// Two live columns: `statements_` keyed on the whole pair (id-form
@@ -95,10 +87,7 @@ namespace gl {
         ///        mutations must not escalate any LB's deload-dirty flag.
         DirtyState dirty_ = DirtyState::Clean;
         /// @brief `set<pair<EWV, set<int>>>` as a set of id-form byte keys.
-        ///        mailOut holds SENDER NameMap ids; mailIn holds GLOBAL mailInterner
-        ///        ids (the commit seam translates sender -> global). The id-space is
-        ///        chosen by the owning mailbox's role; decoded at the memory.hpp
-        ///        boundary with the matching interner.
+        ///        Values are global `mailInterner` ids copied from committed blobs.
         TypedColdSet<IntMailStatementKey> statements_;
         /// @brief `map<EWV, vector<OriginLine>>` as an id-keyed blob run (key =
         ///        packed interner pair; value = `IntMailOrigin`). mailOut keys on
@@ -129,9 +118,8 @@ namespace gl {
 
         /// @brief Insert one statement (id-form pair + levels) — set semantics.
         ///
-        /// @details The caller supplies the interner ids in the owning mailbox's
-        /// id-space (SENDER NameMap ids for mailOut via `fillMailOut`; GLOBAL
-        /// mailInterner ids for mailIn via the pull / `deserializeInto`).
+        /// @details The caller supplies global mail-interner ids from pull or
+        /// `deserializeInto`.
         ///
         /// @param originalId The expression's interner id.
         /// @param validityId The scope's interner id.
@@ -173,8 +161,7 @@ namespace gl {
         /// @pre `[levels, levels + levelCount)` is sorted ascending with no
         ///      duplicates (asserted for shape; the ORDER obligation is the
         ///      caller's source contract — a sorted-unique store run).
-        /// @param originalId The expression's interner id (sender NameMap for
-        ///                   mailOut; global mailInterner for mailIn).
+        /// @param originalId The expression's global mail-interner id.
         /// @param validityId The scope's interner id (same space as
         ///                   `originalId`).
         /// @param levels     Pointer to `levelCount` ascending-unique levels;
@@ -211,27 +198,37 @@ namespace gl {
             return statementsEmpty() && exprOriginMapEmpty();
         }
 
+        /// @brief Report physical blocks currently held by this routing
+        ///        mailbox's exclusive arena.
+        ///
+        /// @details
+        /// Includes statement/origin pages and any spilled arena-directory
+        /// blocks. Because each `RoutingColdMail` owns its `LbArena`, summing
+        /// this value over LBs gives the exact simultaneous routing-mailbox
+        /// footprint. `clear` returns the count to zero by calling
+        /// `arena_.releaseAll()`.
+        ///
+        /// @return Held mail-pool blocks, or zero before first use.
+        /// @invariant No other mailbox shares `arena_`.
+        /// @see clear, LbArena::blocksHeld.
+        int64_t blocksHeld() const {
+            return arenaInited_ ? arena_.blocksHeld() : 0;
+        }
+
         // The string-decoding statements snapshot moved to memory.hpp
-        // (decodeMailInStatements + routingMailOutToHeap / routingMailInToHeap),
-        // which see the matching interner (sender NameMap for mailOut, global
-        // mailInterner for mailIn) to turn the stored ids back into strings.
+        // (decodeMailInStatements + routingMailInToHeap), which uses the global
+        // mail interner to turn the stored ids back into strings.
         // statements_ is exposed directly as the id-form column.
 
         // The string-decoding origins snapshot moved to memory.hpp
-        // (decodeMailInOrigins / decodeMailOutOrigins + the routingMail*ToHeap
-        // helpers), which see the matching interner (sender originInterner for
-        // mailOut, global mailInterner for mailIn) to turn the stored ids back
-        // into strings. origins_ is exposed directly as the id-form column.
+        // (decodeMailInOrigins / routingMailInToHeap), which uses the global mail
+        // interner. origins_ is exposed directly as the id-form column.
 
-        // toHeapMail() moved to memory.hpp as the role-specific free functions
-        // routingMailOutToHeap(mo, NameMap&) / routingMailInToHeap(mi): the
-        // statements column is now id-form, so materializing the heap Mail needs
-        // the matching interner (sender NameMap for mailOut, global mailInterner
-        // for mailIn) which the mail headers cannot see.
+        // toHeapMail() moved to memory.hpp as routingMailInToHeap(mi), which sees
+        // the global interner this lower-level header cannot use.
 
-        /// @brief Empty the mailbox and RETURN its arena blocks to the mail pool
-        ///        — the read-out free (mailOut at the commit barrier, mailIn after
-        ///        the phase-1 absorb).
+        /// @brief Empty the inbox and return its arena blocks to the mail pool
+        ///        after the phase-1 absorb.
         ///
         /// @details Releases both columns' pages, then `releaseAll`s the
         /// arena (blocks back to the pool — no retention). The arena stays bound
@@ -260,12 +257,5 @@ namespace gl {
                 [&pred](const IntMailStatementKey& k) { return pred(k); });
         }
     };
-
-    // addMailOrigin(RoutingColdMail&, ...) moved to memory.hpp as
-    // addRoutingMailOrigin(RoutingColdMail&, ValueInterner&, EWV, OriginLine, int):
-    // its D-49 cap-full preference compares OriginTag values, and OriginTag lives
-    // in memory.hpp (invisible here). The helper encodes (ev, origin) into the
-    // sender originInterner + packs the key, then does the RMW on hm.origins_ via
-    // the shared addMailOriginRecord.
 
 } // namespace gl

@@ -519,8 +519,24 @@ TEST(cold_hash_map, byte_set_facets_resolve_and_round_trip) {
     bBytes.bulkAppendBytes(bytes.data(), aBytes.size());
 
     ASSERT_EQ(b.count(), a.count());
-    ASSERT_EQ(b.lookup(gl::StrSpan(std::string("gamma"))),
-              a.lookup(gl::StrSpan(std::string("gamma"))));
+    const std::string gamma = "gamma";
+    const gl::StrSpan gammaSpan(gamma);
+    const int32_t gammaId = a.lookup(gammaSpan);
+    ASSERT_EQ(b.lookup(gammaSpan), gammaId);
+    ASSERT_EQ(a.keyStore().hashStored(gammaId),
+              a.keyStore().hashProbe(gammaSpan));
+    ASSERT_EQ(b.keyStore().hashStored(gammaId),
+              b.keyStore().hashProbe(gammaSpan));
+
+    // Cross-arena copy carries the same static location-record digest and
+    // rebuilds a lookup index that resolves the same id.
+    gl::LbArena lb3(&g);
+    gl::DirtyState dirty3 = gl::DirtyState::Clean;
+    ByteSet clone(&lb3, &dirty3);
+    clone.copyFrom(a);
+    ASSERT_EQ(clone.lookup(gammaSpan), gammaId);
+    ASSERT_EQ(clone.keyStore().hashStored(gammaId),
+              clone.keyStore().hashProbe(gammaSpan));
     std::vector<char> lens2, bytes2;
     ByteSet::LengthsView(&b).appendSpanBytes(lens2, 0);
     ByteSet::BytesView(&b).appendSpanBytes(bytes2, 0);
@@ -1102,6 +1118,201 @@ TEST(cold_hash_map, blob_map_alias_identity) {
     static_assert(gl::BlobCsrValueStore::kTagCount == 3,
                   "blob value store contributes three tags");
     ASSERT_TRUE(true);
+}
+
+TEST(cold_hash_map, blob_run_start_suffix_rebase_matches_scalar_oracle) {
+    gl::GlobalMemoryManager manager;
+    manager.init(kMapTestCfg);
+    gl::LbArena arena(&manager);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::BlobCsrValueStore store(&arena, &dirty);
+    const char byte = 'x';
+    constexpr int32_t kRuns = 5000;
+    for (int32_t i = 0; i < kRuns; ++i) {
+        store.openRun();
+        store.appendBlob(&byte, 1);
+    }
+
+    dirty = gl::DirtyState::Clean;
+    constexpr int32_t kFirst = 1023;
+    constexpr int32_t kDelta = 37;
+    store.addToRunStartsSuffix(kFirst, kDelta);
+
+    ASSERT_EQ(static_cast<int>(dirty),
+              static_cast<int>(gl::DirtyState::Restructured));
+    for (int32_t i = 0; i < kRuns; ++i) {
+        const int32_t expected = i + ((i >= kFirst) ? kDelta : 0);
+        ASSERT_EQ(store.runStartRaw(i), expected);
+    }
+}
+
+TEST(cold_hash_map, blob_value_store_generated_replace_matches_contiguous) {
+    gl::GlobalMemoryManager manager;
+    manager.init(kMapTestCfg);
+    gl::LbArena arena(&manager);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::BlobCsrValueStore store(&arena, &dirty);
+    store.openRun();
+    store.appendBlob("old-a", 5);
+    store.appendBlob("old-bb", 6);
+    store.openRun();
+    store.appendBlob("tail", 4);
+
+    const std::vector<std::string> replacement = {
+        "generated-one", "g2", "generated-three"
+    };
+    int32_t total = 0;
+    for (const std::string& value : replacement)
+        total += static_cast<int32_t>(value.size());
+    store.replaceRunGenerated(0, 2,
+        static_cast<int32_t>(replacement.size()), total,
+        [&](const auto& sink) {
+            for (const std::string& value : replacement)
+                sink(value.data(), static_cast<int32_t>(value.size()));
+        });
+    store.addToRunStartsSuffix(1, 1);
+
+    ASSERT_EQ(store.runLen(1, 2), 3);
+    ASSERT_EQ(store.runLen(2, 2), 1);
+    std::vector<char> bytes;
+    for (int32_t j = 0; j < 3; ++j) {
+        store.readBlob(j, bytes);
+        ASSERT_TRUE(std::string(bytes.begin(), bytes.end()) == replacement[j]);
+    }
+    store.readBlob(3, bytes);
+    ASSERT_TRUE(std::string(bytes.begin(), bytes.end()) == "tail");
+}
+
+TEST(cold_hash_map, blob_map_assign_run_generated_matches_contiguous) {
+    gl::GlobalMemoryManager manager;
+    manager.init(kMapTestCfg);
+    gl::LbArena arenaA(&manager), arenaB(&manager);
+    gl::DirtyState dirtyA = gl::DirtyState::Clean;
+    gl::DirtyState dirtyB = gl::DirtyState::Clean;
+    PodBlobMap generated(&arenaA, &dirtyA);
+    PodBlobMap contiguous(&arenaB, &dirtyB);
+    assignBlobs(generated, 10, { "old-a", "old-b" });
+    assignBlobs(generated, 20, { "tail-a", "tail-b" });
+    assignBlobs(contiguous, 10, { "old-a", "old-b" });
+    assignBlobs(contiguous, 20, { "tail-a", "tail-b" });
+
+    const std::vector<std::string> replacement = {
+        "segmented-alpha", "b", "segmented-gamma", "delta"
+    };
+    std::string concat;
+    std::vector<int32_t> lens;
+    for (const std::string& value : replacement) {
+        concat += value;
+        lens.push_back(static_cast<int32_t>(value.size()));
+    }
+    generated.assignRunGenerated(10,
+        static_cast<int32_t>(replacement.size()),
+        static_cast<int32_t>(concat.size()), [&](const auto& sink) {
+            for (const std::string& value : replacement)
+                sink(value.data(), static_cast<int32_t>(value.size()));
+        });
+    contiguous.assignRun(10, concat.data(), lens.data(),
+                         static_cast<int32_t>(lens.size()));
+    generated.assignRunGenerated(30, 2, 9, [&](const auto& sink) {
+        sink("new", 3);
+        sink("record", 6);
+    });
+    const int32_t newLens[2] = { 3, 6 };
+    contiguous.assignRun(30, "newrecord", newLens, 2);
+
+    ASSERT_EQ(generated.count(), contiguous.count());
+    ASSERT_EQ(generated.blobCount(), contiguous.blobCount());
+    for (int32_t id = 1; id <= generated.count(); ++id) {
+        ASSERT_EQ(generated.runLen(id), contiguous.runLen(id));
+        for (int32_t j = 0; j < generated.runLen(id); ++j)
+            ASSERT_TRUE(readBlobStr(generated, id, j)
+                == readBlobStr(contiguous, id, j));
+    }
+}
+
+TEST(cold_hash_map, blob_map_known_id_assignment_matches_key_probe) {
+    gl::GlobalMemoryManager manager;
+    manager.init(kMapTestCfg);
+    gl::LbArena arenaA(&manager), arenaB(&manager);
+    gl::DirtyState dirtyA = gl::DirtyState::Clean;
+    gl::DirtyState dirtyB = gl::DirtyState::Clean;
+    PodBlobMap knownId(&arenaA, &dirtyA);
+    PodBlobMap keyProbe(&arenaB, &dirtyB);
+    assignBlobs(knownId, 10, { "old", "records" });
+    assignBlobs(knownId, 20, { "tail" });
+    assignBlobs(keyProbe, 10, { "old", "records" });
+    assignBlobs(keyProbe, 20, { "tail" });
+
+    const BlobBatch contiguous = makeBlobs({ "alpha", "b", "gamma" });
+    ASSERT_EQ(knownId.assignRunAtId(1, contiguous.bytes.data(),
+                                   contiguous.lens.data(), 3), 1);
+    ASSERT_EQ(keyProbe.assignRun(10, contiguous.bytes.data(),
+                                 contiguous.lens.data(), 3), 1);
+
+    ASSERT_EQ(knownId.assignRunGeneratedAtId(1, 2, 11,
+        [&](const auto& sink) {
+            sink("generated", 9);
+            sink("id", 2);
+        }), 1);
+    ASSERT_EQ(keyProbe.assignRunGenerated(10, 2, 11,
+        [&](const auto& sink) {
+            sink("generated", 9);
+            sink("id", 2);
+        }), 1);
+
+    ASSERT_EQ(knownId.count(), keyProbe.count());
+    ASSERT_EQ(knownId.blobCount(), keyProbe.blobCount());
+    for (int32_t id = 1; id <= knownId.count(); ++id) {
+        ASSERT_EQ(knownId.runLen(id), keyProbe.runLen(id));
+        for (int32_t j = 0; j < knownId.runLen(id); ++j)
+            ASSERT_TRUE(readBlobStr(knownId, id, j)
+                == readBlobStr(keyProbe, id, j));
+    }
+}
+
+TEST(cold_hash_map, blob_range_scanner_matches_blob_reads_across_pages) {
+    gl::GlobalMemoryManager manager;
+    manager.init(kMapTestCfg);
+    gl::LbArena arena(&manager), scratch(&manager);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::BlobCsrValueStore store(&arena, &dirty);
+    const std::vector<std::string> expected = {
+        std::string(5000, 'a'), std::string(5000, 'b'),
+        std::string(), std::string(7000, 'c')
+    };
+    store.openRun();
+    for (const std::string& value : expected)
+        store.appendBlob(value.data(), static_cast<int32_t>(value.size()));
+
+    std::vector<std::string> scanned;
+    store.forEachBlobRange(0, static_cast<int32_t>(expected.size()), scratch,
+        [&](const char* bytes, int32_t len) {
+            scanned.emplace_back(bytes == nullptr ? "" : std::string(bytes, len));
+        });
+    ASSERT_TRUE(scanned == expected);
+}
+
+TEST(cold_hash_map, blob_map_run_scanner_matches_random_access) {
+    gl::GlobalMemoryManager manager;
+    manager.init(kMapTestCfg);
+    gl::LbArena arena(&manager), scratch(&manager);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    PodBlobMap map(&arena, &dirty);
+    const std::vector<std::string> expected = {
+        std::string(5000, 'x'), std::string(5000, 'y'),
+        std::string(7000, 'z')
+    };
+    const int32_t id = assignBlobs(map, 77, expected);
+    assignBlobs(map, 88, { "later-key" });
+
+    std::vector<std::string> scanned;
+    map.forEachBlobContiguous(id, scratch,
+        [&](const char* bytes, int32_t len) {
+            scanned.emplace_back(bytes, len);
+        });
+    ASSERT_TRUE(scanned == expected);
+    for (int32_t j = 0; j < static_cast<int32_t>(expected.size()); ++j)
+        ASSERT_TRUE(readBlobStr(map, id, j) == scanned[j]);
 }
 
 // `PagedVector::replaceRange` against a `std::vector` oracle, across many pages.

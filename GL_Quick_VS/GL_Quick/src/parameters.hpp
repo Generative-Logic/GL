@@ -44,6 +44,7 @@
 // Mirrors the `GL_DISINT_PROFILE` convention used in `compiler.hpp`.
 #define RT_MEASUREMENT 0
 
+
 #include <cstdint>
 
 // Subset of parameters needed for quick mode scaffold.
@@ -65,13 +66,25 @@ namespace gl {
         int standardMaxSecondaryNumber = 1;
 
         // --- Submatch cap (LB split) ---
-        // Maximum number of SUBMATCHES (preEvaluateFromEncoded matches) a single
-        // LB part may make in one hashburst. The burst stops (BurstSink::canAccept
-        // and the growBaseCandidates grow-DFS bail) once a part reaches this, and
+        // Maximum number of SUBMATCHES a single LB part may make in one hashburst.
+        // The burst stops (BurstSink::canAccept, which the request generator's
+        // grow-DFS also consults) once a part reaches this, and
         // the busiest part's submatch count vs this cap drives the split policy.
         // Lowering it is only sound together with LB splitting (each part stays
         // under the cap). See D-109.
         int maxNumberHashRequests = 40000;
+
+        // --- Second-split submatch cap (stump split) ---
+        // The submatch ceiling of a part of an ALREADY rule-split LB
+        // (numberOfParts > 1). maxNumberHashRequests above stays the ceiling of
+        // an UNSPLIT LB's single part, whose cap-hit escalates it to the rule
+        // split; a rule-part that reaches THIS lower cap escalates one level
+        // further, returning its growing candidates as stumps so the LB splits
+        // again on expressions (one sub-part per stump). A stump sub-part that
+        // reaches it stops, exactly as a rule-part stops today -- there is no
+        // third split. Config key: second_split_submatch_cap. See
+        // D-203.
+        int second_split_submatch_cap = 10000;
 
         // --- LB-split disable (diagnostic / RT measurement) ---
         // When true, proveKernel forces one phase-2 part per LB (N = 1) instead
@@ -119,7 +132,18 @@ namespace gl {
         // own un-split loop, splitCount=1, never reaches proveKernel).
         // Raise/lower to trade split overhead against per-part submatch load. See
         // D-111.
-        int fixed_number_splits = 100;
+        //
+        // It is ALSO the stump-count floor produceExpressionStumps grows a short
+        // filter list toward. A rule-part that reaches second_split_submatch_cap
+        // returns one stump per expression surviving its request filter, and one
+        // sub-part runs per stump, so the two dimensions multiply. At 100 rule-
+        // parts a single Peano induction LB drew 13,188 sub-parts and its hash
+        // burst took 108 s, dominated by the fixed per-part cost (the statement
+        // filter and the obligatory-stump builders, five batches over, rebuilt by
+        // every part). 20 keeps the product in a range where the mechanism can be
+        // exercised end to end; a filter list above 20 expressions never grows,
+        // so a stump stays one expression.
+        int fixed_number_splits = 20;
 
         // --- LB-split FALL-BACK ratio (config-tunable) ---
         // A split LB (numberOfParts > 1) coarsens back to unsplit (numberOfParts
@@ -135,6 +159,47 @@ namespace gl {
         // is unchanged (every APPLIED burst is complete). Config key:
         // split_fallback_ratio. See D-111.
         double split_fallback_ratio = 0.10;
+
+        // --- LB-split setup break-even floor (config-tunable) ---
+        // The straggler trigger's floor (isStraggler): an LB splits into
+        // logicalCores expression buckets next iteration only if its total submatch
+        // work this iteration exceeds BOTH the idle-core fair-share (T / logicalCores)
+        // AND this floor. It is the per-bucket setup break-even -- each of the
+        // logicalCores buckets re-pays the fixed setup (filterIntEncodedStatements +
+        // the obligatory-stump builders over the whole statement universe), so below
+        // the point where a bucket's share of the work exceeds that setup, splitting
+        // cannot pay off. This is the ONLY tunable knob of the split trigger (the
+        // fan-out is logicalCores, not a config number). Default conservative.
+        // Config key: min_split_work.
+        int min_split_work = 20000;
+
+        // NOTE: maxNumberHashRequests / second_split_submatch_cap /
+        // fixed_number_splits / split_fallback_ratio above are UNUSED on the main
+        // path since the split trigger became statistics-driven and preemptive: a
+        // straggler is split into logicalCores expression buckets next iteration
+        // (isStraggler), bursts run to completion (no cap, no escalation). Kept as
+        // no-op fields only to keep config-file parsing stable.
+
+        // --- Quiescent-burst skip (D-194) ---
+        // When true, proveKernel's single-threaded active-build excludes from the
+        // sweep every active LB whose burst would provably do nothing — no
+        // producer-side work (hasWork clear) and no un-ingested ancestor mail
+        // (mailPeek false). A skipped LB stays isActive and is never paged in,
+        // collapsing the 4 GiB paging of the converged frozen tail. Warm-up
+        // iterations and compressor mode never skip. Set false to A/B against the
+        // sweep-everything reference (must be byte-identical). Config key:
+        // enable_quiesce_skip. See D-194, I-153.
+        bool enable_quiesce_skip = true;
+
+        // --- Extent-file raw eviction (D-195) ---
+        // When true, the v4 raw eviction images live in ONE preallocated extent
+        // file, each LB placed at a stable slab offset and dumped/reloaded by
+        // positioned I/O into the already-open handle — eliminating the per-
+        // eviction NTFS create/truncate/close (and the per-file Defender scan).
+        // When false, the raw path falls back to one named file per LB (the
+        // pre-extent behaviour) for A/B comparison. Default true on the branch.
+        // Config key: enable_extent_deload.
+        bool enable_extent_deload = true;
 
         bool trackHistory = true;
         int standardMaxAdmissionDepth = 0;
@@ -187,7 +252,7 @@ namespace gl {
         // power of two for the arena's offset shift/mask) and
         // isValidStaticPageConfig (block a whole multiple of page, page a
         // power of two); the ExpressionAnalyzer constructor asserts both.
-        int64_t static_pool_bytes = 8589934592LL; // 8 GiB
+        int64_t static_pool_bytes = 4294967296LL; // 4 GiB
         int32_t static_block_bytes = 262144;      // 256 KiB
         int32_t static_page_bytes = 8192;         // 8 KiB
 
@@ -208,15 +273,16 @@ namespace gl {
 
         // --- Statification: mail (third) pool ---
         // A THIRD program-start reservation, separate from both pools above and
-        // NEVER deloaded. It backs the cross-LB pull-model mail log (MailLog on
-        // ExpressionAnalyzer): each LB's committed mail batches plus the
-        // per-(recipient,ancestor) ingestion cursors, for a whole execution
-        // batch. A stand-alone pool by design — nothing reads its grant ledger,
+        // NEVER deloaded. It backs the cross-LB pull-model mail system: the
+        // ExpressionAnalyzer MailLog plus per-LB incoming routing mailboxes and
+        // the global mail interner. MailLog keeps full history for a grid with an
+        // initially dormant LB and rolling delivered windows otherwise (I-161).
+        // A stand-alone pool by design — nothing reads its grant ledger,
         // so it plays no role in any deload/throttle/steward decision and the
         // mail content never competes with the deloadable main pool. Shares
         // static_page_bytes; blocks match the main pool's (mail content is
         // bulky, so large blocks keep grant traffic low). Size by peak total
-        // mail content across a batch (tune by the pool telemetry); exhaustion
+        // mail-system content across a batch (tune by `[pool-memory]`); exhaustion
         // asserts naming static_mail_pool_bytes. Must satisfy
         // isValidStaticMemoryConfig (pool/block) and isValidStaticPageConfig
         // (block/page); the ExpressionAnalyzer constructor asserts both.
@@ -334,29 +400,42 @@ namespace gl {
         static constexpr int32_t kMaxNormKeyBytes =
             2 * (static_cast<int32_t>(MAX_KEY_SLOTS) + 2);
 
-        /// @brief Ceiling on one LB burst's captured firing-record count —
-        ///        sizes the pointer-index sort's contiguous `int32_t` index
-        ///        allocation in `applyFiringRecords`.
+
+        /// @brief Chunk size of `applyFiringRecords`' pointer-index sort — the
+        ///        longest contiguous `int32_t` index one arena block holds.
         ///
         /// @details
-        /// The sort index rides the byte-bump tier of a gen-scratch arena,
-        /// where a single allocation must fit ONE pool block
-        /// (`ProverParameters::static_block_bytes`, default 256 KiB) — this
-        /// constant is that default divided by `sizeof(int32_t)`: 65,536
-        /// index slots per LB burst. The retired heap `merged` vector had no
-        /// such ceiling; current corpora sit far below it (each part's
-        /// firing count is bounded indirectly by the per-part submatch cap).
-        /// The named assert at the allocation site makes a scale overrun
-        /// read as the designed capacity bound it is — never as corruption
-        /// via the arena's generic fits-one-block assert, and never a
-        /// silent clamp or truncated sort (Rule 19). If it ever fires, the
-        /// documented widening path is a page-tier indirect sort (a
-        /// `PagedVector<int32_t>` index sorted through paged storage)
-        /// instead of one contiguous byte-bump run. Anyone retuning
-        /// `static_block_bytes` must retune this constant in step.
+        /// The sort index rides the byte-bump tier, where a single allocation
+        /// must fit ONE pool block (`ProverParameters::static_block_bytes`,
+        /// default 256 KiB): this constant is that default divided by
+        /// `sizeof(int32_t)`, 65,536 slots. A burst producing more firings than
+        /// that cannot be sorted in one contiguous run, so the index is cut into
+        /// chunks of this size, each `std::sort`ed on its own, and the chunks are
+        /// consumed merged. At or below this many records there is exactly ONE
+        /// chunk, which is a single `std::sort` over one contiguous index — the
+        /// form this path had before the chunking, at the same cost.
         ///
-        /// @see `applyFiringRecords` — the guarded allocation site.
-        static constexpr int32_t kMaxFiringRecordsPerLbBurst = 262144 / 4;
+        /// It was formerly a hard ceiling (`kMaxFiringRecordsPerLbBurst`) with an
+        /// assert. The stump split pushed a Peano induction LB past it: its
+        /// rule-parts stopped truncating at the submatch cap, so the burst ran to
+        /// completion and produced 80,147 records. The ceiling was a property of
+        /// the allocation, never of the merge, so it became a chunk size rather
+        /// than being raised. Anyone retuning `static_block_bytes` must retune
+        /// this in step.
+        ///
+        /// @see `applyFiringRecords` — the sole user.
+        static constexpr int32_t kFiringRecordSortChunk = 262144 / 4;
+
+        /// @brief Ceiling on the number of sort chunks one LB burst may need.
+        ///
+        /// @details
+        /// Sizes `applyFiringRecords`' stack arrays of per-chunk cursors, so it
+        /// bounds a burst at `kFiringRecordSortChunk * this` = 4,194,304 firing
+        /// records. Two orders of magnitude above the largest burst observed
+        /// (80,147). Overrun is a loud assert (Rule 19), never a truncated sort.
+        ///
+        /// @see `applyFiringRecords` — the guarded consumer.
+        static constexpr int32_t kMaxFiringRecordSortChunks = 64;
 
         /// @brief Ceiling on one admission / rejected key's serialized RUN
         ///        byte size — sizes the whole-run concatenation buffer in

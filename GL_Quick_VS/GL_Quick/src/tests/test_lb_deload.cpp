@@ -392,6 +392,16 @@ TEST(lb_deload, memory_deload_reload_roundtrip) {
     m.setExprKey("(=[a,b])");
     for (int16_t i = 0; i < 80; ++i)
         m.intEncodedStatements.push_back(makeExpr(i));
+    const gl::ExpressionWithValidity outgoing("(in[a,N])", "main");
+    m.insertMailOutStatement(outgoing, std::set<int>{ 1, 4 });
+    m.addMailOutOrigin(outgoing,
+        std::make_pair("disintegration",
+            std::vector<gl::ExpressionWithValidity>{
+                gl::ExpressionWithValidity("(&[x,y])", "main") }),
+        8);
+    const int64_t mailBytesBefore = m.mailOutLiveBytes;
+    ASSERT_TRUE(m.mailOutPending);
+    ASSERT_TRUE(mailBytesBefore > 0);
     ASSERT_TRUE(m.lbMemory.manager.blocksHeld() > 0);
 
     const std::filesystem::path dir = freshDir("test_deload_memory");
@@ -409,10 +419,26 @@ TEST(lb_deload, memory_deload_reload_roundtrip) {
     ASSERT_EQ(m.intEncodedStatementsCount(), 80); // resident branch
     for (int16_t i = 0; i < 80; ++i)
         ASSERT_TRUE(sameExpr(m.intEncodedStatements[i], makeExpr(i)));
+    ASSERT_TRUE(m.mailOutPending);
+    ASSERT_EQ(m.mailOutLiveBytes, mailBytesBefore);
+    const gl::Mail reloaded = gl::routingMailOutToHeap(
+        m.mailOut, m.mailOutInterner);
+    ASSERT_EQ(reloaded.statements.size(), static_cast<std::size_t>(1));
+    ASSERT_TRUE(reloaded.statements.count(
+        std::make_pair(outgoing, std::set<int>{ 1, 4 })) == 1);
+    ASSERT_EQ(reloaded.exprOriginMap.at(outgoing).size(),
+              static_cast<std::size_t>(1));
+    ASSERT_EQ(reloaded.exprOriginMap.at(outgoing)[0].first,
+              std::string("disintegration"));
 
     // Resident no-op path (the touch points call unconditionally).
     m.ensureLoaded(dir.string());
     ASSERT_EQ(m.intEncodedStatements.size(), 80);
+    m.clearMailOut();
+    ASSERT_FALSE(m.mailOutPending);
+    ASSERT_EQ(m.mailOutLiveBytes, 0);
+    ASSERT_TRUE(m.mailOut.empty());
+    ASSERT_EQ(m.mailOutInterner.internedCount(), 0);
 }
 
 // NameMap validity metadata (the validityNodes parent-pointer forest)
@@ -658,18 +684,25 @@ TEST(lb_deload, purge_empties_and_recreates) {
     ASSERT_TRUE(std::filesystem::is_empty(dir));
 }
 
-TEST(lb_deload, registry_sorted_by_ordinal) {
+TEST(lb_deload, registry_sorted_by_ordinal_with_extent_columns) {
     const std::filesystem::path dir = freshDir("test_deload_registry");
     std::map<int64_t, std::string> m;
     m[2] = "chainB";
     m[0] = "chainA";
-    gl::lbdeload::rewriteRegistry(m, dir);
+    m[5] = "chainC";
+    // Ordinal 2 owns an extent slab; 0 and 5 are slab-less (v3-only /
+    // discharged / extent off) and write the -1/0 placeholder columns.
+    std::map<int64_t, gl::SlabAllocation> slabs;
+    slabs[2] = gl::SlabAllocation{ 262144, 524288 };
+    gl::lbdeload::rewriteRegistry(m, slabs, dir);
     std::ifstream in(dir / "registry.txt");
-    std::string line1, line2;
+    std::string line1, line2, line3;
     std::getline(in, line1);
     std::getline(in, line2);
-    ASSERT_EQ(line1, std::string("0\tchainA"));
-    ASSERT_EQ(line2, std::string("2\tchainB"));
+    std::getline(in, line3);
+    ASSERT_EQ(line1, std::string("0\t-1\t0\tchainA"));
+    ASSERT_EQ(line2, std::string("2\t262144\t524288\tchainB"));
+    ASSERT_EQ(line3, std::string("5\t-1\t0\tchainC"));
 }
 
 TEST(lb_deload, assign_deload_ordinal_is_monotone_unique) {

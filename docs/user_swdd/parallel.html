@@ -204,7 +204,7 @@ guarantee.
   <text x="575" y="24" fill="#5DCAA5" font-size="12.5" font-weight="bold" text-anchor="middle">serial phase — single-threaded, sorted</text>
   <rect x="410" y="36" width="320" height="172" rx="10" fill="#1C1F2B" stroke="#5DCAA5"/>
   <g font-size="9.5" fill="#F0E8DC">
-    <rect x="426" y="50"  width="288" height="26" rx="5" fill="#262938" stroke="#3A3D4A"/><text x="570" y="67" font-size="8.5" text-anchor="middle">MailLog commit barrier — commit each LB's mailOut to its log</text>
+    <rect x="426" y="50"  width="288" height="26" rx="5" fill="#262938" stroke="#3A3D4A"/><text x="570" y="67" font-size="8.5" text-anchor="middle">retire global window → reload pending mailOut → commit</text>
     <rect x="426" y="80"  width="288" height="26" rx="5" fill="#262938" stroke="#3A3D4A"/><text x="570" y="97"  text-anchor="middle">sort the per-core queues</text>
     <rect x="426" y="110" width="288" height="26" rx="5" fill="#262938" stroke="#3A3D4A"/><text x="570" y="127" text-anchor="middle">activateZeroCondition (induction)</text>
     <rect x="426" y="140" width="288" height="26" rx="5" fill="#262938" stroke="#3A3D4A"/><text x="570" y="157" text-anchor="middle">updateGlobal / updateGlobalDirect</text>
@@ -231,7 +231,7 @@ worker runs the <b>elementary step</b> on whatever block it grabs and writes
 </p>
 <table>
 <tr><th>Per-core slot a worker may write</th><th>Drained by the serial phase into…</th></tr>
-<tr><td><code>mailOut</code> (its OWN LB's outbox — not a shared per-core slot)</td><td>its own <code>MailLog</code> — committed at the post-join barrier, then PULLED by receivers in phase-1 (I-28, I-94, I-101)</td></tr>
+<tr><td><code>mailOut</code> (its OWN deloadable LB outbox + private interner)</td><td>its own <code>MailLog</code> — the shell pending bit selects claim/reload at the post-join commit barrier, then receivers PULL in phase 1</td></tr>
 <tr><td><code>updateGlobalTuples[coreId]</code></td><td>global theorem registry + OR-pair completion</td></tr>
 <tr><td><code>updateGlobalDirectTuples[coreId]</code></td><td>direct-theorem emission</td></tr>
 <tr><td><code>pendingCompactionQueue[coreId]</code></td><td>deferred implication compaction (§3.5.3)</td></tr>
@@ -250,25 +250,39 @@ in the hot path because there is nothing shared to lock.</li>
 helpers — <code>performElemPhase1</code> (absorb incoming mail), the hashburst,
 <code>performElemPhase3</code> (post-burst absorb) — with a join between each.
 Phases&nbsp;1 and&nbsp;3 are plain across-block work-stealing sweeps. The
-<b>hashburst (phase&nbsp;2)</b> is a <i>flat</i> pool: a heavy block whose hashburst
-overflows the per-burst request cap is split into N parts (each part takes the rules
-whose id falls in its residue class), and <code>proveKernel</code> runs every
-<code>(block,&nbsp;part)</code> across all active blocks as <b>one flat task list</b>
-over the cores — a monster block contributes N tasks, a normal block one, and no
-block ever spawns its own sub-threads (flat, never nested). So one heavy block's
-hashburst genuinely runs across many cores. After the pool joins, a per-block step
-merges that block's parts and applies them, then re-sizes the block's split
-<b>adaptively</b>: every block starts <b>unsplit</b> (one part); the moment an unsplit
-block's single part hits the per-burst cap its truncated burst is <b>thrown away</b> and
-the block is re-run from scratch at the full split (a fixed count, e.g.&nbsp;100) in the
-same cycle, so the applied burst is always complete; and a split block whose busiest part
-stays well under the cap (below a configurable fraction, default 10&percnt;) drops back to
-unsplit next cycle. A block pays the split overhead only while it needs it. The split is invisible to the
-proof: each part only <i>reads</i> the shared block — it mints nothing into it — and
-writes its own records, and the merge sorts them, so neither the split nor the thread
-order can change a result (I-28). Inside a part, generation and checking are
-<b>interleaved</b> — each request is checked the instant it is built, with no buffer and
-the per-burst cap simply counted. When a block runs <b>unsplit</b> (one part) and a fired
+<b>hashburst (phase&nbsp;2)</b> is a <i>flat</i> pool over every active block and every
+expression bucket of a split block. No block spawns its own sub-threads. After the
+pool joins, a per-block step concatenates and canonically sorts that block's firing
+records before applying them.</p>
+
+<p><b>The split is statistics-driven and expression-only.</b> Every burst runs to
+completion; there is no request cap, truncation, or discard-and-redo. At the end of
+an iteration, <code>proveKernel</code> totals each block's completed submatch work. A
+block whose work exceeds both the balanced per-core share and the setup break-even
+is marked as a straggler for the next iteration. A newly activated induction-zero
+block is also split on its first active burst because it has no earlier statistic.</p>
+
+<p>A split block first runs one read-only <b>producer</b> over the whole block. It
+enumerates expression combinations called <i>stumps</i> from
+<code>overallHashMemory</code>, which is the superset from which the working and local
+hash memories are populated. The stumps are dealt round-robin into at most one
+bucket per logical core, then each bucket runs the ordinary request generator while
+accepting all rules. The filter and name sort are paid once per bucket, and a request
+reached through two stumps in one bucket is emitted once.</p>
+
+<p>When the producer replaces a short combination level with a larger one, a short
+combination that can already complete a request is retained as a <b>terminal
+pre-stump</b>. Its bucket checks that combination against the actual hash memory for
+each request batch and sends valid requests through the same pre-evaluation, deduplication,
+and checker as every other request, but does not grow it further. The larger child
+stumps own all larger combinations. This is why the overall memory is enough to
+discover work but is never trusted as the final validity decision.</p>
+
+<p>The split is invisible to the proof: every bucket only <i>reads</i> the shared
+block, writes its own firing records, and the merge sorts them, so neither the split
+nor thread order can change the result (I-28). Inside a bucket, generation and checking
+are <b>interleaved</b> — each request is checked the instant it is built. When a block
+runs <b>unsplit</b> (one part) and a fired
 head shows it doomed (a contradiction, a vacuous-truth contradiction, or a reached induction
 goal), that part flips an <i>external</i> per-block stop flag (one
 <code>std::atomic&lt;bool&gt;</code> per block, held by <code>proveKernel</code>, never a field
@@ -296,8 +310,12 @@ in a <b>sorted order chosen so worker finish-order cannot change the outcome</b>
 </p>
 <ul class="inv">
 <li><b><code>MailLog</code> commit barrier + phase-1 pull.</b> Each LB's
-<code>mailOut</code> is committed once to its own append-only <code>MailLog</code> at
-the post-join barrier (the role <code>smashMail</code> used to fill). Receivers pull in
+<code>mailOut</code> is committed once to its retained <code>MailLog</code> chain at
+the post-join barrier. Outboxes and their private interners may already be cold;
+the barrier probes only an always-resident pending bit, then claim/reloads one
+producer before serializing and clearing it. If every block was active when the grid completed, the
+already-delivered blob/reference window and its global mail-id table are reset
+immediately before that commit; otherwise both remain for dormant catch-up. Receivers pull in
 phase-1: a per-(recipient, ancestor) cursor advances over un-ingested batches and
 <code>MailLog::mergeBatchInto</code> merges them per recipient — statements/implications
 set-wise (commutative), origins by linear de-dup. Byte-reproducible regardless of
@@ -381,13 +399,14 @@ silicon. The thread pool is a software stand-in for a fabric of cores.
 <b>This geometry is retired.</b> The push routing it served — every worker writing an
 outgoing copy into a per-core mailbox slot, then <code>smashMail</code> consolidating
 the slots into recipients' inboxes — has been replaced by the <b>pull model</b>: each
-block stores the mail it emits <b>once</b> in its own append-only log
+block stores the mail it emits <b>once</b> in its own retained chain
 (<code>MailLog</code> on the analyzer), and a receiver pulls un-ingested batches from
 its ancestors' logs in its phase-1, advancing a per-(recipient, ancestor) cursor.
 There is no outbound copy and no per-core slot, so the contention this structure
 existed to avoid does not arise. Each block's <code>mailOut</code> is committed to its
-log single-threaded at the post-join barrier (where <code>smashMail</code> used to
-run); the parallel pull only reads frozen logs and writes its own cursor row. See
+chain single-threaded at the post-join barrier; when the completed grid had no
+dormant block, the delivered chain window and its global id table are reset first. The parallel pull
+only reads frozen retained pages and writes its own cursor row. See
 Substrate §3.3 (the pull model).
 </p>
 <p style="color:#8B8FA5;font-size:0.92em">

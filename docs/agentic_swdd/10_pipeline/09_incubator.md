@@ -77,6 +77,10 @@ Used to be the master flag. As of 2026-04-29 it no longer gates Pass B (that's `
 
 `ban_disintegration` now governs every disintegration-shaped path in the prover: Pass B at [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp), back-reformulation at [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp), hypothetical disintegration at [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp), and necessity-for-equality-hypo at [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp). The collapse from a brief two-flag split (`ban_disintegration` + `allow_disintegration`) is documented in [D-28](../40_decisions.md#d-28).
 
+### Mail-history mode
+
+The current canonical incubator grids have no LBs born dormant. A telemetry-only seven-batch Windows run on 2026-07-10 counted `dormant_lbs=0` at completed-grid inspection for `IncubatorPeano1`, `IncubatorPeano2`, `IncubatorGauss1`, `IncubatorGauss2`, and `IncubatorGauss3`. They therefore select rolling `MailLog` history: after every phase-3 join the already-delivered blob/ref window is released before the next commit barrier, while routing, cumulative head counts, and cursors remain resident. The companion main `Peano` and `Gauss` batches counted 246 and 127 dormant induction LBs and retain full history. This is a measured property of the current grids, not an `incubator_mode` special case; the policy is always the one-time completed-grid dormant scan ([D-204](../40_decisions.md#d-204), [I-161](../30_invariants.md#i-161)).
+
 ---
 
 ## AnchorIncubator — the 14-slot anchor
@@ -233,7 +237,7 @@ Invoked as a separate Python entry point: `run_modes.incubator_run`. The main pi
 
 - **OPEN-19 — RESOLVED.** The j-copy strategy in [`incubator_to_simple_facts.py`](../../incubator_to_simple_facts.py) has two rules (per the script's header comment at `:35–38` and implementation at `:142–190`):
  1. **Anchor-matching coverage**: always emit j0/j1 variants for every fact, up to `max_j=2`. This ensures the CE filter's hash-request generator can match anchor-related rules regardless of which j-copy slot the anchor pins.
- 2. **Repetition-break**: when a fact has repeated i-value arguments (e.g. `(in3[i4,i4,i0,+])`), emit j-copy variants that break the repetition (e.g. `(in3[i4,j4,i0,+])`). This enables rules that require two different-looking arguments to match — without distinct copies, the hash engine would never fire them on the fact table. Matches the note about `generateEncodedRequestsStaticCE` needing distinct fact entries.
+ 2. **Repetition-break**: when a fact has repeated i-value arguments (e.g. `(in3[i4,i4,i0,+])`), emit j-copy variants that break the repetition (e.g. `(in3[i4,j4,i0,+])`). This enables rules that require two different-looking arguments to match — without distinct copies, the hash engine would never fire them on the fact table. Matches the note about the CE-mode request generator needing distinct fact entries.
 - **OPEN-20 — RESOLVED.** `compressed_out_theorems.txt` holds **eliminated external theorems** — theorems from `compressed_external_theorems.txt` that the compressor determined were redundant and eliminated from the external-theorem pool. Written at [`compressor.cpp`](../../GL_Quick_VS/GL_Quick/src/compressor.cpp); appended to at [`run_modes.cpp`](../../GL_Quick_VS/GL_Quick/src/run_modes.cpp) via *"Append eliminated externals to compressed_out_theorems.txt"*. Purpose: audit trail — "what did the compressor remove?" Referenced by [`run_modes.py`](../../run_modes.py) (Python orchestrator). Main pipeline has no equivalent because its `compressed_external_theorems.txt` is rebuilt each run rather than accumulated.
 
 ---

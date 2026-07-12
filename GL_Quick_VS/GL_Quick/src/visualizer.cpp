@@ -25,6 +25,9 @@
 #include "prover.hpp"
 #include "memory_infra/lb_deload.hpp"
 #include <numeric>
+#include <chrono>
+#include <cstdlib>
+#include <iomanip>
 
 namespace gl {
 
@@ -730,6 +733,65 @@ void ExpressionAnalyzer::generateRawProofGraph(
     const std::filesystem::path& outDirParam)
 {
     namespace fs = std::filesystem;
+    using FrameClock = std::chrono::steady_clock;
+
+    const auto rawGenerationStarted = FrameClock::now();
+    std::string frameBatch;
+#ifdef _WIN32
+    char* batchRaw = nullptr;
+    size_t batchLength = 0;
+    const errno_t batchEnvironmentResult =
+        _dupenv_s(&batchRaw, &batchLength, "GL_FRAME_BATCH");
+    assert(batchEnvironmentResult == 0);
+    if (batchRaw != nullptr) {
+        frameBatch.assign(batchRaw);
+        std::free(batchRaw);
+    }
+#else
+    const char* batchRaw = std::getenv("GL_FRAME_BATCH");
+    if (batchRaw != nullptr) frameBatch.assign(batchRaw);
+#endif
+    const auto frameSecondsSince = [](FrameClock::time_point started) {
+        return std::chrono::duration<double>(FrameClock::now() - started).count();
+    };
+    const auto recordFrameTiming = [&](const char* stage,
+                                       double seconds,
+                                       int64_t count = 1) {
+        assert(stage != nullptr && stage[0] != '\0');
+        assert(seconds >= 0.0);
+        assert(count > 0);
+        std::string timingPath;
+#ifdef _WIN32
+        char* timingPathRaw = nullptr;
+        size_t timingPathLength = 0;
+        const errno_t timingEnvironmentResult = _dupenv_s(
+            &timingPathRaw, &timingPathLength, "GL_FRAME_TIMING_PATH");
+        assert(timingEnvironmentResult == 0);
+        if (timingPathRaw == nullptr) return;
+        timingPath.assign(timingPathRaw);
+        std::free(timingPathRaw);
+#else
+        const char* timingPathRaw = std::getenv("GL_FRAME_TIMING_PATH");
+        if (timingPathRaw == nullptr) return;
+        timingPath.assign(timingPathRaw);
+#endif
+        std::ofstream timing(timingPath, std::ios::app);
+        assert(timing.is_open());
+        timing << "{\"batch\":\"" << frameBatch
+               << "\",\"count\":" << count
+               << ",\"excluded\":false"
+               << ",\"parent\":\"native.raw_proof\""
+               << ",\"seconds\":" << std::setprecision(12) << seconds
+               << ",\"stage\":\"" << stage << "\"}\n";
+        timing.flush();
+        assert(timing.good());
+    };
+    double buildStackSeconds = 0.0;
+    double serializationSeconds = 0.0;
+    double releaseSeconds = 0.0;
+    int64_t buildStackCalls = 0;
+    int64_t serializedChapters = 0;
+    int64_t releasedTheorems = 0;
 
     // D-51 (option 1): reset thread_local path stack at run start. Each
     // chapter emission pushes/pops independently — the clear here is a
@@ -765,9 +827,12 @@ void ExpressionAnalyzer::generateRawProofGraph(
     fs::path glBinDir = fs::path(__FILE__).parent_path()
                         .parent_path().parent_path().parent_path()
                       / "files" / "GL_binaries";
+    const auto binaryExportStarted = FrameClock::now();
     this->exportCompiledExpressionsJSON(glBinDir);
+    const double binaryExportSeconds = frameSecondsSince(binaryExportStarted);
 
     // MODIFIED: Scan for start index based on existing files
+    const auto indexStarted = FrameClock::now();
     int idx = 0;
     if (fs::exists(outDir)) {
         int max_found = -1;
@@ -789,6 +854,18 @@ void ExpressionAnalyzer::generateRawProofGraph(
             idx = max_found + 1;
         }
     }
+    const double indexSeconds = frameSecondsSince(indexStarted);
+
+    const auto timedBuildStack = [&](Memory& memoryBlock,
+                                     const ExpressionWithValidity& proved,
+                                     std::vector<std::vector<std::string>>& stack,
+                                     std::set<ExpressionWithValidity>& covered) {
+        const auto started = FrameClock::now();
+        const bool result = this->buildStack(memoryBlock, proved, stack, covered);
+        buildStackSeconds += frameSecondsSince(started);
+        ++buildStackCalls;
+        return result;
+    };
 
     auto toLower = [](std::string s) {
         for (std::size_t i = 0; i < s.size(); ++i) {
@@ -824,6 +901,8 @@ void ExpressionAnalyzer::generateRawProofGraph(
     auto writeStackIndexed = [&](int idx, const std::string& part,
         const std::vector<std::vector<std::string>>& stackRows) {
 
+            const auto started = FrameClock::now();
+
             fs::path fp = outDir / (std::to_string(idx) + "_" + part + ".txt");
             std::ofstream f(fp.c_str());
 
@@ -835,6 +914,10 @@ void ExpressionAnalyzer::generateRawProofGraph(
                 }
                 f << '\n';
             }
+            f.flush();
+            assert(f.good());
+            serializationSeconds += frameSecondsSince(started);
+            ++serializedChapters;
         };
 
     // ... (directStack, checkZeroStack, checkInductionConditionStack, debugStack definitions omitted for brevity - they are unchanged) ...
@@ -878,7 +961,7 @@ void ExpressionAnalyzer::generateRawProofGraph(
         // recipe lives).
         ExpressionWithValidity chapterGoalEv(theorem, "main");
         g_buildStackPath.insert(chapterGoalEv);
-        this->buildStack(*mb, ExpressionWithValidity(head, "main"), stack, covered);
+        timedBuildStack(*mb, ExpressionWithValidity(head, "main"), stack, covered);
         g_buildStackPath.erase(chapterGoalEv);
         return stack;
         };
@@ -978,7 +1061,8 @@ void ExpressionAnalyzer::generateRawProofGraph(
                 }
                 std::vector<std::vector<std::string> > stack;
                 std::set<ExpressionWithValidity> covered;
-                this->buildStack(*mbTarget, ExpressionWithValidity(head, "main"), stack, covered);
+                timedBuildStack(
+                    *mbTarget, ExpressionWithValidity(head, "main"), stack, covered);
                 return stack;
             }
             return std::vector<std::vector<std::string> >();
@@ -1031,7 +1115,8 @@ void ExpressionAnalyzer::generateRawProofGraph(
 
                 std::vector<std::vector<std::string> > stack;
                 std::set<ExpressionWithValidity> covered;
-                this->buildStack(*node, ExpressionWithValidity(head, "main"), stack, covered);
+                timedBuildStack(
+                    *node, ExpressionWithValidity(head, "main"), stack, covered);
                 return stack;
             }
             return std::vector<std::vector<std::string> >();
@@ -1072,7 +1157,8 @@ void ExpressionAnalyzer::generateRawProofGraph(
 
             std::vector<std::vector<std::string> > stack;
             std::set<ExpressionWithValidity> covered;
-            this->buildStack(*mb, ExpressionWithValidity(typingGoal, "main"), stack, covered);
+            timedBuildStack(
+                *mb, ExpressionWithValidity(typingGoal, "main"), stack, covered);
             return stack;
         };
 
@@ -1116,7 +1202,7 @@ void ExpressionAnalyzer::generateRawProofGraph(
         std::vector<std::vector<std::string>> stack;
         std::set<ExpressionWithValidity> covered;
 
-        this->buildStack(*mb, target, stack, covered);
+        timedBuildStack(*mb, target, stack, covered);
 
         return stack;
         };
@@ -1226,12 +1312,36 @@ void ExpressionAnalyzer::generateRawProofGraph(
         // The read-only export brought them back on demand; their on-disk
         // images stay, so a later theorem revisiting an LB reloads it again.
         // Without this, the reloads accumulate across theorems to static-pool
-        // exhaustion (G-53).
-        for (Memory* lb : exportReloaded) lb->releaseStaticBlocks();
+        // exhaustion (G-53). Release DISPATCHES on the recorded format exactly
+        // as the reload did: a raw-format LB (a live equality node the export
+        // reloaded from its eviction image) must keep its container bookkeeping
+        // for the next raw rebind — and on the extent path it has no named file
+        // set at all — so the v3 release walk would be wrong on both counts.
+        const auto releaseStarted = FrameClock::now();
+        for (Memory* lb : exportReloaded) lb->releaseStaticBlocksDispatch();
         exportReloaded.clear();
+        releaseSeconds += frameSecondsSince(releaseStarted);
+        ++releasedTheorems;
     }
     g_exportReloadSink = nullptr;
     mapping.close();
+
+    const double totalSeconds = frameSecondsSince(rawGenerationStarted);
+    const double knownSeconds = binaryExportSeconds + indexSeconds
+        + buildStackSeconds + serializationSeconds + releaseSeconds;
+    assert(totalSeconds >= knownSeconds);
+    recordFrameTiming("native.raw.binary_export", binaryExportSeconds);
+    recordFrameTiming("native.raw.index", indexSeconds);
+    recordFrameTiming(
+        "native.raw.build_stack", buildStackSeconds,
+        buildStackCalls == 0 ? 1 : buildStackCalls);
+    recordFrameTiming(
+        "native.raw.serialization", serializationSeconds,
+        serializedChapters == 0 ? 1 : serializedChapters);
+    recordFrameTiming(
+        "native.raw.release", releaseSeconds,
+        releasedTheorems == 0 ? 1 : releasedTheorems);
+    recordFrameTiming("native.raw.other", totalSeconds - knownSeconds);
 }
 
 } // namespace gl

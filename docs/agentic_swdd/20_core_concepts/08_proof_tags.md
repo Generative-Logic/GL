@@ -289,7 +289,7 @@ Decoded:
 1. Every PAIR of constituent namespaces (impl + each premise) must be comparable (parent-child via [`comparable / deeperOf`](04_validity_stack.md#comparablea-b) in the validity-stack chapter — one is an ancestor of the other, or they are equal). Sibling scopes are rejected.
 2. The row's namespace (`line.namespace`) must EQUAL the deepest constituent namespace. Equivalently, `line.namespace ∈ {impl_ns} ∪ {premise_nss}`.
 
-The C++ prover's hash-kernel ([`generateEncodedRequestsStatic` + `growBaseCandidates`](../../GL_Quick_VS/GL_Quick/src/memory.cpp)) accumulates the joined-scope of combined facts via `nm.deeperOf(...)` — the result of an implication firing lives at the deepest scope of its inputs, never at a strictly deeper scope no constituent reaches. The verifier mirrors this. See [I-38](../30_invariants.md#i-38) and [D-58](../40_decisions.md#d-58) for the full rule + sound-under-validity-stack-semantics rationale.
+The C++ prover's hash-kernel ([`generateEncodedRequestsStatic`](../../GL_Quick_VS/GL_Quick/src/memory.cpp)) accumulates the joined-scope of combined facts via `nm.deeperOf(...)` — the result of an implication firing lives at the deepest scope of its inputs, never at a strictly deeper scope no constituent reaches. The verifier mirrors this. See [I-38](../30_invariants.md#i-38) and [D-58](../40_decisions.md#d-58) for the full rule + sound-under-validity-stack-semantics rationale.
 
 **Concrete failing example (pre-fix, rung-1 incubator branch).**
 

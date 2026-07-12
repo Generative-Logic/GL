@@ -69,6 +69,8 @@ For implementation depth — exact validity-stack semantics, the `K` mutual-excl
 
 The next frontier — see [`docs/fta_ladder/README.md`](docs/fta_ladder/README.md) for the rung-by-rung index, and `docs/fta_ladder/rung<N>/current_proof_state.md` for any in-flight rung's live analysis trace:
 
+**Next release: v0.10.0 — incubator theorems that require branching.**
+
 - **Incubator-side ground facts** to filter statements about intervals and sequences — extensions of the rung-1 pattern to larger fixed sets, e.g. `{0,1,2}=[0,2]`, `{0,1,2,3}=[0,3]`, and analogous claims. These are the concrete-instance theorems the CE filter needs in order to kill false conjectures about general intervals and sequences before they reach the prover.
 - **Euclid's lemma**.
 - **FTA proper**.
@@ -85,7 +87,7 @@ Verifier coverage: one entry per proof-graph tag in `verifier.py`'s `TAG_CHECKER
 
 There is only one run mode (previously called "Full Mode"). `python main.py` orchestrates the full ten-stage pipeline end-to-end (MPL definitions → conjecturer → CE filter → prover → compressor → process-proof-graph → HTML export → verifier; plus the incubator counterpart for ground-fact discovery). Each stage is documented in its own chapter under [`docs/agentic_swdd/10_pipeline/`](docs/agentic_swdd/10_pipeline/) — read those if you need to understand or modify a specific stage.
 
-End-to-end runtime, full pipeline (reference): ~21 minutes on a Dell G16 7630 (Intel-class laptop, Windows MSVC build); ~26 minutes on a 32-core i9-13900HX laptop (both Windows + Linux+mimalloc); driven primarily by the incubator and branching stages. Memory peak ~5 GB. The Linux build needs `libmimalloc-dev` installed (see *Why mimalloc is required by default* in the build section).
+Latest full Windows reference (2026-07-12, Dell G16 7630, MSVC): 1,478.95102 seconds (24 minutes 38.951 seconds), with 1,241/1,241 native unit tests, 352/352 verifier unit tests, and 131,886 proof checks passing with zero failures. The largest main static-pool high-water was 16,105 of 16,384 256-KiB blocks in `IncubatorGauss1`: 4,026.250 MiB of the 4,096-MiB reservation (98.297%). Other pools and process overhead are separate; these pool peaks are not additive. The Linux build needs `libmimalloc-dev` installed (see *Why mimalloc is required by default* in the build section).
 
 ## Prerequisites
 

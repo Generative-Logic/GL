@@ -136,8 +136,9 @@ alive is</b> — and a small-window all-SRAM design is alive <i>and</i> affordab
 <div class="win">
 <span class="lab">Why this is the right time to map it</span>
 The recently-completed statification campaign moved <b>all</b> per-block prover
-memory into <b>fixed pools with virtual-offset addressing, a working-set pager, and an
-SSD deload format that is byte-identical across runs and machines</b>. It was
+memory into <b>fixed pools with virtual-offset addressing, a working-set pager, and a
+two-format SSD deload path</b> (a byte-identical canonical format for archival
+images, a near-memcpy raw format for the eviction hot loop). It was
 undertaken for the <b>Fundamental Theorem of Arithmetic campaign</b> — the next
 milestone — whose memory and runtime demands exceed those of prior work and require a
 bounded, fixed-size memory model. That model is, by construction, what a dedicated
@@ -212,9 +213,13 @@ need at all.
 GL is <b>fully deterministic</b>: the same inputs produce byte-identical outputs
 across runs, across thread counts, and <b>across machines</b>. This is enforced
 as a project-wide doctrine — every cross-run or cross-host deviation is treated
-as a bug — and it survives all the way down to the on-disk deload images, which
-are a pure function of logical content (element order in, bytes out), with
-physical addresses and parallel scheduling order never observable.
+as a bug — with physical addresses and parallel scheduling order never
+observable in the outputs. It survives all the way down to the <b>archival</b>
+on-disk deload images, which are a pure function of logical content (element order
+in, bytes out). The <b>eviction hot-loop</b> images are the one deliberate
+exception — a fast raw memory copy whose bytes are not reproducible but whose
+restored state is, so the proof output (which depends only on the state) stays
+byte-identical.
 </p>
 
 <div class="win">
@@ -367,14 +372,14 @@ physical memory bank:
 
 <table>
 <tr><th>Pool</th><th>Size (provisioned)</th><th>Block</th><th>Backs</th><th>Deloads to SSD?</th></tr>
-<tr><td><b>Main</b></td><td class="num">8 GiB</td><td class="num">256 KiB</td><td>all per-LB working containers (the bump arena)</td><td><b>yes</b></td></tr>
+<tr><td><b>Main</b></td><td class="num">4 GiB</td><td class="num">256 KiB</td><td>all per-LB working containers (the bump arena)</td><td><b>yes</b></td></tr>
 <tr><td><b>Persistent</b></td><td class="num">1 GiB</td><td class="num">32 KiB</td><td>the goal registry — kept always-resident so deactivation logic can read it while a block is cold</td><td>no</td></tr>
 <tr><td><b>Mail</b></td><td class="num">2 GiB</td><td class="num">256 KiB</td><td>the cross-block mail log (who sent what to whom)</td><td>no</td></tr>
 <tr><td><b>LB-body</b></td><td class="num">2 GiB</td><td class="num">256 KiB</td><td>the block objects themselves (fixed slots, never moved)</td><td>no</td></tr>
 </table>
 
 <p>
-Total program-start reservation: <b>13 GiB</b>, fixed. These are <i>ceilings</i>,
+Total program-start reservation: <b>9 GiB</b>, fixed. These are <i>ceilings</i>,
 not consumption — the sizing knob you would tune for a real part is the
 <i>measured peak</i>, which §7 puts (from the booklet's own dated figures) at
 roughly 1 GB for the named theorem batches and ~4–5 GB for the heaviest exploration
@@ -389,7 +394,7 @@ is the whole reason the cost story has a hot tier and a cold tier.
   <defs><marker id="h2-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
 
   <rect x="20" y="14" width="720" height="96" rx="10" fill="#1C1F2B" stroke="#EF9F27" stroke-width="2"/>
-  <text x="380" y="36" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">POOL — one reservation at start-up (Main = 8 GiB = 32768 blocks)</text>
+  <text x="380" y="36" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">POOL — one reservation at start-up (Main = 4 GiB = 16384 blocks)</text>
   <text x="380" y="52" fill="#8B8FA5" font-size="9.5" text-anchor="middle">the software model of the SRAM-macro fabric — block == one 256 KiB SRAM · carved under one mutex · never grown</text>
   <g font-size="8.5">
     <rect x="40"  y="64" width="64" height="32" rx="4" fill="#262938" stroke="#5DCAA5"/><text x="72"  y="84" fill="#5DCAA5" text-anchor="middle">LB A</text>
@@ -460,7 +465,7 @@ blocks happen <i>at the same time</i> — that concurrency, scaling with core co
 the whole basis of the runtime lever (§<a href="#split">5</a>). And the SRAM holds only the resident
 <b>window</b>: the pager (below) keeps the macros the cores are working on, and
 <b>deload streams the rest from SSD</b>, so the physical SRAM is far smaller than the
-8&nbsp;GiB pool — the working set lives on SSD; the SRAM is just the hot window.
+4&nbsp;GiB pool — the working set lives on SSD; the SRAM is just the hot window.
 </p>
 <p>
 <b>One core addresses many macros, and the count flexes with the problem.</b> A core's
@@ -508,18 +513,34 @@ bytes, never changes them.
 
 <h3>SSD deload / reload is the cold tier</h3>
 <p>
-When a block is evicted, its containers are streamed to a file in
-<code>.deload/</code> — element by element, in logical order — and its blocks
-return to the pool. The byte stream is a <b>pure function of logical content</b>:
-two blocks with the same contents produce identical files regardless of how
-fragmented their arenas were, so deload images are byte-comparable across runs and
-machines. The format is self-describing (a <code>GLDL</code> magic, a version, a
-per-block ordinal as the filename, a per-tag directory, the block's full identity
-chain verbatim, then fixed-width little-endian payload). Reload rebuilds the
-containers onto a fresh, compact arena and is allowed only at a handful of
-enumerated touch points; touching cold storage anywhere else is an assert, not a
-degraded read. <b>This is the lever that makes memory virtually unlimited:</b> the
-cold tier is an SSD, and an SSD is cheap and enormous.
+Blocks move to and from SSD in <b>two formats</b>, chosen by purpose. The
+<b>eviction hot loop</b> — the pager cycling live blocks in and out under memory
+pressure — uses a <b>raw arena image</b>: a near-memcpy byte copy of the block's
+live memory pages plus a small map of which pages are live. Because every
+container (including its throw-away hash index) packs its pages into the one block
+arena, and the tiny per-container bookkeeping lives in the never-evicted block
+shell, the page image is a complete record: reload binds the same page ids to
+freshly-packed pages and reads the bytes straight back — no element walk, no
+index rebuild, one copy. This is what makes the cold-tier stream run at
+<b>memory-copy bandwidth</b>, which the block-granular datapath (and the optional
+DRAM L2 below) is sized for. The price, accepted deliberately: raw image bytes are
+<b>not reproducible</b> (fragmentation leaks into them), so they are not
+byte-comparable — but the restored logical state is identical, which is all the
+proof output depends on.
+</p>
+<p>
+The <b>discharge / archival</b> path (a block that leaves the working set for
+good, and the read-only proof-export reloads) instead uses the <b>canonical</b>
+format: containers streamed element by element, in logical order. Its byte stream
+is a <b>pure function of logical content</b> — two blocks with the same contents
+produce identical files regardless of fragmentation, so these images ARE
+byte-comparable across runs and machines. The format is self-describing (a
+<code>GLDL</code> magic, a version, a per-block ordinal as the filename, a per-tag
+directory, the block's full identity chain verbatim, then fixed-width
+little-endian payload). Reload rebuilds the containers onto a fresh, compact arena
+and is allowed only at a handful of enumerated touch points; touching cold storage
+anywhere else is an assert, not a degraded read. <b>This SSD cold tier is the
+lever that makes memory virtually unlimited:</b> an SSD is cheap and enormous.
 </p>
 
 <div class="note">
@@ -540,9 +561,9 @@ The first campaign moved all per-LB <b>persistent state — including the mail
 system</b> — into the static pools; the second statified the kernel's <b>transient
 scratch</b>: each worker's working memory is two per-worker arenas drawn from the
 same pool and released whole at the end of each task, so a core's scratch is a
-<b>fixed, enumerable SRAM budget</b>, not an open-ended allocator. <b>Mail is static:</b> the cross-block log lives on the
-dedicated mail pool, and the routing and internal mailboxes on the per-LB arenas
-(§<a href="#mail">4</a>); none of it is on the malloc heap. Within the
+<b>fixed, enumerable SRAM budget</b>, not an open-ended allocator. <b>Mail is static:</b> the cross-block log, global ids, and transient inboxes live on the
+dedicated mail pool; each outbox, its private interner, and the internal channels
+live on the LB's deloadable main-pool arena (§<a href="#mail">4</a>). None is on the malloc heap. Within the
 block-memory subsystem, two things genuinely remain on the ordinary heap:
 <ul style="margin:8px 0 0">
 <li><b>The global pool's recycle queue</b> — one process-wide root that hands out
@@ -551,9 +572,9 @@ outside any one LB. (Each arena's own list of which blocks/pages it holds — on
 the last per-LB heap carve-out — is now pool-backed: a small-buffer directory that
 keeps a tiny arena's table inline at zero pool cost and spills only a large one
 onto pool blocks. So the per-LB arena bookkeeping is now static too.)</li>
-<li><b>Transient mail strings</b> — committed cross-block mail travels as
-<b>global mail-interner int32 ids</b> (a block's own int16 ids are not portable
-across blocks, so the global-interner id space is the cross-block common space). The
+<li><b>Transient mail strings</b> — each deloadable outbox stores int32 ids from
+its own private interner; commit translates them into <b>global mail-interner
+int32 ids</b> for the retained log and receiver inbox. The
 persistent log <i>bytes</i> are static; the absorb/pull side now decodes the frozen
 blob bytes straight into the receiving block's static columns with no heap working
 form at all. What still touches the heap is the short-lived encoding at the
@@ -606,13 +627,13 @@ random access either way.
 </p>
 
 <figure>
-<svg viewBox="0 0 760 330" role="img" aria-label="Mail is random-access reads into a shared log pool. Cores on the left connect through an any-to-any memory NoC to a shared mail pool on the right that holds per-LB logs at scattered addresses. A highlighted receiver reads its ancestors' logs (the root log and one parent log) at arbitrary addresses; the wiring must reach every address, and the tree only selects which logs are read.">
+<svg viewBox="0 0 760 330" role="img" aria-label="Mail is random-access reads into a shared retained-log pool. Cores on the left connect through an any-to-any memory NoC to a shared mail pool on the right that holds per-LB retained chains and a global mail-id table. A highlighted receiver reads its ancestors' chains at arbitrary addresses; delivered pages and the id table may be recycled between cycles when no block was born dormant, while routing and cumulative cursors remain resident.">
   <defs><marker id="m-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#EF9F27"/></marker></defs>
 
   <text x="380" y="22" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">Mail = random-access reads into a shared log pool</text>
 
   <!-- cores -->
-  <text x="58" y="48" fill="#8B8FA5" font-size="10" text-anchor="middle">LB cores</text>
+  <text x="58" y="48" fill="#8B8FA5" font-size="9" text-anchor="middle">LB cores + cold mailOut</text>
   <rect x="20" y="58"  width="78" height="30" rx="6" fill="#262938" stroke="#EF9F27"/><text x="59" y="78" fill="#EF9F27" font-size="9.5" text-anchor="middle">core (here)</text>
   <rect x="20" y="108" width="78" height="30" rx="6" fill="#262938" stroke="#5DCAA5"/><text x="59" y="128" fill="#F0E8DC" font-size="9.5" text-anchor="middle">core</text>
   <rect x="20" y="158" width="78" height="30" rx="6" fill="#262938" stroke="#5DCAA5"/><text x="59" y="178" fill="#F0E8DC" font-size="9.5" text-anchor="middle">core</text>
@@ -630,13 +651,14 @@ random access either way.
 
   <!-- shared mail pool -->
   <rect x="300" y="50" width="440" height="196" rx="10" fill="#20232F" stroke="#E879F9" stroke-width="2"/>
-  <text x="520" y="70" fill="#E879F9" font-size="10.5" font-weight="bold" text-anchor="middle">shared mail pool (RAM) — per-LB append-only logs at scattered addresses</text>
+  <text x="520" y="70" fill="#E879F9" font-size="10.5" font-weight="bold" text-anchor="middle">shared mail pool — retained chains + global ids + transient mailIn</text>
   <rect x="330" y="86"  width="120" height="22" rx="4" fill="#3A2E16" stroke="#EF9F27"/><text x="390" y="101" fill="#EF9F27" font-size="9" text-anchor="middle">root log (hot)</text>
   <rect x="560" y="92"  width="80" height="22" rx="4" fill="#262938" stroke="#5DCAA5"/><text x="600" y="107" fill="#8B8FA5" font-size="9" text-anchor="middle">log Q</text>
   <rect x="430" y="132" width="120" height="22" rx="4" fill="#262938" stroke="#5DCAA5"/><text x="490" y="147" fill="#8B8FA5" font-size="9" text-anchor="middle">log P (ancestor)</text>
   <rect x="648" y="150" width="72" height="22" rx="4" fill="#262938" stroke="#5DCAA5"/><text x="684" y="165" fill="#8B8FA5" font-size="9" text-anchor="middle">log R</text>
   <rect x="340" y="180" width="80" height="22" rx="4" fill="#262938" stroke="#5DCAA5"/><text x="380" y="195" fill="#8B8FA5" font-size="9" text-anchor="middle">log S</text>
   <rect x="520" y="196" width="80" height="22" rx="4" fill="#262938" stroke="#5DCAA5"/><text x="560" y="211" fill="#8B8FA5" font-size="9" text-anchor="middle">log T</text>
+  <rect x="630" y="198" width="90" height="22" rx="4" fill="#2D2538" stroke="#E879F9"/><text x="675" y="213" fill="#E879F9" font-size="8.5" text-anchor="middle">global mail ids</text>
 
   <!-- NoC reaches all addresses (faint) -->
   <path d="M214 110 L330 97"  stroke="#3A3D4A" stroke-width="1"/>
@@ -665,10 +687,10 @@ address — and the root, read by all, is a hotspot. The earlier "tree, not a
 crossbar" framing was wrong: it is random access either way.</figcaption>
 </figure>
 
-<h3>The mux is a pull over append-only logs</h3>
+<h3>The mux is a pull over retained log windows</h3>
 <p>
 Concretely: each block writes the mail it emits <b>once</b>, into its own
-append-only log, at a single-threaded commit point each cycle. A receiver, in its
+retained chain, at a single-threaded commit point each cycle. A receiver, in its
 phase 1, walks its ancestor list and <b>pulls</b> the batches it has not yet
 ingested from each ancestor's log, advancing a private per-(receiver, ancestor)
 cursor. There is no outbound copy and no shared inbox to contend on — the parallel
@@ -677,13 +699,25 @@ readers only read frozen logs and bump their own cursor cells. That is the mux:
 address</i> (which ancestor logs to read), over a shared pool the core can address
 in full.
 </p>
+<p>
+Retention is chosen once when the run-time LB grid is complete. If every block is
+active, the post-phase-3 barrier recycles the delivered blob/reference pages before
+resetting the matching global mail-id table and opening a fresh window at the next
+commit. If any block is born dormant, the complete history and id table remain so
+that block can catch up when activated. In both modes the
+ancestor routing edges, cumulative producer counts, and receiver cursors stay in
+always-on RAM. For silicon this turns the common incubator case into a bounded
+rolling mail working set without changing the provisioned pool, address fabric, or
+mail protocol.
+</p>
 
 <h3>Three mail channels — which SRAM is always-on</h3>
 <p>This split tells you exactly which memory must stay powered and resident:</p>
 <table>
 <tr><th>Channel</th><th>Home</th><th>Always-on?</th></tr>
-<tr><td>routing staging (in/out)</td><td>the mail pool</td><td><b>yes</b> — never deloaded</td></tr>
-<tr><td>cross-block log (the mux)</td><td>dedicated mail pool</td><td><b>yes</b> — never deloaded</td></tr>
+<tr><td>routing inbox (<code>mailIn</code>)</td><td>the mail pool</td><td><b>yes</b> until phase-1 absorb; blocks then returned</td></tr>
+<tr><td>routing outbox + private ids (<code>mailOut</code>)</td><td>the block's main-pool arena</td><td>no — deloads after phase 3; pending blocks reload one at a time for commit</td></tr>
+<tr><td>cross-block retained window + global id table (the mux)</td><td>dedicated mail pool</td><td><b>yes</b> — never deloaded; both may be recycled at the safe seam</td></tr>
 <tr><td>internal one-step channels</td><td>the block's deloadable arena</td><td>no — pages out with the block</td></tr>
 </table>
 <p>
@@ -735,18 +769,27 @@ inside a single block (or a couple) and ran at the speed of one thread — the w
 of one LB's hashburst was a sequential lump. <b>LB split</b> breaks that lump
 across cores: because phase 2 is read-only on the block (§2), the candidate-firing
 work can be partitioned, run on many compute units at once, and merged
-deterministically. A single heavy calculation is one LB, and one LB fans out to at
-most a fixed number of parts (today 100), so it spreads across <b>min(that block's
-split parts, cores available)</b>. The "virtually unlimited" headroom belongs to the
-<i>whole workload's</i> task pool — the ~10⁴–10⁵ independent phase-2 tasks available
-across all active blocks at peak (below) — not to a single block, which is bounded.
+deterministically. A heavy LB is partitioned by <b>expression search</b>, not by rule
+owner: one read-only producer enumerates expression stumps over the whole LB, deals
+them into at most one bucket per logical core, and each bucket accepts every rule
+while generating only requests that contain one of its stumps. A block therefore
+spreads across <b>min(expression buckets, cores available)</b>. The larger headroom
+belongs to the <i>whole workload's</i> flat task pool across all active blocks, not to
+a single block.
 </p>
+
+<p>The expression partition matters for silicon because it divides one irregular
+search without adding a block-memory write port. A recordable short combination that
+would disappear when the producer advances to a larger level is retained as a
+<b>terminal pre-stump</b>: one bucket validates that combination through the normal
+request path but does not grow it, while the larger child stumps cover all larger
+combinations. No valid request is discarded.</p>
 
 <p>The user named two ways to realise this in silicon. Both already exist in the
 software, in two different subsystems:</p>
 
 <figure>
-<svg viewBox="0 0 760 320" role="img" aria-label="Two ways to split. Left: N compute units share one LB's memory read-only, each takes a partition of the rule owners, results merge in canonical sorted order — the main prover. Right: clone the LB's facts N times, run an independent slice on each core — the counterexample filter.">
+<svg viewBox="0 0 760 320" role="img" aria-label="Two ways to split. Left: N compute units share one LB's memory read-only, each takes an expression-stump bucket while accepting every rule, and results merge in canonical sorted order — the main prover. Right: clone the LB's facts N times, run an independent slice on each core — the counterexample filter.">
   <defs><marker id="s-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
 
   <!-- model a -->
@@ -755,9 +798,9 @@ software, in two different subsystems:</p>
   <text x="196" y="50" fill="#8B8FA5" font-size="9.5" text-anchor="middle">the live main-prover model</text>
   <rect x="116" y="60" width="160" height="40" rx="6" fill="#20232F" stroke="#5DCAA5"/><text x="196" y="78" fill="#5DCAA5" font-size="10" text-anchor="middle">ONE LB's memory</text><text x="196" y="92" fill="#8B8FA5" font-size="8.5" text-anchor="middle">read-only during phase 2</text>
   <g font-size="9">
-    <rect x="34"  y="128" width="100" height="46" rx="6" fill="#3A2E16" stroke="#EF9F27"/><text x="84"  y="148" fill="#EF9F27" text-anchor="middle">unit 0</text><text x="84" y="162" fill="#8B8FA5" text-anchor="middle">owners %N==0</text>
-    <rect x="146" y="128" width="100" height="46" rx="6" fill="#3A2E16" stroke="#EF9F27"/><text x="196" y="148" fill="#EF9F27" text-anchor="middle">unit 1</text><text x="196" y="162" fill="#8B8FA5" text-anchor="middle">owners %N==1</text>
-    <rect x="258" y="128" width="100" height="46" rx="6" fill="#3A2E16" stroke="#EF9F27"/><text x="308" y="148" fill="#EF9F27" text-anchor="middle">unit 2</text><text x="308" y="162" fill="#8B8FA5" text-anchor="middle">owners %N==2</text>
+    <rect x="34"  y="128" width="100" height="46" rx="6" fill="#3A2E16" stroke="#EF9F27"/><text x="84"  y="148" fill="#EF9F27" text-anchor="middle">unit 0</text><text x="84" y="162" fill="#8B8FA5" text-anchor="middle">stump bucket 0</text>
+    <rect x="146" y="128" width="100" height="46" rx="6" fill="#3A2E16" stroke="#EF9F27"/><text x="196" y="148" fill="#EF9F27" text-anchor="middle">unit 1</text><text x="196" y="162" fill="#8B8FA5" text-anchor="middle">stump bucket 1</text>
+    <rect x="258" y="128" width="100" height="46" rx="6" fill="#3A2E16" stroke="#EF9F27"/><text x="308" y="148" fill="#EF9F27" text-anchor="middle">unit 2</text><text x="308" y="162" fill="#8B8FA5" text-anchor="middle">stump bucket 2</text>
   </g>
   <path d="M120 100 L84 126" stroke="#5DCAA5" stroke-width="1.2" marker-end="url(#s-ar)"/>
   <path d="M196 100 L196 126" stroke="#5DCAA5" stroke-width="1.2" marker-end="url(#s-ar)"/>
@@ -804,22 +847,21 @@ total content key before applying. The sort is the whole trick: it makes the mer
 function of <i>content</i>, not of which unit found what first or how many units
 there were. So <b>2 cores and 200 cores produce byte-identical output</b> — the
 runtime lever costs you nothing in reproducibility. (And because phase 2 wrote
-nothing to the block, a split that turns out too coarse can simply be re-run finer
-with no residue to clean up.)
+  nothing to the block, bucket tasks may execute in any order with no partial state
+  to clean up.)
 </p>
 
 <h3>How much it splits, adaptively</h3>
 <p>
-A block that hits a work cap in a cycle escalates from unsplit to a fixed fan-out
-(today: 100 parts) and re-runs that cycle split; a block that never hits the cap
-stays unsplit. So the system spends parallelism where the work actually is. On the
-heaviest measured batch there are on the order of a thousand active blocks at peak,
-each potentially fanning out — i.e. <b>tens to hundreds of thousands of independent
-phase-2 tasks</b> are available at the busy moments. GL runs them across ~32 logical
-cores today, 32-at-a-time. <b>MPU 0.1 maps exactly that: 32 LB cores</b>, one per
-logical core we have. The gap between the available parallelism (~10⁴–10⁵ tasks) and
-the cores that chew it (32) is headroom for the lever — <i>more cores, later</i> — not
-something MPU 0.1 spends; MPU 0.1 is what we have now.
+Every main-path burst runs to completion. At the end of an iteration, GL compares
+each LB's deterministic total submatch work with the balanced per-core share and a
+minimum setup threshold. A straggler is pre-split for the next iteration into up to
+<code>logicalCores</code> expression buckets; an LB that falls below the threshold
+returns to one part. A newly activated induction-zero LB takes the split path once
+immediately because no prior statistic exists. This spends parallelism where the
+completed work shows it can shorten the makespan, without a timing-dependent trigger.
+<b>MPU 0.1 maps the current host's approximately 32 logical workers to 32 LB cores</b>;
+more independent LBs and expression buckets remain queued in the flat phase-2 pool.
 </p>
 
 <div class="caveat">
@@ -1261,21 +1303,21 @@ this is what it means: treat ±2× as normal.
 <h3>A · GL sizing constants — code/log-derived (update with the code)</h3>
 <table>
 <tr><th>Constant</th><th>Value</th><th>Source / note</th></tr>
-<tr><td>Main pool (deloadable)</td><td class="num">8 GiB</td><td>32768 × 256 KiB blocks; 8 KiB pages</td></tr>
+<tr><td>Main pool (deloadable)</td><td class="num">4 GiB</td><td>16384 × 256 KiB blocks; 8 KiB pages; includes per-LB mailOut + private ids</td></tr>
 <tr><td>Persistent pool</td><td class="num">1 GiB</td><td>goal registry; never deloaded</td></tr>
-<tr><td>Mail pool</td><td class="num">2 GiB</td><td>cross-block mail log; never deloaded</td></tr>
+<tr><td>Mail pool</td><td class="num">2 GiB</td><td>mailIn + cross-block log/global ids; never deloaded, rolling when safe</td></tr>
 <tr><td>LB-body pool</td><td class="num">2 GiB</td><td>block objects; never deloaded</td></tr>
 <tr><td>Per-worker scratch</td><td class="num">transient</td><td>cold-grant from the main pool, released per worker task</td></tr>
-<tr><td><b>Total reservation</b></td><td class="num"><b>13 GiB</b></td><td>fixed at start-up, never grown</td></tr>
+<tr><td><b>Total reservation</b></td><td class="num"><b>9 GiB</b></td><td>fixed at start-up, never grown</td></tr>
 <tr><td>Address resolve</td><td class="num">off&gt;&gt;18 · off&amp;0x3FFFF</td><td>1 shift + 1 mask + 1 add (per-LB MMU)</td></tr>
 <tr><td>Statement line</td><td class="num">176 B, all int16</td><td>fixed record; ≤16 args</td></tr>
 <tr><td>Datapath widths</td><td class="num">16 / 32 / 64-bit</td><td>ids / packed keys / FNV digest</td></tr>
 <tr><td>Hash</td><td class="num">FNV-1a 64-bit</td><td>per-byte XOR-then-multiply</td></tr>
-<tr><td>Pager watermarks</td><td class="num">40% / 50% / 75%</td><td>park &amp; drain-floor 40%, async steward wake 50%, synchronous one-for-one 75%; window = workers + 4</td></tr>
+<tr><td>Pager reserve</td><td class="num">2048 blocks</td><td>512-block emergency floor; two-tier farthest-next-use eviction outside the worker-scaled keep window</td></tr>
 <tr><td>Floating-point on proof path</td><td class="num">0</td><td>one FP compare exists, only to pick split granularity</td></tr>
 </table>
 
-<h4>Measured working set (full pipeline run)</h4>
+<h4>Measured working set (historical full pipeline run under the former 8 GiB main-pool cap)</h4>
 <table>
 <tr><th>Batch</th><th>Peak resident</th><th>Active blocks</th><th>Note</th></tr>
 <tr><td>IncubatorPeano1 (heaviest)</td><td class="num">~4.76 GB</td><td class="num">19030 / 32768</td><td>~1757 active LBs, exploration batch</td></tr>

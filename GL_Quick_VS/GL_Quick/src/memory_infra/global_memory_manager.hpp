@@ -25,6 +25,9 @@
 #pragma once
 
 #include <atomic>
+#include "extent_file.hpp"
+
+#include <atomic>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -34,6 +37,11 @@
 #include <vector>
 
 namespace gl {
+
+    /// @brief Extent-file growth chunk: when a new slab passes the file's end,
+    ///        the file grows by whole multiples of this (default 256 MiB) so
+    ///        growth is coarse, not per-slab.
+    constexpr int64_t kExtentGrowChunkBytes = 256LL << 20;
 
     /// @brief Which of the three process-wide pools a `GlobalMemoryManager`
     ///        instance is — selects the exhaustion-assert knob name only.
@@ -181,6 +189,48 @@ namespace gl {
         /// @param block A pointer previously returned by `acquireBlock`.
         void releaseBlock(char* block);
 
+        /// @brief Grant `count` blocks under ONE mutex acquisition — the bulk
+        ///        raw-image reload / eviction grant.
+        ///
+        /// @details
+        /// Thread-safe: takes the pool mutex ONCE, grants `count` blocks
+        /// (recycled first, else carved), and updates the accounting
+        /// (`blocksInUse` / peak / grant ledger) and the one-shot grant trigger
+        /// exactly as `count` separate `acquireBlock` calls would — the trigger
+        /// fires once if the batch crosses the armed threshold, outside the
+        /// mutex. It exists because the raw arena reload acquires a whole LB's
+        /// blocks at once, and the per-block mutex traffic was a measured floor
+        /// (~2000 acquire/release round trips per big-LB deload/reload cycle).
+        /// Exhaustion of any block asserts naming the instance's pool knob, per
+        /// `acquireBlock` (never a fallback, Rule 19). The output array is
+        /// filled UNDER the mutex; the caller must NOT re-enter this manager
+        /// from within a hypothetical callback — there is none, `out` is a plain
+        /// array so directory spill (which does re-enter) happens after the
+        /// lock is released.
+        ///
+        /// @param count Blocks to grant; >= 1.
+        /// @param out   Caller array of at least `count` `char*`; filled with
+        ///              the granted block pointers. Physical identity must not
+        ///              influence any observable (I-107).
+        void acquireBlocks(int32_t count, char** out);
+
+        /// @brief Return `count` blocks under ONE mutex acquisition — the bulk
+        ///        raw-image eviction / teardown release.
+        ///
+        /// @details
+        /// Thread-safe: takes the pool mutex ONCE and returns every block in
+        /// `blocks[0..count)` (each validated as `releaseBlock` would —
+        /// in-pool, block-aligned, currently granted — asserts otherwise), then
+        /// decrements `blocksInUse` by `count`. The bulk twin of `releaseBlock`
+        /// for `LbArena::releaseAll`, so an LB's blocks return with one lock
+        /// acquisition instead of one per block — the release half of the
+        /// per-block mutex traffic the bulk grant exists to remove.
+        ///
+        /// @param blocks Array of `count` pointers previously returned by
+        ///               `acquireBlock` / `acquireBlocks`.
+        /// @param count  Blocks to return; >= 1.
+        void releaseBlocks(char* const* blocks, int32_t count);
+
         /// @brief Bytes per block (the grant unit).
         ///
         /// @return `static_block_bytes` of the consumed config. Asserts
@@ -300,6 +350,60 @@ namespace gl {
         ///        not failures).
         void disarmGrantTrigger();
 
+        /// @brief Install (or clear, with an empty function) the FORENSIC
+        ///        EXHAUSTION REPORTER — a diagnostic callback `grantLocked`
+        ///        invokes at the wall, immediately BEFORE the exhaustion
+        ///        assert fires.
+        ///
+        /// @details
+        /// Pure observability at the point of death (the stuck-tripwire
+        /// precedent: print, then assert — the assert REMAINS the failure,
+        /// Rule 19 untouched; no fallback path is created). The prover
+        /// installs it for the `prove()` scope (capturing the LB grid and
+        /// the steward) and clears it on scope exit; a pool with no
+        /// reporter installed asserts exactly as before. A `std::function`
+        /// is deliberate: installation is a cold, single-threaded,
+        /// once-per-prove operation, never on a grant path.
+        ///
+        /// CONTRACT — THE REPORTER RUNS WHILE THE POOL MUTEX IS HELD. It
+        /// must never call back into this manager: no `acquireBlock` /
+        /// `releaseBlock` / `acquireBlocks` / `releaseBlocks`, and none of
+        /// the mutex-taking getters (`blocksInUse()`,
+        /// `grantsSinceBarrier()`, `assignDeloadOrdinal()`, ...) — any of
+        /// those deadlocks on the held mutex. The pool counters it needs
+        /// are therefore PASSED IN (`blocksInUse`, `totalBlocks`, read
+        /// under the already-held mutex at the call site). Legal reads
+        /// inside the reporter: per-LB claim words (atomics), per-arena
+        /// bookkeeping (`LbArena::blocksHeld()` / `resident()` — plain
+        /// member reads that never touch this manager), the steward's
+        /// relaxed in-flight atomics, `DeloadStats` atomics, and the
+        /// scratch registries' per-slot arena bookkeeping. Reads of other
+        /// threads' live arenas are RACY (the process is about to abort;
+        /// the census is approximate by design).
+        ///
+        /// @param reporter Callback receiving (blocksInUse, totalBlocks) at
+        ///                 the wall; empty clears the hook (a completed
+        ///                 lifecycle, not a failure).
+        void setExhaustionReporter(
+            std::function<void(int64_t, int64_t)> reporter);
+
+        /// @brief Invoke the installed exhaustion reporter under the pool
+        ///        mutex — the unit-test seam for the death-path call
+        ///        context.
+        ///
+        /// @details
+        /// The real invocation site is `grantLocked` at the wall, followed
+        /// by an assert that aborts the process — untestable in the
+        /// in-tree harness (no death-test support; `assert` aborts the
+        /// whole suite). This seam reproduces the exact calling context
+        /// (pool mutex held, counters read under it) WITHOUT the abort, so
+        /// a test can prove the census callback performs no manager
+        /// re-entry (a violation deadlocks the test loudly) and receives
+        /// the correct counter values. Asserts a reporter is installed —
+        /// invoking a missing diagnostic is a test bug (production guards
+        /// the call on installation).
+        void invokeExhaustionReporterForTest();
+
         /// @brief Assign the next process-monotonic deload ordinal — the
         ///        injective per-LB file-name handle that replaced the
         ///        chain hash.
@@ -360,6 +464,126 @@ namespace gl {
         /// new batch re-registers, so the cleared map refills completely.
         void resetDeloadRegistry();
 
+        /// @brief Open (creating) the ONE extent file for the v4 raw-eviction
+        ///        images and arm the extent datapath for this batch.
+        ///
+        /// @details
+        /// Closes any prior batch's extent file, opens the new one,
+        /// preallocates it to `initialBytes`, (re)initializes the slab
+        /// allocator to the pool block granularity, and BUMPS the extent
+        /// EPOCH so any LB carrying a slab from a purged prior batch is treated
+        /// as slab-less (its stale `rawExtentOffset_` is ignored — offsets
+        /// recycled from 0 at reset). Sets `useExtent()` true. Called at batch
+        /// start (after `purgeDeloadDirectory` deletes the old file). Only when
+        /// `parameters.enable_extent_deload`; otherwise the named-file raw path
+        /// stays active.
+        ///
+        /// @param path         The extent file path (under the deload dir).
+        /// @param initialBytes Preallocated size (default 1.5x the pool).
+        void openExtentFile(const std::filesystem::path& path,
+                            int64_t initialBytes);
+
+        /// @brief Close the extent file (if open) and disarm the datapath.
+        ///
+        /// @details
+        /// Called BEFORE `purgeDeloadDirectory` (which deletes the file — an
+        /// open handle would block the delete on Windows) and at process
+        /// teardown via the destructor. Sets `useExtent()` false. A no-op when
+        /// already closed.
+        void closeExtentFile();
+
+        /// @brief Whether the extent datapath is armed this batch.
+        /// @return True between `openExtentFile` and `closeExtentFile`.
+        bool useExtent() const {
+            return extentEnabled_.load(std::memory_order_relaxed);
+        }
+
+        /// @brief The current extent epoch — bumped at every `openExtentFile`.
+        ///
+        /// @details
+        /// An LB's cached slab (`rawExtentOffset_`) is valid ONLY if the LB's
+        /// `rawExtentEpoch_` equals this; a mismatch means the slab is from a
+        /// purged batch (offsets since recycled from 0) and must be ignored.
+        /// Read on the dump path; only mutated single-threaded at batch start.
+        ///
+        /// @return The epoch id.
+        int64_t extentEpoch() const { return extentEpoch_; }
+
+        /// @brief The open extent file (positioned I/O at disjoint offsets).
+        /// @return A reference for the raw dump/load positioned calls.
+        PositionedFile& extentFile() { return extentFile_; }
+
+        /// @brief Allocate an extent slab for an image of `need` bytes, growing
+        ///        the file if the high-water passed its end.
+        ///
+        /// @details
+        /// Serializes the slab allocation AND the file grow under one mutex so
+        /// the `PositionedFile::grow` targets stay monotone under concurrent
+        /// evictions (two threads racing the high-water must not order two
+        /// grows backwards). The positioned WRITE that follows runs OUTSIDE
+        /// this lock (disjoint offsets). Records the slab under its ordinal in
+        /// the slab registry (the `registry.txt` extent audit columns).
+        ///
+        /// @param ordinal The LB's deload ordinal (slab-registry key).
+        /// @param need    The image byte count to hold.
+        /// @return The slab offset and its class capacity.
+        SlabAllocation allocateExtentSlab(int64_t ordinal, int64_t need);
+
+        /// @brief Return an extent slab to its class free-list and drop its
+        ///        slab-registry row (class promotion / LB discharge).
+        ///
+        /// @param ordinal    The owning LB's deload ordinal (registry key).
+        /// @param offset     The slab offset from `allocateExtentSlab`.
+        /// @param classBytes The slab's class capacity.
+        void freeExtentSlab(int64_t ordinal, int64_t offset,
+                            int64_t classBytes);
+
+        /// @brief The per-ordinal slab placements — the extent audit columns of
+        ///        `lbdeload::rewriteRegistry`.
+        ///
+        /// @details
+        /// Returns a reference, NOT a copy, on the same justification as
+        /// `deloadRegistry()`: the sole production caller is the kernel barrier
+        /// fold, single-threaded after the steward quiesce, so no executor
+        /// mutation races the read. Reload never consults it (the LB's own
+        /// `rawExtentOffset_` is the source of truth); it exists for the
+        /// human-audit registry file only.
+        ///
+        /// @return Ordinal → current slab (ascending ordinal).
+        const std::map<int64_t, SlabAllocation>& extentSlabRegistry() const {
+            return extentSlabRegistry_;
+        }
+
+        /// @brief Σ live slab class sizes (the extent internal-slack numerator).
+        /// @return `extentAllocatedBytes` telemetry.
+        int64_t extentAllocatedBytes() const {
+            return extentAllocator_.allocatedBytes();
+        }
+
+        /// @brief The extent file's current logical size.
+        /// @return `extentFileBytes` telemetry.
+        int64_t extentFileBytes() const { return extentFile_.fileSize(); }
+
+        /// @brief Adjust the extent live-occupancy total by a signed delta.
+        ///
+        /// @details
+        /// The dump wiring calls this with `newImage - lastImage` on each
+        /// extent dump (the LB's occupancy replaces its prior) and `-lastImage`
+        /// on slab free. Batch-scoped: zeroed by `openExtentFile`, so it stays
+        /// correct across the several prove() calls of one batch (unlike the
+        /// per-prove `DeloadStats` reset). One relaxed accumulation.
+        ///
+        /// @param delta Signed byte delta.
+        void addExtentLive(int64_t delta) {
+            extentLiveBytes_.fetch_add(delta, std::memory_order_relaxed);
+        }
+
+        /// @brief Σ image bytes of currently-Dumped raw LBs (the slack numerator).
+        /// @return `extentLiveBytes` telemetry.
+        int64_t extentLiveBytes() const {
+            return extentLiveBytes_.load(std::memory_order_relaxed);
+        }
+
     private:
         /// @brief Dequeue-or-carve one block and flag it granted; the
         ///        accounting-free core shared by both grant paths. Caller
@@ -392,8 +616,28 @@ namespace gl {
         int64_t grantsSinceBarrier_ = 0;   // monotone within an iteration
         int64_t grantTriggerThreshold_ = -1;  // -1 = disarmed
         std::function<void()> grantTriggerFire_;
+        // Forensic exhaustion reporter (diagnostic only): invoked by
+        // grantLocked at the wall, under mutex_, BEFORE the exhaustion
+        // assert; empty = not installed. See setExhaustionReporter.
+        std::function<void(int64_t, int64_t)> exhaustionReporter_;
         int64_t nextDeloadOrdinal_ = 0;    // process-monotonic deload file id
         std::map<int64_t, std::string> deloadRegistry_;  // ordinal -> chain
+
+        // v4 raw-eviction extent file (D-195 extent
+        // datapath). ONE preallocated file per batch; each LB owns a slab.
+        // extentMutex_ serializes slab alloc + file grow (grow must stay
+        // monotone); the positioned writes/reads run outside it (disjoint
+        // offsets). extentEnabled_ is the A/B gate (relaxed-read on the dump
+        // path); extentEpoch_ invalidates cross-batch stale slabs.
+        PositionedFile extentFile_;
+        ExtentAllocator extentAllocator_;
+        std::mutex extentMutex_;
+        std::atomic<bool> extentEnabled_{ false };
+        int64_t extentEpoch_ = 0;
+        std::atomic<int64_t> extentLiveBytes_{ 0 };
+        // ordinal -> current slab, for registry.txt's audit columns only
+        // (reload uses the LB's own rawExtentOffset_). Under extentMutex_.
+        std::map<int64_t, SlabAllocation> extentSlabRegistry_;
     };
 
     /// @brief The process-wide static-memory manager instance.

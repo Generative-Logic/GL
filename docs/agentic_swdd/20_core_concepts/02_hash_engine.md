@@ -68,13 +68,15 @@ One key can point to multiple `LocalMemoryValue`s — several different rules ma
 
 Per LB, per cycle, the elementary-step hashburst ([`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp), `performElemPhase2` → `performElem2`):
 
-1. **Generate hash requests.** Depending on role (main vs. CE filter) and which pattern sizes are active, call:
- - `generateEncodedRequestsStatic` — singleton matches ([`memory.cpp`](../../GL_Quick_VS/GL_Quick/src/memory.cpp); extracted from `prover.cpp`, 2026-05-04).
- - `generateEncodedRequestsStaticPairs` — pair matches ([`memory.cpp`](../../GL_Quick_VS/GL_Quick/src/memory.cpp); same migration).
- - `generateEncodedRequestsStaticCE` — CE mode, no mandatory elements ([`filter.cpp`](../../GL_Quick_VS/GL_Quick/src/filter.cpp); extracted from `prover.cpp`, 2026-05-04).
+1. **Generate hash requests.** One function does this — `generateEncodedRequestsStatic` ([`memory.cpp`](../../GL_Quick_VS/GL_Quick/src/memory.cpp)) — called with the length of the obligatory stump, the already-known statements every generated request must contain:
+ - **1** — mandatory single (batches 1, 2, 4, 5).
+ - **2** — mandatory pair (batch 3, local × mail).
+ - **0** — CE filter: no element is mandatory, so a grown base candidate is itself the request.
 
- These emit `IntNormalizedKey` objects that correspond to each candidate match.
+ It emits `IntNormalizedKey` objects that correspond to each candidate match.
 
+
+ Under the LB split's second dimension the call also carries a **bucket of split stumps** ([D-203](../40_decisions.md#d-203)). The search then runs once per stump in the bucket over one shared filtered statement list, joining the stump to every growing candidate for both owner-set probes — `normalizedEncodedSubkeys` for growth, the target map for recording — and materialising the union into a `BaseCandidate` only where the target map accepts. The stump is never carried by a growing candidate; it is attached per probe and dropped again. The stump alone is probed once before the search, because unsplit that base candidate is recorded in the loop of the candidate one level up, which a stumped sub-part never runs.
 2. **Look up.** Query `overallHashMemory.encodedMap[key]`. If the key is in `normalizedEncodedKeys`, there is a hit.
 
 3. **Iterate `LocalMemoryValue` list.** For each pointed-to rule, attempt to bind the remaining arguments. If binding succeeds and admission holds (`isAdmitted` / `isAllowedAsOperatorInput`), fire.

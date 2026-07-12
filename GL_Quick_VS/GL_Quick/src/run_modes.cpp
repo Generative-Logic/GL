@@ -31,7 +31,11 @@
 #include <set>
 #include <utility>
 #include <algorithm>
+#include <cassert>
+#include <cstdlib>
+#include <iomanip>
 #include <iostream>
+#include <chrono>
 #include "compressor.hpp"
 #include <json.hpp>
 
@@ -80,6 +84,45 @@ namespace run_modes {
     void fullRun(const std::string& anchor_id) {
         using namespace std;
         namespace fs = std::filesystem;
+        using FrameClock = std::chrono::steady_clock;
+
+        const auto fullRunStarted = FrameClock::now();
+        const auto frameSecondsSince = [](FrameClock::time_point started) {
+            return std::chrono::duration<double>(FrameClock::now() - started).count();
+        };
+        const auto recordFrameTiming = [&](const char* stage,
+                                           double seconds,
+                                           bool excluded,
+                                           int64_t count = 1) {
+            assert(stage != nullptr && stage[0] != '\0');
+            assert(seconds >= 0.0);
+            assert(count > 0);
+            std::string timingPath;
+#ifdef _WIN32
+            char* timingPathRaw = nullptr;
+            size_t timingPathLength = 0;
+            const errno_t timingEnvironmentResult = _dupenv_s(
+                &timingPathRaw, &timingPathLength, "GL_FRAME_TIMING_PATH");
+            assert(timingEnvironmentResult == 0);
+            if (timingPathRaw == nullptr) return;
+            timingPath.assign(timingPathRaw);
+            std::free(timingPathRaw);
+#else
+            const char* timingPathRaw = std::getenv("GL_FRAME_TIMING_PATH");
+            if (timingPathRaw == nullptr) return;
+            timingPath.assign(timingPathRaw);
+#endif
+            std::ofstream timing(timingPath, std::ios::app);
+            assert(timing.is_open());
+            timing << "{\"batch\":\"" << anchor_id
+                   << "\",\"count\":" << count
+                   << ",\"excluded\":" << (excluded ? "true" : "false")
+                   << ",\"parent\":\"native." << anchor_id
+                   << "\",\"seconds\":" << std::setprecision(12) << seconds
+                   << ",\"stage\":\"" << stage << "\"}\n";
+            timing.flush();
+            assert(timing.good());
+        };
 
         if (!anchor_id.empty()) {
             std::cout << "\n[fullRun] Processing Tag/Anchor: " << anchor_id << "\n";
@@ -176,7 +219,13 @@ namespace run_modes {
             }
         }
 
+        recordFrameTiming(
+            "native.setup", frameSecondsSince(fullRunStarted), false);
+
+        const auto proverStarted = FrameClock::now();
         expressionAnalyzer.analyzeExpressions(tmp_lst, proved_lst, external_lst);
+        recordFrameTiming(
+            "native.prover", frameSecondsSince(proverStarted), true);
 
         // Sort globalTheoremList for deterministic downstream processing
         // (OR construction deferred to after compression)
@@ -193,6 +242,7 @@ namespace run_modes {
         // skipCompression is true, so the proof-graph generator below can use
         // it (run_modes.cpp:303-305 falls back to globalTheoremList only when
         // fullTheoremList is empty).
+        const auto compressorStarted = FrameClock::now();
         if (!skipCompression) {
             std::vector<std::string> theoremsForCompressor;
             std::unordered_set<std::string> seen;
@@ -242,6 +292,10 @@ namespace run_modes {
                 expressionAnalyzer.lastCompressionSurvivors = theoremsForCompressor;
             }
         }
+        recordFrameTiming(
+            "native.compressor", frameSecondsSince(compressorStarted), true);
+
+        auto saveStarted = FrameClock::now();
 
         if (skipCompression) {
             // ====== INCUBATOR MODE: Save directly, no compression, no proof graph ======
@@ -258,10 +312,15 @@ namespace run_modes {
                       << " theorems to " << PROVED_THEOREMS_FILE << std::endl;
 
             // Generate proof graph in incubator mode too
+            recordFrameTiming(
+                "native.save_orchestration", frameSecondsSince(saveStarted), false);
+            const auto rawProofStarted = FrameClock::now();
             expressionAnalyzer.generateRawProofGraph(expressionAnalyzer.globalTheoremList, RAW_PROOF_DIR);
             // Grid's last reader done — wipe it so the root's arena-backed
             // encodedMaps don't outlive their arena at process teardown.
             expressionAnalyzer.destroyGrid();
+            recordFrameTiming(
+                "native.raw_proof", frameSecondsSince(rawProofStarted), false);
         } else {
             // ====== PHASE 2: SAVE ======
             // globalTheoremList was compressed by the run_modes.cpp invocation above.
@@ -411,7 +470,10 @@ namespace run_modes {
 
             // Generate proof graph using fullTheoremList (all proved theorems incl. non-essential)
             // so proof stacks can reference non-essential theorems. Python pruning trims the rest.
+            recordFrameTiming(
+                "native.save_orchestration", frameSecondsSince(saveStarted), false);
             if (!skipProofGraph) {
+                const auto rawProofStarted = FrameClock::now();
                 // Use fullTheoremList if populated (big iteration mode); otherwise globalTheoremList
                 auto& listForGraph = expressionAnalyzer.fullTheoremList.empty()
                     ? expressionAnalyzer.globalTheoremList
@@ -427,8 +489,190 @@ namespace run_modes {
                 // Grid's last reader done — wipe it so the root's arena-backed
                 // encodedMaps don't outlive their arena at process teardown.
                 expressionAnalyzer.destroyGrid();
+                recordFrameTiming(
+                    "native.raw_proof", frameSecondsSince(rawProofStarted), false);
             }
         }
+
+        const auto telemetryStarted = FrameClock::now();
+
+        // `mailArena` is owned exclusively by MailLog. Its blocks are retained
+        // until analyzer teardown, so the end-of-batch held count is also the
+        // log's physical high-water, including spilled arena directories.
+        const int64_t mailLogPeakBlocks =
+            expressionAnalyzer.mailArena.blocksHeld();
+        const int64_t mailPeakBlocks = gl::mailMemory().peakBlocksInUse();
+        const int64_t mailBlockBytes =
+            expressionAnalyzer.parameters.static_mail_block_bytes;
+        const int64_t mailInternerPeakBlocks =
+            gl::mailInterner().arenaBlocksHeld();
+        const int64_t routingMailInPeakBlocks =
+            expressionAnalyzer.peakRoutingMailInBlocks.load(
+                std::memory_order_relaxed);
+        const int64_t deloadableMailOutPeakBytes =
+            expressionAnalyzer.peakDeloadableMailOutBytes;
+        assert(expressionAnalyzer.routingMailInBlocksInFlight.load(
+                   std::memory_order_relaxed) == 0
+            && "batch ended with routing mailIn attribution still in flight");
+        const int64_t mailEndBlocks = gl::mailMemory().blocksInUse();
+        assert(mailEndBlocks >= mailLogPeakBlocks + mailInternerPeakBlocks);
+        const int64_t mailEndUnattributedBlocks =
+            mailEndBlocks - mailLogPeakBlocks - mailInternerPeakBlocks;
+        std::cout << "[mail-memory] dormant_lbs="
+                  << expressionAnalyzer.dormantLogicBlocksAtGridBuild
+                  << " mode="
+                  << (expressionAnalyzer.rollingMailHistoryEnabled
+                          ? "rolling" : "full")
+                  << " total_committed_history_bytes="
+                  << expressionAnalyzer.mailLog.totalCommittedHistoryBytes
+                  << " peak_retained_history_bytes="
+                  << expressionAnalyzer.mailLog.peakRetainedHistoryBytes
+                  << " mail_log_peak_blocks=" << mailLogPeakBlocks
+                  << " mail_log_peak_bytes="
+                  << mailLogPeakBlocks * mailBlockBytes
+                  << " mail_interner_peak_blocks="
+                  << mailInternerPeakBlocks
+                  << " mail_interner_peak_bytes="
+                  << mailInternerPeakBlocks * mailBlockBytes
+                  << " routing_mail_in_peak_blocks="
+                  << routingMailInPeakBlocks
+                  << " routing_mail_in_peak_bytes="
+                  << routingMailInPeakBlocks * mailBlockBytes
+                  << " deloadable_mail_out_peak_bytes="
+                  << deloadableMailOutPeakBytes
+                  << " peak_pool_blocks=" << mailPeakBlocks
+                  << " block_bytes=" << mailBlockBytes
+                  << " peak_pool_bytes=" << mailPeakBlocks * mailBlockBytes
+                  << " end_pool_blocks=" << mailEndBlocks
+                  << " end_unattributed_blocks="
+                  << mailEndUnattributedBlocks
+                  << std::endl;
+
+        // One executable invocation processes one batch, so each manager's
+        // lifetime high-water is this batch's actual physical pool peak. Keep
+        // every pool separate: their peaks need not occur simultaneously.
+        const int64_t mainPeakBlocks = gl::staticMemory().peakBlocksInUse();
+        const int64_t mainBlockBytes = gl::staticMemory().blockBytes();
+        const int64_t persistentPeakBlocks =
+            gl::persistentMemory().peakBlocksInUse();
+        const int64_t persistentBlockBytes =
+            gl::persistentMemory().blockBytes();
+        const int64_t lbPeakBlocks = gl::lbMemory().peakBlocksInUse();
+        const int64_t lbBlockBytes = gl::lbMemory().blockBytes();
+        std::cout << "[pool-memory]"
+                  << " main_peak_blocks=" << mainPeakBlocks
+                  << " main_block_bytes=" << mainBlockBytes
+                  << " main_peak_bytes=" << mainPeakBlocks * mainBlockBytes
+                  << " main_capacity_bytes="
+                  << gl::staticMemory().totalBlocks() * mainBlockBytes
+                  << " persistent_peak_blocks=" << persistentPeakBlocks
+                  << " persistent_block_bytes=" << persistentBlockBytes
+                  << " persistent_peak_bytes="
+                  << persistentPeakBlocks * persistentBlockBytes
+                  << " persistent_capacity_bytes="
+                  << gl::persistentMemory().totalBlocks()
+                        * persistentBlockBytes
+                  << " mail_peak_blocks=" << mailPeakBlocks
+                  << " mail_block_bytes=" << mailBlockBytes
+                  << " mail_peak_bytes=" << mailPeakBlocks * mailBlockBytes
+                  << " mail_capacity_bytes="
+                  << gl::mailMemory().totalBlocks() * mailBlockBytes
+                  << " lb_peak_blocks=" << lbPeakBlocks
+                  << " lb_block_bytes=" << lbBlockBytes
+                  << " lb_peak_bytes=" << lbPeakBlocks * lbBlockBytes
+                  << " lb_capacity_bytes="
+                  << gl::lbMemory().totalBlocks() * lbBlockBytes
+                  << std::endl;
+
+        std::string memoryLogPath;
+#ifdef _WIN32
+        char* memoryLogPathRaw = nullptr;
+        size_t memoryLogPathLength = 0;
+        const errno_t environmentResult = _dupenv_s(
+            &memoryLogPathRaw, &memoryLogPathLength, "GL_MEMORY_LOG_PATH");
+        assert(environmentResult == 0);
+        assert(memoryLogPathRaw != nullptr && memoryLogPathLength > 1);
+        memoryLogPath.assign(memoryLogPathRaw);
+        std::free(memoryLogPathRaw);
+#else
+        const char* memoryLogPathRaw = std::getenv("GL_MEMORY_LOG_PATH");
+        assert(memoryLogPathRaw != nullptr && memoryLogPathRaw[0] != '\0');
+        memoryLogPath.assign(memoryLogPathRaw);
+#endif
+        std::ofstream memoryLog(memoryLogPath, std::ios::app);
+        assert(memoryLog.is_open());
+        memoryLog << "\n## " << anchor_id << "\n\n"
+                  << "| Pool | Block KiB | Peak blocks | Peak MiB | "
+                     "Reservation MiB | Headroom MiB | Used |\n"
+                  << "|---|---:|---:|---:|---:|---:|---:|\n";
+        const auto writePoolRow = [&](const char* poolName,
+                                      int64_t peakBlocks,
+                                      int64_t blockBytes,
+                                      int64_t capacityBytes) {
+            const int64_t peakBytes = peakBlocks * blockBytes;
+            assert(peakBytes <= capacityBytes);
+            constexpr double bytesPerMiB = 1024.0 * 1024.0;
+            memoryLog << "| " << poolName
+                      << " | " << std::fixed << std::setprecision(3)
+                      << blockBytes / 1024.0
+                      << " | " << peakBlocks
+                      << " | " << peakBytes / bytesPerMiB
+                      << " | " << capacityBytes / bytesPerMiB
+                      << " | " << (capacityBytes - peakBytes) / bytesPerMiB
+                      << " | " << 100.0 * peakBytes / capacityBytes
+                      << "% |\n";
+        };
+        writePoolRow("Main", mainPeakBlocks, mainBlockBytes,
+                     gl::staticMemory().totalBlocks() * mainBlockBytes);
+        writePoolRow("Persistent", persistentPeakBlocks,
+                     persistentBlockBytes,
+                     gl::persistentMemory().totalBlocks()
+                         * persistentBlockBytes);
+        writePoolRow("Mail", mailPeakBlocks, mailBlockBytes,
+                     gl::mailMemory().totalBlocks() * mailBlockBytes);
+        writePoolRow("LB-body", lbPeakBlocks, lbBlockBytes,
+                     gl::lbMemory().totalBlocks() * lbBlockBytes);
+        memoryLog << "\n### Mail-pool attribution\n\n"
+                  << "Component peaks are independent and must not be summed. "
+                     "The end-state rows are simultaneous.\n\n"
+                  << "| Component | Blocks | MiB | Meaning |\n"
+                  << "|---|---:|---:|---|\n";
+        const auto writeMailAttributionRow = [&](const char* component,
+                                                 int64_t blocks,
+                                                 const char* meaning) {
+            memoryLog << "| " << component
+                      << " | " << blocks
+                      << " | " << std::fixed << std::setprecision(3)
+                      << blocks * mailBlockBytes / (1024.0 * 1024.0)
+                      << " | " << meaning << " |\n";
+        };
+        writeMailAttributionRow("MailLog exclusive arena peak",
+                                mailLogPeakBlocks,
+                                "Retained blobs, references, routing, cursors");
+        writeMailAttributionRow("Global mail interner arena peak",
+                                mailInternerPeakBlocks,
+                                "Largest retained global-id dictionary arena");
+        writeMailAttributionRow("Routing mailIn simultaneous peak",
+                                routingMailInPeakBlocks,
+                                "All phase-1 inboxes concurrently in flight");
+        memoryLog << "| Deloadable mailOut live-byte peak"
+                  << " | main-pool shared"
+                  << " | " << std::fixed << std::setprecision(3)
+                  << deloadableMailOutPeakBytes / (1024.0 * 1024.0)
+                  << " | Exact logical bytes across all per-LB output mailboxes and private interners; physical blocks are in Main static peak |\n";
+        writeMailAttributionRow("Whole mail pool physical peak",
+                                mailPeakBlocks,
+                                "GlobalMemoryManager lifetime high-water");
+        writeMailAttributionRow("End-of-batch pool in use",
+                                mailEndBlocks,
+                                "Simultaneous retained state after grid teardown");
+        writeMailAttributionRow("End-of-batch unattributed",
+                                mailEndUnattributedBlocks,
+                                "End pool minus MailLog and global interner arenas");
+        memoryLog.flush();
+        assert(memoryLog.good());
+        recordFrameTiming(
+            "native.telemetry", frameSecondsSince(telemetryStarted), false);
     }
 
     void ceOnlyRun(const std::string& anchor_id) {

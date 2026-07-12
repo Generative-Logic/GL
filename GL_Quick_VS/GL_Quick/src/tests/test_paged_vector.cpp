@@ -91,6 +91,38 @@ TEST(paged_vector, push_and_index_across_page_boundary) {
     ASSERT_NE(static_cast<int>(d), static_cast<int>(gl::DirtyState::Clean));
 }
 
+TEST(paged_vector, add_scalar_to_suffix_crosses_pages_byte_identically) {
+    gl::GlobalMemoryManager m;
+    m.init(kPvCfg);
+    gl::LbArena a(&m);
+    gl::DirtyState d = gl::DirtyState::Clean;
+    gl::PagedVector<int32_t> v(&a, &d);
+    std::vector<int32_t> oracle;
+    for (int32_t i = 0; i < 5000; ++i) {
+        v.push_back(i * 3);
+        oracle.push_back(i * 3);
+    }
+
+    d = gl::DirtyState::Clean;
+    const int32_t first = 1023;
+    const int32_t delta = -17;
+    v.addScalarToSuffix(first, delta);
+    for (int32_t i = first; i < static_cast<int32_t>(oracle.size()); ++i)
+        oracle[static_cast<std::size_t>(i)] += delta;
+
+    ASSERT_EQ(static_cast<int>(d),
+              static_cast<int>(gl::DirtyState::Restructured));
+    for (int32_t i = 0; i < v.size(); ++i)
+        ASSERT_EQ(v[i], oracle[static_cast<std::size_t>(i)]);
+
+    d = gl::DirtyState::Clean;
+    v.addScalarToSuffix(v.size(), 9);
+    v.addScalarToSuffix(0, 0);
+    ASSERT_EQ(static_cast<int>(d), static_cast<int>(gl::DirtyState::Clean));
+    for (int32_t i = 0; i < v.size(); ++i)
+        ASSERT_EQ(v[i], oracle[static_cast<std::size_t>(i)]);
+}
+
 TEST(paged_vector, single_page_uses_no_directory_page) {
     gl::GlobalMemoryManager m;
     m.init(kPvCfg);
@@ -179,6 +211,37 @@ TEST(paged_vector, replace_range_matches_std_vector_oracle) {
     }
     ASSERT_EQ(v.size(), static_cast<int32_t>(oracle.size()));
     for (int32_t i = 0; i < v.size(); ++i) ASSERT_TRUE(v[i] == oracle[i]);
+}
+
+TEST(paged_vector, replace_range_generated_matches_segmented_oracle) {
+    gl::GlobalMemoryManager m;
+    m.init(kPvCfg);
+    gl::LbArena a(&m);
+    gl::DirtyState d = gl::DirtyState::Clean;
+    gl::PagedVector<PvPod> v(&a, &d);
+    std::vector<PvPod> oracle;
+    for (int i = 0; i < 5200; ++i) {
+        const PvPod e = pod(i);
+        v.push_back(e);
+        oracle.push_back(e);
+    }
+    std::vector<PvPod> first, second;
+    for (int i = 0; i < 1700; ++i) first.push_back(pod(10000 + i));
+    for (int i = 0; i < 1900; ++i) second.push_back(pod(20000 + i));
+    constexpr int32_t pos = 900;
+    constexpr int32_t oldLen = 2500;
+    const int32_t newLen = static_cast<int32_t>(first.size() + second.size());
+    v.replaceRangeGenerated(pos, oldLen, newLen, [&](const auto& sink) {
+        sink(first.data(), static_cast<int32_t>(first.size()));
+        sink(second.data(), static_cast<int32_t>(second.size()));
+    });
+    oracle.erase(oracle.begin() + pos, oracle.begin() + pos + oldLen);
+    oracle.insert(oracle.begin() + pos, second.begin(), second.end());
+    oracle.insert(oracle.begin() + pos, first.begin(), first.end());
+    ASSERT_EQ(v.size(), static_cast<int32_t>(oracle.size()));
+    for (int32_t i = 0; i < v.size(); ++i) ASSERT_TRUE(v[i] == oracle[i]);
+    ASSERT_EQ(static_cast<int>(d),
+              static_cast<int>(gl::DirtyState::Restructured));
 }
 
 TEST(paged_vector, back_to_front_filter_erase) {

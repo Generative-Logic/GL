@@ -120,6 +120,8 @@
     <ClCompile Include="src\memory_infra\lb_arena.cpp" />
     <ClCompile Include="src\memory_infra\lb_store.cpp" />
     <ClCompile Include="src\memory_infra\lb_deload.cpp" />
+    <ClCompile Include="src\memory_infra\deload_stats.cpp" />
+    <ClCompile Include="src\memory_infra\extent_file.cpp" />
     <ClCompile Include="src\memory_infra\steward.cpp" />
     <ClCompile Include="src\memory_infra\scratch_arena.cpp" />
     <ClCompile Include="src\memory_infra\sealed_pages.cpp" />
@@ -141,6 +143,9 @@
     <ClCompile Include="src\tests\test_paged_vector.cpp" />
     <ClCompile Include="src\tests\test_lb_deload.cpp" />
     <ClCompile Include="src\tests\test_steward.cpp" />
+    <ClCompile Include="src\tests\test_deload_stats.cpp" />
+    <ClCompile Include="src\tests\test_raw_image.cpp" />
+    <ClCompile Include="src\tests\test_extent_file.cpp" />
     <ClCompile Include="src\tests\test_scratch_arena.cpp" />
     <ClCompile Include="src\tests\test_scratch_string.cpp" />
     <ClCompile Include="src\tests\test_sealed_pages.cpp" />
@@ -152,6 +157,7 @@
     <ClCompile Include="src\tests\test_lb_store.cpp" />
     <ClCompile Include="src\tests\test_simple_map_store.cpp" />
     <ClCompile Include="src\tests\test_reconstruct_implication.cpp" />
+    <ClCompile Include="src\tests\test_reverse_args_index.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\compiler.hpp" />
@@ -173,6 +179,8 @@
     <ClInclude Include="src\memory_infra\int_encoded_expr.hpp" />
     <ClInclude Include="src\memory_infra\lb_memory.hpp" />
     <ClInclude Include="src\memory_infra\lb_deload.hpp" />
+    <ClInclude Include="src\memory_infra\deload_stats.hpp" />
+    <ClInclude Include="src\memory_infra\extent_file.hpp" />
     <ClInclude Include="src\memory_infra\steward.hpp" />
     <ClInclude Include="src\memory_infra\scratch_arena.hpp" />
     <ClInclude Include="src\memory_infra\scratch_string.hpp" />
@@ -184,6 +192,7 @@
     <ClInclude Include="src\memory_infra\mail_types.hpp" />
     <ClInclude Include="src\memory_infra\cold_mail.hpp" />
     <ClInclude Include="src\memory_infra\paged_hash_index.hpp" />
+    <ClInclude Include="src\memory_infra\reverse_args_index.hpp" />
     <ClInclude Include="src\memory_infra\ptr_directory.hpp" />
     <ClInclude Include="src\memory_infra\cold_string_table.hpp" />
     <ClInclude Include="src\json.hpp" />

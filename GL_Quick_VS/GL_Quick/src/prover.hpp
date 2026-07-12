@@ -127,17 +127,19 @@ namespace gl {
         ProverParameters parameters;
 
         // Per-split-part submatch counter — THE hashburst work metric (replaces
-        // the former emitted-request count). Counts each preEvaluateFromEncoded
-        // match: a growing request allowed to add an expression (grow-DFS
-        // extensions + the merge step, both singles and pairs generators; seeds
-        // excluded since they add nothing). It drives BOTH the cap
-        // (BurstSink::canAccept and growBaseCandidates stop the burst once it
-        // reaches maxNumberHashRequests) AND the split policy (the busiest part's
-        // count is the fill-ratio numerator). performElem2 resets it to 0 at entry,
-        // so it is per-split-part (one performElem2 call == one part). partitionAccepts
-        // gates the match inside preEvaluateFromEncoded, so each part counts only
-        // the submatches it owns (id % splitCount == processID); a submatch whose
-        // owners span residues is counted by more than one part, which is fine.
+        // the former emitted-request count). Counts each match: a growing request
+        // allowed to add an expression. Two sites bump it — the grow-DFS subkey
+        // probe inside generateEncodedRequestsStatic, and the merge step's
+        // preEvaluateFromEncoded. Seeds are excluded since they add nothing. It
+        // drives BOTH the cap (BurstSink::canAccept stops the burst, and the
+        // grow-DFS bails on it, once a part reaches maxNumberHashRequests) AND the
+        // split policy (the busiest part's count is the fill-ratio numerator).
+        // performElem2 resets it to 0 at entry, so it is per-split-part (one
+        // performElem2 call == one part). partitionAccepts gates the match inside
+        // ownerKeyAccepts, so each part counts only the submatches it owns
+        // (id % splitCount == processID); a submatch whose owners span residues is
+        // counted by more than one part, which is fine. An empty stump (the CE
+        // filter) runs uncapped and unsplit, so nothing reads its tally.
         // thread_local: no shared write / race. See D-109.
         static thread_local int64_t g_growthMatchCount;
 
@@ -376,6 +378,31 @@ namespace gl {
         LbArena mailArena{ &mailMemory() };
         DirtyState mailDirty = DirtyState::Clean;
         MailLog mailLog{ &mailArena, &mailDirty };
+
+        // Mail-history telemetry. The grid-build scan sets the deterministic
+        // dormant count once all LBs exist. Rolling mode is fixed for the
+        // execution batch and is true only when that count is zero; otherwise
+        // full history remains available for dormant catch-up.
+        int dormantLogicBlocksAtGridBuild = 0;
+        bool rollingMailHistoryEnabled = false;
+
+        // Mail attribution telemetry. mailIn is concurrent during phase 1, so
+        // its simultaneous current/peak counters are atomic. Deloadable mailOut
+        // contributes to the MAIN pool, not the mail pool; its always-resident
+        // per-LB live-byte snapshots are summed after joins without cold loads.
+        std::atomic<int64_t> routingMailInBlocksInFlight{ 0 };
+        std::atomic<int64_t> peakRoutingMailInBlocks{ 0 };
+        int64_t peakDeloadableMailOutBytes = 0;
+
+        // Quiescent-burst skip (D-194). `warmUpPhase` is set
+        // around the warm-up prove() call so proveKernel forces every active LB
+        // into the sweep during warm-up (belt-and-suspenders — warm-up bursts are
+        // productive anyway). `lastSweptCount` / `lastSkippedCount` are the
+        // previous kernel's post-skip sweep size and the number of active LBs it
+        // skipped — telemetry only (Rule 16 / I-44), printed on the burst dt line.
+        bool warmUpPhase = false;
+        int lastSweptCount = 0;
+        int lastSkippedCount = 0;
 
         // LB object store (D-150): the Memory node shells live
         // in fixed-size slots carved from the never-deloaded LB-body pool instead
@@ -801,60 +828,180 @@ namespace gl {
         void applyFiringRecords(Memory& memoryBlock,
             SealedPageSet* const* parts, int32_t partCount);
 
-        // --- Static filter+mandatory over IntStmtView statement views ---
+        // --- Obligatory-stump builders over IntStmtView statement views ---
         int16_t makeMandatoryEncodedStatementLists1Static(
             const HashMemory& mem, const NameMap& nm,
             IntStmtView stmts,
-            int16_t* outIndices, int16_t maxOut);
+            Stump* outStumps, int16_t maxOut);
 
         int16_t makeMandatoryEncodedStatementLists2Static(
             const Memory& body, const HashMemory& mem,
             IntStmtView first,
             IntStmtView second,
-            MandatoryPair* outPairs, int16_t maxOut);
+            Stump* outStumps, int16_t maxOut);
 
-        // --- Static request generation (singles, sizeOne=1) ---
+        /// @brief THE request generator: grow base candidates, attach the
+        ///        obligatory stump, emit every request that lands on a whole key.
+        ///
+        /// @details
+        /// One function serves all three request-generation modes. They differ only
+        /// in @p stumpLen — the number of already-known statements every generated
+        /// request is obliged to contain:
+        ///
+        /// | `stumpLen` | mode | target key map | grow depth |
+        /// |---|---|---|---|
+        /// | 0 | counter-example filter | `normalizedEncodedKeys` | `maxKeyLength` |
+        /// | 1 | prover, mandatory single | `normalizedEncodedSubkeysMinusOne` | `maxKeyLength - 1` |
+        /// | 2 | prover, mandatory pair | `normalizedEncodedSubkeysMinusTwo` | `maxKeyLength - 2` |
+        ///
+        /// Four phases:
+        ///
+        /// 1. **Stump preparation.** Each stump's own elements are name-sorted and
+        ///    marked valid only when they are mutually scope-comparable. A stump of
+        ///    one element is trivially both. A stump of zero has no instances, so
+        ///    this phase and phases 2 and 4 do nothing at all.
+        /// 2. **Seed.** A stump that is already a complete key is emitted as a
+        ///    request on its own.
+        /// 3. **Grow.** The statement universe is filtered
+        ///    (`filterIntEncodedStatements`, widened to full keys exactly when the
+        ///    stump is empty) and name-sorted; a depth-first search then extends the
+        ///    empty candidate one statement at a time, in ascending name order, up
+        ///    to the grow depth. Per node it builds the normalized key once and
+        ///    probes two owner-set maps with it: `normalizedEncodedSubkeys` decides
+        ///    whether the candidate may grow further (and is the sole contributor to
+        ///    the `g_growthMatchCount` submatch tally, D-109), the target map decides
+        ///    whether it is recorded. A candidate with a stump must satisfy BOTH —
+        ///    it still has to be extended, so it must remain a growable subkey. A
+        ///    candidate with no stump is already the finished request and is emitted
+        ///    on the spot, which is what preserves the counter-example filter's
+        ///    contradiction early-exit.
+        ///
+        ///    Under a **stump split** (@p splitStumpCount > 0) the search is
+        ///    unchanged except that the split stump joins every candidate for the
+        ///    two probes. A growing candidate never carries it: the union is built
+        ///    per probe from two disjoint ascending runs — the search skips the
+        ///    stump's own statements — and dropped again, and only a candidate the
+        ///    target map accepts materialises the union into a `BaseCandidate`. The
+        ///    stump eats grow depth, so the search runs `splitStumpCount` levels
+        ///    shallower. The stump alone is probed once before the search: it is
+        ///    the one base candidate no growing candidate can reproduce, since
+        ///    unsplit it was recorded inside the loop of the candidate one level up
+        ///    and this sub-part never runs that loop. A terminal-only stump stops
+        ///    after this probe: it preserves a recordable shallow producer node,
+        ///    while the node's surviving children cover every larger candidate.
+        /// 4. **Merge.** Each base candidate is paired with each stump. The pairing
+        ///    is dropped when their scopes are not comparable or when a base element
+        ///    repeats a stump element (same `originalId` at a comparable scope).
+        ///    Otherwise the stump is appended to the base and the whole array is
+        ///    name-sorted by one stable sort — so a stump element that ties a base
+        ///    element on name sorts after it — then emitted if it lands on a whole
+        ///    key.
+        ///
+        /// @tparam Consumer  Streaming request sink; must expose `canAccept()` and
+        ///                   `consume(const StaticRequest&)`. `BurstSink` is the
+        ///                   only production instantiation.
+        /// @param body       Owning LB; supplies `nameMap` and `intEncodedStatements`.
+        /// @param intMemory  Reference hash memory: `maxKeyLength`, the four
+        ///                   `normalizedEncoded*` owner-set maps.
+        /// @param stumpLen   Obligatory stump length: 0, 1 or 2.
+        /// @param stumps     Stump array; `nullptr` iff @p stumpLen is 0.
+        /// @param stumpCount Number of stumps; 0 iff @p stumpLen is 0.
+        /// @param stumpSrc0  Source view for element 0 of each stump.
+        /// @param stumpSrc1  Source view for element 1; read only when @p stumpLen is 2.
+        /// @param splitStump The LB split's expression dimension: this sub-part's
+        ///                   stump plus its place among its siblings. Default-
+        ///                   constructed when the LB is not stump-split, and the
+        ///                   generator is then line-for-line the unsplit one. Never
+        ///                   an obligatory stump — see phase 3 below.
+        /// @param coreId     Per-slot scratch-arena / mailbox id.
+        /// @param consumer   Sink; a `false` from it ends generation immediately.
+        /// @invariant Every emitted request's `IntNormalizedKey::data` and premise
+        ///            copies live on the per-slot gen scratch arena and stay valid
+        ///            until the per-task `releaseAll`.
+        /// @invariant Heap-free: stack arrays plus the gen scratch arena's byte-bump
+        ///            and page tiers
+        ///            ([I-130](../../docs/agentic_swdd/30_invariants.md#i-130), Rule 28).
+        /// @invariant Writes no shared cross-LB state during the parallel phase
+        ///            ([I-28](../../docs/agentic_swdd/30_invariants.md#i-28),
+        ///            [I-83](../../docs/agentic_swdd/30_invariants.md#i-83)).
+        /// @invariant The owner-set prunes never drop a request that could fire
+        ///            ([I-70](../../docs/agentic_swdd/30_invariants.md#i-70),
+        ///            [I-79](../../docs/agentic_swdd/30_invariants.md#i-79)).
+        /// @see `filterIntEncodedStatements`, `requestGatesPass`, `ownerKeyAccepts`,
+        ///      `preEvaluateFromEncoded`, `StaticRequestEmitter`, `BurstSink`.
         template <typename Consumer>
         void generateEncodedRequestsStatic(
                 const Memory& body,
                 const HashMemory& intMemory,
-                const int16_t* mandatoryIndices, int16_t mandatoryCount,
-                IntStmtView mandatorySrcInt,
+                int16_t stumpLen,
+                const Stump* stumps, int16_t stumpCount,
+                IntStmtView stumpSrc0,
+                IntStmtView stumpSrc1,
+                const SplitStumpRef& splitStump,
                 unsigned coreId,
                 Consumer& consumer);
 
-        // --- Static request generation (pairs, sizeOne=2) ---
-        template <typename Consumer>
-        void generateEncodedRequestsStaticPairs(
-                const Memory& body,
-                const HashMemory& intMemory,
-                const MandatoryPair* pairs, int16_t pairCount,
-                IntStmtView firstSrcInt,
-                IntStmtView secondSrcInt,
-                unsigned coreId,
-                Consumer& consumer);
-
-        // --- Static request generation for CE mode (no mandatory) ---
-        template <typename Consumer>
-        void generateEncodedRequestsStaticCE(
-                const Memory& body,
-                const HashMemory& intMemory,
-                unsigned coreId,
-                Consumer& consumer);
-
-        // --- Common grow loop for Singles/Pairs (collects base candidates) ---
-        void growBaseCandidates(
-                const Memory& body,
-                const HashMemory& intMemory,
-                IntStmtView allIntStmts,
-                const int16_t* filteredIdx, int16_t nFiltered,
-                int16_t mainValidityId,
-                int targetLen,
-                // D-72: targetSubkeys is a cold owner-set blob map; the prune
-                // runs through ownerKeyAccepts.
-                const TypedColdBlobMap<NormKey, OwnerSet>& targetSubkeys,
-                unsigned coreId,
-                PagedVector<BaseCandidate>& baseCandidates);
+        /// @brief Build a straggler's whole-LB stump list — the base candidates
+        ///        `proveKernel` deals into `logicalCores` expression buckets.
+        ///
+        /// @details
+        /// This is the request generator run in a different mode: no obligatory
+        /// stump, all expressions, and the grow search stopped as soon as it
+        /// holds enough candidates. The round-1 PRODUCER task calls it at
+        /// `g_splitCount == 1`, so `filterIntEncodedStatements` (via
+        /// `ownerKeyAccepts` / `partitionAccepts`) prunes the statement universe to
+        /// the WHOLE LB's rules — the stumps span the LB's whole expression search.
+        /// It fires nothing; the buckets that run its stumps do the firing work.
+        ///
+        /// A stump is a candidate that **survives the filter**: its normalized
+        /// key is accepted by `normalizedEncodedSubkeys`, exactly as a growing
+        /// candidate is inside the search. The list is one uniform level:
+        ///
+        /// 1. Every expression surviving `filterIntEncodedStatements` is a
+        ///    1-stump. If that reaches @p target, stop.
+        /// 2. Otherwise **all** surviving 2-stumps replace them. A recordable
+        ///    1-stump is retained as terminal-only work; every other 1-stump is
+        ///    dropped because a surviving 2-stump contains it.
+        /// 3. Otherwise all surviving 3-stumps replace those, and so on, up to
+        ///    `min(MAX_EXPRESSIONS, maxKeyLength)` or until no candidate grows.
+        ///
+        /// A level overshoots @p target freely — the stump count is the LB's
+        /// sub-part count, and @p target is a floor, not a ceiling. Growth is
+        /// only ever reached when the filter yields fewer than @p target
+        /// expressions.
+        ///
+        /// **Terminal pre-stumps.** A stump of length `L` can only cover base
+        /// candidates of size `>= L`, since a sub-part's candidates are `C u S`.
+        /// Before replacing a level, the producer therefore probes the overall
+        /// hash memory's minus-one and minus-two maps. Every recordable node is
+        /// appended as a terminal-only stump, assigned to exactly one bucket, and
+        /// revalidated by each request batch against that batch's actual hash
+        /// memory. It may materialise its own `BaseCandidate` but never grows;
+        /// the replacement level covers all larger candidates. The producer only
+        /// detects work and fires nothing.
+        ///
+        /// @param body    Owning LB; supplies `nameMap` and `intEncodedStatements`.
+        /// @param coreId  Per-slot scratch-arena id.
+        /// @param target  Floor on the stump count; the growth trigger.
+        /// @param out     Task-owned sealed page set, `Filling`; receives one
+        ///                `ExpressionStump` record per stump, in candidate order.
+        /// @return Number of regular and terminal-only stumps appended — the
+        ///         bucket-deal work-item count.
+        /// @invariant Every expression surviving the filter lies inside at least
+        ///            one stump, so no base candidate of size `>= L` is orphaned.
+        /// @invariant Leaves `g_growthMatchCount` untouched: it probes through
+        ///            the non-counting `ownerKeyAccepts`, never
+        ///            `preEvaluateFromEncoded`, so the split policy's fill ratio
+        ///            still measures request generation alone (D-109).
+        /// @invariant Heap-free: stack arrays plus the gen scratch arena's page
+        ///            tier ([I-130](../../docs/agentic_swdd/30_invariants.md#i-130),
+        ///            Rule 28).
+        /// @invariant Read-only on @p body, like the burst it replaces
+        ///            ([I-83](../../docs/agentic_swdd/30_invariants.md#i-83)).
+        /// @see `generateEncodedRequestsStatic` — the consumer of these stumps.
+        /// @see `ExpressionStump`, `filterIntEncodedStatements`, `ownerKeyAccepts`.
+        int32_t produceExpressionStumps(const Memory& body, unsigned coreId,
+                                        int32_t target, SealedPageSet& out);
 
         /// @brief Enumerate all set partitions of @p elements into an arena CSR
         ///        of element INDICES — the heap-free twin of the former
@@ -1136,7 +1283,16 @@ namespace gl {
         /// @param coreId        Worker core id (passed to
         ///                      `checkLocalEncodedMemoryStatic`).
         /// @param processID     This executor's index `n` (0-based).
-        /// @param splitCount    Total executors `N` for this LB (`>= 1`).
+        /// @param splitCount    RULE-dimension executor count `N` for this LB
+        ///                      (`>= 1`; read by `partitionAccepts`). The
+        ///                      expression/bucket split keeps this `1` so every
+        ///                      rule is accepted.
+        /// @param partCount     Total concurrent parts of this LB this burst, in
+        ///                      EITHER dimension (`>= 1`). Sets the per-burst
+        ///                      `g_isMultiPart` (`= partCount > 1`) that gates the
+        ///                      burst early-exit (I-76) — distinct from
+        ///                      `splitCount`, because a whole-LB expression split
+        ///                      runs `partCount` bucket parts at `splitCount == 1`.
         /// @param sealedPages   This task's page set: record chain + the sealed
         ///                      strings/spans the records reference. Bound and
         ///                      `Filling` at entry; the caller seals it after
@@ -1149,83 +1305,87 @@ namespace gl {
         /// @return (void). The split-policy marker is this part's submatch count
         ///         (`g_growthMatchCount`, a preEvaluateFromEncoded-match tally),
         ///         read by the worker from the thread_local right after this call;
-        ///         `proveKernel`'s finalize reduces the LB's parts to the busiest
-        ///         part's count, which `adaptiveSplitDecision` consumes. The former
-        ///         emitted-request count no longer drives the cap or the split.
+        ///         `proveKernel` SUMS the LB's parts into its total work, which the
+        ///         end-of-iteration `isStraggler` pass consumes.
         /// @see `performElemPhase2` — the orchestrator that calls this and merges.
-        /// @see `adaptiveSplitDecision` — consumes the busiest part's submatch count.
-        /// @see `partitionAccepts`, `g_splitProcessID`, `g_splitCount`.
+        /// @see `isStraggler` — consumes the LB's summed submatch work.
+        /// @see `partitionAccepts`, `g_splitProcessID`, `g_splitCount`, `g_isMultiPart`.
+        /// @param splitStump  The LB split's expression dimension: this bucket part's
+        ///        stump, which every request it generates must contain, plus its
+        ///        place among its siblings (which the generator's seed phase reads).
+        ///        Default-constructed for an unsplit LB
+        ///        and for the counter-example filter. Handed to every
+        ///        request-generator call in the burst.
+        /// @see `produceExpressionStumps` — where a stump comes from.
         void performElem2(const Memory& body, unsigned coreId,
-            int processID, int splitCount,
+            int processID, int splitCount, int partCount,
+            const SplitStumpRef& splitStump,
             SealedPageSet& sealedPages,
             std::atomic<bool>& burstShouldStop);
 
-        /// @brief One LB's adaptive split decision — next part count + whether to
-        ///        re-run this iteration — from the busiest part's submatch count.
+        /// @brief Whether an LB is a straggler that should split into `cores`
+        ///        expression buckets next iteration — the split TRIGGER.
         ///
-        /// @details
-        /// The bang-bang policy: an LB is in one of two states — unsplit
-        /// (`numberOfParts == 1`) or fully split (`numberOfParts == fixedParts`).
-        /// The transitions, from the part count this burst ran at and its BUSIEST
-        /// part's submatch count:
-        /// - unsplit AND `maxSubmatches >= submatchCap` (the single part hit the
-        ///   cap, so its burst truncated) -> escalate to `fixedParts` AND set
-        ///   `redoNow` — the caller discards the truncated burst and re-runs the
-        ///   LB from scratch at `fixedParts` in the SAME iteration (so the
-        ///   APPLIED burst is always complete);
-        /// - split AND `maxSubmatches < fallbackRatio * submatchCap` (every part
-        ///   ran well under the cap) -> coarsen back to `1` for the NEXT
-        ///   iteration (`redoNow` false — this burst's result is kept);
-        /// - otherwise hold at `currentParts` (`redoNow` false).
-        /// `redoNow` is therefore true on exactly the escalation transition.
-        /// Pure function of its arguments — no LB or analyzer state read or
-        /// written; `static` so it is unit-testable without an
-        /// `ExpressionAnalyzer` instance.
+        /// @details The idle-core fair-share test. `totalWork / cores` is the
+        /// ideally-balanced per-core load for this iteration's active main-path LBs;
+        /// an LB whose own work exceeds it is, alone, a makespan bottleneck that
+        /// leaves cores idle, so parallelising it across `cores` is justified. The
+        /// second clause is the setup break-even (`minSplitWork`): below it a
+        /// bucket's share of the work is smaller than the fixed per-bucket setup, so
+        /// splitting provably cannot help — this suppresses splitting when the whole
+        /// iteration is trivially cheap. Fair-share is masking-resistant (one
+        /// straggler lifts the bar by only `work / cores`) and self-limiting (at
+        /// most `cores - 1` LBs can exceed it -> "a few"). Integer arithmetic only,
+        /// so the verdict is a deterministic function of the (deterministic) work
+        /// totals — the property that keeps two runs byte-identical. Pure function of
+        /// its arguments; `static` so it is unit-testable without an analyzer.
         ///
-        /// @param currentParts  The part count this burst ran at (the LB's
-        ///                      `numberOfParts`; `>= 1`).
-        /// @param maxSubmatches Busiest part's submatch count this burst
-        ///                      (`g_growthMatchCount`; `>= 0`).
-        /// @param submatchCap   `parameters.maxNumberHashRequests` — the per-part
-        ///                      submatch cap (`>= 1`).
-        /// @param fixedParts    `parameters.fixed_number_splits` — the escalation
-        ///                      target (`>= 1`).
-        /// @param fallbackRatio `parameters.split_fallback_ratio` — coarsen when
-        ///                      the busiest part is below this fraction of the cap
-        ///                      (`>= 0.0`).
-        /// @return `{nextParts, redoNow}`: the LB's part count going forward, and
-        ///         whether the caller must re-run this iteration's burst now.
-        /// @invariant `redoNow` implies `currentParts <= 1` and
-        ///            `nextParts == fixedParts` — so an already-split LB never
-        ///            redoes, bounding the re-split to one pass per LB per
-        ///            iteration (`I-75`).
-        /// @see `proveKernel` — drives the redo loop on `redoNow`.
-        /// @see `performElemPhase2` — applies the kept-burst transition.
-        /// @see `Memory::numberOfParts` — the per-LB state this drives.
-        struct SplitDecision { int nextParts; bool redoNow; };
-        static SplitDecision adaptiveSplitDecision(int currentParts, int maxSubmatches,
-            int submatchCap, int fixedParts, double fallbackRatio);
+        /// @param work         This LB's total work this iteration = sum of its
+        ///                     parts' submatch counts (split-invariant, D-117; `>= 0`).
+        /// @param totalWork    Sum of `work` over all active main-path LBs (`>= 0`).
+        /// @param cores        `logicalCores`, the split fan-out (`>= 1`).
+        /// @param minSplitWork `parameters.min_split_work`, the setup break-even
+        ///                     floor (`>= 0`).
+        /// @return `true` iff this LB should run as `cores` expression buckets next
+        ///         iteration; `false` to run it unsplit.
+        /// @see `proveKernel` — the end-of-iteration stats pass that calls this.
+        /// @see `Memory::numberOfParts` — the per-LB state this drives (1 or `cores`).
+        static bool isStraggler(int64_t work, int64_t totalWork,
+            int cores, int64_t minSplitWork);
 
-        /// @brief Hard ceiling on an LB's phase-2 part count — sizes the
-        ///        finalize's stack array of sealed part-set pointers.
+        /// @brief Hard ceiling on the number of phase-2 parts one LB may carry.
         ///
         /// @details
-        /// The bang-bang split policy runs an LB either unsplit (1 part) or at
-        /// `parameters.fixed_number_splits` parts (default 100), and
-        /// `adaptiveSplitDecision` never escalates beyond `fixed_number_splits`
-        /// (I-75) — so this named constant, checked once against the config at
-        /// `proveKernel` entry, covers every reachable part count. The finalize
-        /// hands `performElemPhase2` the LB's sealed part sets through a stack
-        /// `SealedPageSet* [kMaxSplitParts]` buffer; a config raising
-        /// `fixed_number_splits` past this ceiling trips the entry assert
-        /// LOUDLY (Rule 19) instead of overrunning the buffer — raise the
-        /// constant deliberately, never silently.
+        /// The one split dimension is the expression/bucket split: a straggler
+        /// runs at `logicalCores` buckets (the machine core count). This ceiling
+        /// bounds that fan-out, and it is large enough that hitting it means a
+        /// machine with more cores than the constant — deliberately raise it then,
+        /// never cap the split silently.
         ///
-        /// @invariant `parameters.fixed_number_splits <= kMaxSplitParts`,
-        ///            asserted at `proveKernel` entry before any phase-2 pass.
-        /// @see `adaptiveSplitDecision` — the policy that bounds part counts.
+        /// It bounds two things, both loudly (Rule 19): the entry check that
+        /// `logicalCores` fits, and the per-LB check in the finalize that the
+        /// pass's part count fits. The finalize's parts array itself is a reused
+        /// per-worker heap buffer sized to the LB's actual part count, not to this
+        /// constant — a stack array at this size would overflow the thread stack.
+        ///
+        /// @invariant `logicalCores <= kMaxSplitParts`, asserted at `proveKernel`
+        ///            entry before any phase-2 pass.
+        /// @invariant An LB's total part count in one pass never exceeds this,
+        ///            asserted per LB in the finalize.
         /// @see `performElemPhase2` — the parts-array consumer.
-        static constexpr int kMaxSplitParts = 128;
+        static constexpr int kMaxSplitParts = 16384;
+
+        /// @brief How many expression stumps a straggler's producer grows PER
+        ///        bucket, so the round-robin deal balances the buckets.
+        ///
+        /// @details A straggler splits into `logicalCores` expression buckets; the
+        /// round-1 producer (`produceExpressionStumps`) grows this many times
+        /// `logicalCores` base-candidate stumps, then `proveKernel` deals them
+        /// round-robin so each bucket holds ~this many stumps of varied grow-tree
+        /// size. A larger factor balances the buckets better at the cost of a longer
+        /// enumeration; `1` would give one stump per bucket (worst balance). Not a
+        /// correctness knob — the union of buckets is the whole search regardless.
+        static constexpr int kStumpsPerBucketTarget = 4;
 
         /// @brief Phase 2 finalize — merge one LB's flat executor parts and drain
         ///        the staged buffers.
@@ -1244,13 +1404,11 @@ namespace gl {
         /// algebra-admission and integration-prep buffers
         /// (`drainAdmissionKeysAlgebra` / `drainDeferredIntegrationPreps`) before
         /// phase 3's post-burst absorb. Single-LB — `proveKernel` runs it as an
-        /// across-LB sweep (I-28-safe), so it may freely mutate `body`. The
-        /// adaptive split decision (escalate / fall-back / discard-and-redo) lives
-        /// in `proveKernel`'s finalize via `adaptiveSplitDecision`, NOT here; a
-        /// burst flagged for re-split is never passed to this function (its
-        /// truncated records are discarded with their page sets, unread), so
-        /// `performElemPhase2` only ever
-        /// applies a COMPLETE burst (D-111).
+        /// across-LB sweep (I-28-safe), so it may freely mutate `body`. The split
+        /// decision (which LBs are stragglers next iteration) lives in
+        /// `proveKernel`'s end-of-iteration stats pass via `isStraggler`, NOT here;
+        /// every burst runs to completion, so `performElemPhase2` always applies a
+        /// COMPLETE burst (D-201).
         ///
         /// @param body      The LB being finalized.
         /// @param parts     This LB's sealed part sets in part order; the
@@ -1261,7 +1419,7 @@ namespace gl {
         /// @return (void)
         /// @see `performElem2` — the per-part executor that ran in the flat pool.
         /// @see `applyFiringRecords` — the canonical-order deposit merge.
-        /// @see `adaptiveSplitDecision` — the split policy (applied in `proveKernel`).
+        /// @see `isStraggler` — the split trigger (applied in `proveKernel`).
         void performElemPhase2(Memory& body,
             SealedPageSet* const* parts, int32_t partCount);
 
@@ -2434,6 +2592,9 @@ namespace gl {
         ///          former `std::vector<NormKey>` RMW.
         ///
         /// @param map    The secondary index (`Int16SetKey` -> a NormKey run).
+        /// @param rev    The derived reverse membership index for @p map,
+        ///               maintained in lockstep: one `appendEdge` when `nk` is
+        ///               newly added to `argSet`'s run (never on the dup no-op).
         /// @param argSet The remaining-arg id set (the key, ascending).
         /// @param nk     The normalized key to record under `argSet`.
         /// @param gArena Per-slot gen-scratch arena for the RMW (cursor/popTo
@@ -2445,6 +2606,7 @@ namespace gl {
         ///      RMW / raw-door siblings), Codec<Int16SetKey>, Codec<NormKey>.
         static void insertRemainingArgsNormKey(
                 TypedColdBlobMap<Int16SetKey, NormKey>& map,
+                ReverseArgsIndex& rev,
                 const std::set<int16_t>& argSet, const NormKey& nk,
                 ScratchArena& gArena) {
             assert(argSet.size()
@@ -2453,7 +2615,7 @@ namespace gl {
             int16_t argBuf[ExecutionParameters::MAX_KEY_SLOTS];
             int32_t argN = 0;
             for (const int16_t v : argSet) argBuf[argN++] = v;
-            insertRemainingArgsNormKey(map, argBuf, argN, nk.numberExpressions,
+            insertRemainingArgsNormKey(map, rev, argBuf, argN, nk.numberExpressions,
                 nk.data.empty() ? nullptr : nk.data.data(),
                 static_cast<int32_t>(nk.data.size()), gArena);
         }
@@ -2473,6 +2635,11 @@ namespace gl {
         /// install (I-83).
         ///
         /// @param map              The secondary index.
+        /// @param rev              The derived reverse membership index for
+        ///                         @p map; on the `!dup` insert this records one
+        ///                         `appendEdge(nk bytes -> the key's id)`, so the
+        ///                         reverse index stays exactly the inverse of the
+        ///                         forward runs (I-154).
         /// @param argSet           The remaining-arg id run (ascending).
         /// @param argN             The run length.
         /// @param numberExpressions The normalized key's leading count field.
@@ -2483,6 +2650,7 @@ namespace gl {
         ///      NormKey&, …) — the owning forwarder; encodeNormKeyInto.
         static void insertRemainingArgsNormKey(
                 TypedColdBlobMap<Int16SetKey, NormKey>& map,
+                ReverseArgsIndex& rev,
                 const int16_t* argSet, int32_t argN,
                 int16_t numberExpressions, const int16_t* nkData, int32_t nkDataN,
                 ScratchArena& gArena) {
@@ -2590,6 +2758,9 @@ namespace gl {
                 //    deload run content is byte-identical. A dup is the former set
                 //    no-op insert.
                 if (!dup) {
+                    // The forward-map key id, captured from whichever write door
+                    // runs — the reverse edge below records (nk bytes -> this id).
+                    int32_t writtenKeyId = 0;
                     const int32_t outCount = M + 1;
                     int64_t total = nkLen;
                     for (int32_t j = 0; j < M; ++j) total += recs[j].len;
@@ -2620,7 +2791,8 @@ namespace gl {
                             && at == static_cast<int32_t>(total)
                             && "insertRemainingArgsNormKey: concat diverged from "
                                "the computed frame");
-                        map.inner().assignRun(keyBytes, concat, lens, outCount);
+                        writtenKeyId =
+                            map.inner().assignRun(keyBytes, concat, lens, outCount);
                     } else {
                         // Widening path: assignRun with M==0 opens (or clears) k's
                         // run empty and returns its id; per-blob appendBlobToRun
@@ -2638,28 +2810,458 @@ namespace gl {
                             map.inner().appendBlobToRun(
                                 rid, gArena.resolve(br.off), br.len);
                         }
+                        writtenKeyId = rid;
+                    }
+                    // Reverse edge: nk was newly added to this key's run, so
+                    // record (nk bytes -> the key id). Never on the dup no-op
+                    // (this is the !dup branch), so the reverse chain stays
+                    // duplicate-free. nkBytes is still valid (gArena.popTo runs
+                    // below), and appendEdge copies the bytes into the reverse
+                    // interner's own byte pool.
+                    assert(writtenKeyId >= 1
+                        && "insertRemainingArgsNormKey: assignRun returned a "
+                           "null key id");
+                    rev.appendEdge(StrSpan(nkBytes, nkLen), writtenKeyId);
+                }
+            }
+            gArena.popTo(mark);
+        }
+
+        /// @brief One accumulated batch NormKey — a `Codec<NormKey>` byte blob on
+        ///        the caller's gen-scratch byte-bump tier.
+        ///
+        /// @details
+        /// The install-site permutation loop copies each permutation's normalized
+        /// key (`Codec<NormKey>` bytes: `int16 numberExpressions ++ int16 length
+        /// ++ length×int16 data`) onto the byte-bump tier and records its
+        /// `(offset, len)` here; the whole run is then handed to
+        /// @ref insertRemainingArgsNormKeyBatch. The byte tier survives the loop's
+        /// self-framing helpers (`appendLmvIdsRecord`), so the blobs stay valid
+        /// until the batch call.
+        ///
+        /// @see @ref insertRemainingArgsNormKeyBatch.
+        struct RemArgsBatchBlob {
+            /// @brief Byte-bump offset of the serialized NormKey blob.
+            ArenaOffset off;
+            /// @brief Blob byte length.
+            int32_t len;
+        };
+
+        /// @brief Install a WHOLE BATCH of normalized keys into one
+        ///        `Int16SetKey` key's run in ONE read-modify-write — the batched
+        ///        peer of @ref insertRemainingArgsNormKey.
+        ///
+        /// @details
+        /// The install-site permutation loops emit many normalized keys under the
+        /// SAME (loop-invariant) remaining-arg key; feeding them one at a time
+        /// pays a whole-run RMW (peek → sorted splice → `assignRun` → blob-pool
+        /// tail memmove) PER record. This collapses them into ONE: peek the
+        /// existing run ONCE, sorted-unique-merge it with the (sorted-unique)
+        /// batch ONCE, and write it back with ONE `assignRun` (contiguous) or
+        /// ONE `assignRunGenerated` (a segmented run wider than one arena block).
+        ///
+        /// Byte-identical to N sequential @ref insertRemainingArgsNormKey calls
+        /// (the retained per-record path is the oracle): the final run is the
+        /// sorted-unique union of the existing run and the batch — order-
+        /// independent, so the stored bytes match regardless of how the union is
+        /// assembled; the comparator is the same `(numberExpressions, data)` lex
+        /// (a comparator tie is byte-equal by `Codec<NormKey>` injectivity,
+        /// asserted). A reverse edge is appended for each record that is NEW
+        /// (present in the batch, absent from the existing run) — exactly the
+        /// records the sequential path's `!dup` branch would edge, so the reverse
+        /// index answer is identical (its chain order is not observable). When no
+        /// record is new (every batch key already present), the run is unchanged
+        /// and NO `assignRun` runs — matching the sequential all-dup no-op.
+        ///
+        /// Single-threaded install only (I-83). Zero heap: the batch blobs, the
+        /// peeked-run descriptors, the sort columns, and the merged concat all
+        /// ride @p gArena.
+        ///
+        /// @param map    The secondary index (`Int16SetKey` -> a NormKey run).
+        /// @param rev    The derived reverse membership index for @p map; one
+        ///               `appendEdge` per NEW record.
+        /// @param argSet The shared remaining-arg key id run (ascending).
+        /// @param argN   The key run length.
+        /// @param batch  The accumulated NormKey blobs (byte-bump `(off,len)` on
+        ///               @p gArena), in permutation order; may contain duplicates.
+        /// @param gArena Per-slot gen-scratch arena carrying the batch blobs and
+        ///               the RMW scratch (`cursor`/`popTo` framed here).
+        /// @invariant The run stays sorted-unique by `(numberExpressions, data)`;
+        ///            a comparator-equal pair is byte-equal (asserted).
+        /// @see @ref insertRemainingArgsNormKey (the per-record oracle),
+        ///      @ref RemArgsBatchBlob, `ReverseArgsIndex`.
+        static void insertRemainingArgsNormKeyBatch(
+                TypedColdBlobMap<Int16SetKey, NormKey>& map,
+                ReverseArgsIndex& rev,
+                const int16_t* argSet, int32_t argN,
+                const PagedVector<RemArgsBatchBlob>& batch,
+                ScratchArena& gArena) {
+            const int32_t batchN = batch.size();
+            if (batchN == 0) return;   // no keys accumulated (all permutations
+                                       // skipped) — a defined no-op, not a fallback
+            const ArenaOffset mark = gArena.cursor();
+
+            // 1. Int16SetKey bytes (count ++ ascending ids) — byte-identical to
+            //    Codec<Int16SetKey>::encode, exactly as the per-record path.
+            assert(argN >= 0 && argN <= ExecutionParameters::MAX_KEY_SLOTS
+                && "insertRemainingArgsNormKeyBatch: argSet exceeds MAX_KEY_SLOTS");
+            int16_t keyBuf[1 + ExecutionParameters::MAX_KEY_SLOTS];
+            int32_t kn = 0;
+            keyBuf[kn++] = static_cast<int16_t>(argN);
+            for (int32_t i = 0; i < argN; ++i) keyBuf[kn++] = argSet[i];
+            const StrSpan keyBytes(reinterpret_cast<const char*>(keyBuf),
+                kn * static_cast<int32_t>(sizeof(int16_t)));
+
+            // Compare two serialized NormKey blobs by (numberExpressions, then
+            // data lexicographic) — the per-record path's `less` twin.
+            const auto blobCmp = [](const char* a, int32_t aLen,
+                                    const char* b, int32_t bLen) -> int {
+                int16_t neA = 0, neB = 0;
+                std::memcpy(&neA, a, sizeof(int16_t));
+                std::memcpy(&neB, b, sizeof(int16_t));
+                if (neA != neB) return (neA < neB) ? -1 : 1;
+                const int32_t nA =
+                    aLen / static_cast<int32_t>(sizeof(int16_t)) - 2;
+                const int32_t nB =
+                    bLen / static_cast<int32_t>(sizeof(int16_t)) - 2;
+                const int32_t nMin = (nA < nB) ? nA : nB;
+                for (int32_t i = 0; i < nMin; ++i) {
+                    int16_t da = 0, db = 0;
+                    std::memcpy(&da, a + sizeof(int16_t) * (i + 2), sizeof(int16_t));
+                    std::memcpy(&db, b + sizeof(int16_t) * (i + 2), sizeof(int16_t));
+                    if (da != db) return (da < db) ? -1 : 1;
+                }
+                if (nA != nB) return (nA < nB) ? -1 : 1;   // shorter is less
+                return 0;
+            };
+            {
+                // 2. Cache the paged batch descriptors into contiguous byte-bump
+                //    columns, sort an index over those columns, then compact
+                //    comparator-equal duplicates in that same index. std::sort's
+                //    O(N log N) comparator must not repeatedly resolve the paged
+                //    source. Each column has the same one-block bound as the
+                //    former contiguous index.
+                int32_t* bidx = reinterpret_cast<int32_t*>(gArena.resolve(
+                    gArena.alloc(batchN * static_cast<int32_t>(sizeof(int32_t)),
+                                 static_cast<int32_t>(alignof(int32_t)))));
+                ArenaOffset* batchOffs = reinterpret_cast<ArenaOffset*>(
+                    gArena.resolve(gArena.alloc(
+                        batchN * static_cast<int32_t>(sizeof(ArenaOffset)),
+                        static_cast<int32_t>(alignof(ArenaOffset)))));
+                int32_t* batchLens = reinterpret_cast<int32_t*>(gArena.resolve(
+                    gArena.alloc(batchN * static_cast<int32_t>(sizeof(int32_t)),
+                                 static_cast<int32_t>(alignof(int32_t)))));
+                for (int32_t i = 0; i < batchN; ++i) {
+                    bidx[i] = i;
+                    batchOffs[i] = batch[i].off;
+                    batchLens[i] = batch[i].len;
+                }
+                const auto resolveBatch = [&](int32_t j) -> const char* {
+                    return reinterpret_cast<const char*>(
+                        gArena.resolve(batchOffs[j]));
+                };
+                std::sort(bidx, bidx + batchN, [&](int32_t a, int32_t b) {
+                    return blobCmp(resolveBatch(a), batchLens[a],
+                                   resolveBatch(b), batchLens[b]) < 0;
+                });
+                int32_t dN = 0;
+                for (int32_t k = 0; k < batchN; ++k) {
+                    const int32_t j = bidx[k];
+                    if (dN > 0) {
+                        const int32_t prev = bidx[dN - 1];
+                        if (blobCmp(resolveBatch(prev), batchLens[prev],
+                                    resolveBatch(j), batchLens[j]) == 0) {
+                            assert(batchLens[prev] == batchLens[j]
+                                && std::memcmp(resolveBatch(prev), resolveBatch(j),
+                                    static_cast<std::size_t>(batchLens[j])) == 0
+                                && "comparator-equal NormKey blobs differ in bytes "
+                                   "— Codec injectivity broken");
+                            continue;   // dup within batch — one edge, not two
+                        }
+                    }
+                    bidx[dN++] = j;
+                }
+
+                // 3. Merge-count pass. Walk the existing run in place and mark
+                //    which sorted batch records are genuinely new. No paged
+                //    BlobRec/MergedRec scratch is materialized: this pass computes
+                //    the exact output shape, and the write pass replays the same
+                //    canonical two-pointer merge directly into its destination.
+                char* batchNew = reinterpret_cast<char*>(gArena.resolve(
+                    gArena.alloc(dN, 1)));
+                std::memset(batchNew, 0, static_cast<std::size_t>(dN));
+                const int32_t existId = map.inner().lookup(keyBytes);
+                const int32_t M = (existId != 0) ? map.runLen(existId) : 0;
+                int32_t k = 0;
+                int32_t newCount = 0;
+                int64_t total = 0;
+                if (M > 0) {
+                    map.inner().forEachBlobContiguous(
+                        existId, gArena,
+                        [&](const char* existingPtr, int32_t existingLen) {
+                        while (k < dN) {
+                            const int32_t bj = bidx[k];
+                            const int cmp = blobCmp(
+                                existingPtr, existingLen,
+                                resolveBatch(bj), batchLens[bj]);
+                            if (cmp < 0) break;
+                            if (cmp == 0) {
+                                assert(existingLen == batchLens[bj]
+                                    && std::memcmp(
+                                        existingPtr, resolveBatch(bj),
+                                        static_cast<std::size_t>(batchLens[bj])) == 0
+                                    && "comparator-equal NormKey blobs differ in "
+                                       "bytes — Codec injectivity broken");
+                                ++k;
+                                break;
+                            }
+                            batchNew[k] = 1;
+                            total += batchLens[bj];
+                            ++newCount;
+                            ++k;
+                        }
+                        total += existingLen;
+                    });
+                }
+                while (k < dN) {
+                    const int32_t bj = bidx[k];
+                    batchNew[k] = 1;
+                    total += batchLens[bj];
+                    ++newCount;
+                    ++k;
+                }
+
+                // 4. Nothing new -> the run is unchanged; skip the write entirely
+                //    (the sequential all-dup no-op). This also covers an existing
+                //    key whose every batch record was already present.
+                if (newCount == 0) {
+                    gArena.popTo(mark);
+                    return;
+                }
+
+                const int32_t outCount = M + newCount;
+                assert(total <= 0x7fffffffLL
+                    && "insertRemainingArgsNormKeyBatch: merged run exceeds the "
+                       "int32 blob-pool address space");
+
+                // Replay the canonical merge straight from the resident map into
+                // a caller sink. The map remains unchanged throughout this replay,
+                // so its direct pool views are valid until assignRun begins.
+                const auto emitMergedFromMap = [&](const auto& sink) {
+                    int32_t bk = 0, emitted = 0;
+                    if (M > 0) {
+                        map.inner().forEachBlobContiguous(
+                            existId, gArena, [&](const char* ep, int32_t el) {
+                            while (bk < dN) {
+                                const int32_t bj = bidx[bk];
+                                const int cmp = blobCmp(
+                                    ep, el, resolveBatch(bj), batchLens[bj]);
+                                if (cmp < 0) break;
+                                if (cmp == 0) {
+                                    assert(batchNew[bk] == 0);
+                                    ++bk;
+                                    break;
+                                }
+                                assert(batchNew[bk] != 0);
+                                sink(resolveBatch(bj), batchLens[bj]);
+                                ++bk; ++emitted;
+                            }
+                            sink(ep, el);
+                            ++emitted;
+                        });
+                    }
+                    while (bk < dN) {
+                            assert(batchNew[bk] != 0);
+                            const int32_t bj = bidx[bk++];
+                            sink(resolveBatch(bj), batchLens[bj]);
+                            ++emitted;
+                    }
+                    assert(emitted == outCount
+                        && "insertRemainingArgsNormKeyBatch: replay count diverged");
+                };
+
+                // 5. Write the merged run back. A one-block result is emitted
+                //    directly into concat+lens. An over-block result first
+                //    preserves the existing source records in a linked scratch
+                //    chain, then replays that chain through assignRunGenerated.
+                int32_t writtenKeyId = 0;
+                if (total <= ExecutionParameters::kMaxAdmissionRunBytes) {
+                    const ArenaOffset concatOff =
+                        gArena.alloc(static_cast<int32_t>(total), 1);
+                    const ArenaOffset lensOff = gArena.alloc(
+                        outCount * static_cast<int32_t>(sizeof(int32_t)),
+                        static_cast<int32_t>(alignof(int32_t)));
+                    char* concat = reinterpret_cast<char*>(gArena.resolve(concatOff));
+                    int32_t* lens = reinterpret_cast<int32_t*>(gArena.resolve(lensOff));
+                    int32_t at = 0, record = 0;
+                    emitMergedFromMap([&](const char* ptr, int32_t len) {
+                        std::memcpy(concat + at, ptr,
+                                    static_cast<std::size_t>(len));
+                        lens[record++] = len;
+                        at += len;
+                    });
+                    assert(at == static_cast<int32_t>(total) && record == outCount
+                        && "insertRemainingArgsNormKeyBatch: concat diverged from "
+                           "the computed frame");
+                    writtenKeyId = (existId != 0)
+                        ? map.inner().assignRunAtId(
+                            existId, concat, lens, outCount)
+                        : map.inner().assignRun(
+                            keyBytes, concat, lens, outCount);
+                } else {
+                    struct PreservedRec {
+                        ArenaOffset next;
+                        int32_t len;
+                    };
+                    ArenaOffset firstOff = 0, previousOff = 0;
+                    int32_t preserved = 0;
+                    if (M > 0) map.inner().forEachBlobContiguous(
+                        existId, gArena,
+                        [&](const char* source, int32_t len) {
+                        const ArenaOffset off = gArena.alloc(
+                            static_cast<int32_t>(sizeof(PreservedRec)) + len,
+                            static_cast<int32_t>(alignof(PreservedRec)));
+                        PreservedRec* rec = reinterpret_cast<PreservedRec*>(
+                            gArena.resolve(off));
+                        rec->len = len;
+                        std::memcpy(rec + 1, source,
+                                    static_cast<std::size_t>(len));
+                        if (preserved == 0) firstOff = off;
+                        else {
+                            PreservedRec* previous =
+                                reinterpret_cast<PreservedRec*>(
+                                    gArena.resolve(previousOff));
+                            previous->next = off;
+                        }
+                        previousOff = off;
+                        ++preserved;
+                    });
+                    assert(preserved == M
+                        && "insertRemainingArgsNormKeyBatch: preserved scan "
+                           "count diverged");
+                    const auto emitMergedPreserved = [&](const auto& sink) {
+                        int32_t ei = 0, bk = 0, emitted = 0;
+                        ArenaOffset currentOff = firstOff;
+                        const PreservedRec* rec = nullptr;
+                        bool loaded = false;
+                        while (ei < M || bk < dN) {
+                            if (ei < M && !loaded) {
+                                rec = reinterpret_cast<const PreservedRec*>(
+                                    gArena.resolve(currentOff));
+                                loaded = true;
+                            }
+                            const char* ep = loaded
+                                ? reinterpret_cast<const char*>(rec + 1) : nullptr;
+                            const int32_t el = loaded ? rec->len : 0;
+                            int cmp;
+                            if (ei >= M) cmp = 1;
+                            else if (bk >= dN) cmp = -1;
+                            else {
+                                const int32_t bj = bidx[bk];
+                                cmp = blobCmp(ep, el, resolveBatch(bj), batchLens[bj]);
+                            }
+                            if (cmp < 0 || cmp == 0) {
+                                if (cmp == 0) {
+                                    assert(batchNew[bk] == 0);
+                                    ++bk;
+                                }
+                                sink(ep, el);
+                                ++ei; ++emitted;
+                                if (ei < M) currentOff = rec->next;
+                                loaded = false;
+                            } else {
+                                assert(batchNew[bk] != 0);
+                                const int32_t bj = bidx[bk++];
+                                sink(resolveBatch(bj), batchLens[bj]);
+                                ++emitted;
+                            }
+                        }
+                        assert(emitted == outCount
+                            && "insertRemainingArgsNormKeyBatch: preserved replay "
+                               "count diverged");
+                    };
+                    writtenKeyId = (existId != 0)
+                        ? map.inner().assignRunGeneratedAtId(
+                            existId, outCount, static_cast<int32_t>(total),
+                            emitMergedPreserved)
+                        : map.inner().assignRunGenerated(
+                            keyBytes, outCount, static_cast<int32_t>(total),
+                            emitMergedPreserved);
+                }
+
+                // 6. Reverse edges: one per NEW record (batch-only), all pointing
+                //    at this key's id — exactly the edges the sequential !dup path
+                //    would append.
+                assert(writtenKeyId >= 1
+                    && "insertRemainingArgsNormKeyBatch: assignRun returned a "
+                       "null key id");
+                for (int32_t j = 0; j < dN; ++j) {
+                    if (batchNew[j] != 0) {
+                        const int32_t bj = bidx[j];
+                        rev.appendEdge(StrSpan(resolveBatch(bj), batchLens[bj]),
+                                       writtenKeyId);
                     }
                 }
             }
             gArena.popTo(mark);
         }
 
-        /// Full pre-evaluate from IntEncodedExpr pointer array. Zero string ops.
-        /// mainValidityId = NameMap::MAIN_ID (== 1, guaranteed by NameMap ctor).
-        inline std::pair<bool, IntNormalizedKey>
-            preEvaluateFromEncoded(const IntEncodedExpr* const* exprs, int16_t count,
-                const Memory& body, int16_t mainValidityId,
-                // D-72: keySet is a cold owner-set blob map (NormKey ->
-                // one OwnerSet blob per key). The prune (lookup + the three byte
-                // predicates) runs through ownerKeyAccepts below.
-                const TypedColdBlobMap<NormKey, OwnerSet>& keySet,
-                // The accepted key is stored on this slot's gen scratch arena
-                // (byte-bump): transient when the grow-DFS caller only probes
-                // ownerKeyAccepts (BaseCandidate keeps indices, not the key, so
-                // the ArenaStack unwind reclaims it harmlessly), persistent when
-                // the merge / seed caller hands it to emit (allocated outside any
-                // live ArenaStack, freed by the per-task releaseAll).
-                ScratchArena& genArena) {
+        /// @brief The three map-independent request-shape gates: hypothesis-scope
+        ///        consensus, distinct-secondary-variable cap, key length.
+        ///
+        /// @details
+        /// A candidate request is a name-sorted array of premise pointers. Before
+        /// any owner-set map is probed it must clear three cheap checks, each of
+        /// which is a necessary condition for the request to fire:
+        ///
+        /// 1. **Hypothesis-scope consensus.** All hypothetical premises must share
+        ///    one `validityId` — a request straddling two hypothesis scopes can
+        ///    never fire. When a hypothesis is present the request may not exceed
+        ///    `parameters.maxLenHypoKey`, and every remaining premise must either
+        ///    sit at that hypothesis scope or be a `main`-scope anchor.
+        /// 2. **Distinct secondary variables.** The number of DISTINCT secondary
+        ///    variables across the whole request (`argIteration > -1`, products of
+        ///    recursion excluded) may not exceed
+        ///    `parameters.maxNumberSecondaryVariables`. Dedup is by `argFullId`, so
+        ///    one variable occurring in several premises counts once.
+        /// 3. **Length.** The request may not be longer than the LB's longest
+        ///    installed key (`overallHashMemory.maxKeyLength`).
+        ///
+        /// Split out of `preEvaluateFromEncoded` so the request generator's grow
+        /// loop can run the gates once, build the normalized key once, and then
+        /// probe TWO owner-set maps with that one key — the subkey map that decides
+        /// whether the candidate may grow, and the target map that decides whether
+        /// it is recorded — instead of paying for two full pre-evaluations (which
+        /// would also double-count the submatch tally). `preEvaluateFromEncoded` is
+        /// exactly this predicate followed by key-build, one `ownerKeyAccepts`
+        /// probe, the arena copy of the accepted key, and the tally bump.
+        ///
+        /// The distinct-secondary dedup runs on a stack array sized by
+        /// `(MAX_EXPRESSIONS + 2) * MAX_ARITY`: the distinct count is tiny in
+        /// practice (2-3), so a linear insert-if-absent beats a hash set's per-node
+        /// allocation on the hottest burst path. Overflow is a loud assert, never a
+        /// truncation.
+        ///
+        /// @param exprs           Premise pointers, name-sorted; pairwise scope
+        ///                        comparability is the caller's precondition.
+        /// @param count           Premise count (`>= 1`).
+        /// @param body            Owning LB — read for `overallHashMemory`'s
+        ///                        `maxKeyLength` and `productsOfRecursionIds`.
+        /// @param mainValidityId  `NameMap::MAIN_ID`; anchors at this scope are
+        ///                        admitted alongside a hypothesis scope.
+        /// @return `true` when the request may be probed against an owner-set map;
+        ///         `false` when it can never fire and must be dropped.
+        /// @invariant Reads only `const` LB state and touches no arena, so it is
+        ///            safe on the shared read-only LB that the phase-2 split parts
+        ///            run over in parallel
+        ///            ([I-83](../../docs/agentic_swdd/30_invariants.md#i-83)).
+        /// @invariant Allocates nothing — bounded stack scratch only
+        ///            ([I-130](../../docs/agentic_swdd/30_invariants.md#i-130)).
+        /// @see `preEvaluateFromEncoded` — the probing caller.
+        /// @see `ownerKeyAccepts` — the map probe the gates precede.
+        inline bool requestGatesPass(const IntEncodedExpr* const* exprs,
+                                     int16_t count, const Memory& body,
+                                     int16_t mainValidityId) const {
 
             // Hypo validity check
             int16_t hypoValidityId = -1;
@@ -2667,7 +3269,7 @@ namespace gl {
             for (int16_t i = 0; i < count; ++i) {
                 if (exprs[i]->isHypo) {
                     if (foundHypo && exprs[i]->validityId != hypoValidityId) {
-                        return std::make_pair(false, IntNormalizedKey());
+                        return false;
                     }
                     hypoValidityId = exprs[i]->validityId;
                     foundHypo = true;
@@ -2675,12 +3277,12 @@ namespace gl {
             }
             if (foundHypo) {
                 if (count > parameters.maxLenHypoKey) {
-                    return std::make_pair(false, IntNormalizedKey());
+                    return false;
                 }
                 for (int16_t i = 0; i < count; ++i) {
                     if (exprs[i]->validityId == hypoValidityId) continue;
                     if (exprs[i]->validityId == mainValidityId && exprs[i]->isAnchor) continue;
-                    return std::make_pair(false, IntNormalizedKey());
+                    return false;
                 }
             }
 
@@ -2721,11 +3323,37 @@ namespace gl {
                 }
             }
             if (secondaryCounter > parameters.maxNumberSecondaryVariables) {
-                return std::make_pair(false, IntNormalizedKey());
+                return false;
             }
 
             // Length check
             if (count > body.overallHashMemory.maxKeyLength) {
+                return false;
+            }
+
+            return true;
+        }
+
+        /// Full pre-evaluate from IntEncodedExpr pointer array. Zero string ops.
+        /// mainValidityId = NameMap::MAIN_ID (== 1, guaranteed by NameMap ctor).
+        inline std::pair<bool, IntNormalizedKey>
+            preEvaluateFromEncoded(const IntEncodedExpr* const* exprs, int16_t count,
+                const Memory& body, int16_t mainValidityId,
+                // D-72: keySet is a cold owner-set blob map (NormKey ->
+                // one OwnerSet blob per key). The prune (lookup + the three byte
+                // predicates) runs through ownerKeyAccepts below.
+                const TypedColdBlobMap<NormKey, OwnerSet>& keySet,
+                // The accepted key is stored on this slot's gen scratch arena
+                // (byte-bump): transient when the grow-DFS caller only probes
+                // ownerKeyAccepts (BaseCandidate keeps indices, not the key, so
+                // the ArenaStack unwind reclaims it harmlessly), persistent when
+                // the merge / seed caller hands it to emit (allocated outside any
+                // live ArenaStack, freed by the per-task releaseAll).
+                ScratchArena& genArena) {
+
+            // Hypo scope, distinct-secondary cap, length — the map-independent
+            // request-shape gates.
+            if (!requestGatesPass(exprs, count, body, mainValidityId)) {
                 return std::make_pair(false, IntNormalizedKey());
             }
 
@@ -4813,19 +5441,54 @@ namespace gl {
             return counter;
         }
 
-        /// Static filter: works on an IntStmtView, returns passing indices.
-        /// No heap allocation. outIndices must have room for size() entries.
+        /// @brief Statement pre-filter for request generation: keep the statements
+        ///        that can appear in a request at all.
+        ///
+        /// @details
+        /// Builds each statement's single-element normalized key on the stack and
+        /// keeps the statement when an owner of that key is at a comparable scope
+        /// with satisfiable `u_` literals (`ownerKeyAccepts`), and when its
+        /// `maxIteration` is within `parameters.maxIterationNumberVariable`.
+        ///
+        /// Which key map decides acceptance depends on the obligatory stump the
+        /// caller will attach:
+        ///
+        /// - **Non-empty stump** (`alsoAcceptFullKeys == false`) — a surviving
+        ///   statement must be *growable*, so only `normalizedEncodedSubkeys`
+        ///   accepts it. This is the main prover's singles and pairs generation.
+        /// - **Empty stump** (`alsoAcceptFullKeys == true`) — a statement may
+        ///   itself be a complete request, so `normalizedEncodedKeys` accepts it
+        ///   too: the gate is the UNION of the subkey and full-key maps. This is
+        ///   the counter-example filter, where no element is obligatory.
+        ///
+        /// Both probes run before the verdict (no short-circuit visible to the
+        /// caller); `ownerKeyAccepts` is a pure lookup-plus-byte-peek, so this is
+        /// only a cost question, never a behaviour one.
+        ///
+        /// @param stmts              The statement universe to filter.
+        /// @param mem                Reference hash memory supplying the two owner-set
+        ///                           maps.
+        /// @param nm                 Scope name map, for the comparability predicate.
+        /// @param alsoAcceptFullKeys Widen the gate with `normalizedEncodedKeys`.
+        ///                           True exactly when the stump length is 0.
+        /// @param outIndices         Caller buffer receiving the surviving indices
+        ///                           into @p stmts, in ascending index order.
+        /// @param maxOut             Capacity of @p outIndices.
+        /// @return Number of surviving indices written to @p outIndices.
+        /// @invariant The prune is a sound over-approximation of the firing gate —
+        ///            it never drops a statement that could take part in a firing
+        ///            request ([I-70](../../docs/agentic_swdd/30_invariants.md#i-70),
+        ///            [I-79](../../docs/agentic_swdd/30_invariants.md#i-79)).
+        /// @invariant Allocates nothing — stack scratch only
+        ///            ([I-130](../../docs/agentic_swdd/30_invariants.md#i-130)).
+        /// @see `generateEncodedRequestsStatic` — the sole consumer.
+        /// @see `ownerKeyAccepts`.
+        ///
         /// Body lives in memory.cpp.
         int16_t filterIntEncodedStatements(
             IntStmtView stmts,
             const HashMemory& mem, const NameMap& nm,
-            int16_t* outIndices, int16_t maxOut);
-
-        /// CE filter: accepts statements that appear in subkeys OR full keys.
-        /// Body lives in filter.cpp.
-        int16_t filterIntEncodedStatementsCE(
-            IntStmtView stmts,
-            const HashMemory& mem, const NameMap& nm,
+            bool alsoAcceptFullKeys,
             int16_t* outIndices, int16_t maxOut);
 
         inline std::pair<std::string, std::string>
@@ -8438,7 +9101,7 @@ namespace gl {
                         // The span-record doors replace the if() check, handling
                         // both the max origin limits and preventing duplicates.
                         addOriginEncoded(mb.exprOriginMap, mb.originInterner, keySpan, StrSpan(validityName), OriginTag::expansionForIntegration, ieDeps, 1, ieCap);
-                        addRoutingMailOrigin(mb.mailOut, mb.originInterner, keySpan, StrSpan(validityName), OriginTag::expansionForIntegration, ieDeps, 1, ieCap);
+                        mb.addMailOutOrigin(keySpan, StrSpan(validityName), OriginTag::expansionForIntegration, ieDeps, 1, ieCap);
                     }
 
                     for (int32_t i = 0; i < renamedChainN - 1; ++i) {
@@ -8473,7 +9136,7 @@ namespace gl {
 
                             const int peCap = (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr);
                             addOriginEncoded(mb.exprOriginMap, mb.originInterner, elem, StrSpan(scopeValidity), OriginTag::premiseElement, peDeps, 1, peCap);
-                            addRoutingMailOrigin(mb.mailOut, mb.originInterner, elem, StrSpan(scopeValidity), OriginTag::premiseElement, peDeps, 1, peCap);
+                            mb.addMailOutOrigin(elem, StrSpan(scopeValidity), OriginTag::premiseElement, peDeps, 1, peCap);
                         }
 
                         this->addExprToMemoryBlock(elem, mb, -1, 0, nullptr, 0, originPremiseElement, -1, -1, StrSpan(scopeValidity), false);
@@ -8603,7 +9266,7 @@ namespace gl {
                                 { ogGoalOf(StrSpan(cleanSignatureS)), StrSpan(validityName) } };
                             const int ogCap = (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr);
                             addOriginEncoded(mb.exprOriginMap, mb.originInterner, ogKey, StrSpan(validityName), OriginTag::expansionForIntegration, ogDeps, 1, ogCap);
-                            addRoutingMailOrigin(mb.mailOut, mb.originInterner, ogKey, StrSpan(validityName), OriginTag::expansionForIntegration, ogDeps, 1, ogCap);
+                            mb.addMailOutOrigin(ogKey, StrSpan(validityName), OriginTag::expansionForIntegration, ogDeps, 1, ogCap);
                         }
 
                         // Assumptions: ¬a_j for every j != k at branch scope, status=0.
@@ -8640,7 +9303,7 @@ namespace gl {
 
                                 const int oaCap = (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr);
                                 addOriginEncoded(mb.exprOriginMap, mb.originInterner, negAssumption, StrSpan(branchValidity), OriginTag::orBranchAssumption, oaDeps, 1, oaCap);
-                                addRoutingMailOrigin(mb.mailOut, mb.originInterner, negAssumption, StrSpan(branchValidity), OriginTag::orBranchAssumption, oaDeps, 1, oaCap);
+                                mb.addMailOutOrigin(negAssumption, StrSpan(branchValidity), OriginTag::orBranchAssumption, oaDeps, 1, oaCap);
                             }
 
                             // Stamp with mb.level so the branch seed contributes
@@ -8838,7 +9501,7 @@ namespace gl {
                         const OriginDep exDeps[1] = {
                             { igGoalOf(StrSpan(cleanSignatureS)), vSpan } };
                         addOriginEncoded(mb.exprOriginMap, mb.originInterner, expGoalSpan, vSpan, OriginTag::expansionForIntegration, exDeps, 1, igCap);
-                        addRoutingMailOrigin(mb.mailOut, mb.originInterner, expGoalSpan, vSpan, OriginTag::expansionForIntegration, exDeps, 1, igCap);
+                        mb.addMailOutOrigin(expGoalSpan, vSpan, OriginTag::expansionForIntegration, exDeps, 1, igCap);
 
                         // Site: reformulation-for-integration instruction. The tag
                         // is category-selected; the string door's
@@ -8858,10 +9521,10 @@ namespace gl {
                         // expansion KEY already interned — still live this scope).
                         const OriginDep inDeps[1] = { { expGoalSpan, vSpan } };
                         addOriginEncoded(mb.exprOriginMap, mb.originInterner, StrSpan(integrationInstructionForHistoryS), vSpan, instrTag, inDeps, 1, igCap);
-                        addRoutingMailOrigin(mb.mailOut, mb.originInterner, StrSpan(integrationInstructionForHistoryS), vSpan, instrTag, inDeps, 1, igCap);
+                        mb.addMailOutOrigin(StrSpan(integrationInstructionForHistoryS), vSpan, instrTag, inDeps, 1, igCap);
                         // Also record for u_-preserved version (what addToHashMemory/buildStack sees)
                         addOriginEncoded(mb.exprOriginMap, mb.originInterner, StrSpan(integrationInstructionForHashS), vSpan, instrTag, inDeps, 1, igCap);
-                        addRoutingMailOrigin(mb.mailOut, mb.originInterner, StrSpan(integrationInstructionForHashS), vSpan, instrTag, inDeps, 1, igCap);
+                        mb.addMailOutOrigin(StrSpan(integrationInstructionForHashS), vSpan, instrTag, inDeps, 1, igCap);
                     }
 
                     // 0% heap: leElements span the (stable, read-only) rewritten
@@ -14780,13 +15443,12 @@ namespace gl {
 
                 // Statement insert — gated.
                 if (allowedForMail(origView, memoryBlock)) {
-                    // mailOut stores SENDER NameMap ids (ie already carries them —
-                    // no string decode for the statement). The commit seam
-                    // translates these to global mailInterner ids.
+                    // mailOut mints both spans into its private deloadable
+                    // interner; the commit seam translates those ids to global.
                     int lvRun[256];
                     const int32_t lvN = coldIntRunAt(
                         memoryBlock.intStatementLevelsMap, mailLvId, lvRun, 256);
-                    memoryBlock.mailOut.insertStatement(ie.originalId, ie.validityId,
+                    memoryBlock.insertMailOutStatement(origView, valView,
                         lvRun, lvN);
                 }
 
@@ -14798,11 +15460,9 @@ namespace gl {
                             origView, valView, pkEv)) {
                         const int32_t oid = memoryBlock.exprOriginMap.lookup(pkEv);
                         if (oid != 0) {
-                            // Copy the id-form IdOrigin lines DIRECTLY into mailOut
-                            // (sender originInterner id-space; the commit seam
-                            // translates to global) -- no decode to string. pkEv is
-                            // already this EWV's sender-originInterner key.
-                            memoryBlock.mailOut.ensureArena();
+                            // Translate each source-origin record into mailOut's
+                            // private interner. The source and destination id
+                            // spaces are deliberately independent.
                             // Zero-copy blob peek in place of the owned
                             // std::vector<IdOrigin> decode (recordAt returns a heap
                             // std::vector<int64_t>): Codec<IdOrigin> and the
@@ -14816,7 +15476,6 @@ namespace gl {
                             const int32_t n =
                                 memoryBlock.exprOriginMap.runLen(oid);
                             char blobBuf[ExecutionParameters::kMaxOriginBlobBytes];
-                            int64_t depBuf[ExecutionParameters::kMaxOriginDeps];
                             for (int32_t k = 0; k < n; ++k) {
                                 int32_t bl = 0;
                                 const char* bp =
@@ -14827,10 +15486,17 @@ namespace gl {
                                     viewMailOriginBlob(bp, bl);
                                 assert(v.depN
                                     <= ExecutionParameters::kMaxOriginDeps);
-                                for (int32_t d = 0; d < v.depN; ++d)
-                                    depBuf[d] = mailOriginDepAt(v, d);
-                                addMailOriginRecord(memoryBlock.mailOut.origins_,
-                                    pkEv, v.tag, depBuf, v.depN, maxOrigins);
+                                OriginDep deps[ExecutionParameters::kMaxOriginDeps];
+                                for (int32_t d = 0; d < v.depN; ++d) {
+                                    StrSpan depExpr, depValidity;
+                                    decodeOriginKeyView(mailOriginDepAt(v, d),
+                                        memoryBlock.originInterner, depExpr,
+                                        depValidity);
+                                    deps[d] = { depExpr, depValidity };
+                                }
+                                memoryBlock.addMailOutOrigin(origView, valView,
+                                    static_cast<OriginTag>(v.tag), deps, v.depN,
+                                    maxOrigins);
                             }
                         }
                     }
@@ -17619,30 +18285,25 @@ namespace gl {
         unsigned coreId;
         SealedPageSet* sealedPages;  // this task's record + string storage (D-164)
         std::atomic<bool>* stop;   // external per-LB early-exit flag (shared by the LB's parts)
-        int cap;            // submatch cap (int: maxNumberHashRequests can exceed int16_t)
         SealedRecordCursor<FiringRecord> cursor;  // early-exit read-back over the record chain
         int produced = 0;   // emitted-request counter (diagnostic traps); int to avoid overflow
 
         bool canAccept() const {
-            // Cap on SUBMATCHES (preEvaluateFromEncoded matches this part owns),
-            // not emitted requests: stop generating once this part's submatch count
-            // reaches the cap. EXCEPTION: in CE filter mode the cap has ZERO effect
-            // -- the CE filter is a single un-split LB per conjecture and a
-            // completeness check (does the conjecture's negation contradict the
-            // facts?), so truncating its burst could miss the refuting head and
-            // wrongly keep the conjecture. It runs uncapped; only the early-exit
-            // stop applies (which is exactly how CE detects the contradiction and
-            // halts). The early-exit stop is honored ONLY when this LB runs
-            // UNSPLIT (g_splitCount<=1): a single part bailing on its own
-            // deactivating head is deterministic. Under split (>1) the parts are
-            // siblings on one LB and bailing on a sibling-set stop is a thread-
-            // timing race -> non-deterministic output (kills GL determinism), so
-            // g_splitCount>1 skips the stop check and the part runs to completion
-            // (the matching set-side gate is in consume).
-            return (self->ceFilteringActive
-                    || ExpressionAnalyzer::g_growthMatchCount < cap)
-                && (g_splitCount > 1
-                    || !stop->load(std::memory_order_relaxed));
+            // No submatch cap: every burst runs to COMPLETION. A heavy LB is split
+            // preemptively next iteration (proveKernel's stats-driven trigger), not
+            // truncated mid-burst. Only the early-exit stop can halt a burst, and
+            // only when this LB runs as a SINGLE part this burst
+            // (g_isMultiPart == false): one part bailing on its own deactivating
+            // head is deterministic. When the LB runs as several parts the parts are
+            // siblings, and bailing on a sibling-set stop is a thread-timing race ->
+            // non-deterministic output (kills GL determinism), so a multi-part LB
+            // skips the stop check and every part runs to completion (the matching
+            // set-side gate is in consume). g_isMultiPart covers BOTH split
+            // dimensions and, unlike g_splitCount, is true for a whole-LB expression
+            // split (which runs at splitCount==1). The CE filter runs single-part
+            // and relies on the stop to detect its refuting contradiction.
+            return g_isMultiPart
+                || !stop->load(std::memory_order_relaxed);
         }
 
         bool consume(const StaticRequest& req) {
@@ -17660,21 +18321,21 @@ namespace gl {
                                                 *sealedPages);
             // Early-exit: when a fired head proves the LB doomed (contradiction /
             // vacuous-truth / toBeProved reached), stop this part's burst. SOUND
-            // ONLY UNSPLIT (g_splitCount<=1): a single part bailing on its own
-            // deactivating head is deterministic. Under split (>1) the parts are
-            // siblings on one LB -- one part setting stop and the others bailing
+            // ONLY when the LB runs as a SINGLE part (g_isMultiPart == false): one
+            // part bailing on its own deactivating head is deterministic. When it
+            // runs as several parts, one part setting stop and the others bailing
             // mid-burst is a thread-timing race that drops sibling firings, i.e.
-            // non-deterministic output (kills GL determinism). Split parts run to
+            // non-deterministic output (kills GL determinism). Multi-part runs to
             // completion; the skipped requests are wasted-once-doomed, so the
-            // unsplit and split firing sets match. Markers never deactivate.
-            // The cursor scan covers exactly this call's appended records: under
-            // g_splitCount <= 1 every prior consume that appended records also
-            // drained the cursor to the tail before returning true, and a
-            // consume that returned false ended the burst (canAccept gates
-            // generation), so "not yet visited" == "appended by THIS call".
-            // Under split (>1) the scan never ran and never runs — the cursor
-            // stays untouched.
-            if (g_splitCount <= 1) {
+            // single-part and multi-part firing sets match. Markers never
+            // deactivate. The cursor scan covers exactly this call's appended
+            // records: at g_isMultiPart == false every prior consume that appended
+            // records also drained the cursor to the tail before returning true,
+            // and a consume that returned false ended the burst (canAccept gates
+            // generation), so "not yet visited" == "appended by THIS call". When
+            // multi-part the scan never ran and never runs — the cursor stays
+            // untouched.
+            if (!g_isMultiPart) {
                 while (const FiringRecord* fr = cursor.next()) {
                     if (fr->isMarker) continue;
                     if (self->burstDeactivates(*body, *fr)) {

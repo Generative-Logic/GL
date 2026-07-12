@@ -25,7 +25,7 @@ A Logic Block is a self-contained hash-inference engine. Each LB owns:
 - An **equivalence-class registry** — `equivalenceClassesMap`, one per validity.
 - A **validity stack** — `stackOfValidity`, the active scope IDs for this LB.
 - A **name map** — `NameMap`, the scope-ID encoder.
-- A **mailbox** — `mailIn` (inbox) and `mailOut` (outbox) `Mail` buffers.
+- A **mailbox pair** — `mailIn` as mail-pool `RoutingColdMail`; `mailOut` plus its private interner as deloadable `DeloadableMailOut` in the LB arena.
 - A **parent pointer** — `parentMemory`, or `nullptr` for the root.
 - **Children (down-edges)** — held in `SimpleMapStore` (parent → child by interned routing key), off the `Memory` shell, no longer a member map.
 - A **status** — `isActive`, `primedForContradiction`, `toBeProved`, etc.
@@ -53,13 +53,13 @@ The `parentMemory` pointer lets any LB walk up to the root. Cross-scope operatio
 
 A GL run proceeds in cycles:
 
-1. **Cycle start.** All LBs are idle; `mailIn` buffers hold messages queued from the previous cycle.
+1. **Cycle start.** Each active LB pulls the prior retained `MailLog` window from its ancestors into `mailIn` and advances its cumulative cursors.
 2. **Per-LB execution.** `proveKernel` runs the elementary step over every active LB on a pool of `logicalCores` real worker threads (work-stealing over a shared `active` vector), as three barriered phase sweeps — `performElemPhase1` (mail absorb) → `performElemPhase2` (the hashburst) → `performElemPhase3` (post-burst absorb), with a join between each ([`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp), [D-114](../40_decisions.md#d-114)). The hashburst (phase 2) is where, per LB:
  - Generate hash requests from known expressions.
  - Query `overallHashMemory.encodedMap`.
  - On a hit, fire the rule — build the conclusion instance, invoke `addStatement`, record origin.
  - Enqueue outgoing messages into `mailOut`.
-3. **Cycle end.** Drain mail: every `mailOut` merges into the recipient's `mailIn`.
+3. **Cycle end.** After phase 3 joins, an all-active-at-grid-build batch retires the delivered blob/ref window; a batch with any initially dormant LB keeps full history. The commit barrier then serializes each non-empty `mailOut` into the next retained window and clears it.
 4. **Next cycle** — loop until no LB produces anything new, or an iteration budget is exhausted.
 
 **Key property.** LBs never read each other's state *during* a cycle. All cross-LB observation happens via mail, at cycle boundaries. This is both the correctness guarantee (no data races) and the parallelism affordance (the sequential inner loop can become parallel without changing semantics; for the ASIC roadmap).
@@ -86,7 +86,8 @@ Selected fields of `Memory` (not exhaustive — the struct is large):
 | `stackOfValidity` | `std::vector<int16_t>` | Active scope IDs. |
 | `nameMap` | `NameMap` | Scope-ID encoder. |
 | `equivalenceClassesMap` | `unordered_map<validityId, vector<EquivalenceClass>>` | Equality-class registry, keyed by scope id ([D-134](../40_decisions.md#d-134)); probe via the non-minting `classesAt`. |
-| `mailIn`, `mailOut` | `Mail` | Inter-LB messaging (main-scope broadcast channel). |
+| `mailIn` | `RoutingColdMail` | Inter-LB inbox staging on the never-deloaded mail pool; cleared after phase-1 absorb. |
+| `mailOut` | `DeloadableMailOut` | Inter-LB outbox + private ids on the LB's deloadable main-pool arena; shell pending bit selects serial commit reload. |
 | `sameIterationInternalMail` | `Mail` | Per-LB integration-revival inbox (typed `Mail` since 2026-05-07; [D-53](../40_decisions.md#d-53) unification, renumbered from main's D-46— pre-unification was a separate `struct InternalMail`). Populated during hashburst body by `applyEquivalenceClassToRejectedMapIntegration` / `revisitRejectedIntegration2`; drained at top of next hashburst with `status=1` absorb. Not routed across LBs. See [`03_mail_system.md`](03_mail_system.md#integration-revival-channel). |
 | `parentMemory` | `Memory*` | Up-pointer. |
 | (down-edges) | `SimpleMapStore` (off-shell, not a `Memory` member) | Children, by interned routing key. |
@@ -100,16 +101,16 @@ Selected fields of `Memory` (not exhaustive — the struct is large):
 1. **Birth.** `new Memory` — root and compressor LBs; child-creation paths inside the prover (`makeHypothesisBlock`, `makeBranchBlock`, `makeIntegrationBlock` — exact names vary per kind).
 2. **Registration.** Inserted into `permanentBodies` (or `permanentBodiesCE` for CE filter) and linked under its parent in `SimpleMapStore` (`linkChild`; `ceSimpleMapStore` for the CE tree).
 3. **Active execution.** Participates in cycles while `isActive == true`.
-4. **Deactivation.** `deactivateRecursively` — the LB and its descendants are marked inactive when their target is proved or the scope discharges. `primedForContradiction` is the override flag that keeps a contradiction-LB alive past its nominal deactivation so the discharge path can fire.
+4. **Deactivation.** `deactivateRecursively` — the LB and its descendants are marked inactive when their target is proved or the scope discharges. This active-to-inactive transition is permanent. The only inactive-to-active path is an induction-zero LB born dormant and later woken by `activateZeroCondition` ([I-112](../30_invariants.md#i-112)); this is why any initially dormant grid retains full mail history.
 5. **Tear-down.** Main-pipeline LBs persist for the duration of the run; compressor Phase 1 LBs are explicitly `delete`d after their proof-graph extraction via the `destroyGrid` lambda at [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp).
 
 ---
 
 ## Per-batch grid — the `permanentBodies` model
 
-For the main prover, `permanentBodies` is the full vector of active LBs. The outer `prove` loop iterates cycles, calling per-LB step functions; cross-LB mail is the pull model — each LB's `mailOut` is committed to its [`MailLog`](03_mail_system.md#the-pull-model) log at the cycle-end barrier and pulled by descendants in their phase-1. The old per-core `boxes` + `sendMail` / `smashMail` machinery is deleted ([D-137](../40_decisions.md#d-137)), and the once-companion parent→children `index` (`buildParentChildrenMap`) is deleted with the rest of the vestigial `ParentChildrenMap` plumbing (2026-07-03); the `MailLog` itself lives on `ExpressionAnalyzer`, not on `Memory`.
+For the main prover, `permanentBodies` is the full vector of all grid LBs, active or dormant. The outer `prove` loop iterates cycles over the current active subset. Cross-LB mail is the pull model — each LB's `mailOut` is committed to its [`MailLog`](03_mail_system.md#the-pull-model) chain at the cycle-end barrier and pulled by descendants in phase 1. The completed-grid dormant scan fixes either rolling delivered-window retirement or full-history catch-up for the batch ([I-161](../30_invariants.md#i-161)). The old per-core `boxes` + `sendMail` / `smashMail` machinery is deleted ([D-137](../40_decisions.md#d-137)); `MailLog` lives on `ExpressionAnalyzer`, not `Memory`.
 
-For CE filtering, the analogous structure is `permanentBodiesCE`. CE runs with a different hash-request generator (`generateEncodedRequestsStaticCE`) and a different outer budget (`numberIterationsConjectureFiltering`); its isolated clone LBs have no descendants, so the pull is gated off for them.
+For CE filtering, the analogous structure is `permanentBodiesCE`. CE runs the same hash-request generator with an empty obligatory stump (`generateEncodedRequestsStatic`, stump length 0) and a different outer budget (`numberIterationsConjectureFiltering`); its isolated clone LBs have no descendants, so the pull is gated off for them.
 
 The grid runs in parallel: `logicalCores = std::max(1u, std::thread::hardware_concurrency)` (the old `=1` hardcode is commented out), so `proveKernel` spawns real worker threads over three barriered phase sweeps per cycle.
 

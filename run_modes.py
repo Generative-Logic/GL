@@ -37,6 +37,7 @@ import subprocess
 import process_proof_graphs
 import verifier
 from incubator_to_simple_facts import convert_incubator_theorems
+from frame_timing import StageTimer
 
 # wherever this file lives, assume the project root is its parent folder
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -311,36 +312,52 @@ def _run_batch(tag: str, prev_tags: list, theorems_dir: Path = None,
 
     # A. Create Simple Facts (if provided)
     if simple_facts_fn:
-        for n in config.parameters.simple_facts_parameters:
-            simple_facts_fn(n)
+        with StageTimer(
+            "python.simple_facts", parent="python.pipeline", batch=tag
+        ):
+            for n in config.parameters.simple_facts_parameters:
+                simple_facts_fn(n)
 
     # B. Create Expressions (C++ conjecturer)
     start_time = time.time()
     print(f"Conjecture creation started for {tag}.")
     exe_path = _find_gl_quick_exe()
-    subprocess.run([str(exe_path), "--conjecture", tag], cwd=PROJECT_ROOT, check=True)
+    with StageTimer(
+        "native.conjecturer", parent="python.pipeline", batch=tag, excluded=True
+    ):
+        subprocess.run(
+            [str(exe_path), "--conjecture", tag], cwd=PROJECT_ROOT, check=True
+        )
     print(f"Conjecture creation finished for {tag}.")
     end_time = time.time()
     print(f"Conjecture creation runtime: {end_time - start_time:.5f} seconds")
 
     # C. Connect to Previous Anchors (Current -> Prev) — only on first batch per tag
     if add_cross_anchor:
-        for prev_tag in prev_tags:
-            generate_anchor_connection(tag, prev_tag, theorems_dir=theorems_dir)
+        with StageTimer(
+            "python.anchor_connections", parent="python.pipeline", batch=tag
+        ):
+            for prev_tag in prev_tags:
+                generate_anchor_connection(tag, prev_tag, theorems_dir=theorems_dir)
 
-    # D. Run Native Prover (brief pause to let filesystem flush txt files)
-    time.sleep(2)
+    # D. Run Native Prover. The conjecturer subprocess has exited and closed
+    # every output handle before subprocess.run returns, so its files are
+    # immediately available to the next process without a fixed delay.
     print(f"Running GL_Quick for {tag}...")
     # Cross-batch persistent naming: hand the shared spontaneous-operator
     # registry to the C++ prover by copying GL_binary_shared.json into the
     # per-batch file the prover reads on startup. The prover overwrites this
     # same path at end of run with the inherited entries plus any new ones
     # it allocated.
-    _seed_per_batch_binary(tag)
-    run_gl_quick(tag)
+    with StageTimer("python.binary_seed", parent="python.pipeline", batch=tag):
+        _seed_per_batch_binary(tag)
+    os.environ["GL_FRAME_BATCH"] = tag
+    with StageTimer(f"native.{tag}", parent="python.pipeline", batch=tag):
+        run_gl_quick(tag)
     # Fold any newly-allocated spontaneous entries from this batch back into
     # the shared registry so the next batch starts with them.
-    _merge_into_shared(tag)
+    with StageTimer("python.binary_merge", parent="python.pipeline", batch=tag):
+        _merge_into_shared(tag)
 
 
 
@@ -372,23 +389,24 @@ def full_run():
     incubator_full_dir = incubator_dir / "full_proof_graph"
 
     # 1. Global Setup
-    if CLEAN_RUN: 
-        empty_simple_facts()
-        empty_raw_proof_graph()
+    if CLEAN_RUN:
+        with StageTimer("python.global_setup", parent="python.pipeline"):
+            empty_simple_facts()
+            empty_raw_proof_graph()
 
-        gl_binaries_dir = PROJECT_ROOT / "files" / "GL_binaries"
-        if gl_binaries_dir.exists():
-            shutil.rmtree(gl_binaries_dir)
-        gl_binaries_dir.mkdir(parents=True, exist_ok=True)
+            gl_binaries_dir = PROJECT_ROOT / "files" / "GL_binaries"
+            if gl_binaries_dir.exists():
+                shutil.rmtree(gl_binaries_dir)
+            gl_binaries_dir.mkdir(parents=True, exist_ok=True)
 
-        _setup_theorem_folder(theorems_dir)
-        if RUN_INCUBATOR:
-            # Empty incubator externals at start (main externals untouched)
-            ext_path = incubator_theorems_dir / "externally_provided_theorems.txt"
-            ext_path.parent.mkdir(parents=True, exist_ok=True)
-            ext_path.write_text("")
-            _setup_theorem_folder(incubator_theorems_dir)
-            empty_raw_proof_graph(str(incubator_raw_dir.relative_to(PROJECT_ROOT)))
+            _setup_theorem_folder(theorems_dir)
+            if RUN_INCUBATOR:
+                # Empty incubator externals at start (main externals untouched)
+                ext_path = incubator_theorems_dir / "externally_provided_theorems.txt"
+                ext_path.parent.mkdir(parents=True, exist_ok=True)
+                ext_path.write_text("")
+                _setup_theorem_folder(incubator_theorems_dir)
+                empty_raw_proof_graph(str(incubator_raw_dir.relative_to(PROJECT_ROOT)))
     else:
         print("Skipping cleanup (--no-clean).")
 
@@ -400,8 +418,11 @@ def full_run():
         # incubator twins). Sorted alphanumerically; the base config (no
         # digit suffix) sorts first. This is what allows
         # ConfigIncubatorGauss.json to run before ConfigIncubatorGauss1.json.
-        incub_suffixes = _discover_configs_for_tag(f"Incubator{tag}")
-        main_suffixes  = _discover_configs_for_tag(tag)
+        with StageTimer(
+            "python.config_discovery", parent="python.pipeline", batch=tag
+        ):
+            incub_suffixes = _discover_configs_for_tag(f"Incubator{tag}")
+            main_suffixes = _discover_configs_for_tag(tag)
 
         assert incub_suffixes, f"No ConfigIncubator{tag}*.json found in files/config/"
         assert main_suffixes,  f"No Config{tag}*.json found in files/config/"
@@ -459,12 +480,21 @@ def full_run():
         if RUN_INCUBATOR:
             visu_config_path = PROJECT_ROOT / "files" / "config" / "ConfigVisu.json"
             configuration_visu = configuration_reader(visu_config_path)
-            process_proof_graphs.create_processed_proof_graph(
-                configuration_visu, raw_dir=incubator_raw_dir, proc_dir=incubator_proc_dir,
-                theorems_dir=incubator_theorems_dir)
+            with StageTimer(
+                "python.processed_graph.incubator",
+                parent="python.pipeline",
+                batch=tag,
+            ):
+                process_proof_graphs.create_processed_proof_graph(
+                    configuration_visu, raw_dir=incubator_raw_dir,
+                    proc_dir=incubator_proc_dir,
+                    theorems_dir=incubator_theorems_dir)
 
         # Convert incubator proved theorems to simple facts (always, even if incubator skipped)
-        convert_incubator_theorems(tag, theorems_dir=incubator_theorems_dir)
+        with StageTimer(
+            "python.incubator_conversion", parent="python.pipeline", batch=tag
+        ):
+            convert_incubator_theorems(tag, theorems_dir=incubator_theorems_dir)
 
         if not RUN_MAIN_PATH:
             print(f"\n=== Skipping Main {tag} ===")
@@ -505,18 +535,28 @@ def full_run():
     # when the sibling read hits a not-yet-created path on a fresh worktree.
     if RUN_MAIN_PATH:
         print("\n--- Generating Proof Graph ---")
-        process_proof_graphs.create_processed_proof_graph(configuration_visu)
-        generate_full_proof_graph.generate_proof_graph_pages(
-            configuration_visu, sibling_graphs=main_siblings)
+        with StageTimer(
+            "python.processed_graph.main", parent="python.pipeline", batch="main"
+        ):
+            process_proof_graphs.create_processed_proof_graph(configuration_visu)
+        with StageTimer(
+            "python.html.main", parent="python.pipeline", batch="main"
+        ):
+            generate_full_proof_graph.generate_proof_graph_pages(
+                configuration_visu, sibling_graphs=main_siblings)
 
     # 3b. Incubator HTML (incubator processed proof graph already built
     # in the tag loop; the main sibling's processed_proof_graph is now
     # built by Section 3a above).
     if RUN_INCUBATOR:
         print("\n--- Generating Incubator Proof Graph HTML ---")
-        generate_full_proof_graph.generate_proof_graph_pages(
-            configuration_visu, proc_dir=incubator_proc_dir, out_dir=incubator_full_dir,
-            sibling_graphs=incubator_siblings)
+        with StageTimer(
+            "python.html.incubator", parent="python.pipeline", batch="incubator"
+        ):
+            generate_full_proof_graph.generate_proof_graph_pages(
+                configuration_visu, proc_dir=incubator_proc_dir,
+                out_dir=incubator_full_dir,
+                sibling_graphs=incubator_siblings)
 
     # 4. Verification
     all_success = 0
@@ -524,17 +564,25 @@ def full_run():
 
     if RUN_INCUBATOR:
         print("\n--- Running Incubator Proof Graph Verifier ---")
-        incubator_state = verifier.run_verifier(str(incubator_proc_dir))
-        verifier.print_report(incubator_state)
-        s, f = verifier.get_totals(incubator_state)
+        with StageTimer(
+            "python.verifier.incubator", parent="python.pipeline", batch="incubator"
+        ):
+            incubator_state = verifier.run_verifier(str(incubator_proc_dir))
+            verifier.print_report(incubator_state)
+            s, f = verifier.get_totals(incubator_state)
         all_success += s
         all_failure += f
 
     if RUN_MAIN_PATH:
         print("\n--- Running Proof Graph Verifier ---")
-        main_state = verifier.run_verifier(str(PROJECT_ROOT / "files" / "processed_proof_graph"))
-        verifier.print_report(main_state)
-        s, f = verifier.get_totals(main_state)
+        with StageTimer(
+            "python.verifier.main", parent="python.pipeline", batch="main"
+        ):
+            main_state = verifier.run_verifier(
+                str(PROJECT_ROOT / "files" / "processed_proof_graph")
+            )
+            verifier.print_report(main_state)
+            s, f = verifier.get_totals(main_state)
         all_success += s
         all_failure += f
 

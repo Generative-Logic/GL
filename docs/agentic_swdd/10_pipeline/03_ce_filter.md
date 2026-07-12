@@ -20,11 +20,11 @@ and a commercial license — see https://generative-logic.com/license.
 > - `filterConjecturesWithCE` ([`filter.cpp`](../../GL_Quick_VS/GL_Quick/src/filter.cpp)) — top-level orchestrator (the per-fact-file loop body).
 > - `saveFilteredConjectures` ([`filter.cpp`](../../GL_Quick_VS/GL_Quick/src/filter.cpp)) — write survivors.
 >
-> Internal surface (only called from inside `filterConjecturesWithCE` / `generateEncodedRequestsStaticCE`):
+> Internal surface (only called from inside `filterConjecturesWithCE` / the request generator):
 > - `loadFactsForCEFiltering` ([`filter.cpp`](../../GL_Quick_VS/GL_Quick/src/filter.cpp)) — install a fact list into every per-core CE body.
 > - `addConjectureForCEFiltering` ([`filter.cpp`](../../GL_Quick_VS/GL_Quick/src/filter.cpp)) — register one conjecture into a per-core CE LB.
 > - `releaseCEBatchMemory` ([`filter.cpp`](../../GL_Quick_VS/GL_Quick/src/filter.cpp)) — DFS-delete every CE node + reset CE containers.
-> - `generateEncodedRequestsStaticCE` ([`filter.cpp`](../../GL_Quick_VS/GL_Quick/src/filter.cpp)) — CE-mode hash-request generator (no mandatory elements). Uses `filterIntEncodedStatementsCE` ([`filter.cpp`](../../GL_Quick_VS/GL_Quick/src/filter.cpp)), the dual-key-table filter that distinguishes CE mode from regular mode (accepts statements appearing in `normalizedEncodedSubkeys` **or** `normalizedEncodedKeys`, where regular `filterIntEncodedStatements` accepts subkeys only).
+> - `generateEncodedRequestsStatic` ([`memory.cpp`](../../GL_Quick_VS/GL_Quick/src/memory.cpp)) — the ONE hash-request generator, invoked here with an obligatory stump of length **0**: no element is mandatory, so a grown base candidate is already the finished request and is emitted inside the search (which is what preserves the contradiction early-exit). It calls `filterIntEncodedStatements` with `alsoAcceptFullKeys = true`, and that one flag is the whole difference between CE mode's statement universe and regular mode's: CE accepts statements appearing in `normalizedEncodedSubkeys` **or** `normalizedEncodedKeys`, regular mode accepts subkeys only, because with a non-empty stump every survivor must still be growable.
 >
 > The CE-only `ContradictionItem` row type lives in [`filter.hpp`](../../GL_Quick_VS/GL_Quick/src/filter.hpp). All bodies remain member functions of `ExpressionAnalyzer` (declared in `prover.hpp`); only the definitions moved.
 > **Entry site:** invoked near the top of `ExpressionAnalyzer::analyzeExpressions` after reading `conjectures.txt`, gated on `!parameters.skip_ce_filter`. Seen at [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp).
@@ -117,7 +117,7 @@ Every `(1)`-typed constant appears in two forms: `i<k>` and `j<k>` — two paral
 
 The anchor line `(AnchorPeano[N,j0,s,+,*,j1])` pins the j-variables; the main-slot `i`-variables are pinned elsewhere. Every operator-output fact is emitted once per `i*j*` combination where distinctness is semantically trivial — `(in3[i4,i5,i0,+])` and `(in3[i4,j5,i0,+])` are both valid rows.
 
-**Why.** `generateEncodedRequestsStaticCE` (the hash-request generator used during CE filtering; [`filter.cpp`](../../GL_Quick_VS/GL_Quick/src/filter.cpp)) needs **distinct fact entries** to drive its rule-firing pattern — without j-copies, rules that require two different-looking arguments to match never fire on the table. This is the "CE filter j-copy requirement" documented in memory file.
+**Why.** The hash-request generator running at stump length 0 (`generateEncodedRequestsStatic`; [`memory.cpp`](../../GL_Quick_VS/GL_Quick/src/memory.cpp)) needs **distinct fact entries** to drive its rule-firing pattern — without j-copies, rules that require two different-looking arguments to match never fire on the table. This is the "CE filter j-copy requirement" documented in memory file.
 
 ### Growth pattern
 
@@ -157,7 +157,7 @@ The per-file filter is where the real work lives. Flow of `filterConjecturesWith
  - grabs the next conjecture index;
  - clones the facts template into a fresh single-use LB (`Memory::cloneFactsTemplate` — a deep value-copy of the fact containers + `nameMap`, everything else reset);
  - sets the clone's identity (`lb->setExprKey(std::to_string(i))` — a lookup-only hit after the step-3 pre-intern) and installs the conjecture's rule into the clone (`addConjectureForCEFiltering`, which also sets the clone's `contradictionIndex`);
- - runs **exactly one hashburst** on the clone — `performElemPhase1` → `performElem2` (the CE generator `generateEncodedRequestsStaticCE`) → `performElemPhase2` → `performElemPhase3` — on a per-conjecture `SealedPageSet` (record chain + sealed strings) plus the worker's per-slot scratch arenas, with empty mail boxes (`splitCount = 1`, an isolated leaf LB);
+ - runs **exactly one hashburst** on the clone — `performElemPhase1` → `performElem2` (`generateEncodedRequestsStatic` at stump length 0) → `performElemPhase2` → `performElemPhase3` — on a per-conjecture `SealedPageSet` (record chain + sealed strings) plus the worker's per-slot scratch arenas, with empty mail boxes (`splitCount = 1`, an isolated leaf LB);
  - `burstDeactivates` stops the burst the instant a refuting head fires, and phase 3's `dischargeContradiction` CE branch records the refutation into the clone's disjoint `contradictionTable` slot;
  - deletes the clone and grabs the next conjecture.
  There is **no batch barrier** — a freed worker takes new work immediately, so no core idles on the slowest conjecture in a batch.
@@ -166,7 +166,7 @@ The per-file filter is where the real work lives. Flow of `filterConjecturesWith
 
 CE filtering runs **one hashburst per conjecture**: `numberIterationsConjectureFiltering` is `1` in every config (asserted before the pool), so the single burst checks whether the conjecture's negation immediately contradicts the facts — there is no iterative deepening.
 
-CE mode differs from main-prover mode in one key detail: **no mandatory elements**. Regular hash-request generation (`generateEncodedRequestsStatic` + `generateEncodedRequestsStaticPairs`) requires an element already known to the LB to be present in the generated request. CE mode drops this requirement — any combination of fact arguments is a valid hash target, so the filter can explore freely within the model.
+CE mode differs from main-prover mode in one key detail: **no mandatory elements**. Regular hash-request generation runs `generateEncodedRequestsStatic` with an obligatory stump of one or two elements, requiring an element already known to the LB to be present in the generated request. CE mode passes a stump of length 0, dropping this requirement — any combination of fact arguments is a valid hash target, so the filter can explore freely within the model.
 
 ### Data flow diagram
 
@@ -211,7 +211,7 @@ In other words: the CE filter is *fast* because someone else (the incubator) did
 
 ### Known & tracked
 
-- **Historically ~80% of Gauss runtime.** the project conventions records the original figure. The per-conjecture thread pool (see Decisions) roughly halved CE wall-clock (Gauss CE 51.8s → 30.1s, Peano 37.3s → 16.2s on a 32-core host); remaining leverage is shrinking the Gauss simple-facts table or accelerating `generateEncodedRequestsStaticCE`.
+- **Historically ~80% of Gauss runtime.** the project conventions records the original figure. The per-conjecture thread pool (see Decisions) roughly halved CE wall-clock (Gauss CE 51.8s → 30.1s, Peano 37.3s → 16.2s on a 32-core host); remaining leverage is shrinking the Gauss simple-facts table or accelerating the request generator at stump length 0.
 - **Incubator ⟷ main cross-contamination.** A Gauss incubator config change affected Peano CE behaviour — pipeline isolation is suspect. Memory file.
 - **Clone empty-template assumption.** `Memory::cloneFactsTemplate` asserts the template's `overallHashMemory` is empty (facts load as status-4 statements, never hash rules). If a future fact base installs implication-shaped fact *rules*, the assert fires and the clone must be extended to rebuild those rules into the clone's own `keyArena` rather than value-copy the arena-backed keys.
 

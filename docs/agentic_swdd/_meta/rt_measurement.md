@@ -323,10 +323,10 @@ thread-local `g_currentThreadTracker`.
 | # | Label | Owner | Brackets |
 |---|----------------------------------------|-------|----------|
 | 1 | `PRE_FIXPOINT_MAIL_ABSORB` | `performElemPhase1` | `body.changedClassesThisStep.clear`, the workingMemory / externalStatements / intExternalStatements clears, and the pre-burst `standardProcessing` call. |
-| 2 | `REQGEN_CE_MODE` | `performElem2` | The `if (ceFilteringActive)` branch — single call to `generateEncodedRequestsStaticCE`. |
+| 2 | `REQGEN_CE_MODE` | `performElem2` | The `if (ceFilteringActive)` branch — single call to `generateEncodedRequestsStatic` at stump length 0. |
 | 3 | `REQGEN_BATCH1_WORKING_MEMORY` | `performElem2` | Batch 1: `body.workingMemory` × local statements. Inside the `if (!body.workingMemory.encodedMap.empty)` guard, so the row only appears when the batch fires. |
 | 4 | `REQGEN_BATCH2_LOCAL_DELTA` | `performElem2` | Batch 2: `body.overallHashMemory` × local delta. Unconditional. |
-| 5 | `REQGEN_BATCH3_LOCAL_X_MAIL` | `performElem2` | Batch 3: local × mail pairs via `generateEncodedRequestsStaticPairs`. Unconditional. |
+| 5 | `REQGEN_BATCH3_LOCAL_X_MAIL` | `performElem2` | Batch 3: local × mail pairs via `generateEncodedRequestsStatic` at stump length 2. Unconditional. |
 | 6 | `REQGEN_BATCH4_LOCAL_X_MAIL_SINGLES` | `performElem2` | Batch 4: `body.localHashMemory` × mail singles. Inside the dual `!empty` guard. |
 | 7 | `REQGEN_BATCH5_LOCAL_HASH_DELTA` | `performElem2` | Batch 5: `body.localHashMemoryDelta`. Inside the `!empty` guard. |
 | 8 | `FIXPOINT_LOOP` | `performElem2` | The single request-evaluation pass `for (int16_t r = 0;...)` only. Calls `RT_NOTE_ITERATIONS_HERE(1)` on scope exit, so the `iter` column always shows `1`. The deposit merge moved out (next row). |

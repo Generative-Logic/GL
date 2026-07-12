@@ -200,6 +200,28 @@ namespace gl {
         return nextDeloadOrdinal_++;
     }
 
+    /// @brief Install (or clear) the forensic exhaustion reporter (see the
+    ///        header for the full under-mutex contract).
+    ///
+    /// @param reporter Callback receiving (blocksInUse, totalBlocks) at the
+    ///                 wall; empty clears the hook.
+    void GlobalMemoryManager::setExhaustionReporter(
+        std::function<void(int64_t, int64_t)> reporter) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        exhaustionReporter_ = std::move(reporter);
+    }
+
+    /// @brief Invoke the installed exhaustion reporter under the pool mutex
+    ///        — the unit-test seam for the death-path call context (see the
+    ///        header for why the death path itself is untestable).
+    void GlobalMemoryManager::invokeExhaustionReporterForTest() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        assert(exhaustionReporter_
+            && "invokeExhaustionReporterForTest without an installed "
+               "reporter");
+        exhaustionReporter_(blocksInUse_, totalBlocks_);
+    }
+
     /// @brief Record an `ordinal -> full LB chain` mapping for
     ///        `registry.txt` — the human/audit resolver of the numeric file
     ///        names.
@@ -254,6 +276,75 @@ namespace gl {
         deloadRegistry_.clear();
     }
 
+    /// @brief Open the extent file and arm the raw-eviction datapath (see the
+    ///        declaration for the full contract).
+    ///
+    /// @param path         The extent file path.
+    /// @param initialBytes Preallocated size.
+    void GlobalMemoryManager::openExtentFile(const std::filesystem::path& path,
+                                             int64_t initialBytes) {
+        std::lock_guard<std::mutex> lock(extentMutex_);
+        // A prior batch's file is closed here as a defined batch-reset step
+        // (the purge already deleted its bytes). Not defensive — the batch
+        // boundary resets extent state exactly as it resets the registry.
+        if (extentFile_.isOpen()) extentFile_.close();
+        extentFile_.open(path);
+        extentFile_.preallocate(initialBytes);
+        extentAllocator_.init(blockBytes());   // offsets recycle from 0
+        extentSlabRegistry_.clear();
+        extentLiveBytes_.store(0, std::memory_order_relaxed);
+        ++extentEpoch_;                        // invalidate cross-batch slabs
+        extentEnabled_.store(true, std::memory_order_relaxed);
+    }
+
+    /// @brief Close the extent file and disarm the datapath (see the
+    ///        declaration).
+    void GlobalMemoryManager::closeExtentFile() {
+        std::lock_guard<std::mutex> lock(extentMutex_);
+        extentEnabled_.store(false, std::memory_order_relaxed);
+        if (extentFile_.isOpen()) extentFile_.close();
+    }
+
+    /// @brief Allocate an extent slab, grow the file if needed, and record the
+    ///        slab under its ordinal (see the declaration).
+    ///
+    /// @param ordinal The LB's deload ordinal (slab-registry key).
+    /// @param need    The image byte count to hold.
+    /// @return The slab offset and class capacity.
+    SlabAllocation GlobalMemoryManager::allocateExtentSlab(int64_t ordinal,
+                                                           int64_t need) {
+        assert(ordinal >= 0 && "extent slab for an unassigned ordinal");
+        std::lock_guard<std::mutex> lock(extentMutex_);
+        const SlabAllocation slab = extentAllocator_.allocSlab(need);
+        const int64_t hw = extentAllocator_.highWaterBytes();
+        if (hw > extentFile_.fileSize()) {
+            const int64_t grown =
+                (hw + kExtentGrowChunkBytes - 1)
+                / kExtentGrowChunkBytes * kExtentGrowChunkBytes;
+            extentFile_.grow(grown);
+        }
+        extentSlabRegistry_[ordinal] = slab;
+        return slab;
+    }
+
+    /// @brief Return an extent slab to its class free-list and drop its
+    ///        slab-registry row (see the declaration).
+    ///
+    /// @param ordinal    The owning LB's deload ordinal.
+    /// @param offset     The slab offset.
+    /// @param classBytes The slab class capacity.
+    void GlobalMemoryManager::freeExtentSlab(int64_t ordinal, int64_t offset,
+                                             int64_t classBytes) {
+        std::lock_guard<std::mutex> lock(extentMutex_);
+        const auto it = extentSlabRegistry_.find(ordinal);
+        assert(it != extentSlabRegistry_.end()
+            && it->second.offset == offset
+            && it->second.classBytes == classBytes
+            && "extent slab free does not match the registered slab");
+        extentSlabRegistry_.erase(it);
+        extentAllocator_.freeSlab(offset, classBytes);
+    }
+
     /// @brief Return a granted block to the recycle queue.
     ///
     /// @details
@@ -266,6 +357,58 @@ namespace gl {
         std::lock_guard<std::mutex> lock(mutex_);
         returnLocked(block);
         --blocksInUse_;
+    }
+
+    /// @brief Grant `count` blocks under ONE mutex acquisition — the bulk
+    ///        raw-image reload / eviction grant.
+    ///
+    /// @details
+    /// One lock, `count` `grantLocked` calls, one accounting update, one grant-
+    /// trigger check — accounting-identical to `count` separate `acquireBlock`
+    /// calls, but the mutex is taken once. The trigger fires once outside the
+    /// mutex when the batch crosses the armed threshold.
+    ///
+    /// @param count Blocks to grant; >= 1.
+    /// @param out   Caller array of at least `count` `char*`; filled.
+    void GlobalMemoryManager::acquireBlocks(int32_t count, char** out) {
+        assert(count >= 1);
+        std::function<void()> fire;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            assert(pool_ != nullptr);
+            for (int32_t i = 0; i < count; ++i)
+                out[i] = grantLocked();
+            blocksInUse_ += count;
+            if (blocksInUse_ > peakBlocksInUse_)
+                peakBlocksInUse_ = blocksInUse_;
+            grantsSinceBarrier_ += count;
+            if (grantTriggerThreshold_ >= 0
+                && grantsSinceBarrier_ >= grantTriggerThreshold_) {
+                fire = std::move(grantTriggerFire_);
+                grantTriggerFire_ = nullptr;
+                grantTriggerThreshold_ = -1;
+            }
+        }
+        if (fire) fire();
+    }
+
+    /// @brief Return `count` blocks under ONE mutex acquisition — the bulk
+    ///        raw-image eviction / teardown release.
+    ///
+    /// @details
+    /// One lock, `count` `returnLocked` calls (each validated in-pool /
+    /// block-aligned / granted), one accounting decrement — release-identical
+    /// to `count` separate `releaseBlock` calls with the mutex taken once.
+    ///
+    /// @param blocks Array of `count` previously granted pointers.
+    /// @param count  Blocks to return; >= 1.
+    void GlobalMemoryManager::releaseBlocks(char* const* blocks,
+                                            int32_t count) {
+        assert(count >= 1);
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (int32_t i = 0; i < count; ++i)
+            returnLocked(blocks[i]);
+        blocksInUse_ -= count;
     }
 
     /// @brief Dequeue-or-carve one block and flag it granted; the
@@ -288,6 +431,26 @@ namespace gl {
             recycled_.pop_front();
         }
         else {
+            if (carveCursor_ >= totalBlocks_) {
+                // THE WALL. Print the pool-side counters and run the
+                // installed forensic reporter BEFORE the assert below fires
+                // (the stuck-tripwire precedent: print, then assert — the
+                // assert remains the failure, Rule 19 untouched). All reads
+                // here are direct members under the already-held mutex; the
+                // reporter receives the counters it must not fetch itself
+                // (its contract forbids manager re-entry — see
+                // setExhaustionReporter).
+                std::cerr << "[EXHAUSTION] pool kind="
+                          << static_cast<int>(cfg_.kind)
+                          << " totalBlocks=" << totalBlocks_
+                          << " blocksInUse=" << blocksInUse_
+                          << " carveCursor=" << carveCursor_
+                          << " recycled=" << recycled_.size()
+                          << " peak=" << peakBlocksInUse_
+                          << " blockBytes=" << cfg_.blockBytes << std::endl;
+                if (exhaustionReporter_)
+                    exhaustionReporter_(blocksInUse_, totalBlocks_);
+            }
             // Exhaustion asserts naming the instance's pool sizing constant
             // (Rule 19 — never a fallback). Each pool names its own constants
             // so a sizing problem points at the right parameters.hpp field.

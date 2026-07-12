@@ -259,7 +259,13 @@ TEST(admission_reshuffle, deferred_ancestor_admission_drain_replays_and_skips_di
             3, 3, true });
     }
 
+    // The drain's seam door routes each ancestor reload through the steward
+    // handshake (claim-correct seam loads); production always has a live
+    // steward at the drain (proveKernel's prove scope), so the direct-call
+    // test provides one too. Not started: the handshake works standalone.
+    ea.steward = std::make_unique<gl::MemorySteward>();
     ea.drainDeferredAncestorAdmissions();
+    ea.steward.reset();
 
     // The drain replayed both records, then sealed + freed + reset the page set.
     ASSERT_FALSE(ea.deferredAncestorPages.has_value());

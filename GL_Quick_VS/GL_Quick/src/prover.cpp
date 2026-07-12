@@ -29,6 +29,7 @@
 #include "memory_infra/global_memory_manager.hpp"
 #include "memory_infra/scratch_arena.hpp"
 #include "memory_infra/lb_deload.hpp"
+#include "memory_infra/deload_stats.hpp"
 #include <iostream>
 #include <fstream>
 #include <numeric>
@@ -215,6 +216,10 @@ ExpressionAnalyzer::ExpressionAnalyzer(std::string anchorID)
                 if (pp.contains("max_number_splits")) parameters.max_number_splits = pp["max_number_splits"];
                 if (pp.contains("fixed_number_splits")) parameters.fixed_number_splits = pp["fixed_number_splits"];
                 if (pp.contains("split_fallback_ratio")) parameters.split_fallback_ratio = pp["split_fallback_ratio"];
+                if (pp.contains("second_split_submatch_cap")) parameters.second_split_submatch_cap = pp["second_split_submatch_cap"];
+                if (pp.contains("min_split_work")) parameters.min_split_work = pp["min_split_work"];
+                if (pp.contains("enable_quiesce_skip")) parameters.enable_quiesce_skip = pp["enable_quiesce_skip"];
+                if (pp.contains("enable_extent_deload")) parameters.enable_extent_deload = pp["enable_extent_deload"];
                 // Memory-size knobs (static pool/block/page, persistent
                 // pool/block, hot-arena) are intentionally NOT read from the
                 // config: they are fixed in parameters.hpp and identical for
@@ -1557,19 +1562,10 @@ void ExpressionAnalyzer::multiplyImplication(StrSpan implication,
 // Turn optimizations OFF for just this section
 //#pragma optimize("", off)
 
-// addToHashMemory(), makeNormalizedKeysForAdmission(), lessByName(),
-// lessByOriginal() — moved to memory.cpp.
-
-
-// growBaseCandidates(), generateEncodedRequestsStatic(), and
-// generateEncodedRequestsStaticPairs() — moved to memory.cpp (alongside
-// the inline filterIntEncodedStatements helper from prover.hpp).
-
-// generateEncodedRequestsStaticCE() and filterIntEncodedStatementsCE() —
-// moved to filter.cpp.
-
-
-// checkLocalEncodedMemoryStatic() — moved to memory.cpp.
+// The hash-engine bodies live in memory.cpp: addToHashMemory(),
+// makeNormalizedKeysForAdmission(), lessByName(), lessByOriginal(),
+// filterIntEncodedStatements(), the two obligatory-stump builders,
+// generateEncodedRequestsStatic(), and checkLocalEncodedMemoryStatic().
 
 // ========================================================================
 // Static pipeline: IntEncodedExpr-based, zero-alloc request generation
@@ -1818,9 +1814,27 @@ thread_local int ExpressionAnalyzer::g_currentCoreId = -1;
 
 /// @see Declaration in `prover.hpp` for the full contract.
 void ExpressionAnalyzer::performElem2(const Memory& body, unsigned coreId,
-    int processID, int splitCount,
+    int processID, int splitCount, int partCount,
+    const SplitStumpRef& splitStump,
     SealedPageSet& sealedPages,
     std::atomic<bool>& burstShouldStop) {
+
+    // The LB split's expression dimension. A stump-split sub-part carries a bucket
+    // of stumps, and every request it generates contains one of them; an ordinary
+    // whole-LB part carries none.
+    assert((splitStump.count == 0) == (splitStump.stumps == nullptr)
+        && "performElem2: stump bucket present iff non-empty");
+    // A stump bucket only ever rides a MULTI-PART LB: the whole-LB expression split
+    // runs partCount bucket parts (at splitCount == 1). The burst early-exit (I-76)
+    // is disabled whenever partCount > 1, because a sibling bailing on another
+    // part's stop is a scheduling race; a bucket part is exactly such a sibling, and
+    // this assert is what makes the g_isMultiPart gate cover it.
+    assert((splitStump.count == 0 || partCount > 1)
+        && "performElem2: a stump bucket belongs to a MULTI-PART LB — the "
+           "early-exit gate reads g_isMultiPart and would re-enable at 1");
+    assert((splitStump.count == 0 || splitStump.total >= 1)
+        && "performElem2: a stump sub-part has a place among its siblings");
+    assert(partCount >= 1 && "performElem2: partCount is the LB's part count (>= 1)");
 
     // Per-call RT tracker home. performElem2 is the hashburst (request
     // generation + the inline fixpoint check) — where a runaway LB spends its
@@ -1836,6 +1850,10 @@ void ExpressionAnalyzer::performElem2(const Memory& body, unsigned coreId,
     // this executor generates only its id % splitCount == processID slice).
     g_splitProcessID = processID;
     g_splitCount = splitCount;
+    // Per-burst multi-part signal for the early-exit gate (I-76), independent of
+    // the rule dimension: a whole-LB expression split runs partCount bucket parts
+    // at splitCount == 1, and each must run to completion (D-121).
+    g_isMultiPart = (partCount > 1);
 
     // The request keys + the IntEncodedExpr copies now ride this slot's gen
     // scratch arena (genScratchArenas().forSlot(coreId)), released per worker
@@ -1852,20 +1870,22 @@ void ExpressionAnalyzer::performElem2(const Memory& body, unsigned coreId,
     // worker finishes.
 
     // Submatch counter reset: zero the per-split-part tally at the start of this
-    // part. preEvaluateFromEncoded bumps it on every match it owns; canAccept /
-    // growBaseCandidates cap the burst on it, and the worker reads it after this
-    // call to drive the split policy. See D-109.
+    // part. The generator's grow-DFS and the merge's preEvaluateFromEncoded bump it
+    // on every match this part owns; canAccept caps the burst on it, and the worker
+    // reads it after this call to drive the split policy. See D-109.
     g_growthMatchCount = 0;
 
     // Streaming consumer: each generated request is checked inline (dependency
     // skip + checkLocalEncodedMemoryStatic) instead of being buffered and
     // checked afterwards. The external `burstShouldStop` flag — per-LB, shared
-    // by all the LB's parts and living OUTSIDE the LB — lets any part end this
-    // whole LB's burst early without writing anything on the LB (I-66). The cap
-    // is counted, not buffered (BurstSink::canAccept stops at
-    // maxNumberHashRequests).
+    // by all the LB's parts and living OUTSIDE the LB — lets a SINGLE-part LB end
+    // its burst early without writing anything on the LB (I-66); a multi-part LB
+    // runs every part to completion (I-76 / g_isMultiPart).
+    //
+    // No submatch cap: main-path bursts run to COMPLETION and a straggler is split
+    // preemptively next iteration (the stats-driven trigger in proveKernel), never
+    // truncated mid-burst. The CE filter was already uncapped (ceFilteringActive).
     BurstSink sink{ this, &body, coreId, &sealedPages, &burstShouldStop,
-                    parameters.maxNumberHashRequests,
                     SealedRecordCursor<FiringRecord>(sealedPages) };
 
     // ===================================================================
@@ -1878,31 +1898,34 @@ void ExpressionAnalyzer::performElem2(const Memory& body, unsigned coreId,
 
     if (ceFilteringActive) {
         RT_SCOPE_HERE("REQGEN_CE_MODE");
-        // --- CE mode: enumerate statement combos from persistent state.
-        this->generateEncodedRequestsStaticCE(body, body.overallHashMemory, coreId, sink);
+        // --- CE mode: no element is obligatory, so the stump is empty and every
+        // base candidate is itself a request.
+        this->generateEncodedRequestsStatic(body, body.overallHashMemory,
+            /*stumpLen=*/0, /*stumps=*/nullptr, /*stumpCount=*/0,
+            IntStmtView(), IntStmtView(), SplitStumpRef{}, coreId, sink);
     } else {
-        // --- Normal mode: 5-batch mandatory pipeline ---
+        // --- Normal mode: 5-batch obligatory-stump pipeline ---
         // Batch 1 reads the persistent `body.workingMemory` and the
         // mail-pair batches read `body.intExternalStatements`, both
         // filled by the absorb above.
 
-        int16_t mslBuf[4096];
+        Stump stumpBuf[4096];
 
         // --- Batch 1: mail-recovered rules (body.workingMemory) ---
         // Filled by the absorb above (status=3 recovered implications). The
-        // leading sink.canAccept() skips this batch's makeMandatory + generate
+        // leading sink.canAccept() skips this batch's stump build + generate
         // once the LB hit the cap or was early-exited by another part.
         if (sink.canAccept() && !body.workingMemory.encodedMap.empty()) {
             RT_SCOPE_HERE("REQGEN_BATCH1_WORKING_MEMORY");
             int16_t nMsl1 = this->makeMandatoryEncodedStatementLists1Static(
                 body.workingMemory, body.nameMap,
                 IntStmtView(body.intLocalEncodedStatements),
-                mslBuf, 4096);
+                stumpBuf, 4096);
             if (nMsl1 > 0) {
                 this->generateEncodedRequestsStatic(body, body.workingMemory,
-                    mslBuf, nMsl1,
-                    IntStmtView(body.intLocalEncodedStatements),
-                    coreId, sink);
+                    /*stumpLen=*/1, stumpBuf, nMsl1,
+                    IntStmtView(body.intLocalEncodedStatements), IntStmtView(),
+                    splitStump, coreId, sink);
             }
         }
 
@@ -1912,48 +1935,48 @@ void ExpressionAnalyzer::performElem2(const Memory& body, unsigned coreId,
             int16_t nMsl2 = this->makeMandatoryEncodedStatementLists1Static(
                 body.overallHashMemory, body.nameMap,
                 IntStmtView(body.intLocalEncodedStatementsDelta),
-                mslBuf, 4096);
+                stumpBuf, 4096);
 
             if (nMsl2 > 0) {
                 this->generateEncodedRequestsStatic(body, body.overallHashMemory,
-                    mslBuf, nMsl2,
-                    IntStmtView(body.intLocalEncodedStatementsDelta),
-                    coreId, sink);
+                    /*stumpLen=*/1, stumpBuf, nMsl2,
+                    IntStmtView(body.intLocalEncodedStatementsDelta), IntStmtView(),
+                    splitStump, coreId, sink);
             }
         }
 
-        // --- Batch 3: local × mail pairs (fully static) ---
+        // --- Batch 3: local × mail pairs (two-element stumps) ---
         // Mail side = body.intExternalStatements (filled by the absorb above).
         if (sink.canAccept()) {
             RT_SCOPE_HERE("REQGEN_BATCH3_LOCAL_X_MAIL");
-            MandatoryPair pairsBuf[8192];
+            Stump pairsBuf[8192];
             int16_t nPairs = this->makeMandatoryEncodedStatementLists2Static(
                 body, body.overallHashMemory,
                 IntStmtView(body.intLocalEncodedStatements),
                 IntStmtView(body.intExternalStatements),
                 pairsBuf, 8192);
             if (nPairs > 0) {
-                this->generateEncodedRequestsStaticPairs(body, body.overallHashMemory,
-                    pairsBuf, nPairs,
+                this->generateEncodedRequestsStatic(body, body.overallHashMemory,
+                    /*stumpLen=*/2, pairsBuf, nPairs,
                     IntStmtView(body.intLocalEncodedStatements),
                     IntStmtView(body.intExternalStatements),
-                    coreId, sink);
+                    splitStump, coreId, sink);
             }
         }
 
-        // --- Batch 4: localHashMemory — mail mandatory singles ---
+        // --- Batch 4: localHashMemory — mail one-element stumps ---
         // Mail side = body.intExternalStatements (filled by the absorb above).
         if (sink.canAccept() && !body.localHashMemory.encodedMap.empty() && !body.intExternalStatements.empty()) {
             RT_SCOPE_HERE("REQGEN_BATCH4_LOCAL_X_MAIL_SINGLES");
             int16_t nMsl4 = this->makeMandatoryEncodedStatementLists1Static(
                 body.localHashMemory, body.nameMap,
                 IntStmtView(body.intExternalStatements),
-                mslBuf, 4096);
+                stumpBuf, 4096);
             if (nMsl4 > 0) {
                 this->generateEncodedRequestsStatic(body, body.localHashMemory,
-                    mslBuf, nMsl4,
-                    IntStmtView(body.intExternalStatements),
-                    coreId, sink);
+                    /*stumpLen=*/1, stumpBuf, nMsl4,
+                    IntStmtView(body.intExternalStatements), IntStmtView(),
+                    splitStump, coreId, sink);
             }
         }
 
@@ -1963,12 +1986,12 @@ void ExpressionAnalyzer::performElem2(const Memory& body, unsigned coreId,
             int16_t nMsl5 = this->makeMandatoryEncodedStatementLists1Static(
                 body.localHashMemoryDelta, body.nameMap,
                 IntStmtView(body.intEncodedStatements),
-                mslBuf, 4096);
+                stumpBuf, 4096);
             if (nMsl5 > 0) {
                 this->generateEncodedRequestsStatic(body, body.localHashMemoryDelta,
-                    mslBuf, nMsl5,
-                    IntStmtView(body.intEncodedStatements),
-                    coreId, sink);
+                    /*stumpLen=*/1, stumpBuf, nMsl5,
+                    IntStmtView(body.intEncodedStatements), IntStmtView(),
+                    splitStump, coreId, sink);
             }
         }
     } // end normal mode
@@ -2011,27 +2034,15 @@ void ExpressionAnalyzer::performElem2(const Memory& body, unsigned coreId,
 }
 
 /// @see Declaration in `prover.hpp` for the full contract.
-ExpressionAnalyzer::SplitDecision ExpressionAnalyzer::adaptiveSplitDecision(
-    int currentParts, int maxSubmatches, int submatchCap, int fixedParts,
-    double fallbackRatio) {
-    // Bang-bang two-state policy: an LB is either unsplit (1) or fully split
-    // (fixedParts). Escalate the moment an unsplit part hits the cap, and have
-    // the caller redo the burst at fixedParts this iteration (the truncated
-    // unsplit burst is discarded). Coarsen back to unsplit once a split LB's
-    // busiest part runs well under the cap. See D-111.
-    if (currentParts <= 1) {
-        // Unsplit: the single part owns ALL the LB's rules, so its submatch count
-        // IS the LB's whole burst. Hitting the cap means the burst truncated
-        // (dropped requests that are not wasted-once-doomed) -> incomplete, so
-        // escalate to fixedParts and signal redo-now.
-        if (maxSubmatches >= submatchCap) return { fixedParts, true };
-        return { 1, false };  // ran under the cap -> complete -> stay unsplit
-    }
-    // Split: each part owns 1/N of the rules and is independently capped. If even
-    // the busiest part ran below fallbackRatio of the cap, the split buys nothing
-    // -> coarsen to unsplit next iteration (this burst's result is kept).
-    if (maxSubmatches < fallbackRatio * static_cast<double>(submatchCap)) return { 1, false };
-    return { currentParts, false };  // hold at the current split
+bool ExpressionAnalyzer::isStraggler(int64_t work, int64_t totalWork,
+    int cores, int64_t minSplitWork) {
+    assert(cores >= 1 && "isStraggler: cores is the machine core count (>= 1)");
+    // Idle-core fair-share: an LB whose work alone exceeds the ideally-balanced
+    // per-core load leaves cores idle, so splitting it across cores is justified.
+    // The floor suppresses splitting a trivially cheap iteration (per-bucket work
+    // below the fixed setup cost). Integer division -> deterministic verdict.
+    const int64_t fairShare = totalWork / static_cast<int64_t>(cores);
+    return work > fairShare && work >= minSplitWork;
 }
 
 /// @see Declaration in `prover.hpp` for the full contract.
@@ -2043,8 +2054,8 @@ void ExpressionAnalyzer::performElemPhase2(Memory& body,
     // on its LB (D-116) and appending its records to its own sealed page set;
     // `parts` hands THIS LB's sealed part sets in part order. This step is
     // single-LB and runs after the pool join, so it may freely mutate the LB. The
-    // adaptive split decision (escalate / fall-back / discard-and-redo) lives in
-    // proveKernel's finalize sweep, not here (D-111).
+    // split decision (which LBs are stragglers next iteration) lives in proveKernel's
+    // end-of-iteration stats pass via isStraggler, not here.
 
     // ENTRANCE isActive gate. performElemPhase1's absorb may have discharged the
     // LB (primed/CE contradiction, vacuous-truth induction step, toBeProved
@@ -2069,6 +2080,15 @@ void ExpressionAnalyzer::performElemPhase2(Memory& body,
         // stays deterministic.
         this->applyFiringRecords(body, parts, partCount);
     }
+
+    // Quiescence (D-194): admission-map churn this burst is a
+    // mutation the phase-3 statement-count diff cannot see — a marker firing
+    // registers an admission template without depositing a statement, yet it can
+    // enable a fresh it_/int_ admission (and thus a firing) next burst. Flag it
+    // so the LB stays awake. Read while the staging vectors still hold this
+    // burst's records, before the drains below consume them.
+    if (!body.admissionKeysAlgebra.empty() || !body.deferredIntegrationPreps.empty())
+        body.mutatedThisBurst = true;
 
     // Drain the per-burst admission / integration records (replay in firing
     // order before phase 3's post-burst standardProcessing absorb). Run for
@@ -2102,7 +2122,16 @@ void ExpressionAnalyzer::performElemPhase1(Memory& body, unsigned coreId) {
     // clones run with NO steward (always resident, never deloaded) and skip
     // the handshake entirely.
     if (steward)
-        steward->claimAndLoadForWork(body, lbdeload::kDeloadDirectory);
+        steward->claimAndLoadForWork(body, /*phase=*/1,
+                                     lbdeload::kDeloadDirectory);
+
+    // Quiescence SLEEP detector reset (D-194): the per-burst
+    // non-statement mutation flag starts clean, and the statement-count baseline
+    // is snapped BEFORE the pre-burst mail absorb below, so any mail-absorbed
+    // deposit this burst counts as work (keeps the LB awake). Read back at
+    // phase-3 exit to decide whether hasWork clears.
+    body.mutatedThisBurst = false;
+    body.encodedCountAtBurstStart = body.intEncodedStatementsCount();
 
     // ENTRY trap — delegate to hashburst_dump (relocated into phase 1 with the
     // performElem phase split; the dump sections / file path / target predicate
@@ -2175,8 +2204,21 @@ void ExpressionAnalyzer::performElemPhase1(Memory& body, unsigned coreId) {
     // parallel-safe, because commits happen only at the single-threaded
     // post-join seam. CE / compressor LBs are isolated/flat and never registered,
     // so they are gated out.
+    int64_t trackedMailInBlocks = 0;
     if (!ceFilteringActive && !parameters.compressor_mode) {
         this->mailLog.pull(&body, body.mailIn);
+        trackedMailInBlocks = body.mailIn.blocksHeld();
+        const int64_t simultaneousMailInBlocks =
+            routingMailInBlocksInFlight.fetch_add(
+                trackedMailInBlocks, std::memory_order_relaxed)
+            + trackedMailInBlocks;
+        int64_t observedPeak =
+            peakRoutingMailInBlocks.load(std::memory_order_relaxed);
+        while (simultaneousMailInBlocks > observedPeak
+            && !peakRoutingMailInBlocks.compare_exchange_weak(
+                observedPeak, simultaneousMailInBlocks,
+                std::memory_order_relaxed)) {
+        }
     }
 
     // mailIn is HOT (I-101): the absorb reads its canonical
@@ -2189,6 +2231,12 @@ void ExpressionAnalyzer::performElemPhase1(Memory& body, unsigned coreId) {
                              /*internalMailOut=*/body.sameIterationInternalMail,
                              coreId);
     body.mailIn.clear();
+    if (!ceFilteringActive && !parameters.compressor_mode) {
+        const int64_t beforeRelease = routingMailInBlocksInFlight.fetch_sub(
+            trackedMailInBlocks, std::memory_order_relaxed);
+        assert(beforeRelease >= trackedMailInBlocks
+            && "routing mailIn attribution counter underflow");
+    }
     } // RT_SCOPE PRE_FIXPOINT_MAIL_ABSORB
 
     // Release the claim — phase 1 is done with this LB, so it is deloadable
@@ -2211,7 +2259,8 @@ void ExpressionAnalyzer::performElemPhase3(Memory& body, unsigned coreId) {
     // Unified working-set handshake (all phases equivalent): claim + load
     // this LB before phase 3 reads it; CE clones run with no steward.
     if (steward)
-        steward->claimAndLoadForWork(body, lbdeload::kDeloadDirectory);
+        steward->claimAndLoadForWork(body, /*phase=*/3,
+                                     lbdeload::kDeloadDirectory);
 
     { RT_SCOPE_HERE("POST_FIXPOINT_MAIL_FLUSH");
     this->standardProcessing(body,
@@ -2249,6 +2298,11 @@ void ExpressionAnalyzer::performElemPhase3(Memory& body, unsigned coreId) {
     // sortedNew loops have all completed for this burst, so no
     // in-flight iteration can be invalidated.
     if (!body.pendingWipeScopes.empty()) {
+        // Quiescence (D-194): a subtree wipe eradicates state
+        // (and can leave the net statement count unchanged if it also erased what
+        // this burst added), so flag it as a mutation directly rather than relying
+        // on the count diff.
+        body.mutatedThisBurst = true;
         // Snapshot the cold set's ids then reset it, so wipeSubtree's own
         // inserts into other fields run against a fresh container.
         // Sort the IDS by their DECODED names (compareSpans == std::string
@@ -2280,6 +2334,94 @@ void ExpressionAnalyzer::performElemPhase3(Memory& body, unsigned coreId) {
         gArena.popTo(drainMark);
     }
     } // RT_SCOPE END_OF_BURST_SANITIZE
+
+    // Quiescence SLEEP (D-194): the burst has finished
+    // mutating. Clear hasWork unless this burst produced work — a statement
+    // deposit / equi-class rewrite / subtree-wipe erase (count changed vs the
+    // phase-1 baseline), a flagged non-statement mutation (admission churn or
+    // wipe), or a pending emission on an INTERNAL mail channel (revival on
+    // sameIter, a cross-iteration deferral on nextIter — both are inputs this
+    // LB's own NEXT burst absorbs). A sound over-approximation: when any of
+    // these holds the LB stays dirty and is swept again next iteration
+    // (Rule 19 — a missed wake would be unsound, an extra sweep is merely
+    // slow). Reads only this LB's own resident/never-deloaded state; no
+    // residency input (I-106 / I-108).
+    //
+    // mailOut is deliberately NOT in this fold. It is OUTGOING-ONLY under the
+    // pull model (I-64: fillMailOut and the deposit doors write it; the
+    // single-threaded commit barrier is its sole consumer): no burst path
+    // derives local state from it — the one historical burst-path read, the
+    // retired transitive-ship dedup, is dead code — so pending mailOut content
+    // can never make this LB's NEXT burst productive. And the barrier's commit
+    // sweep iterates `bodies` regardless of sweep status, so that content is
+    // committed whether or not this LB sweeps. Including it was never a valid
+    // activity signal, and it false-fired the shadow check on the ROOT: the
+    // post-join drains (the updateGlobal* theorem sends, the D-76 compaction
+    // flush) append to the root's mailOut AFTER the barrier, so a genuinely
+    // no-op root burst saw "mailOut non-empty" here and re-armed hasWork.
+    const bool sleepMutated = body.mutatedThisBurst;
+    const int32_t sleepCountNow = body.intEncodedStatementsCount();
+    const bool sleepSameIterNonEmpty = !body.sameIterationInternalMail.empty();
+    const bool sleepNextIterNonEmpty = !body.nextIterationInternalMail.empty();
+    body.hasWork =
+          sleepMutated
+       || sleepCountNow != body.encodedCountAtBurstStart
+       || sleepSameIterNonEmpty
+       || sleepNextIterNonEmpty;
+
+#ifdef QUIESCE_SHADOW_CHECK
+    // Empirical soundness validator (off by default, in-tree). Under the flag the
+    // skip filter does NOT exclude a would-be-skipped LB — it sweeps it anyway and
+    // records the predicate's verdict in shadowWouldSkip. If that "quiescent"
+    // burst actually produced work, hasWork is now set and this fires at the exact
+    // LB: the predicate is unsound (a missed wake door or a missed mutation choke
+    // point). Rule 19 in spirit — surface it loudly at its origin. The forensic
+    // dump below prints exactly WHICH SLEEP condition re-triggered and the full
+    // parentMemory chain (Rule 12 — full chain, never exprKey alone), so one run
+    // identifies the miss precisely.
+    if (body.shadowWouldSkip && body.hasWork) {
+        std::ostringstream fx;
+        fx << "[QUIESCE-SHADOW] predicate miss at burst="
+           << ::gl::rt_tracker::g_currentHashburstIndex
+           << " phase=3 (performElemPhase3 exit)\n";
+        fx << "[QUIESCE-SHADOW] LB chain (innermost -> root):\n";
+        for (const Memory* cur = &body; cur != nullptr;
+             cur = cur->parentMemory) {
+            fx << "[QUIESCE-SHADOW]   '" << cur->exprKey() << "'"
+               << (cur->parentMemory == nullptr ? "  (root sentinel)" : "")
+               << "\n";
+        }
+        fx << "[QUIESCE-SHADOW] SLEEP conditions re-triggered this burst:\n";
+        fx << "[QUIESCE-SHADOW]   mutatedThisBurst        = "
+           << (sleepMutated ? "TRUE" : "false") << "\n";
+        fx << "[QUIESCE-SHADOW]   encodedStatements count = "
+           << sleepCountNow << " now vs " << body.encodedCountAtBurstStart
+           << " at phase-1 entry"
+           << (sleepCountNow != body.encodedCountAtBurstStart
+                   ? "  <-- CHANGED" : "  (unchanged)") << "\n";
+        fx << "[QUIESCE-SHADOW]   sameIterationInternalMail non-empty = "
+           << (sleepSameIterNonEmpty ? "TRUE" : "false") << "\n";
+        fx << "[QUIESCE-SHADOW]   nextIterationInternalMail non-empty = "
+           << (sleepNextIterNonEmpty ? "TRUE" : "false") << "\n";
+        fx << "[QUIESCE-SHADOW] latch state: shadowWouldSkip=true (so at this "
+              "iteration's active-build hasWork was false AND mailPeek was "
+              "false); hasWork now=true\n";
+        fx << "[QUIESCE-SHADOW] mailPeek(now, frozen logs) = "
+           << (mailLog.mailPeek(&body) ? "TRUE" : "false")
+           << "  (commits happen only at the barrier, so this equals the "
+              "active-build value)\n";
+        fx << "[QUIESCE-SHADOW] isActive=" << (body.isActive ? "true" : "false")
+           << " dischargedForever=" << (body.dischargedForever ? "true" : "false")
+           << " primedForContradiction="
+           << (body.primedForContradiction ? "true" : "false")
+           << " toBeProved count=" << body.intToBeProved.count() << "\n";
+        std::cerr << fx.str() << std::flush;
+        assert(!body.hasWork
+            && "QUIESCE_SHADOW_CHECK: a would-be-skipped LB's burst mutated state "
+               "— the quiescence predicate is unsound (missed wake or missed "
+               "mutation choke point)");
+    }
+#endif
 
     // EXIT trap — delegate to hashburst_dump (relocated here from the inline
     // performElem tail with the phase split; dump unchanged, Rule 14).
@@ -2624,14 +2766,19 @@ void ExpressionAnalyzer::updateGlobalDirect(const std::string& theorem, int core
                 // standardProcessing call will drain
                 // nextIterationInternalMail alongside mailIn.
                 if (!memoryBlockR->dischargedForever) {
-                    // Cross-LB residency: memoryBlockR is a DIFFERENT LB whose
-                    // nextIterationInternalMail rides its DELOADABLE arena
-                    // (I-102), so make it resident before
-                    // the cold-door write. A dischargedForever target is skipped
-                    // -- it never drains its nextIter again (dead deposit), and
-                    // ensureLoaded asserts on a discharged LB. Single-threaded
-                    // post-join (I-28), so the reload is safe.
-                    memoryBlockR->ensureLoaded(lbdeload::kDeloadDirectory);
+                    // SEAM DOOR (D-196): memoryBlockR is a
+                    // DIFFERENT LB whose nextIterationInternalMail rides its
+                    // DELOADABLE arena (I-102). The uniform handshake makes it
+                    // resident, claim-correct (never Dumped-but-resident), and
+                    // holds WorkerOwned across the write so the barrier seam
+                    // window's executors cannot evict it mid-deposit; the
+                    // release below makes it evictable again (the deposit
+                    // lives in the arena and rides the raw image). A
+                    // dischargedForever target is skipped -- it never drains
+                    // its nextIter again (dead deposit), and the reload
+                    // asserts on a discharged LB.
+                    steward->claimAndLoadForWork(*memoryBlockR, /*phase=*/4,
+                                                 lbdeload::kDeloadDirectory);
                     const int maxOrigins = parameters.compressor_mode
                         ? parameters.compressor_max_origins_per_expr
                         : parameters.max_origin_per_expr;
@@ -2645,6 +2792,14 @@ void ExpressionAnalyzer::updateGlobalDirect(const std::string& theorem, int core
                                       OriginTag::implication, implDeps, implDepN,
                                       maxOrigins);
                     }
+                    // WAKE DOOR 1 (D-194): a cross-LB deposit
+                    // into memoryBlockR's nextIterationInternalMail is new work it
+                    // will drain next step — mark it dirty so the skip filter
+                    // sweeps it even if it had converged.
+                    memoryBlockR->hasWork = true;
+                    memoryBlockR->stewardClaim.store(
+                        static_cast<uint8_t>(Memory::StewardClaim::Idle),
+                        std::memory_order_release);
                 }
             }
 
@@ -2730,10 +2885,15 @@ void ExpressionAnalyzer::updateGlobalDirect(const std::string& theorem, int core
     // nextIterationInternalMail). Merge them into the root's mailOut; the NEXT
     // commit barrier ships them into the root's log for descendants to pull,
     // preserving the old post-smashMail one-iteration-later delivery. Runs
-    // single-threaded post-join, so writing the root's mailOut is race-free.
+    // single-threaded post-join. The root's mailOut is deloadable, so the seam
+    // claims and reloads it across the deposit.
     assert(coreId >= 0);
-    mergeBatchIntoMailOut(mailOut, this->body.mailOut, this->body.nameMap,
-                          this->body.originInterner);
+    steward->claimAndLoadForWork(this->body, /*phase=*/4,
+                                 lbdeload::kDeloadDirectory);
+    mergeBatchIntoMailOut(mailOut, this->body);
+    this->body.stewardClaim.store(
+        static_cast<uint8_t>(Memory::StewardClaim::Idle),
+        std::memory_order_release);
 }
 
 //#pragma optimize("", off)
@@ -2789,7 +2949,14 @@ void ExpressionAnalyzer::deactivateRecursively() {
         // The survey reads intToBeProved, which now lives in the PERSISTENT pool
         // and is always resident (I-108) — so it runs on
         // every ACTIVE node regardless of whether the node's MAIN arena is
-        // deloaded. Gating on isActive (not residency) is the determinism fix:
+        // deloaded. This is also what makes the quiescent-burst skip
+        // (D-194) preserve the I-48 deactivation schedule with
+        // zero extra work: this survey is a tree-wide, post-join walk from the
+        // root, so a SKIPPED LB (unswept this iteration but still isActive) is
+        // still surveyed here, reading only never-deloaded state (intToBeProved
+        // persistent I-108; child isActive + simpleMap edges on the never-deloaded
+        // LB slab, I-109 / I-110) — it forces no reload of a cold skipped LB.
+        // Gating on isActive (not residency) is the determinism fix:
         // the old residency gate SKIPPED a deloaded-but-active node, and which
         // nodes are deloaded is timing-dependent, so the deactivation decision
         // (and thus the theorem set) was non-deterministic. An already-inactive
@@ -3063,11 +3230,15 @@ void ExpressionAnalyzer::updateGlobal(int auxyIndex, bool allLevelsInvolved, int
             // `nextIterationInternalMail` for absorption at the start
             // of its next elementary step (alongside mailIn).
             if (!memoryBlock->dischargedForever) {
-                // This LB is resident (it just ran its phases), so ensureLoaded
-                // is a no-op here; a dischargedForever LB has no next step to
-                // drain the deposit (dead), so it is skipped
-                // (I-102).
-                memoryBlock->ensureLoaded(lbdeload::kDeloadDirectory);
+                // SEAM DOOR (D-196): this LB just ran its
+                // phases, but the barrier seam window's executors may have
+                // evicted it since its release — the uniform handshake reloads
+                // it claim-correctly and holds WorkerOwned across the write;
+                // the release makes it evictable again. A dischargedForever LB
+                // has no next step to drain the deposit (dead), so it is
+                // skipped (I-102).
+                steward->claimAndLoadForWork(*memoryBlock, /*phase=*/4,
+                                             lbdeload::kDeloadDirectory);
                 const int maxOrigins = parameters.compressor_mode
                     ? parameters.compressor_max_origins_per_expr
                     : parameters.max_origin_per_expr;
@@ -3081,6 +3252,13 @@ void ExpressionAnalyzer::updateGlobal(int auxyIndex, bool allLevelsInvolved, int
                                   OriginTag::implication, implDeps, implDepN,
                                   maxOrigins);
                 }
+                // WAKE DOOR 2 (D-194): updateGlobal deposits
+                // the proved head into this LB's nextIterationInternalMail (and
+                // erased a main goal above) — new work next step; keep it swept.
+                memoryBlock->hasWork = true;
+                memoryBlock->stewardClaim.store(
+                    static_cast<uint8_t>(Memory::StewardClaim::Idle),
+                    std::memory_order_release);
             }
 
             // ASIC 0.1 reshuffle: the legacy Mail::implications channel is
@@ -3166,14 +3344,15 @@ void ExpressionAnalyzer::updateGlobal(int auxyIndex, bool allLevelsInvolved, int
                         // Cross-LB deposit into the target block's
                 // `nextIterationInternalMail` for next-iter absorb.
                 if (!memoryBlockR->dischargedForever) {
-                    // Cross-LB residency: memoryBlockR is a DIFFERENT LB whose
-                    // nextIterationInternalMail rides its DELOADABLE arena
-                    // (I-102), so make it resident before
-                    // the cold-door write. A dischargedForever target is skipped
-                    // -- it never drains its nextIter again (dead deposit), and
-                    // ensureLoaded asserts on a discharged LB. Single-threaded
-                    // post-join (I-28), so the reload is safe.
-                    memoryBlockR->ensureLoaded(lbdeload::kDeloadDirectory);
+                    // SEAM DOOR (D-196): the uniform
+                    // handshake reloads the recipient claim-correctly and
+                    // holds WorkerOwned across the write (the barrier seam
+                    // window's executors cannot evict it mid-deposit); the
+                    // release makes it evictable again. A dischargedForever
+                    // target is skipped -- it never drains its nextIter again
+                    // (dead deposit; I-102).
+                    steward->claimAndLoadForWork(*memoryBlockR, /*phase=*/4,
+                                                 lbdeload::kDeloadDirectory);
                     const int maxOrigins = parameters.compressor_mode
                         ? parameters.compressor_max_origins_per_expr
                         : parameters.max_origin_per_expr;
@@ -3187,6 +3366,13 @@ void ExpressionAnalyzer::updateGlobal(int auxyIndex, bool allLevelsInvolved, int
                                       OriginTag::implication, implDeps, implDepN,
                                       maxOrigins);
                     }
+                    // WAKE DOOR 1 (D-194): cross-LB deposit
+                    // into memoryBlockR's nextIterationInternalMail — new work
+                    // next step; keep it swept.
+                    memoryBlockR->hasWork = true;
+                    memoryBlockR->stewardClaim.store(
+                        static_cast<uint8_t>(Memory::StewardClaim::Idle),
+                        std::memory_order_release);
                 }
                     }
 
@@ -3202,11 +3388,15 @@ void ExpressionAnalyzer::updateGlobal(int auxyIndex, bool allLevelsInvolved, int
             // mailOut carries only origin lines (documentation, I-44); merge them
             // into the root's mailOut, shipped by the NEXT commit barrier
             // (one-iteration delay, matching the old post-smashMail timing).
-            // Single-threaded post-join, so writing the root's mailOut is
-            // race-free.
+            // Single-threaded post-join; claim/reload the root because mailOut
+            // rides its deloadable arena.
             assert(coreId >= 0);
-            mergeBatchIntoMailOut(mailOut, this->body.mailOut, this->body.nameMap,
-                          this->body.originInterner);
+            steward->claimAndLoadForWork(this->body, /*phase=*/4,
+                                         lbdeload::kDeloadDirectory);
+            mergeBatchIntoMailOut(mailOut, this->body);
+            this->body.stewardClaim.store(
+                static_cast<uint8_t>(Memory::StewardClaim::Idle),
+                std::memory_order_release);
         }
     }
 }
@@ -3357,6 +3547,12 @@ inline void ExpressionAnalyzer::updateAdmissionMap3(StrSpan expr,
                         maxSecondaryNumber,
                         partOfRecursion,
                         StrSpan("main", 4));
+                    // WAKE DOOR 3 (inline twin, D-194): an
+                    // inline (single-threaded) admission write into tempMb — its
+                    // own LB when self-seeding (harmless), or an ancestor on a
+                    // non-parallel re-entry climb — is rule state that can fire
+                    // next burst; keep the target swept.
+                    tempMb->hasWork = true;
                 }
             }
             break;
@@ -3443,10 +3639,12 @@ void ExpressionAnalyzer::drainDeferredAncestorAdmissions() {
         // seed and must not be resurrected (I-102 / I-112) — skip, mirroring the
         // dischargedForever guard on the proven-head deposit drain.
         if (r.ancestor->dischargedForever) continue;
-        // The working-set pager may have evicted the ancestor during the
-        // parallel phase; bring it back before touching its deloadable admission
-        // maps (no-op when resident, I-111).
-        r.ancestor->ensureLoaded(lbdeload::kDeloadDirectory);
+        // SEAM DOOR (D-196): the pager (a phase window or
+        // the barrier seam window) may have evicted the ancestor — the
+        // uniform handshake reloads it claim-correctly and holds WorkerOwned
+        // across the admission write below; released after.
+        steward->claimAndLoadForWork(*r.ancestor, /*phase=*/4,
+                                     lbdeload::kDeloadDirectory);
         // SealedSpan<SealedString> -> StrSpan[] stack runs for the C2 signature.
         // The sealed bytes stay valid until freePages() below (updateAdmissionMap
         // mints the ANCESTOR's interners, never this page set; I-3).
@@ -3461,6 +3659,14 @@ void ExpressionAnalyzer::drainDeferredAncestorAdmissions() {
         this->updateAdmissionMap(*r.ancestor, keyRun, kN, remRun, rN,
             r.maxAdmissionDepth, r.maxSecondaryNumber, r.partOfRecursion,
             StrSpan("main", 4));
+        // WAKE DOOR 3 (D-194): this replays a cross-LB
+        // admission seed into the ancestor's admission map (rule state, not a
+        // mailbox) — it can enable a fresh firing next burst, so keep the
+        // ancestor swept.
+        r.ancestor->hasWork = true;
+        r.ancestor->stewardClaim.store(
+            static_cast<uint8_t>(Memory::StewardClaim::Idle),
+            std::memory_order_release);
     }
     gArena.popTo(mark);
     ps.seal();
@@ -5649,9 +5855,11 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
                     ? parameters.compressor_max_origins_per_expr
                     : parameters.max_origin_per_expr;
                 ExpressionWithValidity ev(element, "main");
-                child->mailOut.insertStatement(child->nameMap.encode(ev.original),
-                    child->nameMap.encode(ev.validityName), lvRun, 1);
-                addRoutingMailOrigin(child->mailOut, child->originInterner, StrSpan(ev.original), StrSpan(ev.validityName), origin.tag, origin.deps, origin.depN, maxOriginsLocal);
+                child->insertMailOutStatement(StrSpan(ev.original),
+                    StrSpan(ev.validityName), lvRun, 1);
+                child->addMailOutOrigin(StrSpan(ev.original),
+                    StrSpan(ev.validityName), origin.tag, origin.deps,
+                    origin.depN, maxOriginsLocal);
             }
         }
 
@@ -5930,10 +6138,14 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
                                                 ? parameters.compressor_max_origins_per_expr
                                                 : parameters.max_origin_per_expr;
                                             ExpressionWithValidity ev(cleanOp, "main");
-                                            contradictionLB->mailOut.insertStatement(
-                                                contradictionLB->nameMap.encode(ev.original),
-                                                contradictionLB->nameMap.encode(ev.validityName), lvRun, 1);
-                                            addRoutingMailOrigin(contradictionLB->mailOut, contradictionLB->originInterner, StrSpan(ev.original), StrSpan(ev.validityName), origin.tag, origin.deps, origin.depN, maxOriginsLocal);
+                                            contradictionLB->insertMailOutStatement(
+                                                StrSpan(ev.original),
+                                                StrSpan(ev.validityName), lvRun, 1);
+                                            contradictionLB->addMailOutOrigin(
+                                                StrSpan(ev.original),
+                                                StrSpan(ev.validityName), origin.tag,
+                                                origin.deps, origin.depN,
+                                                maxOriginsLocal);
                                         }
                                     }
                                     reformulatedOperator = true;
@@ -5972,10 +6184,13 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
                                 ? parameters.compressor_max_origins_per_expr
                                 : parameters.max_origin_per_expr;
                             ExpressionWithValidity ev(head, "main");
-                            contradictionLB->mailOut.insertStatement(
-                                contradictionLB->nameMap.encode(ev.original),
-                                contradictionLB->nameMap.encode(ev.validityName), lvRun, 1);
-                            addRoutingMailOrigin(contradictionLB->mailOut, contradictionLB->originInterner, StrSpan(ev.original), StrSpan(ev.validityName), origin.tag, origin.deps, origin.depN, maxOriginsLocal);
+                            contradictionLB->insertMailOutStatement(
+                                StrSpan(ev.original), StrSpan(ev.validityName),
+                                lvRun, 1);
+                            contradictionLB->addMailOutOrigin(
+                                StrSpan(ev.original), StrSpan(ev.validityName),
+                                origin.tag, origin.deps, origin.depN,
+                                maxOriginsLocal);
                         }
 
                     }
@@ -6702,6 +6917,13 @@ void ExpressionAnalyzer::activateZeroCondition(Memory& memoryBlock)
                 && "activateZeroCondition on a discharged LB - "
                    "deactivation is permanent");
             zeroChild->isActive = true;
+            // WAKE DOOR 6 / case F (D-194): this births an
+            // induction zero block into the active set bypassing every mailbox,
+            // so it must be marked dirty to be swept its first burst.
+            zeroChild->hasWork = true;
+            // First active burst processes a full backlog with no prior submatch
+            // history — split it preemptively this iteration (D-201).
+            zeroChild->justActivated = true;
         }
     }
 }
@@ -6714,11 +6936,11 @@ void ExpressionAnalyzer::activateZeroCondition(Memory& memoryBlock)
 /// barriered phase sweeps (`performElemPhase1` -> join -> phase 2 -> join ->
 /// `performElemPhase3` -> join), each a work-stealing sweep over the active LBs.
 /// Phase 2 is the **flat (LB, part) executor pool** (one work-stealing pool over
-/// every active LB's parts — an LB contributes `numberOfParts` tasks) followed by
-/// a per-LB finalize (`performElemPhase2`), wrapped in an adaptive re-split loop:
-/// a main-path LB whose UNSPLIT part hits the submatch cap escalates to
-/// `fixed_number_splits`, and its truncated burst is discarded and re-run from
-/// scratch in the next pass (<= 2 passes, D-111).
+/// every active LB's parts — a straggler contributes `logicalCores` expression
+/// buckets, everything else one part) followed by a per-LB finalize
+/// (`performElemPhase2`), in a <= 2-round loop: round 1 runs the producers +
+/// unsplit bursts, round 2 runs the stragglers' buckets. The split is decided by
+/// the end-of-iteration `isStraggler` stats pass (D-201).
 /// Cross-LB state mutations are forbidden during the worker phase per
 /// [I-28](../../docs/agentic_swdd/30_invariants.md#i-28); each worker writes only
 /// to its own LB's local state and to the per-thread collectors
@@ -6762,7 +6984,51 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
     // the old `if(!isActive) continue` admission. See D-114.
     std::vector<Memory*> active;
     active.reserve(bodies.size());
-    for (Memory* b : bodies) if (b && b->isActive) active.push_back(b);
+    // Quiescent-burst skip (D-194): sweep an active LB iff it
+    // may produce work this burst. `skipEnabled` gates the whole filter off during
+    // warm-up (belt), when the config disables it, and in compressor mode (LBs
+    // unregistered in the mail log, so mailPeek would be invalid — gated out). An
+    // eligible LB is skipped only when it has NO producer-side work (hasWork clear)
+    // AND NO un-ingested ancestor mail (mailPeek false). mailPeek is polled fresh
+    // each iteration, so a cross-LB commit at iteration N wakes the recipient at
+    // the N+1 active-build — the identical iteration the reference would pull, so
+    // no mail latency is added (I-55). The predicate reads ONLY never-deloaded
+    // logical state (hasWork on the LB slab, mailPeek on the mail pool); it never
+    // reads resident() / blocksInUse() — the I-106 / I-108 / D-149 determinism
+    // doctrine. A skipped LB stays isActive and keeps its claim/pager state
+    // untouched: it is unswept this round, not deactivated, so the pager's sweep
+    // window never includes it and it evicts and stays evicted at 4 GiB.
+    const bool skipEnabled = parameters.enable_quiesce_skip
+        && !parameters.compressor_mode && !warmUpPhase;
+    int skipped = 0;
+    for (Memory* b : bodies) {
+        if (!(b && b->isActive)) continue;
+#ifdef QUIESCE_SHADOW_CHECK
+        // Shadow: record the predicate's verdict but NEVER actually skip — the LB
+        // is swept and performElemPhase3 asserts its "quiescent" burst was a no-op.
+        b->shadowWouldSkip = skipEnabled && !b->hasWork && !mailLog.mailPeek(b);
+        active.push_back(b);
+#else
+        if (skipEnabled && !b->hasWork && !mailLog.mailPeek(b)) { ++skipped; continue; }
+        active.push_back(b);
+#endif
+    }
+    lastSweptCount = static_cast<int>(active.size());
+    lastSkippedCount = skipped;
+
+    // Once-per-batch LB-size telemetry (this batch's first kernel barrier,
+    // single-threaded): the active-LB count and the resident LBs' blocksHeld
+    // distribution — raw inputs for later tuning constants (Rule 16 / I-44,
+    // never a prover input). Gathered only on the first barrier via the guard.
+    if (deloadStats().lbHistogramPending()) {
+        std::vector<int64_t> blocksHeld;
+        blocksHeld.reserve(active.size());
+        for (Memory* b : active)
+            if (b->lbMemory.manager.resident())
+                blocksHeld.push_back(b->lbMemory.manager.blocksHeld());
+        deloadStats().reportLbHistogram(static_cast<int>(active.size()),
+                                        blocksHeld);
+    }
 
     // Active-LB eviction is now CONTINUOUS — the steward drains the working
     // set in every phase window (the working-set pager,
@@ -6817,7 +7083,7 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
     // can reclaim it once done.
     {
         std::atomic<std::size_t> phase1Cursor{ 0 };
-        steward->beginPhaseWindow(&phase1Cursor, &active, workers,
+        steward->beginPhaseWindow(/*phase=*/1, &phase1Cursor, &active, workers,
                                   lbdeload::kDeloadDirectory);
         runPhase(phase1Cursor, [this](Memory& b, unsigned cid) {
             g_inParallelWorkerPhase = true;
@@ -6827,147 +7093,224 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
         steward->endPhaseWindow();
     }
 
-    // Phase 2 opens the same working-set window (all phases equivalent). Its
-    // cursor advances as the finalize pool completes LBs; while it is open the
-    // steward prefetches + drains, and a worker reloading a cold LB makes room
-    // through evictOneForReload. The unified handshake uses the single
-    // stewardClaim word — the separate burst-claim word and the mid-burst
-    // throttle gate are retired (the pager subsumes them).
-    std::atomic<std::size_t> phase2Cursor{ 0 };
-    steward->beginPhaseWindow(&phase2Cursor, &active, workers,
-                              lbdeload::kDeloadDirectory);
+    // Phase 2 opens TWO working-set windows PER PASS
+    // (D-196): an EXECUTOR window over the real dispatch
+    // atomic (`next` over the flat `execOrder` task list — duplicates for
+    // split parts are fine: the enqueue dedup and the claim CAS collapse
+    // them, and split LBs are ineligible victims anyway), then, after the
+    // executor join, a FINALIZE window over `nextLi` / `toRun`. This retires
+    // the frozen `phase2Cursor` (a completion cursor stored only by the
+    // finalize, which sat at 0 through the whole hashburst — the steward was
+    // blind in the heaviest phase and every phase-2 reload ran inline on
+    // workers). Redo passes open their own windows over their own vectors,
+    // so indices are always in the right space. The unified handshake uses
+    // the single stewardClaim word — the separate burst-claim word and the
+    // mid-burst throttle gate are retired (the pager subsumes them).
 
-    // ---- Phase 2: FLAT executor pool + per-LB finalize, ADAPTIVE re-split ----
+    // ---- Phase 2: FLAT executor pool + per-LB finalize, EXPRESSION-BUCKET split ----
     // FLAT parallelism, never nested: one work-stealing pool over the flat list of
-    // (LB, part) executor tasks across the LBs of this pass. A split LB with
-    // numberOfParts == N contributes N tasks; an unsplit LB contributes 1. No LB
-    // spawns sub-threads, so the cores are never oversubscribed by nesting. With
-    // the read-only fixpoint (D-116), distinct tasks on one
-    // LB only READ it (the shared NameMap is read via lookup) and each writes its
-    // OWN sealed page set's record chain, so same-LB tasks never race; tasks on
-    // different LBs are independent.
+    // (LB, part) executor tasks across the LBs of this pass. No LB spawns
+    // sub-threads, so the cores are never oversubscribed by nesting. With the
+    // read-only fixpoint (D-116), distinct tasks on one LB only READ it (the shared
+    // NameMap is read via lookup) and each writes its OWN sealed page set's record
+    // chain, so same-LB tasks never race; tasks on different LBs are independent.
     //
-    // Adaptive 1 <-> fixed_number_splits with same-iteration discard-and-redo
-    // (D-111). Every main-path / compressor LB starts
-    // unsplit (numberOfParts default 1). A pass runs the current `toRun` set; in the
-    // finalize, a main-path LB whose UNSPLIT part hit the submatch cap escalates to
-    // fixed_number_splits and is NOT applied -- its truncated burst is discarded and
-    // the LB re-runs from scratch in the next pass (the read-only phase 2 left it
-    // pristine, I-74), so the APPLIED burst is always
-    // complete. Bounded to <= 2 passes: adaptiveSplitDecision never redoes an
-    // already-split LB (I-75). disable_lb_split and the
-    // incubator run UNSPLIT and never escalate; the CE filter is unaffected (its own
-    // splitCount=1 loop in filter.cpp, never through proveKernel).
-    struct ExecTask { Memory* lb; int processID; int splitCount; std::atomic<bool>* stop; std::atomic<int>* partsLeft; };
+    // The split is decided BEFORE the iteration (the end-of-iteration stats pass
+    // below, D-201): a straggler (numberOfParts > 1) carries
+    // logicalCores expression buckets. No cap, no escalation, no discarded burst.
+    // The pass loop is at most TWO rounds (I-75):
+    //
+    //   round 1: a straggler dispatches one produceOnly PRODUCER (produceExpressionStumps,
+    //            whole-LB, fires nothing); every other LB dispatches one unsplit burst
+    //   round 2: the producer's regular and terminal pre-stumps are dealt into
+    //            buckets, one bucket part each
+    //
+    // Requeued work runs in the NEXT round, never appended to the running one: the
+    // working-set pager has registered this round's task list and dispatch cursor, so
+    // the task vector cannot grow under it. An LB is finalised ONCE, in the round after
+    // which it has no tasks left. The merge is partition-independent (applyFiringRecords
+    // sorts, D-117 / I-77), so which parts came from which round cannot matter.
+    //
+    // The rule dimension (partitionAccepts / g_splitCount) is OFF on the main path
+    // (splitCount stays 1). disable_lb_split and the incubator run UNSPLIT; the CE
+    // filter is unaffected (its own splitCount=1 loop in filter.cpp).
+    struct ExecTask {
+        Memory* lb;
+        std::size_t li;          // index into `active`
+        int processID;           // 0 on the main path (rule dimension off)
+        int splitCount;          // 1 on the main path (partitionAccepts accepts all rules)
+        int partCount;           // concurrent parts of this LB this burst (= bucket count);
+                                 // sets g_isMultiPart in performElem2 (early-exit gate)
+        bool produceOnly;        // a round-1 stump PRODUCER (runs produceExpressionStumps,
+                                 // not performElem2); its buckets requeue for round 2
+        SplitStumpRef stump;     // empty for an unsplit part; set for a bucket part
+        std::atomic<bool>* stop;
+        std::atomic<int>* partsLeft;
+    };
     const bool mainPath = !parameters.disable_lb_split && !parameters.incubator_mode;
-    // The finalize hands each LB's sealed part sets through a stack
-    // SealedPageSet*[kMaxSplitParts] buffer; the split policy never exceeds
-    // fixed_number_splits (I-75), so this one entry check covers every
-    // reachable part count (Rule 19 — a config past the ceiling stops HERE).
-    assert(parameters.fixed_number_splits <= kMaxSplitParts
-        && "fixed_number_splits exceeds kMaxSplitParts — raise the named "
-           "constant deliberately, never reduce the config silently");
-    std::vector<Memory*> toRun = active;  // first pass: every LB active after phase 1
-    // Phase-2 workers claim + load each task's LB through the unified
-    // working-set handshake (steward->claimAndLoadForWork), the same one
-    // phases 1 and 3 use — the separate burst-claim lambda and the throttle
-    // gate are retired.
-    while (!toRun.empty()) {
-        const std::size_t M = toRun.size();
-        std::vector<ExecTask> tasks;
-        std::vector<std::size_t> lbTaskStart(M, 0);
-        std::vector<int> lbTaskCount(M, 0);
-        // Per-LB phase-2 early-exit flags, EXTERNAL to the LB so the hashburst stays
-        // strictly read-only on the LB (I-66). One flag per LB, shared by all its
-        // parts; sized to M up front so the &stopFlags[li] handed to tasks stay
-        // stable (the vector is never resized; std::atomic is not movable).
-        std::vector<std::atomic<bool>> stopFlags(M);
-        // Per-LB remaining-parts counter (working-set pager): each executor
-        // part decrements it after sealing, and the part that drops it to zero
-        // releases the LB's claim to Idle — so an executor-done LB becomes
-        // deloadable immediately, bounding the phase-2 resident set to the
-        // working set instead of all of `toRun` (I-114).
-        // Sized to M up front (std::atomic is not movable).
-        std::vector<std::atomic<int>> partsRemaining(M);
+    // A straggler splits into logicalCores expression buckets; that is the only
+    // split dimension now, so the whole-machine core count is the per-LB part
+    // ceiling (Rule 19 -- a machine past the named constant stops HERE).
+    assert(static_cast<int>(logicalCores) <= kMaxSplitParts
+        && "logicalCores exceeds kMaxSplitParts - raise the named constant "
+           "deliberately for a machine with more cores than the ceiling");
+
+    if (!active.empty()) {
+    const std::size_t M = active.size();
+    // Per-LB phase-2 early-exit flags, EXTERNAL to the LB so the hashburst stays
+    // strictly read-only on it (I-66). One flag per LB, shared by all its parts;
+    // sized once so the &stopFlags[li] handed to tasks stay stable across passes
+    // (the vector is never resized; std::atomic is not movable).
+    std::vector<std::atomic<bool>> stopFlags(M);
+    // Per-LB remaining-parts counter (working-set pager): each executor part
+    // decrements it after sealing, and the part that drops it to zero releases the
+    // LB's claim to Idle -- so an executor-done LB becomes deloadable immediately,
+    // bounding the phase-2 resident set to the working set (I-114). Re-armed per pass.
+    std::vector<std::atomic<int>> partsRemaining(M);
+
+    // Sealed record sets accumulate ACROSS this iteration's rounds: a non-straggler's
+    // round-1 burst is kept while a straggler's buckets run in round 2. Deque:
+    // SealedPageSet is non-movable, so the views' owner pointers stay stable (D-164).
+    std::deque<SealedPageSet> pageStore;
+    std::vector<std::vector<SealedPageSet*>> keptParts(M);
+    // Per-LB total work this iteration = SUM of its parts' submatch counts
+    // (split-invariant, D-117) -- the straggler classifier's input (the end-of-
+    // iteration stats pass below). lbMaxSub is the busiest single part, kept only
+    // for the split-ineffective self-control report.
+    std::vector<int64_t> lbTotalSub(M, 0);
+    std::vector<int64_t> lbMaxSub(M, 0);
+    // Diagnostics for the split-ineffective report: how many stump work items the
+    // producer returned and how many buckets it dealt them into (1 = not really split).
+    std::vector<int32_t> lbStumps(M, 0);
+    std::vector<int32_t> lbBuckets(M, 1);
+    std::vector<char> lbFinalized(M, 0);
+    // The stumps a producer task returns, copied off its sealed pages so those pages
+    // go back to the pool at once. The bucket tasks point into these runs, so the
+    // storage must outlive the pass: deque, never reallocated.
+    std::deque<std::vector<ExpressionStump>> stumpStore;
+
+    // Task build. A straggler (numberOfParts > 1, set last iteration by the stats
+    // pass below) dispatches ONE producer task that enumerates the LB's expression
+    // stumps; its buckets run in round 2. Every other LB dispatches ONE unsplit part.
+    // The rule dimension is off on the main path: splitCount stays 1 so
+    // partitionAccepts accepts every rule.
+    std::vector<ExecTask> tasks;
+    for (std::size_t li = 0; li < M; ++li) {
+        Memory* b = active[li];
+        if (!b->isActive) continue;  // discharged in phase 1 -> no executor tasks
+        // Split preemptively if the submatch stat flagged it last iteration
+        // (numberOfParts > 1) OR it just activated this iteration (justActivated,
+        // one-shot: no prior burst for the stat to see). Consume the flag here.
+        const bool straggler = mainPath && (b->numberOfParts > 1 || b->justActivated);
+        b->justActivated = false;
+        tasks.push_back(ExecTask{ b, li, /*processID=*/0, /*splitCount=*/1,
+            /*partCount=*/1, /*produceOnly=*/straggler, SplitStumpRef{},
+            &stopFlags[li], &partsRemaining[li] });
+    }
+
+    int passNo = 0;
+    for (;;) {
+        ++passNo;
+        // Round 1: producers + unsplit bursts. Round 2: the producers' buckets.
+        assert(passNo <= 2
+            && "phase-2 pass loop exceeded two rounds - a bucket part requeued");
+
         for (std::size_t li = 0; li < M; ++li) {
-            Memory* b = toRun[li];
-            lbTaskStart[li] = tasks.size();
             stopFlags[li].store(false, std::memory_order_relaxed);
             partsRemaining[li].store(0, std::memory_order_relaxed);
-            if (!b->isActive) continue;  // discharged in phase 1 -> no executor tasks
-            // Unsplit (1) under disable_lb_split / incubator; otherwise the LB's
-            // adaptive numberOfParts (default 1, escalates to fixed_number_splits on a
-            // cap-hit). See D-111.
-            const int N = mainPath ? b->numberOfParts : 1;
-            assert(N >= 1 && "numberOfParts must stay >= 1 (unsplit identity)");
-            lbTaskCount[li] = N;
-            partsRemaining[li].store(N, std::memory_order_relaxed);
-            for (int p = 0; p < N; ++p)
-                tasks.push_back(ExecTask{ b, p, N, &stopFlags[li],
-                                          &partsRemaining[li] });
         }
-        // One sealed page set per task: the task's record CHAIN and its record
-        // strings live here,
-        // sealed at task end, read by the finalize pool across the join, and
-        // freed in one sweep after the finalize join (covers kept AND
-        // discarded bursts uniformly — a discarded redo burst's records are
-        // dropped unread with their pages). Deque: SealedPageSet is non-movable
-        // so the views'
-        // owner pointers stay stable (D-164).
-        std::deque<SealedPageSet> taskPageSets(tasks.size());
+        for (const ExecTask& t : tasks)
+            partsRemaining[t.li].fetch_add(1, std::memory_order_relaxed);
+
+        // This pass's page sets append to the store; `base` is where they start.
+        const std::size_t base = pageStore.size();
+        for (std::size_t i = 0; i < tasks.size(); ++i) pageStore.emplace_back();
+        // A second set per task, for the stumps a round-1 producer returns: the
+        // record chain is single-type per set (I-135) and the firing records already
+        // own the first.
+        std::deque<SealedPageSet> stumpPages(tasks.size());
+        std::vector<char> stumpBound(tasks.size(), 0);
+        std::vector<int32_t> taskStumps(tasks.size(), 0);
         // Per-(LB, part) submatch tally: each worker reads g_growthMatchCount right
-        // after its performElem2 returns (preEvaluateFromEncoded matches owned by this
-        // part, per partitionAccepts). The finalize reduces an LB's parts to the
-        // busiest part's count, which drives the adaptive decision. See
-        // D-109.
+        // after its performElem2 returns (the matches owned by this part, per
+        // partitionAccepts). See D-109.
         std::vector<int64_t> taskSubMatches(tasks.size(), 0);
-        {
+        // Flat executor order for this pass's pager window: one entry per task.
+        std::vector<Memory*> execOrder;
+        execOrder.reserve(tasks.size());
+        for (const ExecTask& t : tasks) execOrder.push_back(t.lb);
+
+        if (!tasks.empty()) {
             std::atomic<std::size_t> next{ 0 };
-            auto worker = [this, &tasks, &taskPageSets,
-                           &taskSubMatches, &next, workers](unsigned coreId) {
+            // EXECUTOR window: the pool's real dispatch atomic is the pager cursor,
+            // so the steward prefetches upcoming tasks' LBs and evicts behind the
+            // executor sweep in real time.
+            steward->beginPhaseWindow(/*phase=*/2, &next, &execOrder, workers,
+                                      lbdeload::kDeloadDirectory);
+            auto worker = [this, &tasks, &pageStore, base, &stumpPages, &stumpBound,
+                           &taskStumps, &taskSubMatches, &next, workers,
+                           mainPath](unsigned coreId) {
                 const unsigned cid = workers ? (coreId % workers) : 0U;
                 // The phase-2 executor pool runs in parallel like phases 1/3, so
-                // publish this worker's slot. Every g_currentCoreId-resolved
-                // per-slot arena consumer reached from performElem2 (the C5
-                // allowedForMail string scratch) must pick THIS worker's slot, not
-                // the single reserved slot every unpublished worker would share
-                // (that slot is single-threaded-only — concurrent workers rewinding
-                // it collide, tripping LbArena::popTo's forwards-past-cursor guard).
+                // publish this worker's slot. Every g_currentCoreId-resolved per-slot
+                // arena consumer reached from performElem2 must pick THIS worker's
+                // slot, not the single reserved slot every unpublished worker would
+                // share (that slot is single-threaded-only).
                 g_currentCoreId = static_cast<int>(cid);
-                // The request-expr copies + keys ride the per-slot gen scratch
-                // arena inside performElem2 (released per task at its exit), so
-                // there is no per-thread TypedArena here. Per-task records ride
-                // the task's own sealed page set (the finalize reads them).
                 for (;;) {
                     std::size_t i = next.fetch_add(1, std::memory_order_relaxed);
                     if (i >= tasks.size()) break;
                     const ExecTask& t = tasks[i];
-                    // Unified working-set handshake: claim this LB so the
-                    // steward will not deload it under us, reloading (and
-                    // making room via the load<->evict exchange) if it is
-                    // cold. No back-pressure gate — the exchange bounds the
-                    // pool and genuine exhaustion asserts (never a silent
-                    // wait). A split sibling that already owns it returns
-                    // immediately (resident).
-                    steward->claimAndLoadForWork(*t.lb,
+                    // Unified working-set handshake: claim this LB so the steward
+                    // will not deload it under us, reloading if it is cold. A split
+                    // sibling that already owns it returns immediately (resident).
+                    steward->claimAndLoadForWork(*t.lb, /*phase=*/2,
                                                  lbdeload::kDeloadDirectory);
-                    // The task's exclusive write window on its page set opens
-                    // here and closes at the seal below — the records'
-                    // strings then cross the pool join read-only.
-                    taskPageSets[i].bind(&staticMemory());
-                    this->performElem2(*t.lb, cid, t.processID, t.splitCount,
-                                       taskPageSets[i], *t.stop);
-                    taskPageSets[i].seal();
-                    taskSubMatches[i] = g_growthMatchCount;
-                    // Last part of this LB to finish releases its claim to Idle
-                    // (all parts have sealed -> no part still reads it), so the
-                    // steward may now deload it — the working-set bound on the
-                    // phase-2 executor pool. The finalize re-claims + reloads it
-                    // (content-invisible).
-                    if (t.partsLeft->fetch_sub(1, std::memory_order_acq_rel)
-                            == 1) {
-                        assert(t.lb->stewardClaim.load(
-                                   std::memory_order_relaxed)
+                    // The task's exclusive write window on its page set opens here
+                    // and closes at the seal below -- the records' strings then cross
+                    // the pool join read-only.
+                    SealedPageSet& ps = pageStore[base + i];
+                    ps.bind(&staticMemory());
+                    if (t.produceOnly) {
+                        // Round-1 stump PRODUCER: enumerate the whole LB's
+                        // expression stumps at g_splitCount == 1 (so the filter
+                        // accepts every rule), retaining terminal pre-stumps for
+                        // recordable nodes replaced by a deeper level. It fires
+                        // nothing and deposits nothing (ps stays empty); the
+                        // classify deals all work items into buckets that run in
+                        // round 2. Grow MORE stumps than buckets (a small multiple
+                        // of logicalCores) so the round-robin deal evens out the
+                        // buckets' grow-tree sizes.
+                        g_splitProcessID = 0;
+                        g_splitCount = 1;
+                        g_isMultiPart = false;
+                        ps.seal();
+                        stumpPages[i].bind(&staticMemory());
+                        stumpBound[i] = 1;
+                        const int32_t stumpTarget = static_cast<int32_t>(
+                            logicalCores) * kStumpsPerBucketTarget;
+                        taskStumps[i] = this->produceExpressionStumps(
+                            *t.lb, cid, stumpTarget, stumpPages[i]);
+                        stumpPages[i].seal();
+                        taskSubMatches[i] = 0;  // the producer does no firing work
+                        // The producer's level column held this slot's gen arena;
+                        // the stumps were copied onto the sealed pages, so nothing
+                        // points into it — hand the blocks back now.
+                        genScratchArenas().forSlot(cid).releaseAll();
+                    } else {
+                        // A burst part: an unsplit LB, or one expression bucket of a
+                        // straggler. Runs to completion (no cap). partCount > 1 for a
+                        // bucket keeps the early-exit off (I-76 / g_isMultiPart).
+                        this->performElem2(*t.lb, cid, t.processID, t.splitCount,
+                                           t.partCount, t.stump, ps, *t.stop);
+                        ps.seal();
+                        taskSubMatches[i] = g_growthMatchCount;
+                    }
+                    // Last part of this LB to finish releases its claim to Idle (all
+                    // parts have sealed -> no part still reads it), so the steward may
+                    // now deload it. The finalize re-claims + reloads it.
+                    if (t.partsLeft->fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                        assert(t.lb->stewardClaim.load(std::memory_order_relaxed)
                                    == static_cast<uint8_t>(
                                           Memory::StewardClaim::WorkerOwned)
                                && "phase-2 executor release of an LB not held "
@@ -6982,72 +7325,142 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
             pool.reserve(workers);
             for (unsigned t = 0; t < workers; ++t) pool.emplace_back(worker, t);
             for (auto& th : pool) th.join();
+            // Close the executor window at its join (its cursor and order die with
+            // this block; queued stale tasks drop on the generation).
+            steward->endPhaseWindow();
         }
 
-        // Per-LB finalize sweep (I-28-safe: each LB touches only its own state and its
-        // own redo[li] slot). A main-path unsplit LB that hit the cap escalates +
-        // flags redo and is NOT applied (discard); every other LB merges (in part
-        // order; applyFiringRecords sorts, so thread/partition order cannot matter)
-        // and applies, then takes the fall-back transition for the next iteration.
-        std::vector<char> redo(M, 0);
-        {
+        // ---- Classify every part, single-threaded: deal a producer's stumps into
+        // buckets (requeue for round 2), or keep a burst part ----
+        std::vector<ExecTask> nextTasks;
+        for (std::size_t i = 0; i < tasks.size(); ++i) {
+            const ExecTask& t = tasks[i];
+            const std::size_t li = t.li;
+            SealedPageSet& ps = pageStore[base + i];
+
+            // A round-1 PRODUCER. It fired nothing (ps is empty). Deal its stumps
+            // into logicalCores expression buckets and requeue one bucket part each.
+            if (t.produceOnly) {
+                ps.freePages();
+                if (taskStumps[i] == 0) {
+                    // No statement survives the filter -> the LB's real burst would
+                    // generate nothing either. Run it once, unsplit, this iteration
+                    // (guarantees the burst happens; its work then feeds the stats).
+                    nextTasks.push_back(ExecTask{ t.lb, li, /*processID=*/0,
+                        /*splitCount=*/1, /*partCount=*/1, /*produceOnly=*/false,
+                        SplitStumpRef{}, &stopFlags[li], &partsRemaining[li] });
+                    continue;
+                }
+                stumpStore.emplace_back();
+                std::vector<ExpressionStump>& run = stumpStore.back();
+                run.reserve(static_cast<std::size_t>(taskStumps[i]));
+                stumpPages[i].forEachRecord<ExpressionStump>(
+                    [&run](const ExpressionStump& s) { run.push_back(s); });
+                assert(static_cast<int32_t>(run.size()) == taskStumps[i]
+                    && "stump record chain disagrees with the producer's count");
+
+                // Deal the regular and terminal pre-stumps into BUCKETS, one part
+                // per bucket. Round-robin, so
+                // a bucket draws stumps from across the name-sorted list rather than
+                // one contiguous slice; the stumps are permuted into bucket order so
+                // each bucket is a contiguous run. Grown to a multiple of buckets
+                // (kStumpsPerBucketTarget), so the deal evens out the buckets'
+                // grow-tree sizes; fewer stumps than buckets means the LB could not
+                // fan wider. The generator builds the filter once per bucket and the
+                // emitter's seen-set collapses a request two of a bucket's stumps
+                // both reach (I-158).
+                const int32_t nStumps = static_cast<int32_t>(run.size());
+                lbStumps[li] = nStumps;
+                const int16_t buckets = static_cast<int16_t>(
+                    std::min<int32_t>(nStumps, static_cast<int32_t>(logicalCores)));
+                lbBuckets[li] = buckets;
+                std::vector<ExpressionStump> dealt;
+                dealt.reserve(run.size());
+                std::vector<int32_t> bucketStart(
+                    static_cast<std::size_t>(buckets) + 1, 0);
+                for (int16_t k = 0; k < buckets; ++k) {
+                    bucketStart[static_cast<std::size_t>(k)] =
+                        static_cast<int32_t>(dealt.size());
+                    for (int32_t j = k; j < nStumps; j += buckets)
+                        dealt.push_back(run[static_cast<std::size_t>(j)]);
+                }
+                bucketStart[static_cast<std::size_t>(buckets)] =
+                    static_cast<int32_t>(dealt.size());
+                run.swap(dealt);
+                for (int16_t k = 0; k < buckets; ++k) {
+                    const int32_t lo = bucketStart[static_cast<std::size_t>(k)];
+                    const int32_t hi = bucketStart[static_cast<std::size_t>(k) + 1];
+                    nextTasks.push_back(ExecTask{ t.lb, li, /*processID=*/0,
+                        /*splitCount=*/1, /*partCount=*/buckets, /*produceOnly=*/false,
+                        SplitStumpRef{ run.data() + lo,
+                                       static_cast<int16_t>(hi - lo), k, buckets },
+                        &stopFlags[li], &partsRemaining[li] });
+                }
+                continue;
+            }
+
+            // A burst part (an unsplit LB or one expression bucket): keep it and add
+            // its submatch count to the LB's split-invariant TOTAL work (the straggler
+            // classifier's input); lbMaxSub tracks the busiest single part for the
+            // split-ineffective report.
+            keptParts[li].push_back(&ps);
+            lbTotalSub[li] += taskSubMatches[i];
+            if (taskSubMatches[i] > lbMaxSub[li]) lbMaxSub[li] = taskSubMatches[i];
+        }
+        for (std::size_t i = 0; i < tasks.size(); ++i)
+            if (stumpBound[i]) stumpPages[i].freePages();
+
+        // ---- Finalize every LB that has no work left ----
+        std::vector<char> hasNext(M, 0);
+        for (const ExecTask& t : nextTasks) hasNext[t.li] = 1;
+        std::vector<Memory*> toFinalize;
+        std::vector<std::size_t> finalizeLi;
+        for (std::size_t li = 0; li < M; ++li) {
+            if (hasNext[li] || lbFinalized[li]) continue;
+            lbFinalized[li] = 1;
+            toFinalize.push_back(active[li]);
+            finalizeLi.push_back(li);
+        }
+        if (!toFinalize.empty()) {
             std::atomic<std::size_t> nextLi{ 0 };
-            auto finalizeWorker = [this, &toRun, &lbTaskStart, &lbTaskCount, &taskPageSets,
-                                   &taskSubMatches, &redo, mainPath, &nextLi,
-                                   &phase2Cursor](unsigned tIdx) {
-                // The finalize pool runs in parallel like phases 1/3, so publish
-                // this worker's slot. The per-slot scratch / gen arenas reached
-                // deep in the drains (prefixArgumentsWithU's absorb door; the
-                // integration-prep WorkInstruction) must pick THIS worker's arena,
-                // not the single reserved slot every worker would otherwise share.
+            // FINALIZE window: nextLi is a real fetch_add dispatch cursor over
+            // toFinalize -- the pager tracks the finalize sweep like phases 1/3.
+            steward->beginPhaseWindow(/*phase=*/2, &nextLi, &toFinalize, workers,
+                                      lbdeload::kDeloadDirectory);
+            auto finalizeWorker = [this, &toFinalize, &finalizeLi, &keptParts,
+                                   &nextLi](unsigned tIdx) {
+                // The finalize pool runs in parallel like phases 1/3, so publish this
+                // worker's slot. The per-slot scratch / gen arenas reached deep in the
+                // drains must pick THIS worker's arena, not the single reserved slot
+                // every worker would otherwise share.
                 g_currentCoreId = static_cast<int>(tIdx);
                 for (;;) {
-                    std::size_t li = nextLi.fetch_add(1, std::memory_order_relaxed);
-                    if (li >= toRun.size()) break;
-                    Memory* b = toRun[li];
-                    // Make the LB resident before finalize writes it: an active
-                    // LB is already WorkerOwned from the executor; an inactive
-                    // one (no executor task) may be cold. The unified handshake
-                    // reloads it if needed.
+                    std::size_t j = nextLi.fetch_add(1, std::memory_order_relaxed);
+                    if (j >= toFinalize.size()) break;
+                    Memory* b = toFinalize[j];
+                    const std::size_t li = finalizeLi[j];
+                    // Make the LB resident before finalize writes it: an active LB was
+                    // released to Idle by its last executor part; an inactive one (no
+                    // executor task) may be cold. The handshake reloads it.
                     steward->claimAndLoadForWork(
-                        *b, lbdeload::kDeloadDirectory);
-                    const std::size_t start = lbTaskStart[li];
-                    const int count = lbTaskCount[li];
-                    // Busiest part's submatch count (cheap reduce; no LB mutation).
-                    int maxSub = 0;
-                    for (int k = 0; k < count; ++k) {
-                        const int64_t s = taskSubMatches[start + static_cast<std::size_t>(k)];
-                        if (s > maxSub) maxSub = static_cast<int>(s);
-                    }
-                    if (b->isActive && mainPath) {
-                        const ExpressionAnalyzer::SplitDecision d =
-                            ExpressionAnalyzer::adaptiveSplitDecision(
-                                b->numberOfParts, maxSub, parameters.maxNumberHashRequests,
-                                parameters.fixed_number_splits, parameters.split_fallback_ratio);
-                        b->numberOfParts = d.nextParts;
-                        if (d.redoNow) { redo[li] = 1; continue; }  // discard truncated burst; re-run at fixed
-                    }
-                    // Keep this burst: hand the LB's sealed part sets, in part
-                    // order, to the finalize (applyFiringRecords reads each
-                    // chain in append order — the former concatenation
-                    // sequence). count == 0 for a phase-1-discharged LB:
-                    // partsBuf unused, partCount 0, nothing deposits — same as
-                    // the former empty merge.
+                        *b, /*phase=*/2, lbdeload::kDeloadDirectory);
+                    // The split decision is no longer here (no cap, no escalation):
+                    // it is the single-threaded end-of-iteration stats pass below.
+                    // Hand the LB's sealed part sets, in part order, to the finalize
+                    // (applyFiringRecords reads each chain in append order, then
+                    // sorts - the merge is partition- and pass-independent). Empty for
+                    // a phase-1-discharged LB: nothing deposits.
+                    const int count = static_cast<int>(keptParts[li].size());
                     assert(count <= kMaxSplitParts
-                        && "LB part count exceeds the finalize parts buffer");
-                    SealedPageSet* partsBuf[kMaxSplitParts];
-                    for (int k = 0; k < count; ++k)
-                        partsBuf[k] =
-                            &taskPageSets[start + static_cast<std::size_t>(k)];
-                    this->performElemPhase2(*b, partsBuf, count);
-                    // Phase 2 is done with this LB: advance the window cursor
-                    // and release the claim so the steward may reclaim it.
-                    phase2Cursor.store(li, std::memory_order_relaxed);
+                        && "LB part count exceeds kMaxSplitParts - raise the named "
+                           "constant deliberately, never cap the split silently");
+                    this->performElemPhase2(*b, keptParts[li].data(), count);
+                    // Phase 2 is done with this LB: release the claim so the steward
+                    // may reclaim it.
                     assert(b->stewardClaim.load(std::memory_order_relaxed)
                                == static_cast<uint8_t>(
                                       Memory::StewardClaim::WorkerOwned)
-                           && "phase-2 finalize release of an LB not held "
-                              "WorkerOwned");
+                           && "phase-2 finalize release of an LB not held WorkerOwned");
                     b->stewardClaim.store(
                         static_cast<uint8_t>(Memory::StewardClaim::Idle),
                         std::memory_order_release);
@@ -7057,28 +7470,55 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
             pool.reserve(workers);
             for (unsigned t = 0; t < workers; ++t) pool.emplace_back(finalizeWorker, t);
             for (auto& th : pool) th.join();
+            steward->endPhaseWindow();
+            // Records consumed -- free the finalised LBs' pages in one sweep. After
+            // this point any straggler view asserts at its access site.
+            for (std::size_t j = 0; j < finalizeLi.size(); ++j)
+                for (SealedPageSet* set : keptParts[finalizeLi[j]]) set->freePages();
         }
 
-        // Records consumed (applied via performElemPhase2, or dropped by the
-        // redo discard) — free every task's sealed pages in one sweep. After
-        // this point any straggler view asserts at its access site.
-        for (SealedPageSet& set : taskPageSets) set.freePages();
-
-        // The LBs that escalated this pass re-run at numberOfParts = fixed_number_splits
-        // next pass (the discarded truncated burst replaced by a complete split burst).
-        // Empty after a pass that ran any already-split LB, so <= 2 passes.
-        std::vector<Memory*> nextToRun;
-        for (std::size_t li = 0; li < M; ++li) if (redo[li]) nextToRun.push_back(toRun[li]);
-        toRun = std::move(nextToRun);
+        if (nextTasks.empty()) break;
+        tasks = std::move(nextTasks);
     }
 
-    // Close the phase-2 window after the whole of phase 2.
-    steward->endPhaseWindow();
+    // ---- End-of-iteration straggler classification (the split TRIGGER) ----
+    // Set each LB's split for the NEXT iteration from this iteration's completed,
+    // deterministic work totals. work(L) = sum of L's parts' submatch counts
+    // (split-invariant, D-117). A straggler is an LB whose work exceeds the ideally-
+    // balanced per-core load T / logicalCores (so it alone leaves cores idle) AND
+    // clears the setup break-even min_split_work; it runs as logicalCores expression
+    // buckets next iteration, every other LB unsplit. Integer arithmetic only, over a
+    // fixed-order single-threaded sweep -> the split set is a deterministic function
+    // of proof state (two runs stay byte-identical). Recomputed every iteration, so an
+    // LB whose work falls back below the bar returns to unsplit.
+    if (mainPath) {
+        int64_t T = 0;
+        for (std::size_t li = 0; li < M; ++li) T += lbTotalSub[li];
+        const int64_t fairShare = T / static_cast<int64_t>(logicalCores);
+        for (std::size_t li = 0; li < M; ++li) {
+            const bool straggler = ExpressionAnalyzer::isStraggler(
+                lbTotalSub[li], T, static_cast<int>(logicalCores),
+                static_cast<int64_t>(parameters.min_split_work));
+            active[li]->numberOfParts =
+                straggler ? static_cast<int>(logicalCores) : 1;
+            // Self-control report: a split LB whose busiest bucket is still a global
+            // outlier has an irreducibly-serial core (a "runs and runs" induction LB)
+            // that bucketing cannot subdivide. Pure observation -> determinism intact.
+            if (straggler && lbMaxSub[li] > fairShare)
+                std::cout << "[SPLIT] ineffective: work=" << lbTotalSub[li]
+                          << " maxPart=" << lbMaxSub[li]
+                          << " buckets=" << lbBuckets[li]
+                          << " stumps=" << lbStumps[li]
+                          << " fairShare=" << fairShare
+                          << " lb=" << active[li]->exprKey() << "\n";
+        }
+    }
+    }  // active non-empty
 
     // Phase 3 opens the same working-set window (all phases equivalent).
     {
         std::atomic<std::size_t> phase3Cursor{ 0 };
-        steward->beginPhaseWindow(&phase3Cursor, &active, workers,
+        steward->beginPhaseWindow(/*phase=*/3, &phase3Cursor, &active, workers,
                                   lbdeload::kDeloadDirectory);
         runPhase(phase3Cursor, [this](Memory& b, unsigned cid) {
             g_inParallelWorkerPhase = true;
@@ -7086,6 +7526,31 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
             g_inParallelWorkerPhase = false;
         });
         steward->endPhaseWindow();
+    }
+
+    int64_t deloadableMailOutBytes = 0;
+    for (const Memory* lb : bodies) {
+        if (lb != nullptr) deloadableMailOutBytes += lb->mailOutLiveBytes;
+    }
+    peakDeloadableMailOutBytes =
+        std::max(peakDeloadableMailOutBytes, deloadableMailOutBytes);
+
+    // A grid with no initially dormant LB has no future catch-up reader. Every
+    // LB that can consume the currently retained window ran phase 1 before this
+    // post-phase-3 join, so release the delivered blob/ref pages and their
+    // global-id dictionary before the next commit opens a fresh window. Every
+    // active LB cleared mailIn after its phase-1 absorb; mailOut still carries
+    // sender-local ids, so no live global mail id crosses this seam. The
+    // grid-build policy is fixed for the whole execution batch: any initially
+    // dormant LB keeps full history and the matching global-id space even if it
+    // later activates (I-162).
+    if (!parameters.compressor_mode && rollingMailHistoryEnabled) {
+        for (const Memory* lb : bodies) {
+            assert(lb == nullptr || lb->mailIn.empty()
+                && "mail interner retirement requires every mailIn to be empty");
+        }
+        this->mailLog.retireDeliveredBatches();
+        resetMailInterner();
     }
 
     // New mail system (D-137): the commit barrier. Each LB's
@@ -7105,24 +7570,75 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
     // matching the old post-smashMail sendMail timing. The compressor's LBs are
     // flat and never registered, so it is gated out.
     if (!parameters.compressor_mode) {
-        for (Memory* lb : bodies) {
+        // BARRIER SEAM WINDOW A (D-196): the commit sweep
+        // is a linear walk over `bodies`, so it gets a dispatch-style pager
+        // window like a phase — the planner prefetches ahead of the commit
+        // cursor and drains behind it, so the sweep's reloads no longer
+        // accumulate monotonically with the planner parked (the 4 GiB
+        // between-iterations wall). Each committed LB goes through the
+        // UNIFORM DOOR (claimAndLoadForWork -> commit -> release Idle): the
+        // claim hold keeps the executors off the LB while commit serializes
+        // its private deloadable mailOut ids, and the claim word ends
+        // consistent — a seam reload can never leave Dumped-but-resident.
+        //
+        // Discharge distinction: an LB that merely DEACTIVATED this iteration
+        // (isActive false; dischargedForever not yet set — the discharge
+        // block runs later in this same barrier) is legal to door-reload for
+        // its final commit; a PREVIOUSLY-discharged LB is structurally
+        // skipped by the empty-mailOut check — its last commit (this sweep,
+        // the barrier before its discharge) cleared mailOut, and nothing
+        // appends to a non-root mailOut afterwards (fillMailOut needs a phase
+        // run; the post-join drains merge into the ROOT's mailOut only). The
+        // one theoretical exception is the ROOT itself deactivating with the
+        // drains appending after this sweep — that path lands on
+        // ensureLoaded's discharged-assert exactly as before (a real bug we
+        // want loud, Rule 19), and is unreachable in practice: the prove loop
+        // ends when the root deactivates.
+        std::atomic<std::size_t> commitCursor{ 0 };
+        steward->beginPhaseWindow(/*phase=*/4, &commitCursor, &bodies, workers,
+                                  lbdeload::kDeloadDirectory);
+        for (std::size_t bi = 0; bi < bodies.size(); ++bi) {
+            commitCursor.store(bi, std::memory_order_relaxed);
+            Memory* lb = bodies[bi];
             if (!lb) continue;
-            if (lb->mailOut.statementsEmpty() && lb->mailOut.exprOriginMapEmpty()) continue;
-            // commit serializes lb's SENDER NameMap ids (which live on the
-            // deloadable pool), so lb must be resident here. A non-empty mailOut
-            // implies an active LB that just ran (discharged LBs flush mailOut), so
-            // the reload is safe / a no-op if resident; a discharged LB here would
-            // assert in ensureLoaded (Rule 19) — a real bug, not papered over.
-            lb->ensureLoaded(lbdeload::kDeloadDirectory);
+            if (!lb->mailOutPending) continue;
+            steward->claimAndLoadForWork(*lb, /*phase=*/4,
+                                         lbdeload::kDeloadDirectory);
+            assert(!lb->mailOut.empty()
+                && "mailOutPending set for an empty outgoing mailbox");
             this->mailLog.commit(lb, lb->mailOut);
-            lb->mailOut.clear();
+            lb->clearMailOut();
+            lb->stewardClaim.store(
+                static_cast<uint8_t>(Memory::StewardClaim::Idle),
+                std::memory_order_release);
         }
+        steward->endPhaseWindow();
     }
 
     // Sort thread-collected vectors for deterministic processing order
     std::sort(inductionMemoryBlocks.begin(), inductionMemoryBlocks.end(),
         [](const Memory* a, const Memory* b) { return a->exprKey() < b->exprKey(); });
     std::sort(updateGlobalTuples.begin(), updateGlobalTuples.end());
+
+    // BARRIER SEAM WINDOW B (D-196): the post-join drains
+    // below (deferred ancestor admissions, updateGlobal, updateGlobalDirect,
+    // the compaction flush) deposit into RANDOM-ACCESS recipient LBs (per-
+    // theorem accessMemory tree lookups) — there is no sweep order to
+    // register, so the window's cursor is PINNED AT 0 over `active`. That
+    // pin is the honest Belady origin between iterations: the next use of
+    // active[i] IS position i (the next kernel re-sweeps from 0), so the
+    // planner keeps the next iteration's head resident (pre-warming phase 1)
+    // and evicts everything else farthest-first WHILE the drains churn —
+    // bounding the residency that previously grew monotonically with no
+    // window open. Each drain reload goes through the uniform door
+    // (claimAndLoadForWork -> write -> release Idle): recipients are
+    // WorkerOwned across their deposit (never evicted mid-write), evictable
+    // the moment they release (the deposit lives in the arena and rides the
+    // raw image — recipient churn under pressure is correct behavior).
+    {
+        std::atomic<std::size_t> drainCursor{ 0 };
+        steward->beginPhaseWindow(/*phase=*/4, &drainCursor, &active, workers,
+                                  lbdeload::kDeloadDirectory);
 
     for (int blockIndex = 0; blockIndex < inductionMemoryBlocks.size(); blockIndex++)
     {
@@ -7233,8 +7749,11 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                     (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
             }
         }
-        for (std::map<int, Mail>::iterator mit = compactionMailByCore.begin(); mit != compactionMailByCore.end(); ++mit)
-        {
+        if (!compactionMailByCore.empty()) {
+            steward->claimAndLoadForWork(this->body, /*phase=*/4,
+                                         lbdeload::kDeloadDirectory);
+        }
+        for (std::map<int, Mail>::iterator mit = compactionMailByCore.begin(); mit != compactionMailByCore.end(); ++mit) {
             // New mail system (D-137): the D-76 compact
             // (implication<N>[...]) forms target the root's descendants, so merge
             // every per-core batch into the root's mailOut. The NEXT commit
@@ -7247,11 +7766,27 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
             // per-core key no longer routes anything; the assert stays as a
             // tripwire for a corrupt core id (Rule 19).
             assert(mit->first >= -1);
-            mergeBatchIntoMailOut(mit->second, this->body.mailOut,
-                                  this->body.nameMap, this->body.originInterner);
+            mergeBatchIntoMailOut(mit->second, this->body);
+        }
+        if (!compactionMailByCore.empty()) {
+            this->body.stewardClaim.store(
+                static_cast<uint8_t>(Memory::StewardClaim::Idle),
+                std::memory_order_release);
         }
     }
     pendingCompactionQueue.clear();
+
+        // Close the barrier seam window: the drains are done; the discharge
+        // barrier block below quiesces the steward before reading any state.
+        steward->endPhaseWindow();
+    }
+
+    deloadableMailOutBytes = 0;
+    for (const Memory* lb : bodies) {
+        if (lb != nullptr) deloadableMailOutBytes += lb->mailOutLiveBytes;
+    }
+    peakDeloadableMailOutBytes =
+        std::max(peakDeloadableMailOutBytes, deloadableMailOutBytes);
 
     // (D-39 pendingAncestorOrigins drain retired by D-51 — contradiction record
     // now lives only in the __contradiction__ LB, no upward propagation. Drain
@@ -7343,14 +7878,23 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
             if (!b->isActive) {
                 assert(!b->dischargedForever
                     && "discharged LB re-entered an active snapshot");
-                // The pager may have deloaded this LB while it was active+Idle
-                // in a phase; reload before discharge (dischargeStatementContent
-                // reads the registry and asserts residency). The discharge
+                // SEAM DOOR (D-196): the pager may have
+                // deloaded this LB while it was active+Idle in a phase or the
+                // barrier seam window; reload before discharge
+                // (dischargeStatementContent reads the registry and asserts
+                // residency). The uniform handshake keeps the claim word
+                // consistent (never Dumped-but-resident); it runs here
+                // post-quiesce with no window open, so its valve is a defined
+                // no-op and nothing can race the claim. The discharge
                 // protocol (D-157): capture the exact
                 // gate records, empty the dischargeable containers, reshuffle —
                 // every block returns NOW, zero I/O. The pressure-lazy pending
                 // dump later writes the near-empty image.
-                b->ensureLoaded(lbdeload::kDeloadDirectory);
+                steward->claimAndLoadForWork(*b, /*phase=*/4,
+                                             lbdeload::kDeloadDirectory);
+                b->stewardClaim.store(
+                    static_cast<uint8_t>(Memory::StewardClaim::Idle),
+                    std::memory_order_release);
                 b->dischargeStatementContent(dischargeScratch);
                 // Stamp the ordinal single-threaded now, before any later
                 // (steward) dump names the file.
@@ -7388,7 +7932,29 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
         staticMemory().resetGrantLedger();
         if (dumpedSomething)
             lbdeload::rewriteRegistry(staticMemory().deloadRegistry(),
+                                      staticMemory().extentSlabRegistry(),
                                       lbdeload::kDeloadDirectory);
+        // BARRIER HEAD PREFETCH (D-196): warm the head of
+        // the next iteration's sweep — one-shot HIGH-lane loads for the
+        // Dumped, still-active LBs among the first window-width slots, so
+        // phase 1 does not cold-start every iteration. Runs AFTER the
+        // discharge decision (inactive heads are skipped) and after the
+        // quiesce above, so no queued load can ever observe a
+        // dischargedForever LB. Content-invisible cross-boundary I/O.
+        // NOT harmless when unbounded: these loads execute with no window
+        // open — no planner eviction can relieve them and the executor load
+        // path has no valve — so prefetchHead caps its issues at the
+        // prefetch budget (pending loads always fit inside the reserve's
+        // free blocks), and after the LAST iteration the prove-scope guard
+        // discards whatever is still queued (there is no next iteration to
+        // warm). The unbudgeted, undiscarded form was the 4 GiB teardown
+        // wall.
+        steward->prefetchHead(
+            &active,
+            static_cast<std::size_t>(workers)
+                + steward::kLookaheadWorkerMultiple
+                      * static_cast<std::size_t>(workers),
+            lbdeload::kDeloadDirectory);
     }
 }
 
@@ -8487,7 +9053,8 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
             // `buildStack` (chapter export) walks from a child's
             // `disintegration | <conjunction>` origin to the conjunction,
             // looks it up in `exprOriginMap`, finds nothing, and asserts.
-            addRoutingMailOrigin(memoryBlock.mailOut, memoryBlock.originInterner, StrSpan(expandedSignature), StrSpan(validityName), OriginTag::expansion, expDeps, 1, expCap);
+            memoryBlock.addMailOutOrigin(StrSpan(expandedSignature),
+                StrSpan(validityName), OriginTag::expansion, expDeps, 1, expCap);
 
             // 2. Record Disintegration Origin for Children (if requested)
             if (trackChildren) {
@@ -8503,7 +9070,9 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
                     // disintegration products do not directly hit the delta in
                     // this step (they are processed later in the recursion), so
                     // a delta-only path misses them.
-                    addRoutingMailOrigin(memoryBlock.mailOut, memoryBlock.originInterner, StrSpan(elemClean), StrSpan(validityName), OriginTag::disintegration, disDeps, 1, expCap);
+                    memoryBlock.addMailOutOrigin(StrSpan(elemClean),
+                        StrSpan(validityName), OriginTag::disintegration,
+                        disDeps, 1, expCap);
                 }
             }
         };
@@ -9450,10 +10019,33 @@ void ExpressionAnalyzer::prove(int numberIterations,
     // kernel re-plans from live state at its next pressured barrier).
     stewardEvictionPlan.clear();
     steward = std::make_unique<MemorySteward>();
-    steward->start();
+    // The worker count sizes the I/O executor pool (steward::ioThreadCountFor
+    // — 4 executors at 32 workers).
+    steward->start(logicalCores);
+    // FORENSIC EXHAUSTION TRAP: at a main-pool wall, grantLocked prints the
+    // pool counters and this census (the grid + steward view) to stderr
+    // BEFORE the exhaustion assert aborts — resolving policy-missed-victims
+    // versus pinned-working-set at the point of death. The census runs under
+    // the pool mutex; printExhaustionCensus is manager-mutex-free by
+    // construction (its contract). Cleared first in the scope guard so no
+    // post-prove grant ever runs a reporter over a stale grid reference.
+    staticMemory().setExhaustionReporter(
+        [&bodies, s = steward.get()](int64_t inUse, int64_t total) {
+            printExhaustionCensus(bodies, s, inUse, total);
+        });
     struct StewardScope {
         std::unique_ptr<MemorySteward>& s;
         ~StewardScope() {
+            // TEARDOWN LOAD-SHEDDING: after the last iteration, the final
+            // barrier's head-prefetch loads (and any straggler window tasks)
+            // are pure waste — there is no next iteration to warm, no window
+            // is open (the planner cannot evict to make room), and the
+            // executor load path has no valve. Discard everything queued but
+            // unstarted (defined load-shedding, the ring-drop doctrine);
+            // in-flight tasks finish and the quiesce below waits for them.
+            // The unbudgeted, undiscarded form of these loads was the 4 GiB
+            // teardown wall (D-196).
+            s->discardQueuedIoTasks();
             // The final barrier may have re-armed the grant trigger; the
             // chapter export's post-prove reloads acquire blocks and would
             // fire a trigger pointing at this stopped steward (the
@@ -9463,6 +10055,14 @@ void ExpressionAnalyzer::prove(int numberIterations,
             staticMemory().disarmGrantTrigger();
             s->quiesce();
             s->stop();
+            // The exhaustion reporter clears LAST — after every teardown
+            // action that can still grant (the in-flight executor loads the
+            // quiesce just waited out), so a teardown exhaustion prints a
+            // full census. Lifetime: the reporter captures prove()'s
+            // `bodies` reference (alive for the whole prove scope, including
+            // this guard) and the steward pointer (alive until the reset
+            // below) — both outlive every possible invocation.
+            staticMemory().setExhaustionReporter(nullptr);
             s.reset();
         }
     } stewardScope{ steward };
@@ -9496,7 +10096,12 @@ void ExpressionAnalyzer::prove(int numberIterations,
         proveKernel(bodies);
         auto burstEnd = std::chrono::high_resolution_clock::now();
         double burstSec = std::chrono::duration<double>(burstEnd - burstStart).count();
-        std::cout << "  dt=" << burstSec << "s" << std::endl;
+        // active_bodies (above) is the PRE-skip count; swept is the post-skip
+        // sweep size and skipped the quiescent LBs excluded this iteration
+        // (D-194). Telemetry only (Rule 16 / I-44).
+        std::cout << "  dt=" << burstSec << "s"
+                  << "  swept=" << lastSweptCount
+                  << "  skipped=" << lastSkippedCount << std::endl;
         std::cout.flush();
     }
 }
@@ -9817,6 +10422,12 @@ void ExpressionAnalyzer::broadcastTheorems(const std::vector<std::string>& prove
     // exprOriginMap, exactly what mergeBatchInto and commit keep.
     mergeBatchIntoMailIn(broadcastMail, this->body.mailIn);
     this->mailLog.commit(&this->body, std::move(broadcastMail));
+    // WAKE DOOR 5 (D-194): the seed batch self-injects the
+    // root's mailIn directly, so wake the root here; every descendant is woken
+    // by mailPeek on the next active-build (it sees the root's bumped commit
+    // count). A no-op on burst 1 (root born dirty), load-bearing for the
+    // between-warm-up-and-main broadcast where the root may have gone quiescent.
+    this->body.hasWork = true;
 
     std::cout << "Distributed knowledge to " << permanentBodies.size() << " memory blocks." << std::endl;
 }
@@ -10445,8 +11056,21 @@ void ExpressionAnalyzer::analyzeExpressions(const std::vector<std::string>& theo
     // deload directory at batch START only (end-of-run files stay on
     // disk for post-run inspection). The accumulated manifest resets
     // with it.
+    // Close any prior batch's extent file BEFORE the purge deletes it (an open
+    // handle blocks the delete on Windows), then purge + reopen a fresh one.
+    staticMemory().closeExtentFile();
     lbdeload::purgeDeloadDirectory(lbdeload::kDeloadDirectory);
     staticMemory().resetDeloadRegistry();
+    if (parameters.enable_extent_deload) {
+        // Preallocate 1.5x the pool: live extent bytes are the Dumped (non-
+        // resident) LBs' slabs, so the extent legitimately exceeds pool size
+        // (disk > RAM is the point of deload). Growth covers under-estimates.
+        const int64_t initialBytes =
+            staticMemory().totalBlocks() * staticMemory().blockBytes() * 3 / 2;
+        staticMemory().openExtentFile(
+            std::filesystem::path(lbdeload::kDeloadDirectory) / "extent.bin",
+            initialBytes);
+    }
     pendingDischarge.clear();
     stewardEvictionPlan.clear();
 
@@ -10492,6 +11116,17 @@ void ExpressionAnalyzer::analyzeExpressions(const std::vector<std::string>& theo
         this->prefillIntegrationMapsRecursive(&this->body);
         this->prehandleAnchor(&this->body);
 
+        // Process-documentation telemetry for the mail-history experiment.
+        // Count after every LB has been created and anchor prehandling has run,
+        // at the exact program point where the retention policy is fixed.
+        this->dormantLogicBlocksAtGridBuild = 0;
+        for (const Memory* lb : permanentBodies) {
+            assert(lb != nullptr && "buildGrid: permanentBodies contains null");
+            if (!lb->isActive) ++this->dormantLogicBlocksAtGridBuild;
+        }
+        this->rollingMailHistoryEnabled =
+            this->dormantLogicBlocksAtGridBuild == 0;
+
         // New mail system (D-137): register every LB so the
         // parallel phase-1 pull only advances pre-existing cursor cells, never
         // inserting or rehashing. Every LB the prover will ever run -- the root
@@ -10516,7 +11151,7 @@ void ExpressionAnalyzer::analyzeExpressions(const std::vector<std::string>& theo
         for (Memory* lb : permanentBodies) {
             if (!lb) continue;
             this->mailLog.commit(lb, lb->mailOut);
-            lb->mailOut.clear();
+            lb->clearMailOut();
         }
     };
 
@@ -10580,7 +11215,11 @@ void ExpressionAnalyzer::analyzeExpressions(const std::vector<std::string>& theo
 
         if (preIterations > 0) {
             std::cout << "Phase 1: Running " << preIterations << " warm-up iterations..." << std::endl;
+            // Quiescence: warm-up bursts never skip (D-194) —
+            // they are productive priming and the belt keeps every active LB swept.
+            this->warmUpPhase = true;
             this->prove(preIterations, permanentBodies);
+            this->warmUpPhase = false;
         }
 
         int remainingIterations = parameters.maxIterationNumberProof - preIterations;
@@ -10654,6 +11293,29 @@ void ExpressionAnalyzer::analyzeExpressions(const std::vector<std::string>& theo
               << staticMemory().totalBlocks() << " ("
               << staticMemory().blockBytes() << " bytes per block)"
               << std::endl;
+    // Extent-file occupancy (D-195): live = Σ Dumped
+    // raw-LB image bytes, allocated = Σ slab class sizes (alloc/live =
+    // internal slack), file = preallocation high-water (file/alloc =
+    // free-list + preallocation overhang) — the class-ladder / preallocation
+    // tuning inputs. Zero when the extent path is off.
+    if (staticMemory().useExtent()) {
+        constexpr double kGiBd = 1024.0 * 1024.0 * 1024.0;
+        std::cout << "[STATIC-MEMORY] extent file: live "
+                  << (static_cast<double>(staticMemory().extentLiveBytes())
+                      / kGiBd)
+                  << " GiB | allocated "
+                  << (static_cast<double>(staticMemory().extentAllocatedBytes())
+                      / kGiBd)
+                  << " GiB | file "
+                  << (static_cast<double>(staticMemory().extentFileBytes())
+                      / kGiBd)
+                  << " GiB" << std::endl;
+    }
+    // End-of-batch deload telemetry summary, then reset the process-wide
+    // aggregate for the next batch (single-threaded here — the steward is
+    // stopped once prove() returns). Pure telemetry (Rule 16 / I-44).
+    deloadStats().reportSummary();
+    deloadStats().reset();
 }
 
 

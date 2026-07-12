@@ -1,8 +1,27 @@
 # Release Notes
 
-## Unreleased
+## v0.9.1 — 2026-07-12
 
-_Nothing yet — the next release's notes accumulate here._
+**The non-prover frame now has a complete cross-language timing ledger.** Every full run records Python orchestration, processed-proof generation, main and incubator HTML generation, both verifier passes, native save/export work, and raw-proof stack construction in one hierarchical JSON-lines report. The WSL direct-copy runner pairs each measurement with a SHA-256 manifest of every proof artifact, making sequential performance work measurable without relaxing byte identity. The first measured culprit was seven obsolete two-second filesystem waits between the conjecturer and native batch run; subprocess completion already closes every output handle, so the fixed fourteen-second delay is removed.
+
+**SSD paging engine rebuilt: half the memory, the same proofs, near-baseline runtime.**
+
+The static-memory prover can now run entire pipelines in half its previous memory reservation while streaming logic blocks to and from SSD continuously — with proof output byte-for-byte identical and total runtime within a few percent of the full-memory baseline. The paging engine was rebuilt end to end:
+
+- **Raw memory images.** An evicted logic block is written as a verbatim image of its memory pages into one preallocated extent file (a database-style layout: per-block slabs, in-place overwrite, no per-eviction file churn) and reloads by reading straight back — no serialization, no index rebuilding, an order-of-magnitude faster round trip. The canonical element-stream format remains for the archival discharge images, where cross-run reproducibility matters.
+- **A working-set pager that knows the future.** Because the prover's sweep order is deterministic, eviction is next-use-optimal: the pager keeps the blocks about to be processed resident, evicts the ones needed last, and maintains a free reserve so a worker thread never waits on disk it didn't cause. Prefetch and eviction run on a small pool of dedicated I/O threads, overlapped with proving.
+- **No calculation cap per logic block.** Main-path hash bursts run their assigned work to completion instead of stopping at a fixed per-block calculation quota, so a large block is partitioned rather than truncated.
+- **Expression-based logic-block splitting can reach unbounded granularity.** Heavy work is partitioned by expression structure rather than confined to a fixed number of rule buckets; continued expression-based refinement can make the parallel work units arbitrarily fine.
+- **Quiescent blocks skip their turn.** A logic block that provably received no new work since its last burst is skipped entirely — validated by a shadow mode that runs every skipped burst anyway and asserts it produced nothing — so converged regions of a proof stop consuming sweep time and paging traffic.
+- **Memory pressure is diagnosable.** If the pool is ever genuinely exhausted, the engine prints a full census of where every block sits before stopping, and per-phase telemetry reports the paging stream's volume and throughput throughout the run.
+
+Eviction images are intentionally exempt from the byte-reproducibility contract that governs archival images — they never outlive a run. Everything the proofs depend on remains deterministic.
+
+**Partial fix of the incubator slowdown** — one hot request-generation lookup restored to a single probe; proof output byte-for-byte identical.
+
+**Mail memory is now measured per run and outgoing staging deloads with each logic block.** Every `main.py` run writes a paired memory report with the physical high-water, reservation, and attribution for all four static pools. Grids with no initially dormant logic blocks recycle delivered mail history and its global id table after each burst, while grids that need dormant catch-up retain the complete window. Each producer's outgoing mailbox and private id table now live in its deloadable logic-block arena instead of the always-on mail pool. The Windows confirmation preserved all seven theorem totals and completed 131,886 verifier checks with no failures; the largest measured mail-pool reduction was 417 MiB (92.1%) in the first Peano incubator batch.
+
+**Next release: v0.10.0 — incubator theorems that require branching.**
 
 ## v0.9.0 — 2026-07-06
 

@@ -263,8 +263,8 @@ own per-conjecture pool in <code>filter.cpp</code> over
 <code>prove()</code>/<code>proveKernel</code>. Each cycle steps every active block once — the elementary
 step, run as three barriered phase sweeps
 (<a href="parallel.html#pool">§5.1</a>) — generate hash requests
-(<code>generateEncodedRequestsStatic</code> for singletons,
-<code>…Pairs</code> for pairs, <code>…CE</code> in filter mode), match against
+(<code>generateEncodedRequestsStatic</code>, one function whose obligatory-stump
+length is 1 for singletons, 2 for pairs and 0 in filter mode), match against
 <code>overallHashMemory.encodedMap</code>, fire via <code>addStatement</code>,
 push main-scope results to <code>mailOut</code> — then drains mail. The loop ends
 when a whole cycle adds nothing or the per-batch iteration cap is hit; warm-up

@@ -192,72 +192,6 @@ namespace gl {
     }
 
     // ------------------------------------------------------------------
-    // CE-filter request generation.
-    // ------------------------------------------------------------------
-
-    /// CE filter: accepts statements that appear in subkeys OR full keys.
-    int16_t ExpressionAnalyzer::filterIntEncodedStatementsCE(
-        IntStmtView stmts,
-        const HashMemory& mem, const NameMap& nm,
-        int16_t* outIndices, int16_t maxOut) {
-
-        const int16_t count = static_cast<int16_t>(stmts.size());
-        int16_t buf[ExecutionParameters::MAX_KEY_SLOTS];
-        int16_t nOut = 0;
-
-        for (int16_t i = 0; i < count && nOut < maxOut; ++i) {
-            const IntEncodedExpr& s = stmts[i];
-
-            // Build single-expr IntNormalizedKey on stack
-            int16_t pos = 0;
-            buf[pos++] = s.nameId;
-            buf[pos++] = s.negation;
-            for (int16_t j = 0; j < s.arity; ++j) {
-                buf[pos++] = s.argId[j];
-                buf[pos++] = 0; // changeable
-            }
-            // Normalize: sequential IDs by first appearance
-            {
-                int16_t varMap[ExecutionParameters::MAX_KEY_SLOTS];
-                int16_t nV = 0;
-                int16_t nextN = 1;
-                for (int16_t p = 2; p < pos; p += 2) {
-                    int16_t raw = buf[p];
-                    int16_t norm = 0;
-                    for (int16_t v = 0; v < nV; ++v) {
-                        if (varMap[v * 2] == raw) { norm = varMap[v * 2 + 1]; break; }
-                    }
-                    if (norm == 0) {
-                        norm = nextN++;
-                        varMap[nV * 2] = raw;
-                        varMap[nV * 2 + 1] = norm;
-                        ++nV;
-                    }
-                    buf[p] = norm;
-                }
-            }
-
-            // D-105/D-120: keep the statement only if an owner of its
-            // single-element key is at a comparable scope (CE acceptance is the
-            // union of subkeys and full keys) and its u_ literals are satisfiable.
-            // CE facts are all "main", so the main-skip makes this a no-op in
-            // practice.
-            const IntEncodedExpr* sp = &s;
-            const bool ceSubOk =
-                ownerKeyAccepts(mem.normalizedEncodedSubkeys, buf, pos, nm, &sp, 1);
-            const bool ceKeyOk =
-                ownerKeyAccepts(mem.normalizedEncodedKeys, buf, pos, nm, &sp, 1);
-            if (!ceSubOk && !ceKeyOk)
-                continue;
-            if (s.maxIteration > parameters.maxIterationNumberVariable)
-                continue;
-
-            outIndices[nOut++] = i;
-        }
-        return nOut;
-    }
-
-    // ------------------------------------------------------------------
     // CE-filter batch lifecycle.
     // ------------------------------------------------------------------
 
@@ -484,11 +418,11 @@ namespace gl {
             // successor, same as the registry above).
             ceBody.intLocalEncodedStatements.release();
             ceBody.intLocalEncodedStatementsDelta.release();
-            // mailIn/mailOut ride the never-deloaded mail pool (own per-LB
-            // arenas), non-copyable and non-movable, so the swap-with-empty idiom
-            // does not apply: clear() returns their arena blocks to the mail pool.
+            // Mail containers are non-copyable. mailIn returns its arena blocks
+            // to the mail pool; clearMailOut resets the deloadable columns,
+            // private interner, and always-resident pending bit together.
             ceBody.mailIn.clear();
-            ceBody.mailOut.clear();
+            ceBody.clearMailOut();
             // Registered-membership reset of the packed statement registry:
             // the `registered` membership empties, `known` rows stay
             // untouched (this teardown never reset the level-registry
@@ -609,7 +543,7 @@ namespace gl {
                 std::atomic<bool> stop{ false };
                 this->performElem2(
                     *lb, coreId, /*processID=*/0, /*splitCount=*/1,
-                    sealedPages, stop);
+                    /*partCount=*/1, SplitStumpRef{}, sealedPages, stop);
                 sealedPages.seal();
                 // The CE LB is single-use (deleted below) and runs UNSPLIT
                 // (splitCount=1), so no adaptive split decision applies (that lives
@@ -650,117 +584,5 @@ namespace gl {
         ceFilteringActive = false;
         return filtered;
     }
-
-    // ========================================================================
-    // generateEncodedRequestsStaticCE — CE mode: no mandatory elements.
-    // Enumerates statement combinations that directly match full hash keys.
-    // Own grow loop (dual-check: fullKeys for emit, subkeys for growth).
-    // ========================================================================
-    template <typename Consumer>
-    void ExpressionAnalyzer::generateEncodedRequestsStaticCE(
-        const Memory& body,
-        const HashMemory& intMemory,
-        unsigned coreId,
-        Consumer& consumer)
-    {
-        RT_SCOPE_HERE("GENERATE_ENCODED_REQUESTS_STATIC_CE");
-        const int maxKeyLen = intMemory.maxKeyLength;
-        if (maxKeyLen <= 0) return;
-
-        const NameMap& nm = body.nameMap;
-        const int16_t mainValidityId = NameMap::MAIN_ID;
-
-        // The request keys + the IntEncodedExpr copies ride this slot's gen
-        // scratch arena byte-bump tier (no per-thread heap arena); persistent per task,
-        // freed by the per-task releaseAll.
-        ScratchArena& genArena = genScratchArenas().forSlot(coreId);
-        StaticRequestEmitter<Consumer> emitter(genArena, consumer);
-
-        // Filter allStatements (CE filter: subkeys OR full keys)
-        const IntStmtView allIntStmts(body.intEncodedStatements);
-        int16_t filteredIdx[8192];
-        int16_t nFiltered = filterIntEncodedStatementsCE(allIntStmts,
-            intMemory, nm, filteredIdx, 8192);
-        // Name-only stable_sort. Emergence-order tie resolution is
-        // deterministic by the stable_sort contract across MSVC STL
-        // and libstdc++ — cross-host byte-identical at this site.
-        std::stable_sort(filteredIdx, filteredIdx + nFiltered, [&](int16_t a, int16_t b) {
-            return compareSpans(nm.decodeView(allIntStmts[a].nameId),
-                                nm.decodeView(allIntStmts[b].nameId)) < 0;
-        });
-
-        // Combinatorial enumeration — directly target full keys
-        struct StackItem {
-            int start;
-            int16_t allIdx[ExecutionParameters::MAX_EXPRESSIONS];
-            int16_t count;
-            int16_t validityId;
-        };
-
-        // DFS frontier on this slot's request-generation scratch arena (byte-bump
-        // tier): grow on push, reclaim on backtrack via popTo, so the footprint
-        // tracks the live frontier. Released with the arena at task end.
-        ScratchArena& dfsArena = genArena;
-        ArenaStack<StackItem> stack(dfsArena);
-        {
-            StackItem init;
-            init.start = 0;
-            init.count = 0;
-            init.validityId = mainValidityId;
-            stack.push(init);
-        }
-
-        while (!stack.empty()) {
-            StackItem top = stack.back();
-            stack.pop();
-
-            for (int i = top.start; i < nFiltered; ++i) {
-                if (top.count + 1 > maxKeyLen) break;
-
-                const int16_t allIdx = filteredIdx[i];
-                const IntEncodedExpr& ie = allIntStmts[allIdx];
-
-                if (!nm.comparable(top.validityId, ie.validityId)) continue;
-                int16_t newValidityId = nm.deeperOf(top.validityId, ie.validityId);
-
-                const IntEncodedExpr* ptrs[ExecutionParameters::MAX_EXPRESSIONS];
-                for (int16_t k = 0; k < top.count; ++k)
-                    ptrs[k] = &allIntStmts[top.allIdx[k]];
-                ptrs[top.count] = &ie;
-                const int16_t newCount = static_cast<int16_t>(top.count + 1);
-
-                // Check full key match → emit
-                std::pair<bool, IntNormalizedKey> prFull =
-                    preEvaluateFromEncoded(ptrs, newCount, body, mainValidityId,
-                        intMemory.normalizedEncodedKeys, dfsArena);
-                if (prFull.first) {
-                    if (!emitter.emit(ptrs, newCount, prFull.second)) return;
-                }
-
-                // Check subkey for further growth
-                if (newCount < maxKeyLen) {
-                    std::pair<bool, IntNormalizedKey> prSub =
-                        preEvaluateFromEncoded(ptrs, newCount, body, mainValidityId,
-                            intMemory.normalizedEncodedSubkeys, dfsArena);
-                    if (prSub.first) {
-                        StackItem next;
-                        next.start = i + 1;
-                        std::memcpy(next.allIdx, top.allIdx, top.count * sizeof(int16_t));
-                        next.allIdx[top.count] = allIdx;
-                        next.count = newCount;
-                        next.validityId = newValidityId;
-                        stack.push(next);
-                    }
-                }
-            }
-        }
-
-        return;
-    }
-
-    // Explicit instantiation of the CE request-generator member template for the
-    // streaming consumer (mirrors memory.cpp's singles/pairs).
-    template void ExpressionAnalyzer::generateEncodedRequestsStaticCE<BurstSink>(
-        const Memory&, const HashMemory&, unsigned, BurstSink&);
 
 } // namespace gl

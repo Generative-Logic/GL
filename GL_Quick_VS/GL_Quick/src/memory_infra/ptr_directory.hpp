@@ -55,7 +55,7 @@ namespace gl {
     /// One MAIN-pool data block holds `262144 / 8 = 32768` `char*` entries. With
     /// `kArenaDirRootCap == 16` the spilled region addresses up to `16 * 32768 =
     /// 524288` entries on top of the inline buffer — i.e. far beyond any single LB
-    /// (the whole 8 GiB main pool peaks at ~3 GiB across ALL live LBs). Exhaustion
+    /// (the whole 4 GiB main pool contains only 16384 data blocks). Exhaustion
     /// (a 17th spilled data block is needed) is a hard assert naming this constant
     /// (Rule 19 / I-19) — never a third directory level, never a fallback.
     constexpr int32_t kArenaDirRootCap = 16;

@@ -65,6 +65,9 @@
     <ClCompile Include="src\memory_infra\lb_deload.cpp">
       <Filter>Memory_Infra</Filter>
     </ClCompile>
+    <ClCompile Include="src\memory_infra\deload_stats.cpp">
+      <Filter>Memory_Infra</Filter>
+    </ClCompile>
     <ClCompile Include="src\memory_infra\steward.cpp">
       <Filter>Memory_Infra</Filter>
     </ClCompile>
@@ -110,6 +113,9 @@
     <ClCompile Include="src\tests\test_steward.cpp">
       <Filter>Tests</Filter>
     </ClCompile>
+    <ClCompile Include="src\tests\test_deload_stats.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
     <ClCompile Include="src\tests\test_scratch_arena.cpp">
       <Filter>Tests</Filter>
     </ClCompile>
@@ -135,6 +141,9 @@
       <Filter>Tests</Filter>
     </ClCompile>
     <ClCompile Include="src\tests\test_lb_arena.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_raw_image.cpp">
       <Filter>Tests</Filter>
     </ClCompile>
     <ClCompile Include="src\tests\test_arena_stack.cpp">
@@ -227,6 +236,9 @@
       <Filter>Memory_Infra</Filter>
     </ClInclude>
     <ClInclude Include="src\memory_infra\lb_deload.hpp">
+      <Filter>Memory_Infra</Filter>
+    </ClInclude>
+    <ClInclude Include="src\memory_infra\deload_stats.hpp">
       <Filter>Memory_Infra</Filter>
     </ClInclude>
     <ClInclude Include="src\memory_infra\steward.hpp">

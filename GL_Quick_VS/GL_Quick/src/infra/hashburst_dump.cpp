@@ -716,13 +716,13 @@ namespace hashburst_dump {
         }
 
         void writeMailOut(std::ofstream& f, const Memory& body) {
-            // mailOut is HOT (I-101): materialize the
+            // mailOut is deloadable LB state: materialize the
             // canonical heap snapshot so the byte-identical format below is
             // unchanged (user-approved Rule-14 touch, byte-neutral). mailOut is
-            // id-form (SENDER NameMap ids); routingMailOutToHeap decodes via the
-            // LB's NameMap.
-            const Mail mailOut = routingMailOutToHeap(body.mailOut, body.nameMap,
-                                                      body.originInterner);
+            // id-form in its own per-LB interner; routingMailOutToHeap decodes
+            // through that interner.
+            const Mail mailOut = routingMailOutToHeap(body.mailOut,
+                                                      body.mailOutInterner);
             f << "-- mailOut.statements (" << mailOut.statements.size() << "):\n";
             for (const auto& st : mailOut.statements) {
                 f << "  " << st.first.original

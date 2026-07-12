@@ -209,9 +209,15 @@ exhaustion assert and never depleting the main pool. The <b>persistent pool</b>
 backs the never-deloaded goal registry — keeping it always resident, so the
 deactivation logic can read it even when an LB's main storage has been written out
 to disk (removing a source of run-to-run nondeterminism). The <b>mail pool</b>
-backs the cross-block mail log — the record of which block sent what to whom: it
-too is never written to disk, and being stand-alone it plays no part in any
-deload decision, so the mail content never competes with the main pool. The
+backs the cross-block mail log, global blob ids, and transient <code>mailIn</code>
+staging. Outgoing <code>mailOut</code> staging and its per-block interner live in
+the main deloadable pool instead. The mail pool is never written to disk and plays
+no part in any deload decision. If every block
+was active when the grid completed, delivered blob/reference pages and the
+matching global mail-id table are reset after each cycle; if any block started
+dormant, full history and that id table stay available for its later catch-up.
+Routing, cumulative counts, and cursors remain resident in both modes, and the
+mail content never competes with the main pool. The
 <b>LB-body pool</b> holds the logic-block objects themselves — every block used to
 be a separate heap allocation; now each is placement-constructed into a fixed-size
 slot carved from this pool and never moved, so the many pointers between blocks
@@ -243,7 +249,7 @@ power-of-two page (so an index resolves by one shift and one mask);
 
 <table>
 <tr><th>Level</th><th>Sizing constant (parameters.hpp)</th><th>Owner</th><th>Unit handed down</th></tr>
-<tr><td>Pool</td><td><code>static_pool_bytes</code> (8&nbsp;GiB)</td><td><code>GlobalMemoryManager</code> — one per process</td><td>block</td></tr>
+<tr><td>Pool</td><td><code>static_pool_bytes</code> (4&nbsp;GiB)</td><td><code>GlobalMemoryManager</code> — one per process</td><td>block</td></tr>
 <tr><td>Block</td><td><code>static_block_bytes</code> (256&nbsp;KiB, a power of two)</td><td><code>LbArena</code> — one per LB</td><td>page</td></tr>
 <tr><td>Page</td><td><code>static_page_bytes</code> (8&nbsp;KiB, a power of two)</td><td>the paged containers, via the arena's page tier</td><td>elements (packed contiguously, addressed by page id)</td></tr>
 </table>
@@ -254,7 +260,7 @@ power-of-two page (so an index resolves by one shift and one mask);
 
   <!-- pool -->
   <rect x="20" y="16" width="720" height="124" rx="10" fill="#1C1F2B" stroke="#EF9F27" stroke-width="2"/>
-  <text x="380" y="38" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">GlobalMemoryManager — ONE reservation at program start (static_pool_bytes, 8 GiB)</text>
+  <text x="380" y="38" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">GlobalMemoryManager — ONE reservation at program start (static_pool_bytes, 4 GiB)</text>
   <text x="380" y="55" fill="#8B8FA5" font-size="9.5" text-anchor="middle">never freed, never grown — the software model of the MPU's fixed SRAM · mutex inside acquireBlock</text>
   <g font-size="9">
     <rect x="40"  y="68" width="60" height="34" rx="5" fill="#262938" stroke="#5DCAA5"/><text x="70"  y="88" fill="#5DCAA5" text-anchor="middle">LB A</text>
@@ -425,6 +431,26 @@ growing container); they die at deload, <code>clear</code>, <code>release</code>
 or the page compaction.</li>
 </ul>
 
+<p>
+<b>Large variable-record runs still move each tail once.</b> The cold blob maps
+keep a dense two-level index over one dense byte pool. A replacement that fits
+one scratch block is written from a contiguous buffer; a larger replacement is
+streamed from replayable record spans directly into the same paged gap. The
+byte-pool tail and its blob-index tail are each shifted once, rather than once
+per record. Both doors produce the same dense index and byte stream, so deload
+images and proof artifacts do not depend on which write door was used.
+</p>
+
+<p>
+<b>Variable-length byte keys cache their full hash in static memory.</b> Each
+key's page-backed location record stores its byte offset, length, and 64-bit
+digest. A lookup hashes the probe once and rejects candidates with a different
+digest before resolving the byte pool; matching digests still require the full
+length and byte comparison. This is not a heap-side cache and does not add an
+on-disk field: canonical deload still writes only lengths and logical bytes,
+and reload reconstructs each digest from those bytes.
+</p>
+
 <!-- ===================== 6.4 AGGREGATE ===================== -->
 <h2 id="aggregate">6.4 &nbsp;<code>LbMemory</code> — the growable aggregate</h2>
 <p>
@@ -472,36 +498,77 @@ the next few about to be processed. The order in which GL processes its logic
 blocks is fixed, so "the working set" is simply a sliding window over that order.
 </p>
 <p>
-The <b>steward</b> — a dedicated background thread — maintains that window in
-<b>every one of the three kernel phases</b> (they are all equivalent here; no
-phase pre-loads everything). While a phase runs, the steward watches its work
-cursor and does two things: it <b>prefetches</b> the next few LBs (reloading
-any that sit on disk) so a worker finds its LB ready, and, once memory is
-tight, it <b>drains</b> everything outside the window back to disk — biggest
-LB first. A worker that reaches an LB still on disk simply <b>loads it
-itself</b> (a one-line handshake with the steward so the two never collide) and,
-to make room, deloads the biggest out-of-window LB in exchange. An LB being
+The <b>steward</b> — a background <b>planner</b> thread plus a small pool of
+<b>I/O executor</b> threads (one executor per eight workers, between two and
+eight) — maintains that window in <b>every one of the three kernel phases</b>
+(they are all equivalent here; no phase pre-loads everything) <b>and across the
+between-iterations seam</b>: the single-threaded mail-distribution work that
+runs between one iteration and the next reloads blocks too, so it gets the same
+treatment — its linear sweep carries its own cursor, the scattered mail-delivery
+work runs under a window anchored at the start of the next iteration's order
+(whose head is exactly what will be needed first), and every reload passes
+through the same one-line handshake, so the paging machinery always sees a
+consistent picture and keeps evicting while the seam churns. While a phase
+runs, the planner watches its work cursor and <b>plans</b> two kinds of work
+onto two fixed-size queues: <b>prefetches</b> of the window ahead of the cursor
+(reloading any LB that sits on disk) so a worker finds its LB ready, and
+<b>evictions</b> that keep a small <b>reserve</b> of free blocks by paging out
+the LBs whose next turn is furthest away. The executors drain the queues and do
+the actual disk work in parallel — loads first, except when free blocks fall
+below the emergency floor, where evictions jump the queue (they must never
+starve behind reloads that have no room to land in). One serial evictor could
+not match thirty-two workers' memory consumption against the fixed cost of a
+file write per eviction; the pool is what lets the eviction stream keep pace.
+Every queued job re-checks its window when it finally runs and simply drops if
+the world moved on — the planner re-plans continuously, so a dropped job costs
+nothing. An eviction holds the LB and its memory until its disk image is
+<i>complete</i>, only then frees the blocks and marks the LB paged out — no one
+can ever observe a half-written eviction. A worker that reaches an LB still on
+disk simply <b>loads it itself</b> into the reserve's free room (a one-line
+handshake so worker, planner, and executors never collide). An LB being
 processed is never touched, and a worker is never interrupted mid-LB. The
 kernel decides what to discharge at its single-threaded iteration barrier
 (deterministic, order-and-numbers based); the steward executes while the next
-iteration already computes.
+iteration already computes — the discharge dump itself stays on the planner
+thread. The barrier also queues a one-shot <b>head prefetch</b>: loads for the
+first window's worth of the <i>next</i> iteration's blocks, so no iteration
+cold-starts its first phase waiting on disk. Queued prefetch loads are always
+<b>budgeted below the reserve</b> — they are the one kind of work with no
+relief valve of its own, so what is pending must always fit in the free room
+the reserve guarantees — and at the very end of a proving run the queue is
+simply discarded (there is no next iteration left to warm).
 </p>
 <p>
-Three thresholds shape the draining (all simple fractions of the pool, easy to
-retune). Below half the pool: nothing happens — the steward is parked, no LB is
-evicted, so none ever needs reloading. Cross half: the steward wakes and does a
-<b>one-for-one exchange</b> — each LB loaded is paid for by deloading the biggest
-out-of-window LB — draining the resident set down to a <b>40% floor</b> before it
-parks again (the 50→40 gap is a hysteresis band, so it never oscillates at the
-wake mark). Past three quarters: the <b>synchronous hard water</b> — a worker that
-needs a block while the pool is this full does the swap itself rather than wait
-for the steward, which above this mark mass-evicts. The
-consequence the design leans on: a light batch whose memory stays under three
-quarters force-deloads nothing, therefore reloads nothing, therefore runs exactly
-as it did before — full speed, zero disk traffic. If the working set <i>itself</i>
-cannot fit the pool, that is a genuinely too-small pool and the run stops at a
-loud assert — never a silent stall (a dedicated stuck-detector also turns any
-unexpected worker wait longer than thirty seconds into an assert).
+The draining follows one rule: <b>keep a free-block reserve, and pay for it with
+the LBs whose reload is furthest away</b>. Each maintenance pass, while the free
+blocks are below the reserve and an eligible victim exists, the steward evicts
+<i>one</i> LB and looks again; the pass ends the moment the reserve is met — or
+the moment nothing is left to evict, in which case the stream simply pauses
+(never a silent stall). The victim it picks is the <b>farthest-next-use</b> LB
+behind the work cursor. GL sweeps its logic blocks in a fixed cyclic order, so
+the block just <i>behind</i> the cursor was processed most recently and will not
+be needed again until the next full sweep — the textbook Belady choice — while
+the blocks just ahead are needed within moments and are kept. The selection is
+<b>two-tier</b>: the steward first <b>skips tiny LBs</b> (a size floor — each
+eviction costs a fixed file write regardless of size, so evicting a tiny block
+pays the whole cost to reclaim almost nothing), but when the reserve is breached
+and <i>nothing above the floor</i> is left to evict, a second scan runs in the
+same farthest-next-use order with the floor dropped: survival beats
+per-eviction efficiency, because early batches consist almost entirely of tiny
+blocks and a floor-only drain would find no victim at all while the workers keep
+consuming memory. The consequence the design leans
+on: a run whose memory never dips below the reserve evicts <b>nothing</b>,
+therefore reloads nothing, therefore runs exactly as it did before — full speed,
+zero disk traffic. The current 4&nbsp;GiB cap deliberately puts the heavy incubator
+batches under pager pressure; historical 8&nbsp;GiB comparison runs kept the pager
+mostly idle. If the working set <i>itself</i> cannot fit the
+pool, that is a genuinely too-small pool and the run stops at a loud assert on
+the next block request — never a silent wait (a dedicated stuck-detector also
+turns any unexpected worker wait longer than thirty seconds into an assert). In
+a genuine squeeze — free blocks below a small <b>emergency floor</b> (a quarter
+of the reserve) — <i>every</i> worker handshake, not just one that needs a
+reload, may evict one block inline; a counted event the telemetry reports so a
+steward that cannot keep up shows up as an alarm, not a wall.
 </p>
 <p>
 An LB that was <b>deactivated</b> this iteration is the one special case:
@@ -516,14 +583,52 @@ the background. A run whose memory never crosses the thresholds writes
 <b>zero deload files</b>.
 </p>
 <p>
-A dump streams the aggregate's containers to <code>.deload/</code> — <b>element
-by element, in logical order, containers in tag order</b> — then returns all
-blocks to the pool and marks the LB deloaded. The byte stream is a <b>pure
-function of logical content</b>: two LBs with the same elements in the same order
-produce identical files, regardless of how their arenas were fragmented or which
-physical blocks they sat in. The dump <i>is</i> the canonical "straightening" of
-any fragmentation — and it makes deload images byte-comparable across runs and
-hosts.
+There are <b>two dump formats</b>, chosen by what the image is for. The
+<b>canonical</b> format streams the aggregate's containers to <code>.deload/</code>
+— <b>element by element, in logical order, containers in tag order</b> — then
+returns all blocks to the pool and marks the LB deloaded. Its byte stream is a
+<b>pure function of logical content</b>: two LBs with the same elements in the
+same order produce identical files, regardless of how their arenas were
+fragmented or which physical blocks they sat in. The dump <i>is</i> the canonical
+"straightening" of any fragmentation — and it makes these images byte-comparable
+across runs and hosts. This is the format the <b>discharge</b> drain and the
+chapter-export reads use, where that comparability matters.
+</p>
+<p>
+The working-set pager's <b>evictions</b> — the hot loop above — instead use a
+<b>raw arena image</b>: a near-memcpy byte copy of the LB's live memory pages,
+plus a small map of which pages are live. Because every deloadable container
+(statements, the cold maps, even the throw-away hash index) packs its pages into
+the <i>one</i> LB arena, and the containers' small bookkeeping lives in the
+never-evicted LB shell, a page image is a <b>complete</b> record: reload binds the
+same page ids to freshly-packed pages and reads the bytes straight back — no
+element walk, no index rebuild, one copy. The measured element-by-element reload
+was the eviction loop's bottleneck; the raw image replaces it with memory-copy
+speed. The price, accepted deliberately: raw image <b>bytes are not
+reproducible</b> (arena fragmentation leaks into them), so they are not
+byte-comparable like the canonical format — but the <b>restored logical state
+is</b> identical, which is all the proof output depends on. A raw-evicted LB that
+is later discharged simply writes a canonical image next time.
+</p>
+<p>
+The raw images share <b>one file, held open for the whole batch</b>. Opening,
+truncating, and closing a fresh file per eviction cost a fixed <b>~50&nbsp;milliseconds</b>
+— nearly independent of the image size, and dominated by filesystem metadata and
+the virus scanner's scan-on-close of each new file — times thousands of tiny-LB
+evictions a phase. So instead GL <b>preallocates a single data file</b> and gives
+each LB a fixed <b>slab</b> inside it (the smallest power-of-two multiple of a
+pool block that fits the image). A re-dump of the same LB <b>overwrites its slab
+in place</b> — a single positioned write into the already-open file, at
+memory-copy speed with no per-eviction open or close; only an LB that outgrows
+its slab is moved to a bigger one. Because the dumpers work on <i>different</i>
+LBs at <i>disjoint</i> places in the file, every I/O thread holds its <b>own file
+handle</b> and writes at its own offset with <b>no lock</b> — the only shared
+state is the tiny slab bookkeeper, touched a handful of times per LB. The file's
+slab offsets are not reproducible run-to-run (allocation order varies), but — like
+the raw bytes themselves — offsets never reach the proof output, so nothing about
+the result changes. The whole file is emptied and its slabs recycled at the start
+of each batch. This drops the per-eviction cost from tens of milliseconds to a
+couple, turning the eviction stream from metadata-bound back into copy-bound.
 </p>
 
 <figure>
@@ -554,11 +659,12 @@ hosts.
   <text x="380" y="122" fill="#8B8FA5" font-size="9.5" text-anchor="middle">.deload/ files — the steward pages the working set in/out across ALL three phases; workers reload on touch</text>
   <text x="380" y="156" fill="#8B8FA5" font-size="10" text-anchor="middle">Touching a deloaded container anywhere outside the enumerated reload points asserts.</text>
 </svg>
-<figcaption><b>RAM as a working-set cache.</b> The steward keeps only the LBs
-being processed plus the next few resident — in every phase — and pages the rest
-to disk; a worker reloads an LB on touch and deloads one in exchange. Under the
-thresholds nothing moves. Reload happens only at named touch points; cold reads
-anywhere else stop the run.</figcaption>
+<figcaption><b>RAM as a working-set cache.</b> The steward's planner plans and
+its executor pool pages: only the LBs being processed plus the next few stay
+resident — in every phase — and the rest go to disk; a worker reloads an LB on
+touch, and under a genuine squeeze its handshake may evict one behind-cursor
+block inline. Under the thresholds nothing moves. Reload happens only at named
+touch points; cold reads anywhere else stop the run.</figcaption>
 </figure>
 
 <h3>6.5.1 &nbsp;The file format — self-describing, fixed-width</h3>
@@ -654,14 +760,11 @@ static, and what remains is the accepted boundary below.
       compaction's transient scratch — O(blocks), not O(payload), and outside any
       one LB.</li>
       <li><b>Mail content is interner-id form.</b> Inter-LB messages carry integer
-      interner ids, not <code>std::string</code>. The portability problem — a per-LB
-      id means nothing in another LB — is solved with a <b>global</b> interner:
-      cross-LB routing mail uses one process-wide id table (on the <b>mail pool</b>,
-      §<a href="#why">6.1</a>), so an id denotes the same expression at the sender and
-      at the receiver; internal same-LB mail keeps the cheaper local per-LB ids. A
-      message is minted to global ids only at the single-threaded commit seam and
-      decoded back to text at the read boundary. The storage is off-heap on the mail
-      pool, never deloaded.</li>
+      ids, not <code>std::string</code>. Each outgoing mailbox uses its own per-block
+      interner and deloads with that block. The single-threaded commit translates
+      those private ids into the process-wide global id table on the mail pool;
+      committed blobs and <code>mailIn</code> use the global ids. Internal same-LB
+      mail keeps its existing local ids.</li>
       <li>Per-phase deload / per-LB pipelining — active LBs stay resident for
       the whole iteration.</li>
     </ul>
@@ -768,11 +871,14 @@ stored form is always the id.
 </p>
 
 <p>
-Two deliberate residuals remain. <b>Mail content</b> stays in <b>string form</b> —
-interner ids are not portable across LBs, so strings are the cross-LB common space
-— but its storage is already cold on the dedicated <b>mail pool</b>
-(§<a href="#why">6.1</a>): off-heap, never deloaded, so only the message <i>form</i>
-is residual, not its residence. The <b>LB identity skeleton</b> — the tree key, the
+Two deliberate residuals remain. Committed <b>mail content</b> uses a process-wide
+global interner because per-block ids are not portable. That global table, retained
+log windows, routing edges, cursors, and transient inboxes live on the dedicated
+<b>mail pool</b>. Producer outboxes and their private id tables deload with their
+blocks in the main pool. Delivered
+blob/reference pages and the global id table roll only for a grid that began fully
+active; dormant grids keep full history and the matching id table. The
+<b>LB identity skeleton</b> — the tree key, the
 routing map, the deload chain and file list — stays on the heap because it must
 remain readable while the LB itself is deloaded.
 </p>

@@ -32,6 +32,7 @@
 // types in memory.hpp.
 
 #include "typed_cold_map.hpp"
+#include "reverse_args_index.hpp"
 
 #include <utility>
 
@@ -91,6 +92,17 @@ namespace gl {
         TypedColdBlobMap<Int16SetKey, NormKey>::RunStartsView remainingArgsNormalizedEncodedMapRunStarts;
         TypedColdBlobMap<Int16SetKey, NormKey>::BlobStartsView remainingArgsNormalizedEncodedMapBlobStarts;
         TypedColdBlobMap<Int16SetKey, NormKey>::BlobPoolView remainingArgsNormalizedEncodedMapBlobPool;
+        // Derived reverse membership side-index of
+        // remainingArgsNormalizedEncodedMap: a NormKey's bytes -> the run of
+        // forward-map key ids whose stored run contains that NormKey. Rides the
+        // LB's deloadable arena but is NEVER enrolled in visitContainers, NEVER
+        // deloaded, NEVER dumped (I-117 pattern); maintained by appendEdge at the
+        // insertRemainingArgsNormKey installs, rebuilt on canonical reload +
+        // after wipeRemainingArgsForClosed, cleared at the canonical release
+        // seam, captured verbatim by the raw image (I-154).
+        // It inverts checkLocalEncodedMemoryStatic's candidate enumeration from
+        // an O(keys) forward scan to one hash probe.
+        ReverseArgsIndex remainingArgsReverseIndex;
         // D-72 owner-set maps — the four "subkey" fast-rejection indices, now
         // COLD blob maps (bytes key NormKey -> ONE OwnerSet blob per key: the
         // whole codec'd value, run-length-1, whole-value replace on update). The
@@ -290,6 +302,7 @@ namespace gl {
               remainingArgsNormalizedEncodedMapRunStarts(&remainingArgsNormalizedEncodedMap.inner()),
               remainingArgsNormalizedEncodedMapBlobStarts(&remainingArgsNormalizedEncodedMap.inner()),
               remainingArgsNormalizedEncodedMapBlobPool(&remainingArgsNormalizedEncodedMap.inner()),
+              remainingArgsReverseIndex(arena),
               maxKeyLength(0),
               normalizedEncodedKeys(arena, dirty),
               normalizedEncodedKeysLengths(&normalizedEncodedKeys.inner()),
@@ -404,7 +417,8 @@ namespace gl {
                  + triggersForAdmissionSetIntegration.liveBytes()
                  + productsOfRecursionIds.liveBytes()
                  + originals.liveBytes()
-                 + remainingArgsNormalizedEncodedMap.liveBytes();
+                 + remainingArgsNormalizedEncodedMap.liveBytes()
+                 + remainingArgsReverseIndex.liveBytes();
         }
 
         /// @brief Release every cold (arena-backed) container's blocks + index —
@@ -436,11 +450,13 @@ namespace gl {
             productsOfRecursionIds.release();
             originals.release();
             remainingArgsNormalizedEncodedMap.release();
+            remainingArgsReverseIndex.clear();
         }
 
         void clear() {
             encodedMap.resetToFresh();
             remainingArgsNormalizedEncodedMap.resetToFresh();
+            remainingArgsReverseIndex.clear();
             normalizedEncodedKeys.resetToFresh();
             normalizedEncodedSubkeys.resetToFresh();
             normalizedEncodedSubkeysMinusOne.resetToFresh();

@@ -35,6 +35,7 @@
 #include "cold_mail.hpp"
 #include "changed_classes_buffer.hpp"
 #include "eq_class_name_caches.hpp"
+#include "deloadable_mail_out.hpp"
 
 #include <cstdint>
 
@@ -207,7 +208,10 @@ namespace gl {
             // at-a-base way.
             // Tags 705..754 are RESERVED for eqClassNameCaches (base 705, 5 paged
             // facets; base in eq_class_name_caches.hpp), spliced the same
-            // at-a-base way. Next free tag: 755.
+            // at-a-base way.
+            // Tags 755..804 are RESERVED for the deloadable mailOut aggregate
+            // (base 755, 8 facets: private string table + statements + origins;
+            // base in deloadable_mail_out.hpp). Next free tag: 805.
             // Append new tags here - never renumber, reorder, or reuse.
             // Tags 4..18 survive discharge (survivesDischarge): the cold STRING
             // tags (4..17) plus the NameMap validity-node forest (18). Tag 28
@@ -311,7 +315,8 @@ namespace gl {
               sameInternalMail(&manager, &dirty),
               nextInternalMail(&manager, &dirty),
               changedClassesThisStep(&manager, &dirty),
-              eqClassNameCaches(&manager, &dirty) {}
+              eqClassNameCaches(&manager, &dirty),
+              mailOut(&manager, &dirty) {}
 
         LbMemory(const LbMemory&) = delete;
         LbMemory& operator=(const LbMemory&) = delete;
@@ -477,11 +482,10 @@ namespace gl {
         // cleared internal mail at discharge -- faithful mirror).
         ColdMail sameInternalMail;
         ColdMail nextInternalMail;
-        // The two cross-LB routing mailboxes (Memory::mailIn / mailOut) do NOT
-        // live here: they ride the never-deloaded mail pool (RoutingColdMail owns
-        // its own per-LB arena drawn from mailMemory()), because the commit
-        // barrier reads every body's mailOut incl. evicted ones. See
-        // routing_cold_mail.hpp.
+        // Cross-LB mailIn does not live here: it uses RoutingColdMail's dedicated
+        // mail-pool arena and returns every block immediately after phase-1
+        // absorb. mailOut must cross the phase-3-to-commit seam, so it rides this
+        // deloadable arena and the serial barrier claim/reloads pending LBs.
         // The per-step changed-equivalence-class delta on the cold deloadable
         // path. Written only by standardProcessing (single-threaded phase-1/3),
         // emptied every step, so empty at the deload seam -- dischargeable (NOT in
@@ -492,6 +496,10 @@ namespace gl {
         // per I-83); SURVIVES discharge (the post-prove readers + cross-grid reuse
         // keep it). Spliced into visitContainers at base 705.
         EqClassNameCaches eqClassNameCaches;
+        // Cross-LB outgoing mail on the cold deloadable path, including its own
+        // string id space. Spliced into visitContainers at base 755 and kept on
+        // discharge until its final committed batch is cleared.
+        DeloadableMailOut mailOut;
 
         /// @brief Enumerate the statified containers in tag order (mutable).
         ///
@@ -609,6 +617,9 @@ namespace gl {
             // EqClassNameCaches memo (tags 705..709) — survives discharge.
             eqClassNameCaches.visitContainers(kEqClassNameCachesDeloadBase,
                                               visitHashMemory);
+            // Outgoing routing mail (tags 755..762) — private string table plus
+            // statements and origins, all deloaded as one unit.
+            mailOut.visitContainers(kMailOutDeloadBase, visitHashMemory);
         }
 
         /// @brief Enumerate the statified containers in tag order
@@ -721,6 +732,9 @@ namespace gl {
             // EqClassNameCaches memo (tags 705..709) — survives discharge.
             eqClassNameCaches.visitContainers(kEqClassNameCachesDeloadBase,
                                               visitHashMemory);
+            // Outgoing routing mail (tags 755..762) — private string table plus
+            // statements and origins, all deloaded as one unit.
+            mailOut.visitContainers(kMailOutDeloadBase, visitHashMemory);
         }
 
         /// @brief Whether a tag's content survives discharge (rides the
@@ -769,7 +783,12 @@ namespace gl {
                 // reuse keep resident.
                 || (static_cast<uint32_t>(tag) >= kEqClassNameCachesDeloadBase
                     && static_cast<uint32_t>(tag)
-                           <= kEqClassNameCachesDeloadBase + 49u);
+                           <= kEqClassNameCachesDeloadBase + 49u)
+                // Pending outgoing mail survives discharge so the final serial
+                // commit can reload and publish it.
+                || (static_cast<uint32_t>(tag) >= kMailOutDeloadBase
+                    && static_cast<uint32_t>(tag)
+                           <= kMailOutDeloadBase + 49u);
         }
 
         /// @brief Empty every dischargeable container — the first act of the
@@ -836,7 +855,8 @@ namespace gl {
                  + sameInternalMail.liveBytes()
                  + nextInternalMail.liveBytes()
                  + changedClassesThisStep.liveBytes()
-                 + eqClassNameCaches.liveBytes();
+                 + eqClassNameCaches.liveBytes()
+                 + mailOut.liveBytes();
         }
 
         /// @brief Compaction: pack the LB's live pages onto the contiguous

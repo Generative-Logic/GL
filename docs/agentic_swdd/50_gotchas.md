@@ -454,7 +454,7 @@ See [I-3](30_invariants.md#i-3).
 
 **Manifestation.** A new fact file is written by hand, using only `i`-prefixed constants (no `j`-copies). CE filtering mysteriously underfires — some conjectures that should be refuted slip through.
 
-**Cause.** `generateEncodedRequestsStaticCE` needs *distinct* fact entries for its rule-firing pattern. Without j-copies (parallel constants), rules that require two different-looking arguments to match never fire on the table.
+**Cause.** The request generator at stump length 0 (`generateEncodedRequestsStatic`) needs *distinct* fact entries for its rule-firing pattern. Without j-copies (parallel constants), rules that require two different-looking arguments to match never fire on the table.
 
 **Fix.** Use the j-copy pattern: every constant appears as `i<k>` and `j<k>`. `incubator_to_simple_facts.py` implements this automatically when regenerating facts.
 
@@ -874,7 +874,7 @@ The hashburst trace expansion in [D-74](40_decisions.md#d-74) and the `nameMap.i
 
 **Spot.** `[TRAP] freePage OOR vid=… pageTableSize=0 mode=COLD` (the diagnostic that found all three). The crash phase distinguishes the face: during a reload (face 1), during the export with `blocksInUse` climbing (face 2), or at teardown / inside the CE filter / process exit (face 3).
 
-**Fix direction (current).** Face 1: `releaseStaticBlocks` releases the cold containers via `HashMemory::visitContainers(base)` before `releaseAll`. Face 2: `generateRawProofGraph` releases each theorem's reloaded LBs (the `g_exportReloadSink` that `Memory::reloadFromImage` populates only during the export, plus `releaseStaticBlocks`) at chapter end; the on-disk image stays for revisits. Face 3: an explicit `~Memory` empties all four `encodedMap`s before any member destructs, and the now-live `destroyGrid` (a member, called after the export in `run_modes::fullRun`) wipes the grid at batch end. ALL THREE retire when `HashMemory` folds INTO `LbMemory` — the single enumeration then covers it and the arena destructs last — the stated Part-C endgame.
+**Fix direction (current).** Face 1: `releaseStaticBlocks` releases the cold containers via `HashMemory::visitContainers(base)` before `releaseAll`. Face 2: `generateRawProofGraph` releases each theorem's reloaded LBs (the `g_exportReloadSink` that `Memory::reloadFromImage` populates only during the export, plus `releaseStaticBlocksDispatch`, which routes Raw-kind LBs to the walk-free raw release — the raw rebind needs the container bookkeeping, and an extent-raw LB has no named file set) at chapter end; the on-disk image stays for revisits. Face 3: an explicit `~Memory` empties all four `encodedMap`s before any member destructs, and the now-live `destroyGrid` (a member, called after the export in `run_modes::fullRun`) wipes the grid at batch end. ALL THREE retire when `HashMemory` folds INTO `LbMemory` — the single enumeration then covers it and the arena destructs last — the stated Part-C endgame.
 
 ---
 

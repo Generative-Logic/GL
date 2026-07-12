@@ -567,84 +567,36 @@ TEST(lb_split, rt_note_iterations_here_no_tracker_is_noop) {
     ASSERT_TRUE(true);
 }
 
-TEST(lb_split, adaptive_split_decision_bang_bang) {
-    // Two-state adaptive policy: unsplit (1) <-> fully split (fixedParts).
-    // Escalate the moment an unsplit part hits the cap (and redo this iteration);
-    // coarsen a split LB back to 1 when its busiest part runs below
-    // fallbackRatio*cap; hold otherwise. redoNow is true on EXACTLY the
-    // escalation transition. See D-111.
+TEST(lb_split, is_straggler_fair_share) {
+    // The split TRIGGER: an LB is a straggler iff its total work exceeds the idle-
+    // core fair-share (totalWork / cores) AND clears the setup break-even floor. The
+    // work is the split-invariant SUM of the LB's parts (D-117). Fair-share is
+    // masking-resistant and self-limiting to at most cores-1 LBs; integer arithmetic
+    // keeps the verdict deterministic (two runs byte-identical).
     using EA = gl::ExpressionAnalyzer;
-    const int cap = 40000;
-    const int fixed = 100;
-    const double ratio = 0.10;  // fall-back threshold = 4000 submatches
+    const int cores = 8;
+    const int64_t floor = 1000;
 
-    // Unsplit + cap hit -> escalate to fixed AND redo now. Boundary: == cap counts.
-    {
-        auto d = EA::adaptiveSplitDecision(1, cap, cap, fixed, ratio);
-        ASSERT_EQ(d.nextParts, fixed);
-        ASSERT_TRUE(d.redoNow);
-    }
-    {
-        auto d = EA::adaptiveSplitDecision(1, cap + 10000, cap, fixed, ratio);
-        ASSERT_EQ(d.nextParts, fixed);
-        ASSERT_TRUE(d.redoNow);
-    }
-    // The escalation target is fixedParts (here 32, not 100) -> proves it is used.
-    {
-        auto d = EA::adaptiveSplitDecision(1, cap, cap, 32, ratio);
-        ASSERT_EQ(d.nextParts, 32);
-        ASSERT_TRUE(d.redoNow);
-    }
-    // Unsplit + under cap -> complete -> stay unsplit, no redo.
-    {
-        auto d = EA::adaptiveSplitDecision(1, cap - 1, cap, fixed, ratio);
-        ASSERT_EQ(d.nextParts, 1);
-        ASSERT_FALSE(d.redoNow);
-    }
-    {
-        auto d = EA::adaptiveSplitDecision(1, 0, cap, fixed, ratio);
-        ASSERT_EQ(d.nextParts, 1);
-        ASSERT_FALSE(d.redoNow);
-    }
-    // Split + busiest below fallbackRatio*cap (4000) -> coarsen to 1, never redo.
-    {
-        auto d = EA::adaptiveSplitDecision(fixed, 3999, cap, fixed, ratio);
-        ASSERT_EQ(d.nextParts, 1);
-        ASSERT_FALSE(d.redoNow);
-    }
-    {
-        auto d = EA::adaptiveSplitDecision(fixed, 0, cap, fixed, ratio);
-        ASSERT_EQ(d.nextParts, 1);
-        ASSERT_FALSE(d.redoNow);
-    }
-    // Split + busiest AT the threshold (4000, not below) -> hold.
-    {
-        auto d = EA::adaptiveSplitDecision(fixed, 4000, cap, fixed, ratio);
-        ASSERT_EQ(d.nextParts, fixed);
-        ASSERT_FALSE(d.redoNow);
-    }
-    // Split + busiest above threshold -> hold.
-    {
-        auto d = EA::adaptiveSplitDecision(fixed, 20000, cap, fixed, ratio);
-        ASSERT_EQ(d.nextParts, fixed);
-        ASSERT_FALSE(d.redoNow);
-    }
-    // Split + a part hits the cap -> still HOLD: no escalation beyond fixed, and
-    // no redo at N>1 (split parts run to completion, I-76;
-    // a capped part just regenerates next iteration, exactly as fixed-100 does).
-    {
-        auto d = EA::adaptiveSplitDecision(fixed, cap, cap, fixed, ratio);
-        ASSERT_EQ(d.nextParts, fixed);
-        ASSERT_FALSE(d.redoNow);
-    }
-    // fallbackRatio is honored: same busiest (5000) holds at ratio 0.10 (>=4000)
-    // but coarsens at ratio 0.20 (<8000).
-    {
-        auto hold = EA::adaptiveSplitDecision(fixed, 5000, cap, fixed, 0.10);
-        ASSERT_EQ(hold.nextParts, fixed);
-        auto fall = EA::adaptiveSplitDecision(fixed, 5000, cap, fixed, 0.20);
-        ASSERT_EQ(fall.nextParts, 1);
-    }
+    // Below fair-share -> not a straggler. Total 800, fairShare 100; 100 is not > 100.
+    ASSERT_FALSE(EA::isStraggler(100, 800, cores, floor));
+    // Above fair-share AND above the floor -> straggler. fairShare 1000; 5000 > 1000.
+    ASSERT_TRUE(EA::isStraggler(5000, 8000, cores, floor));
+    // Above fair-share but BELOW the floor -> not a straggler (setup break-even).
+    // fairShare 100; 500 > 100 but 500 < floor 1000.
+    ASSERT_FALSE(EA::isStraggler(500, 800, cores, floor));
+    // Exactly AT fair-share -> not a straggler (strict >).
+    ASSERT_FALSE(EA::isStraggler(1000, 8000, cores, floor));
+    // Just above fair-share and above the floor -> straggler.
+    ASSERT_TRUE(EA::isStraggler(1001, 8000, cores, /*floor=*/1000));
+    // Self-limiting: 5 equal LBs (each 1000, total 5000, C=4, fairShare 1250) ->
+    // none exceeds fair-share, a balanced load splits nothing.
+    ASSERT_FALSE(EA::isStraggler(1000, 5000, 4, 0));
+    // One dominant LB among small ones IS flagged: total 1300, C=4, fairShare 325;
+    // the 1000-work LB is > 325.
+    ASSERT_TRUE(EA::isStraggler(1000, 1300, 4, 0));
+    // Integer division: totalWork 7, cores 2 -> fairShare 3.
+    ASSERT_TRUE(EA::isStraggler(4, 7, 2, 0));   // 4 > 3
+    ASSERT_FALSE(EA::isStraggler(3, 7, 2, 0));  // 3 not > 3
 }
 
 TEST(lb_split, disable_lb_split_defaults_false) {
@@ -656,17 +608,30 @@ TEST(lb_split, disable_lb_split_defaults_false) {
     ASSERT_FALSE(ana.parameters.disable_lb_split);
     ana.parameters.disable_lb_split = true;
     ASSERT_TRUE(ana.parameters.disable_lb_split);
-    // split_growth_factor / max_number_splits default to 2 / 32. Both are now
-    // UNUSED no-op fields: the graduated computeNextNumberOfParts policy they fed
-    // was retired for the bang-bang adaptiveSplitDecision
-    // (D-111). Defaults pinned only to keep
+    // split_growth_factor / max_number_splits / split_fallback_ratio /
+    // fixed_number_splits / the two caps are now UNUSED no-op fields (the split
+    // trigger is the statistics-driven isStraggler). Defaults pinned only to keep
     // config-file parsing stable.
     ASSERT_EQ(ana.parameters.split_growth_factor, 2);
     ASSERT_EQ(ana.parameters.max_number_splits, 32);
-    // split_fallback_ratio defaults to 0.10 — a split LB coarsens back to unsplit
-    // when its busiest part runs below 10% of the cap (D-111).
-    ASSERT_TRUE(ana.parameters.split_fallback_ratio > 0.09
-                && ana.parameters.split_fallback_ratio < 0.11);
+}
+
+TEST(lb_split, min_split_work_defaults_positive) {
+    // The straggler trigger's only tunable knob: the setup break-even floor below
+    // which an LB is never split (per-bucket work would be under the fixed setup
+    // cost). Must default positive so a trivially cheap iteration splits nothing.
+    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    ASSERT_TRUE(ana.parameters.min_split_work > 0);
+}
+
+TEST(lb_split, max_split_parts_bounds_the_expression_split) {
+    // The one split dimension is the expression/bucket split, fanned to logicalCores
+    // buckets, so the machine core count must fit under kMaxSplitParts (the
+    // proveKernel entry assert). kStumpsPerBucketTarget is a positive balance factor.
+    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    ASSERT_TRUE(static_cast<int>(ana.logicalCores)
+                <= gl::ExpressionAnalyzer::kMaxSplitParts);
+    ASSERT_TRUE(gl::ExpressionAnalyzer::kStumpsPerBucketTarget > 0);
 }
 
 TEST(lb_split, name_map_lookup_is_non_minting) {
@@ -842,39 +807,51 @@ TEST(lb_split, burst_deactivates_ce_filter_requires_known_negation) {
     ASSERT_FALSE(ana.burstDeactivates(mb, fr));
 }
 
-TEST(lb_split, burst_sink_caps_and_skips_unknown_dependency) {
-    // BurstSink: canAccept caps on the per-part SUBMATCH count
-    // (ExpressionAnalyzer::g_growthMatchCount), not emitted requests; consume runs
-    // the dependency skip (request element must be a known statement) before firing.
-    // A request whose element is NOT known is counted (produced) but not fired.
+TEST(lb_split, burst_sink_runs_uncapped_and_gates_early_exit_on_multipart) {
+    // BurstSink no longer caps on the submatch count -- bursts run to COMPLETION
+    // (a heavy LB is split preemptively next iteration, not truncated). consume
+    // still runs the dependency skip (a request element must be a known statement
+    // before firing). The early-exit stop is honored ONLY for a SINGLE-part LB
+    // (g_isMultiPart == false); a multi-part LB ignores the sibling-set stop and
+    // runs every part to completion (I-76).
     gl::ExpressionAnalyzer ana(std::string("Peano"));
     gl::Memory mb;
     RecordRig rig;
     std::atomic<bool> stop{ false };
-    gl::BurstSink sink{ &ana, &mb, 0, &rig.pages, &stop, /*cap=*/2,
+    const bool savedMulti = gl::g_isMultiPart;
+    gl::g_isMultiPart = false;
+    gl::BurstSink sink{ &ana, &mb, 0, &rig.pages, &stop,
                         gl::SealedRecordCursor<gl::FiringRecord>(rig.pages) };
 
+    // No cap: canAccept stays true however high the submatch count climbs
+    // (single-part, stop clear).
     gl::ExpressionAnalyzer::g_growthMatchCount = 0;
-    ASSERT_TRUE(sink.canAccept());         // 0 submatches < cap 2
+    ASSERT_TRUE(sink.canAccept());
+    gl::ExpressionAnalyzer::g_growthMatchCount = 1 << 20;
+    ASSERT_TRUE(sink.canAccept());
+    gl::ExpressionAnalyzer::g_growthMatchCount = 0;
 
-    // 1-element request whose element is absent from intKnownStatements.
+    // Dependency skip: a 1-element request whose element is absent from
+    // intKnownStatements is counted (produced) but not fired.
     gl::IntEncodedExpr ie{};
     ie.originalId = 7;
     ie.validityId = gl::NameMap::MAIN_ID;
     gl::StaticRequest req{};
     req.count = 1;
     req.intExprs[0] = &ie;
-
     ASSERT_TRUE(sink.consume(req));        // dependency unmet -> skipped, keep going
     ASSERT_EQ((int)sink.produced, 1);
     ASSERT_EQ(rig.pages.recordCount(), 0); // nothing fired
 
-    ASSERT_TRUE(sink.consume(req));
-    ASSERT_EQ((int)sink.produced, 2);
-    ASSERT_EQ(rig.pages.recordCount(), 0);
+    // Early-exit gate: with the stop set, a SINGLE-part LB closes...
+    stop.store(true);
+    gl::g_isMultiPart = false;
+    ASSERT_FALSE(sink.canAccept());
+    // ...but a MULTI-part LB ignores the sibling-set stop and keeps generating.
+    gl::g_isMultiPart = true;
+    ASSERT_TRUE(sink.canAccept());
 
-    // canAccept caps on the submatch count, not produced: at the cap it closes.
-    gl::ExpressionAnalyzer::g_growthMatchCount = 2;
-    ASSERT_FALSE(sink.canAccept());        // 2 submatches >= cap 2
+    gl::g_isMultiPart = savedMulti;
+    stop.store(false);
     gl::ExpressionAnalyzer::g_growthMatchCount = 0;  // reset for later tests
 }

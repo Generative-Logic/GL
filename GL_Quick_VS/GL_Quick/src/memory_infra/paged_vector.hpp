@@ -76,7 +76,8 @@ namespace gl {
     ///
     /// Deliberately an API SUBSET of `std::vector`, matched to `ArenaVector`'s
     /// public surface so a consumer's element type swaps with no other change:
-    /// `push_back` / `size` / `empty` / `operator[]` / `erase(index)` /
+    /// `push_back` / `size` / `empty` / `operator[]` / `addScalarToSuffix` /
+    /// `erase(index)` /
     /// `clear` / `release` / copy-assign (cross-arena deep copy) / assign from
     /// `std::vector<T>` / `appendSpanBytes` / `bulkAppendBytes` (the deload
     /// element stream) / `liveBytes`. NO `data()`, NO iterators, NO `swap` —
@@ -130,12 +131,35 @@ namespace gl {
         PagedVector(PagedVector&&) = delete;
         PagedVector& operator=(PagedVector&&) = delete;
 
-        /// @brief Frees every held page back to the arena.
+        /// @brief Frees every held page back to the arena — with the
+        ///        teardown-only residency branch for a RAW-deloaded LB.
         ///
         /// @details
         /// `Memory` declares the arena BEFORE its containers, so the arena is
         /// still alive when a container destructs and the pages can be returned.
-        ~PagedVector() { clear(); }
+        ///
+        /// Teardown-only residency branch: when a RAW-deloaded `Memory` is
+        /// destroyed, `Memory::releaseStaticBlocksRaw` returned every arena
+        /// block WITHOUT walking the containers (the raw image preserves the
+        /// vids, so a raw reload rebinds them — the near-memcpy win), so this
+        /// container still holds a nonzero `rootVid_`/`numPages_` on a DELOADED
+        /// arena. Its pages provably no longer exist (the blocks are back in
+        /// the pool), so `freePage` must not run — reset the bookkeeping only.
+        /// A DEFINED teardown state, NOT a swallowed failure (Rule 19): the
+        /// branch lives ONLY in the destructor, so every LIVE `clear()` /
+        /// `release()` on a cold arena still dies loudly on `freePage`'s
+        /// residency assert — the guard cannot mask a mid-run bug. (A
+        /// v3-deloaded container is already empty at destruction and takes the
+        /// same branch harmlessly.)
+        ~PagedVector() {
+            if (!arena_->resident()) {
+                rootVid_ = kNoVid;
+                size_ = 0;
+                numPages_ = 0;
+                return;
+            }
+            clear();
+        }
 
         /// @brief Number of elements.
         ///
@@ -203,6 +227,40 @@ namespace gl {
             assert(i >= 0 && i < size_);
             *dirty_ = DirtyState::Restructured;
             writeSlot(i, value);
+        }
+
+        /// @brief Add one scalar to every element in the suffix `[first,size)`
+        ///        with one page-directory resolution per contiguous page run.
+        ///
+        /// @details
+        /// CSR offset columns rebase a long suffix after an interior run splice.
+        /// Calling `operator[]` plus `setAt` for every offset performs two virtual
+        /// page-directory walks per integer. This door resolves each data page
+        /// once, updates its contiguous elements in place, and escalates the dirty
+        /// state once. The element order and resulting bytes are identical to the
+        /// scalar loop. An empty suffix or zero delta is a defined no-op.
+        ///
+        /// @param first First element to change, in `[0,size()]`.
+        /// @param delta Scalar added to each suffix element.
+        /// @return Nothing.
+        /// @invariant Every element before @p first is unchanged; every element at
+        ///            or after it is increased by exactly @p delta; a non-empty,
+        ///            non-zero update marks the aggregate `Restructured`.
+        void addScalarToSuffix(int32_t first, T delta) {
+            static_assert(std::is_arithmetic<T>::value,
+                "PagedVector::addScalarToSuffix requires an arithmetic element");
+            assert(first >= 0 && first <= size_);
+            if (first == size_ || delta == static_cast<T>(0)) return;
+            *dirty_ = DirtyState::Restructured;
+            int32_t at = first;
+            while (at < size_) {
+                const int32_t within = at & mask_;
+                const int32_t toPageEnd = (mask_ + 1) - within;
+                const int32_t run = std::min(toPageEnd, size_ - at);
+                T* p = reinterpret_cast<T*>(slotPtr(at));
+                for (int32_t j = 0; j < run; ++j) p[j] += delta;
+                at += run;
+            }
         }
 
         /// @brief In-place overwrite of element `i` that does NOT escalate the
@@ -343,8 +401,45 @@ namespace gl {
         /// @param newLen Replacement count; >= 0.
         void replaceRange(int32_t pos, int32_t oldLen, const T* src,
                           int32_t newLen) {
-            assert(pos >= 0 && oldLen >= 0 && pos + oldLen <= size_);
             assert(newLen >= 0 && (newLen == 0 || src != nullptr));
+            replaceRangeGenerated(pos, oldLen, newLen, [&](const auto& sink) {
+                if (newLen > 0) sink(src, newLen);
+            });
+        }
+
+        /// @brief Replace one logical range from a replayable segmented source,
+        ///        shifting the surviving tail exactly once.
+        ///
+        /// @details
+        /// The generated-source twin of @ref replaceRange. It first resizes the
+        /// destination gap with the same page-aware single `blockMove`, then
+        /// invokes @p emit with a sink callable. The emitter feeds one or more
+        /// contiguous `T` spans to that sink; together they must contain exactly
+        /// @p newLen elements. Each span is copied directly into the already-sized
+        /// destination through `writeBytesAt`, so a logical replacement larger
+        /// than one arena block needs no contiguous staging allocation and still
+        /// moves the old tail only once. The emitter is invoked exactly once.
+        ///
+        /// Single-threaded write side only (I-83). Marks the aggregate
+        /// `Restructured`. Source spans must not alias `*this` across the resize;
+        /// callers preserve any pool-backed source before entering.
+        ///
+        /// @tparam Emit Callable accepting one sink callable; the sink signature
+        ///              is `void(const T* elements, int32_t count)`.
+        /// @param pos    Range start in `[0, size()]`.
+        /// @param oldLen Elements replaced; `pos + oldLen <= size()`.
+        /// @param newLen Replacement element count; >= 0.
+        /// @param emit   Replay-free producer that sends exactly @p newLen
+        ///               elements to its supplied sink.
+        /// @return Nothing.
+        /// @invariant The logical prefix and suffix retain byte-identical order;
+        ///            only the replacement range changes.
+        /// @see replaceRange.
+        template <typename Emit>
+        void replaceRangeGenerated(int32_t pos, int32_t oldLen, int32_t newLen,
+                                   Emit emit) {
+            assert(pos >= 0 && oldLen >= 0 && pos + oldLen <= size_);
+            assert(newLen >= 0);
             const int32_t delta = newLen - oldLen;
             if (delta > 0) {
                 ensureGeometry();
@@ -360,8 +455,19 @@ namespace gl {
                 blockMove(pos + oldLen, pos + oldLen + delta,
                           size_ - (pos + oldLen));         // shift tail left
             }
-            if (newLen > 0)
-                writeBytesAt(pos, reinterpret_cast<const char*>(src), newLen);
+            int32_t written = 0;
+            const auto sink = [&](const T* elements, int32_t count) {
+                assert(count >= 0 && written + count <= newLen);
+                assert(count == 0 || elements != nullptr);
+                if (count > 0) {
+                    writeBytesAt(pos + written,
+                        reinterpret_cast<const char*>(elements), count);
+                    written += count;
+                }
+            };
+            emit(sink);
+            assert(written == newLen
+                && "PagedVector::replaceRangeGenerated emitter length mismatch");
             if (delta < 0) {
                 size_ += delta;
                 while (numPages_ > 0 && size_ <= ((numPages_ - 1) << shift_))
@@ -394,6 +500,15 @@ namespace gl {
 
         /// @brief Drop all elements and free every page (data, level-1
         ///        directory, and L2 root, per the directory shape).
+        ///
+        /// @details
+        /// A LIVE mutator — it requires a resident arena like every other page
+        /// operation, and `freePage`'s own residency assert is the tripwire: a
+        /// `clear` reaching a cold LB mid-run is a bug that must die loudly at
+        /// its origin (Rule 19), never silently reset bookkeeping. The one
+        /// lifecycle that legally meets a non-resident arena with live
+        /// bookkeeping — destroying a RAW-deloaded `Memory` — is handled by the
+        /// residency branch in `~PagedVector`, never here.
         void clear() {
             *dirty_ = DirtyState::Restructured;
             const int32_t dirCap = dirMask_ + 1;
