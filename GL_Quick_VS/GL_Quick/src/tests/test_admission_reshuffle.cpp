@@ -79,7 +79,7 @@ TEST(admission_reshuffle, drain_replays_writes_and_honors_consumed_gate) {
     ea.drainAdmissionKeysAlgebra(m);
 
     // admissionMap got key -> { value } — the drain minted the packed key.
-    int32_t keyPk = 0;
+    int64_t keyPk = 0;
     ASSERT_TRUE(gl::lookupTemplateKey(m.templateInterner, m.nameMap,
                                       key.original, key.validityName, keyPk));
     const int32_t admId = m.overallHashMemory.admissionMap.lookup(keyPk);
@@ -98,7 +98,7 @@ TEST(admission_reshuffle, drain_replays_writes_and_honors_consumed_gate) {
     // varsInAdmissionMapKeys was populated from the key's args, never "marker".
     ASSERT_FALSE(m.overallHashMemory.varsInAdmissionMapKeys.empty());
     {
-        const int16_t markerId = m.templateInterner.lookup("marker");
+        const gl::NameId markerId = m.templateInterner.lookup("marker");
         ASSERT_TRUE(markerId == 0
                     || !m.overallHashMemory.varsInAdmissionMapKeys.contains(markerId));
     }
@@ -119,7 +119,7 @@ TEST(admission_reshuffle, drain_replays_writes_and_honors_consumed_gate) {
         value2 });
     ea.drainAdmissionKeysAlgebra(m2);
 
-    int32_t key2Pk = 0;
+    int64_t key2Pk = 0;
     ASSERT_TRUE(gl::lookupTemplateKey(m2.templateInterner, m2.nameMap,
                                       key2.original, key2.validityName, key2Pk));
     ASSERT_TRUE(m2.overallHashMemory.admissionMap.lookup(key2Pk) == 0);

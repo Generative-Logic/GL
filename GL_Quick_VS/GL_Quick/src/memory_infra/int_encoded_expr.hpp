@@ -27,6 +27,7 @@
 #include "../parameters.hpp"
 
 #include <cstdint>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -34,16 +35,25 @@
 namespace gl {
 
     /// @brief Pre-encoded statement for the static request pipeline. All fields
-    /// `int16_t`; no heap allocation; fixed size (176 bytes on x64).
+    /// 32-bit; no heap allocation; fixed size (352 bytes on x64, zero padding).
     ///
     /// @details
-    /// The static request pipeline operates entirely on `int16_t` IDs minted from
+    /// The static request pipeline operates entirely on 32-bit IDs minted from
     /// the per-LB `NameMap` so the hot path in `generateEncodedRequests*` never
     /// touches strings. Each `IntEncodedExpr` carries the canonicalized form of
     /// one expression: its name id, negation flag, arity, two flags for hypo /
     /// anchor classification, and the four fixed-capacity per-arg arrays
     /// (`argId`, `argUnchangeable`, `argIteration`, `argLevPlus1`, `argFullId`).
     /// Capacity is `ExecutionParameters::MAX_ARITY` per arg array.
+    ///
+    /// Field-type discipline: the id fields (`nameId`, `originalId`, `validityId`,
+    /// `argId`, `argFullId`) are `NameId`; the flag / arity / sentinel fields
+    /// (`negation`, `arity`, `maxIteration`, `isHypo`, `isAnchor`,
+    /// `argUnchangeable`, `argIteration`, `argLevPlus1`) are a plain `int32_t` —
+    /// several carry a `-1` sentinel (`maxIteration` / `argIteration`), which must
+    /// never blur into the id role. Both are 32-bit, so the record is uniform:
+    /// zero padding, which is decisive because the POD is byte-hashed and
+    /// pointer-keyed for dedupe — a padding byte would be nondeterministic.
     ///
     /// The struct is purely arithmetic — no constructors, no operator overloads,
     /// no virtual table — so it can be `memcpy`'d directly into the typed arena
@@ -56,20 +66,31 @@ namespace gl {
     ///      EncodedExpression ↔ IntEncodedExpr converter pair, defined in
     ///      `memory.hpp`.
     struct IntEncodedExpr {
-        int16_t nameId;          // NameMap ID of expression name
-        int16_t negation;        // 0 or 1
-        int16_t arity;           // number of arguments (capped at MAX_ARITY)
-        int16_t maxIteration;    // max iteration number across args (-1 if none)
-        int16_t originalId;      // NameMap ID of original string
-        int16_t validityId;      // NameMap ID of validityName
-        int16_t isHypo;          // 1 if validityName contains "_hypo_", else 0
-        int16_t isAnchor;        // 1 if name starts with "Anchor", else 0
-        int16_t argId[ExecutionParameters::MAX_ARITY];           // NameMap ID of arg name
-        int16_t argUnchangeable[ExecutionParameters::MAX_ARITY]; // 1=unchangeable, 0=changeable
-        int16_t argIteration[ExecutionParameters::MAX_ARITY];    // iteration number per arg (-1 if none)
-        int16_t argLevPlus1[ExecutionParameters::MAX_ARITY];     // level+1 per arg (0 if none)
-        int16_t argFullId[ExecutionParameters::MAX_ARITY];       // NameMap ID of full arg string (e.g. "it_0_lev_0_1")
+        NameId  nameId;          // NameMap ID of expression name
+        int32_t negation;        // 0 or 1
+        int32_t arity;           // number of arguments (capped at MAX_ARITY)
+        int32_t maxIteration;    // max iteration number across args (-1 if none)
+        NameId  originalId;      // NameMap ID of original string
+        NameId  validityId;      // NameMap ID of validityName
+        int32_t isHypo;          // 1 if validityName contains "_hypo_", else 0
+        int32_t isAnchor;        // 1 if name starts with "Anchor", else 0
+        NameId  argId[ExecutionParameters::MAX_ARITY];           // NameMap ID of arg name
+        int32_t argUnchangeable[ExecutionParameters::MAX_ARITY]; // 1=unchangeable, 0=changeable
+        int32_t argIteration[ExecutionParameters::MAX_ARITY];    // iteration number per arg (-1 if none)
+        int32_t argLevPlus1[ExecutionParameters::MAX_ARITY];     // level+1 per arg (0 if none)
+        NameId  argFullId[ExecutionParameters::MAX_ARITY];       // NameMap ID of full arg string (e.g. "it_0_lev_0_1")
     };
+
+    // The POD is byte-hashed and pointer-keyed for dedupe, so it MUST be a flat
+    // trivially-copyable record with zero interior padding — 88 fields of exactly
+    // 4 bytes each (8 scalars + 5 arrays of MAX_ARITY). A padding byte would be
+    // nondeterministic in the byte hash; these asserts fail loudly if a future
+    // field-type edit reintroduces padding or a non-32-bit field.
+    static_assert(sizeof(IntEncodedExpr)
+                      == 88 * static_cast<std::size_t>(sizeof(int32_t)),
+                  "IntEncodedExpr must be 88 uniform 32-bit fields, zero padding");
+    static_assert(std::is_trivially_copyable_v<IntEncodedExpr>,
+                  "IntEncodedExpr must stay trivially copyable (memcpy'd into the arena)");
 
     /// @brief The closed origin-tag vocabulary of the history maps — opaque
     /// declaration.

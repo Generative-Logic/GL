@@ -12,6 +12,8 @@
 (>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(>[v4](in2[v2,v4,s])(>[v5](in2[v3,v5,s])(in3[v1,v4,v5,+])))))	direct	-1
 (>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(>[v4](in3[v4,v2,v3,+])(=[v1,v4]))))	induction	v2
 (>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(>[v4](in3[v1,v4,v3,+])(=[v2,v4]))))	induction	v1
+(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(>[](=[v1,v3])(=[i0,v2]))))	induction	v1
+(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(>[](=[v2,v3])(=[i0,v1]))))	induction	v2
 (>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,+])(in3[v2,v1,v3,+])))	induction	v1
 (>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,*])(>[v4,v5,v6](in3[v4,v5,v6,*])(>[](in3[v2,v1,v5,*])(in3[v4,v3,v6,*])))))	direct	-1
 (>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,*])(>[v4,v5](in3[v4,v2,v5,*])(>[](in2[v4,v1,s])(in3[v2,v5,v3,+])))))	induction	v2
@@ -20,8 +22,15 @@
 (>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,*])(>[v4,v5](in3[v1,v4,v5,*])(>[](in2[v4,v2,s])(in3[v5,v1,v3,+])))))	direct	-1
 (>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,*])(>[v4,v5](in3[v2,v4,v5,*])(>[v6](in3[v6,v4,v1,*])(in3[v5,v6,v3,*])))))	direct	-1
 (>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2,v3](in3[v1,v2,v3,*])(in3[v2,v1,v3,*])))	induction	v1
+(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2]!(=[v1,v2])(>[](in3[v1,v2,i0,+])!(=[i0,v2]))))	direct	-1
+(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2]!(=[v1,v2])(>[](in3[v2,v1,i0,+])!(=[i0,v1]))))	direct	-1
+(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](=[v1,v2])(>[](in3[v1,i0,v2,*])(=[i0,v1]))))	direct	-1
+(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](=[v1,v2])(>[](in3[v1,v2,i0,+])(=[i0,v1]))))	induction	v1
+(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](=[v1,v2])(>[](in3[v2,v1,i0,*])(=[i0,v2]))))	induction	v1
+(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in2[v1,v2,s])(>[v3,v4](in2[v3,v4,s])(>[]!(=[v2,v4])!(=[v1,v3])))))	direct	-1
+(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in2[v1,v2,s])(>[v3,v4](in2[v3,v4,s])(>[](=[v1,v3])(=[v2,v4])))))	direct	-1
 (>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in2[v1,v2,s])(>[v3](in2[v3,v2,s])(=[v1,v3]))))	direct	-1
-(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in2[v1,v2,s])(>[](in2[i0,v2,s])(=[i0,v1]))))	direct	-1
+(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in2[v1,v2,s])(>[](in2[v2,i1,s])!(=[i1,v1]))))	direct	-1
 (>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in2[v1,v2,s])(in3[i1,v1,v2,+])))	induction	v1
 (>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in2[v1,v2,s])(in3[v1,i1,v2,+])))	direct	-1
 (>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in3[i0,v1,v2,+])(in3[v1,i0,v2,+])))	induction	v1
@@ -43,14 +52,15 @@
 (>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in3[v1,v2,i0,*])(in3[v2,v1,i0,*])))	induction	v2
 (>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in3[v1,v2,i1,+])(in3[v2,v1,i1,+])))	induction	v2
 (>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](in3[v1,v2,i1,*])(in3[v2,v1,i1,*])))	direct	-1
+(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1,v2](preorder[N,+,v1,v2])(>[](preorder[N,+,v2,v1])(=[v1,v2]))))	direct	-1
 (>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](=[i1,v1])(existence3[N,v1,s])))	direct	-1
-(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in2[v1,i0,s])(>[v2](in[v2,N])(=[v1,v2]))))	induction	v1
-(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in2[v1,i0,s])(>[](in[v1,N])(=[i0,v1]))))	induction	v1
 (>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in[v1,N])(>[v2](in3[i0,v1,v2,+])(=[v1,v2]))))	induction	v1
 (>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in[v1,N])(>[v2](in3[i0,v1,v2,*])(=[i0,v2]))))	induction	v1
-(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in[v1,N])(>[v2](in3[i1,v1,v2,*])(=[v1,v2]))))	induction	v1
+(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in[v1,N])(>[v2](in3[i0,v2,v1,+])(=[v1,v2]))))	induction	v2
 (>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in[v1,N])(>[v2](in3[i1,v2,v1,*])(=[v1,v2]))))	induction	v2
 (>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in[v1,N])(>[]!(=[v1,i0])(existence3[N,v1,s]))))	induction	v1
+(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in[v1,N])(>[]!(existence3[N,v1,s])(=[v1,i0]))))	induction	v1
+(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[v1](in[v1,N])(or0[N,v1,s,i0])))	or theorem	(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7](in[7,1])(>[]!(existence3[1,7,3])(=[7,2]))))
 (>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(existence3[N,i1,s]))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2,v3](in3[v1,v2,v3,+])(in3[v2,v1,v3,+])))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2,v3](in3[v1,v2,v3,*])(>[v4](fold[N,s,+,id,i0,v2,v4])(>[](in2[v2,v1,s])(in3[i2,v4,v3,*])))))	induction	v2
@@ -58,10 +68,27 @@
 (>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[V1,V2](fXY[V1,V2,N])(>[v1](interval[N,+,i0,v1,V2])(sequence[N,+,i0,v1,V1]))))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](fold[N,s,+,id,i0,v1,v2])(>[v3](in2[v1,v3,s])(>[v4](in3[i2,v2,v4,*])(in3[v1,v3,v4,*])))))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[V1,V2](limitSequence[N,+,v1,V1,V2])(>[](sequence[N,+,i0,v2,V1])(sequence[N,+,i0,v1,V2])))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[V1,V2](limitSet[N,+,V1,v2,V2])(>[](interval[N,+,i0,v2,V2])!(interval[N,+,i0,v1,V1])))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[V1,V2](limitSet[N,+,V1,v2,V2])(>[](interval[N,+,i0,v1,V1])!(interval[N,+,i0,v2,V2])))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[V1,V2](limitSet[N,+,V1,i0,V2])(>[](interval[N,+,i0,v1,V1])!(interval[N,+,i0,v2,V2])))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[V1,V2](limitSet[N,+,V1,i1,V2])(>[](interval[N,+,i0,v2,V2])!(interval[N,+,i0,v1,V1])))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[V1,V2](limitSet[N,+,V1,i1,V2])(>[](interval[N,+,i0,v1,V1])!(interval[N,+,i0,v2,V2])))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[V1,V2](limitSet[N,+,V1,i2,V2])(>[](interval[N,+,i0,v2,V2])!(interval[N,+,i0,v1,V1])))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[V1,V2](limitSet[N,+,V1,i2,V2])(>[](interval[N,+,i0,v1,V1])!(interval[N,+,i0,v2,V2])))))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[V1,V2](limitSet[N,+,V1,v1,V2])(>[](interval[N,+,i0,v2,V1])(interval[N,+,i0,v1,V2])))))	direct	-1
-(>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[V1](interval[N,+,i0,v2,V1])(existence5[N,+,V1,v1,i0]))))	reformulated statement	(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11,12](limitSet[1,4,11,9,12])(>[](interval[1,4,2,10,11])(interval[1,4,2,9,12])))))
+(>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[V1,V2](limitSet[N,+,V1,v1,V2])(>[](interval[N,+,i0,i1,V1])!(interval[N,+,i0,v2,V2])))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[V1,V2](limitSet[N,+,V1,v1,V2])(>[](interval[N,+,i0,v1,V1])!(interval[N,+,i0,v2,V2])))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[V1](interval[N,+,i0,v2,V1])!(interval[N,+,i0,v1,V1]))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[V1](interval[N,+,i0,v2,V1])(existence8[N,+,V1,v1,i0]))))	reformulated statement	(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11,12](limitSet[1,4,11,9,12])(>[](interval[1,4,2,10,11])(interval[1,4,2,9,12])))))
+(>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[V1](interval[N,+,i0,i1,V1])(existence10[N,+,V1,v1,i0,v2]))))	reformulated statement	(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11,12](limitSet[1,4,11,9,12])(>[](interval[1,4,2,6,11])!(interval[1,4,2,10,12])))))
+(>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[V1](interval[N,+,i0,v1,V1])!(interval[N,+,i0,v2,V1]))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[V1](interval[N,+,i0,v1,V1])(existence11[N,+,V1,v1,i0,v2]))))	reformulated statement	(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11,12](limitSet[1,4,11,9,12])(>[](interval[1,4,2,9,11])!(interval[1,4,2,10,12])))))
+(>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[V1](interval[N,+,i0,v1,V1])(existence12[N,+,V1,v2,i0]))))	reformulated statement	(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11,12](limitSet[1,4,11,10,12])(>[](interval[1,4,2,9,11])!(interval[1,4,2,10,12])))))
+(>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[V1](interval[N,+,i0,v1,V1])(existence13[N,+,V1,i1,i0,v2]))))	reformulated statement	(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11,12](limitSet[1,4,11,6,12])(>[](interval[1,4,2,9,11])!(interval[1,4,2,10,12])))))
+(>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[V1](interval[N,+,i0,v1,V1])(existence14[N,+,V1,i2,i0,v2]))))	reformulated statement	(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11,12](limitSet[1,4,11,7,12])(>[](interval[1,4,2,9,11])!(interval[1,4,2,10,12])))))
+(>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[V1](interval[N,+,i0,v1,V1])(existence9[N,+,V1,i0,v2]))))	reformulated statement	(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11,12](limitSet[1,4,11,2,12])(>[](interval[1,4,2,9,11])!(interval[1,4,2,10,12])))))
 (>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[v3](preorder[N,+,v3,v1])(preorder[N,+,v3,v2]))))	direct	-1
-(>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[V1](sequence[N,+,i0,v2,V1])(existence6[N,+,v1,V1,i0]))))	reformulated statement	(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11,12](limitSequence[1,4,9,11,12])(>[](sequence[1,4,2,10,11])(sequence[1,4,2,9,12])))))
+(>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[V1](sequence[N,+,i0,v2,V1])(existence15[N,+,v1,V1,i0]))))	reformulated statement	(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11,12](limitSequence[1,4,9,11,12])(>[](sequence[1,4,2,10,11])(sequence[1,4,2,9,12])))))
 (>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(preorder[N,+,v1,v2])))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,V1](interval[N,+,i0,v1,V1])(>[V2](sequence[N,+,i0,v1,V2])(fXY[V2,V1,N]))))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,V1](interval[N,+,i0,v1,V1])(in[v1,V1])))	direct	-1

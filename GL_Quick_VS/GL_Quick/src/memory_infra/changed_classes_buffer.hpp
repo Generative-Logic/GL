@@ -53,7 +53,7 @@ namespace gl {
     ///        cold DELOADABLE arena.
     ///
     /// @details
-    /// Replaces the heap `std::vector<std::pair<int16_t, EquivalenceClass>>`.
+    /// Replaces the heap `std::vector<std::pair<NameId, EquivalenceClass>>`.
     /// `changedClassesThisStep` is written only by `standardProcessing`
     /// (single-threaded phase-1/3; phase 2 is read-only on the LB, I-66/I-74) and
     /// emptied every elementary step, so it is empty at every deload / compaction
@@ -75,7 +75,7 @@ namespace gl {
     /// @see serializeEquivalenceClass, ColdMail, `PagedVector`.
     struct ChangedClassesBuffer {
         /// @brief One validity id per delta entry.
-        PagedVector<int16_t> validityIds_;
+        PagedVector<NameId> validityIds_;
         /// @brief Per-entry blob byte offset (CSR over `blobPool_`).
         PagedVector<int32_t> blobStarts_;
         /// @brief Concatenated canonical class blobs, dense.
@@ -99,7 +99,7 @@ namespace gl {
         ///
         /// @param vid The class's validity id.
         /// @param cls The merged class to snapshot (serialized to a blob).
-        void push(int16_t vid, const EquivalenceClass& cls);
+        void push(NameId vid, const EquivalenceClass& cls);
 
         /// @brief Append one (validityId, ALREADY-serialized blob) delta entry —
         ///        the heap-free twin used when the producer already holds the
@@ -114,7 +114,7 @@ namespace gl {
         /// @param vid      The class's validity id.
         /// @param blobData The canonical class blob bytes.
         /// @param blobLen  The blob length (>= 0).
-        void push(int16_t vid, const char* blobData, int32_t blobLen) {
+        void push(NameId vid, const char* blobData, int32_t blobLen) {
             validityIds_.push_back(vid);
             blobStarts_.push_back(blobPool_.size());
             if (blobLen > 0) blobPool_.appendRun(blobData, blobLen);
@@ -127,7 +127,7 @@ namespace gl {
         /// @brief Validity id of entry `i`.
         /// @param i Index in `[0, size())`.
         /// @return The entry's validity id.
-        int16_t validityAt(int32_t i) const { return validityIds_[i]; }
+        NameId validityAt(int32_t i) const { return validityIds_[i]; }
 
         /// @brief Decode entry `i`'s class snapshot (page-aware).
         ///

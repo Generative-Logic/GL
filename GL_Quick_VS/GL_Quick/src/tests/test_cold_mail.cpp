@@ -112,8 +112,9 @@ TEST(cold_mail, origins_blob_round_trip) {
     ASSERT_TRUE(got[1] == r1);
 }
 
-// disintegrationSignals: the two bools pack into one byte; upsert overwrites in
-// place; the read door unpacks per key, a miss returns {false, false}.
+// disintegrationSignals: bools + witness-generation iteration pack into one
+// int32; on a hit the bools overwrite (last-write) while the iteration
+// min-merges; the read doors unpack per key, a miss returns {false, false, -1}.
 TEST(cold_mail, disintegration_signals_pack_unpack_overwrite_read) {
     gl::GlobalMemoryManager g;
     g.init(kColdMailCfg);
@@ -121,18 +122,40 @@ TEST(cold_mail, disintegration_signals_pack_unpack_overwrite_read) {
     gl::DirtyState d = gl::DirtyState::Clean;
     gl::ColdMail cm(&lb, &d);
 
-    cm.setDisintegrationSignal(pk(26, 16), /*dnd=*/false, /*aod=*/true);
-    cm.setDisintegrationSignal(pk(1, 16), /*dnd=*/true, /*aod=*/false);
-    cm.setDisintegrationSignal(pk(1, 16), /*dnd=*/true, /*aod=*/true);  // overwrite
-    ASSERT_EQ(cm.disintegrationSignals_.count(), 2);                    // upsert
+    cm.setDisintegrationSignal(pk(26, 16), /*dnd=*/false, /*aod=*/true, 0);
+    cm.setDisintegrationSignal(pk(1, 16), /*dnd=*/true, /*aod=*/false, 3);
+    cm.setDisintegrationSignal(pk(1, 16), /*dnd=*/true, /*aod=*/true, 5);  // flags overwrite
+    ASSERT_EQ(cm.disintegrationSignals_.count(), 2);                       // upsert
 
     const std::pair<bool, bool> sa = cm.getDisintegrationSignal(pk(1, 16));
-    ASSERT_TRUE(sa.first == true && sa.second == true);                 // overwritten
+    ASSERT_TRUE(sa.first == true && sa.second == true);                    // overwritten
     const std::pair<bool, bool> sz = cm.getDisintegrationSignal(pk(26, 16));
     ASSERT_TRUE(sz.first == false && sz.second == true);
     // Miss: an unset key returns {false, false}.
     const std::pair<bool, bool> miss = cm.getDisintegrationSignal(pk(99, 16));
     ASSERT_TRUE(miss.first == false && miss.second == false);
+
+    // Iteration half: min-merge on collision (3 then 5 keeps 3), -1 never
+    // overrides a real generation, a real generation replaces -1, and a
+    // miss reads -1.
+    bool dnd = false, aod = false;
+    int32_t it = -99;
+    cm.getDisintegrationSignal(pk(1, 16), dnd, aod, it);
+    ASSERT_EQ(it, 3);
+    cm.setDisintegrationSignal(pk(1, 16), true, true, -1);   // none: keeps 3
+    cm.getDisintegrationSignal(pk(1, 16), dnd, aod, it);
+    ASSERT_EQ(it, 3);
+    cm.setDisintegrationSignal(pk(1, 16), true, true, 1);    // min: 1
+    cm.getDisintegrationSignal(pk(1, 16), dnd, aod, it);
+    ASSERT_EQ(it, 1);
+    cm.setDisintegrationSignal(pk(30, 16), false, false, -1);
+    cm.getDisintegrationSignal(pk(30, 16), dnd, aod, it);
+    ASSERT_EQ(it, -1);                                       // carried nothing
+    cm.setDisintegrationSignal(pk(30, 16), false, false, 4); // real replaces -1
+    cm.getDisintegrationSignal(pk(30, 16), dnd, aod, it);
+    ASSERT_EQ(it, 4);
+    cm.getDisintegrationSignal(pk(99, 16), dnd, aod, it);
+    ASSERT_EQ(it, -1);                                       // miss
 }
 
 // The out-param overload of getDisintegrationSignal is bit-identical to the
@@ -146,18 +169,20 @@ TEST(cold_mail, disintegration_signal_out_param_matches_pair) {
     gl::DirtyState d = gl::DirtyState::Clean;
     gl::ColdMail cm(&lb, &d);
 
-    // Four keys, one per (dnd, aod) bit pattern, plus one deliberately-unset key.
-    cm.setDisintegrationSignal(pk(1, 16), /*dnd=*/false, /*aod=*/false);
-    cm.setDisintegrationSignal(pk(2, 16), /*dnd=*/false, /*aod=*/true);
-    cm.setDisintegrationSignal(pk(3, 16), /*dnd=*/true, /*aod=*/false);
-    cm.setDisintegrationSignal(pk(4, 16), /*dnd=*/true, /*aod=*/true);
+    // Four keys, one per (dnd, aod) bit pattern with distinct iterations,
+    // plus one deliberately-unset key.
+    cm.setDisintegrationSignal(pk(1, 16), /*dnd=*/false, /*aod=*/false, -1);
+    cm.setDisintegrationSignal(pk(2, 16), /*dnd=*/false, /*aod=*/true, 0);
+    cm.setDisintegrationSignal(pk(3, 16), /*dnd=*/true, /*aod=*/false, 2);
+    cm.setDisintegrationSignal(pk(4, 16), /*dnd=*/true, /*aod=*/true, 7);
 
     const int64_t keys[] = { pk(1, 16), pk(2, 16), pk(3, 16), pk(4, 16),
                              pk(99, 16) /*absent*/ };
     for (const int64_t key : keys) {
         const std::pair<bool, bool> oracle = cm.getDisintegrationSignal(key);
         bool dnd = true, aod = true;  // seed opposite of the absent default
-        cm.getDisintegrationSignal(key, dnd, aod);
+        int32_t it = -99;
+        cm.getDisintegrationSignal(key, dnd, aod, it);
         ASSERT_TRUE(dnd == oracle.first);
         ASSERT_TRUE(aod == oracle.second);
     }
@@ -174,7 +199,7 @@ TEST(cold_mail, clear_empties_all_columns) {
     cm.insertStatement(1, 16, std::set<int>{ 1 });
     cm.origins_.assignRun(pk(1, 16), std::vector<gl::IntMailOrigin>{
         gl::IntMailOrigin{ 6, std::vector<int64_t>{ pk(2, 16) } } });
-    cm.setDisintegrationSignal(pk(1, 16), true, true);
+    cm.setDisintegrationSignal(pk(1, 16), true, true, 0);
     ASSERT_TRUE(!cm.empty());
 
     cm.clear();
@@ -206,4 +231,30 @@ TEST(cold_mail, filter_statements_scope_sweep) {
     const gl::IntMailStatementKey kept = cm.statements_.decodeKey(1);
     ASSERT_TRUE(kept.originalId == 1 && kept.validityId == 16);
     ASSERT_EQ(cm.origins_.count(), 1);               // origins untouched
+}
+
+// filterOrigins: the disproof-cleanup origins twin of filterStatements — the
+// predicate sees the packed (exprId, validityId) key (validity in the low
+// half); accepted runs are erased whole, others keep their records.
+TEST(cold_mail, filter_origins_scope_sweep) {
+    gl::GlobalMemoryManager g;
+    g.init(kColdMailCfg);
+    gl::LbArena lb(&g);
+    gl::DirtyState d = gl::DirtyState::Clean;
+    gl::ColdMail cm(&lb, &d);
+
+    const gl::IntMailOrigin r0{ 6, std::vector<int64_t>{ pk(7, 16) } };
+    cm.origins_.assignRun(pk(5, 16), std::vector<gl::IntMailOrigin>{ r0 });
+    cm.origins_.assignRun(pk(5, 20), std::vector<gl::IntMailOrigin>{ r0 });
+    cm.origins_.assignRun(pk(6, 16), std::vector<gl::IntMailOrigin>{ r0 });
+
+    const int32_t removed = cm.filterOrigins([](int64_t k) {
+        return (static_cast<uint64_t>(k) & 0xFFFFFFFFull) == 16u;
+    });
+    ASSERT_EQ(removed, 2);
+    ASSERT_TRUE(cm.origins_.lookup(pk(5, 16)) == 0);
+    ASSERT_TRUE(cm.origins_.lookup(pk(6, 16)) == 0);
+    const int32_t keptId = cm.origins_.lookup(pk(5, 20));
+    ASSERT_TRUE(keptId != 0);
+    ASSERT_EQ(static_cast<int>(cm.origins_.recordsAt(keptId).size()), 1);
 }

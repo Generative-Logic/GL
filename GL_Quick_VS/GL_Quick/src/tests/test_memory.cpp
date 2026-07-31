@@ -69,6 +69,7 @@
 #include <regex>
 #include <set>
 #include <string>
+#include <type_traits>
 #include <unordered_set>
 #include <vector>
 
@@ -117,8 +118,8 @@ namespace {
 TEST(memory, namemap_main_id_one) {
     NameMapRig nmRig;
     gl::NameMap& nm = nmRig.nm;
-    ASSERT_EQ(nm.encode("main"), static_cast<int16_t>(gl::NameMap::MAIN_ID));
-    ASSERT_EQ(nm.encode("main"), static_cast<int16_t>(1));
+    ASSERT_EQ(nm.encode("main"), static_cast<gl::NameId>(gl::NameMap::MAIN_ID));
+    ASSERT_EQ(nm.encode("main"), static_cast<gl::NameId>(1));
 }
 
 // Direct int->string (as on main): "main" is lazily interned as cold-table
@@ -129,18 +130,18 @@ TEST(memory, namemap_main_on_table_direct_ids) {
     // Before any encode: the names table is empty, yet "main" still resolves
     // (eternal root) and decodes without a table touch.
     ASSERT_EQ(nm.nameCount(), 0);
-    ASSERT_EQ(nm.lookup("main"), static_cast<int16_t>(gl::NameMap::MAIN_ID));
+    ASSERT_EQ(nm.lookup("main"), static_cast<gl::NameId>(gl::NameMap::MAIN_ID));
     ASSERT_EQ(nm.decode(gl::NameMap::MAIN_ID), std::string("main"));
 
     // First encode interns "main" as cold-table id 1.
-    const int16_t mainId = nm.encode("main");
-    ASSERT_EQ(mainId, static_cast<int16_t>(1));
+    const gl::NameId mainId = nm.encode("main");
+    ASSERT_EQ(mainId, static_cast<gl::NameId>(1));
     ASSERT_EQ(nm.nameCount(), 1);                 // "main", on the table
     ASSERT_EQ(nm.decode(mainId), std::string("main"));
 
     // First real name is id 2 (== its cold-table id, direct), round-tripping.
-    const int16_t a = nm.encodePush(mainId, "alpha");
-    ASSERT_EQ(a, static_cast<int16_t>(2));
+    const gl::NameId a = nm.encodePush(mainId, "alpha");
+    ASSERT_EQ(a, static_cast<gl::NameId>(2));
     ASSERT_EQ(nm.decode(a), std::string("main_boundary_alpha"));
     ASSERT_EQ(nm.nameCount(), 2);                 // main + alpha
     ASSERT_EQ(nm.lookup("main_boundary_alpha"), a);
@@ -152,11 +153,11 @@ TEST(memory, namemap_main_on_table_direct_ids) {
 TEST(memory, namemap_encodepush_span_matches_string) {
     NameMapRig nmRig;
     gl::NameMap& nm = nmRig.nm;
-    const int16_t mainId = nm.encode("main");
+    const gl::NameId mainId = nm.encode("main");
 
     const std::string alpha = "alpha", beta = "beta";
-    const int16_t a = nm.encodePush(mainId, gl::StrSpan(alpha));
-    const int16_t b = nm.encodePush(a, gl::StrSpan(beta));
+    const gl::NameId a = nm.encodePush(mainId, gl::StrSpan(alpha));
+    const gl::NameId b = nm.encodePush(a, gl::StrSpan(beta));
 
     // Canonical bytes correct (nested parent + "_boundary_" + payload).
     ASSERT_EQ(nm.decode(a), std::string("main_boundary_alpha"));
@@ -174,9 +175,9 @@ TEST(memory, namemap_encodepush_span_matches_string) {
 TEST(memory, namemap_encode_scoped_span_native) {
     NameMapRig nmRig;
     gl::NameMap& nm = nmRig.nm;
-    const int16_t m = nm.encode("main");
-    const int16_t a = nm.encodePush(m, "alpha");
-    const int16_t viaPush = nm.encodePush(a, "beta");
+    const gl::NameId m = nm.encode("main");
+    const gl::NameId a = nm.encodePush(m, "alpha");
+    const gl::NameId viaPush = nm.encodePush(a, "beta");
 
     const std::string full = "main_boundary_alpha_boundary_beta";
     ASSERT_EQ(nm.encode(full), viaPush);              // std::string -> span forward
@@ -189,7 +190,7 @@ TEST(memory, namemap_direct_encodepush_from_main_interns_main) {
     NameMapRig nmRig;
     gl::NameMap& nm = nmRig.nm;
     // No prior encode("main"); push straight from the MAIN_ID constant.
-    const int16_t child = nm.encodePush(gl::NameMap::MAIN_ID, "child");
+    const gl::NameId child = nm.encodePush(gl::NameMap::MAIN_ID, "child");
     ASSERT_EQ(nm.nameCount(), 2);                 // main interned + child
     ASSERT_EQ(nm.decode(gl::NameMap::MAIN_ID), std::string("main"));
     ASSERT_EQ(nm.decode(child), std::string("main_boundary_child"));
@@ -199,12 +200,12 @@ TEST(memory, namemap_direct_encodepush_from_main_interns_main) {
 TEST(memory, namemap_encode_idempotent) {
     NameMapRig nmRig;
     gl::NameMap& nm = nmRig.nm;
-    const int16_t a = nm.encode("main");
-    const int16_t b = nm.encode("main");
+    const gl::NameId a = nm.encode("main");
+    const gl::NameId b = nm.encode("main");
     ASSERT_EQ(a, b);
     // Distinct root strings produce distinct ids.
-    const int16_t r1 = nm.encode("alpha");
-    const int16_t r2 = nm.encode("beta");
+    const gl::NameId r1 = nm.encode("alpha");
+    const gl::NameId r2 = nm.encode("beta");
     ASSERT_NE(r1, r2);
     // Re-encoding either is still idempotent.
     ASSERT_EQ(r1, nm.encode("alpha"));
@@ -218,8 +219,8 @@ TEST(memory, namemap_encode_strspan_byte_identical) {
     {
         NameMapRig nmRig;
         gl::NameMap& nm = nmRig.nm;
-        const int16_t viaStr  = nm.encode(std::string("in3"));
-        const int16_t viaSpan = nm.encode(gl::StrSpan(std::string("in3")));
+        const gl::NameId viaStr  = nm.encode(std::string("in3"));
+        const gl::NameId viaSpan = nm.encode(gl::StrSpan(std::string("in3")));
         ASSERT_EQ(viaSpan, viaStr);                 // hit, not a second mint
         ASSERT_EQ(nm.encode(gl::StrSpan(std::string("in3"))), viaStr);
     }
@@ -228,7 +229,7 @@ TEST(memory, namemap_encode_strspan_byte_identical) {
         NameMapRig nmRig;
         gl::NameMap& nm = nmRig.nm;
         ASSERT_EQ(nm.encode(gl::StrSpan(std::string("main"))),
-                  static_cast<int16_t>(gl::NameMap::MAIN_ID));
+                  static_cast<gl::NameId>(gl::NameMap::MAIN_ID));
     }
     // Scoped name (contains "_boundary_"): span delegates to the recursive
     // std::string path; id identical to encoding the whole string.
@@ -236,8 +237,8 @@ TEST(memory, namemap_encode_strspan_byte_identical) {
         NameMapRig nmRig;
         gl::NameMap& nm = nmRig.nm;
         const std::string scoped = "main_boundary_hypo_x";
-        const int16_t viaStr  = nm.encode(scoped);
-        const int16_t viaSpan = nm.encode(gl::StrSpan(scoped));
+        const gl::NameId viaStr  = nm.encode(scoped);
+        const gl::NameId viaSpan = nm.encode(gl::StrSpan(scoped));
         ASSERT_EQ(viaSpan, viaStr);
         ASSERT_EQ(nm.decode(viaSpan), scoped);
     }
@@ -247,7 +248,7 @@ TEST(memory, namemap_encode_strspan_byte_identical) {
         NameMapRig nmRig;
         gl::NameMap& nm = nmRig.nm;
         const std::string buf = "alphaZZZ";
-        const int16_t sliced = nm.encode(gl::StrSpan(buf.data(), 5));
+        const gl::NameId sliced = nm.encode(gl::StrSpan(buf.data(), 5));
         ASSERT_EQ(sliced, nm.encode(std::string("alpha")));
         ASSERT_EQ(nm.decode(sliced), std::string("alpha"));
         ASSERT_NE(sliced, nm.encode(std::string("alphaZZZ")));
@@ -255,8 +256,8 @@ TEST(memory, namemap_encode_strspan_byte_identical) {
     // Order independence: span-first vs string-first reach identical ids.
     {
         NameMapRig rigA, rigB;
-        const int16_t spanFirst = rigA.nm.encode(gl::StrSpan(std::string("gamma")));
-        const int16_t strFirst  = rigB.nm.encode(std::string("gamma"));
+        const gl::NameId spanFirst = rigA.nm.encode(gl::StrSpan(std::string("gamma")));
+        const gl::NameId strFirst  = rigB.nm.encode(std::string("gamma"));
         ASSERT_EQ(spanFirst, strFirst);
     }
 }
@@ -309,9 +310,9 @@ TEST(harness, smoke_assert_macros_self_consistent) {
 TEST(memory, namemap_encodepush_stack_discipline_I2) {
     NameMapRig nmRig;
     gl::NameMap& nm = nmRig.nm;
-    const int16_t mainId = nm.encode("main");
-    const int16_t a = nm.encodePush(mainId, "alpha");
-    const int16_t b = nm.encodePush(a, "beta");
+    const gl::NameId mainId = nm.encode("main");
+    const gl::NameId a = nm.encodePush(mainId, "alpha");
+    const gl::NameId b = nm.encodePush(a, "beta");
 
     ASSERT_NE(a, mainId);
     ASSERT_NE(b, a);
@@ -326,13 +327,13 @@ TEST(memory, namemap_encodepush_stack_discipline_I2) {
     // verdict() encodes the prefix relation, derived from ancestorsOf:
     // verdict(parent, child) == -1 (parent strict prefix); verdict(child,
     // parent) == +1.
-    int16_t v = 0;
+    gl::NameId v = 0;
     ASSERT_TRUE(nm.verdict(mainId, a, v));
-    ASSERT_EQ(v, static_cast<int16_t>(-1));
+    ASSERT_EQ(v, static_cast<gl::NameId>(-1));
     ASSERT_TRUE(nm.verdict(a, mainId, v));
-    ASSERT_EQ(v, static_cast<int16_t>(1));
+    ASSERT_EQ(v, static_cast<gl::NameId>(1));
     ASSERT_TRUE(nm.verdict(mainId, b, v));
-    ASSERT_EQ(v, static_cast<int16_t>(-1));
+    ASSERT_EQ(v, static_cast<gl::NameId>(-1));
 
     // isStrictAncestor agrees with the verdict derivation.
     const std::string canonicalA = "main_boundary_alpha";
@@ -348,13 +349,13 @@ TEST(memory, namemap_encodepush_stack_discipline_I2) {
 TEST(memory, namemap_encodepush_dedupe_I2) {
     NameMapRig nmRig;
     gl::NameMap& nm = nmRig.nm;
-    const int16_t mainId = nm.encode("main");
-    const int16_t a1 = nm.encodePush(mainId, "scope1");
-    const int16_t a2 = nm.encodePush(mainId, "scope1");
+    const gl::NameId mainId = nm.encode("main");
+    const gl::NameId a1 = nm.encodePush(mainId, "scope1");
+    const gl::NameId a2 = nm.encodePush(mainId, "scope1");
     ASSERT_EQ(a1, a2);
 
     // Same payload from a different parent is a different id.
-    const int16_t a3 = nm.encodePush(a1, "scope1");
+    const gl::NameId a3 = nm.encodePush(a1, "scope1");
     ASSERT_NE(a1, a3);
 }
 
@@ -366,8 +367,8 @@ TEST(memory, namemap_encodepush_dedupe_I2) {
 TEST(memory, namemap_decode_copy_before_nested_mint_I3) {
     NameMapRig nmRig;
     gl::NameMap& nm = nmRig.nm;
-    const int16_t mainId = nm.encode("main");
-    const int16_t s1 = nm.encodePush(mainId, "x");
+    const gl::NameId mainId = nm.encode("main");
+    const gl::NameId s1 = nm.encodePush(mainId, "x");
 
     // Take a copy of the decoded string before further encodes.
     const std::string copied = nm.decode(s1);
@@ -386,9 +387,9 @@ TEST(memory, namemap_decode_copy_before_nested_mint_I3) {
 TEST(memory, namemap_comparable_matches_verdict) {
     NameMapRig nmRig;
     gl::NameMap& nm = nmRig.nm;
-    const int16_t mainId = nm.encode("main");
-    const int16_t a = nm.encodePush(mainId, "a");
-    const int16_t b = nm.encodePush(mainId, "b");   // sibling, divergent
+    const gl::NameId mainId = nm.encode("main");
+    const gl::NameId a = nm.encodePush(mainId, "a");
+    const gl::NameId b = nm.encodePush(mainId, "b");   // sibling, divergent
 
     ASSERT_TRUE(nm.comparable(mainId, mainId));
     ASSERT_TRUE(nm.comparable(mainId, a));
@@ -402,10 +403,10 @@ TEST(memory, namemap_comparable_matches_verdict) {
 TEST(memory, namemap_anccontains_membership) {
     NameMapRig nmRig;
     gl::NameMap& nm = nmRig.nm;
-    const int16_t mainId = nm.encode("main");
-    const int16_t a = nm.encodePush(mainId, "a");
-    const int16_t b = nm.encodePush(a, "b");        // main < a < b
-    const int16_t c = nm.encodePush(mainId, "c");   // sibling of a; diverges
+    const gl::NameId mainId = nm.encode("main");
+    const gl::NameId a = nm.encodePush(mainId, "a");
+    const gl::NameId b = nm.encodePush(a, "b");        // main < a < b
+    const gl::NameId c = nm.encodePush(mainId, "c");   // sibling of a; diverges
 
     ASSERT_TRUE(nm.ancContains(b, a));        // a is an ancestor of b
     ASSERT_TRUE(nm.ancContains(b, mainId));   // main is an ancestor of b
@@ -420,16 +421,16 @@ TEST(memory, namemap_anccontains_membership) {
 TEST(memory, namemap_paircount_derives_relationships) {
     NameMapRig nmRig;
     gl::NameMap& nm = nmRig.nm;
-    const int16_t mainId = nm.encode("main");
+    const gl::NameId mainId = nm.encode("main");
     ASSERT_EQ(nm.pairCount(), static_cast<std::size_t>(0));   // only main, no pairs
 
-    const int16_t a = nm.encodePush(mainId, "a");            // {main,a}: 1 strict
+    const gl::NameId a = nm.encodePush(mainId, "a");            // {main,a}: 1 strict
     ASSERT_EQ(nm.pairCount(), static_cast<std::size_t>(2));
 
-    const int16_t b = nm.encodePush(a, "b");                 // {main,a,b}: 2 strict
+    const gl::NameId b = nm.encodePush(a, "b");                 // {main,a,b}: 2 strict
     ASSERT_EQ(nm.pairCount(), static_cast<std::size_t>(6));   // 2 + 4
 
-    const int16_t c = nm.encodePush(mainId, "c");            // {main,c}: 1 strict
+    const gl::NameId c = nm.encodePush(mainId, "c");            // {main,c}: 1 strict
     (void)b;
     (void)c;
     ASSERT_EQ(nm.pairCount(), static_cast<std::size_t>(8));   // 6 + 2
@@ -448,18 +449,18 @@ TEST(memory, namemap_lazy_seed_on_first_encode) {
     ASSERT_EQ(nm.stackLen(gl::NameMap::MAIN_ID), 0);
     ASSERT_EQ(nm.ancLen(gl::NameMap::MAIN_ID), 1);
     ASSERT_EQ(nm.ancAt(gl::NameMap::MAIN_ID, 0),
-              static_cast<int16_t>(gl::NameMap::MAIN_ID));
+              static_cast<gl::NameId>(gl::NameMap::MAIN_ID));
     ASSERT_TRUE(nm.ancContains(gl::NameMap::MAIN_ID, gl::NameMap::MAIN_ID));
 
-    const int16_t mainId = nm.encode("main");
-    ASSERT_EQ(mainId, static_cast<int16_t>(gl::NameMap::MAIN_ID));
+    const gl::NameId mainId = nm.encode("main");
+    ASSERT_EQ(mainId, static_cast<gl::NameId>(gl::NameMap::MAIN_ID));
     ASSERT_EQ(nm.stackSize(), 2);          // slot 0 + main
     ASSERT_EQ(nm.ancSize(), 2);
     ASSERT_TRUE(nm.stackEmpty(mainId));    // main's stack is empty
     ASSERT_EQ(nm.ancLen(mainId), 1);       // main's ancestors = {main}
     ASSERT_EQ(nm.ancAt(mainId, 0), mainId);
 
-    const int16_t a = nm.encodePush(mainId, "a");
+    const gl::NameId a = nm.encodePush(mainId, "a");
     ASSERT_EQ(nm.stackSize(), 3);          // + the new scope
     ASSERT_EQ(nm.stackLen(a), 1);          // one payload deep
     ASSERT_EQ(nm.ancLen(a), 2);            // {main, a}
@@ -473,9 +474,9 @@ TEST(memory, namemap_lazy_seed_on_first_encode) {
 TEST(prover, ownerset_has_comparable_validity_prune) {
     NameMapRig nmRig;
     gl::NameMap& nm = nmRig.nm;
-    const int16_t mainId = gl::NameMap::MAIN_ID;
-    const int16_t child = nm.encodePush(mainId, "hypo_child");
-    const int16_t sibling = nm.encodePush(mainId, "hypo_sibling");   // diverges from child
+    const gl::NameId mainId = gl::NameMap::MAIN_ID;
+    const gl::NameId child = nm.encodePush(mainId, "hypo_child");
+    const gl::NameId sibling = nm.encodePush(mainId, "hypo_sibling");   // diverges from child
 
     // main request: trivially kept even against an empty owner set (the skip).
     gl::OwnerSet empty;
@@ -484,7 +485,7 @@ TEST(prover, ownerset_has_comparable_validity_prune) {
     // Owners are packed composite ids; the prune reads the LOW half (the
     // scope validity id). The high half (the implication id) is arbitrary
     // for this test.
-    const int16_t ruleId = nm.encodePush(mainId, "rule_impl");
+    const gl::NameId ruleId = nm.encodePush(mainId, "rule_impl");
 
     // owner at main is an ancestor of the child request -> comparable -> kept.
     gl::OwnerSet atMain;
@@ -519,8 +520,8 @@ TEST(memory, ownerset_blob_view_field_readers) {
     os.partitionIds.insert(-3);
     os.partitionIds.insert(100000);
     os.uSignatures.insert(
-        std::vector<std::pair<int16_t, int16_t>>{ { 2, 5 }, { 0, 9 } });
-    os.uSignatures.insert(std::vector<std::pair<int16_t, int16_t>>{ { 1, 4 } });
+        std::vector<std::pair<gl::NameId, gl::NameId>>{ { 2, 5 }, { 0, 9 } });
+    os.uSignatures.insert(std::vector<std::pair<gl::NameId, gl::NameId>>{ { 1, 4 } });
 
     std::vector<char> buf = gl::Codec<gl::OwnerSet>::serialize(os);
     const gl::OwnerSetBlob v{ buf.data(), static_cast<int32_t>(buf.size()) };
@@ -580,10 +581,10 @@ TEST(memory, ownerset_blob_partition_accepts_matches_set) {
 TEST(prover, ownerset_blob_has_comparable_matches_value) {
     NameMapRig nmRig;
     gl::NameMap& nm = nmRig.nm;
-    const int16_t mainId = gl::NameMap::MAIN_ID;
-    const int16_t child = nm.encodePush(mainId, "hypo_child");
-    const int16_t sibling = nm.encodePush(mainId, "hypo_sibling");
-    const int16_t ruleId = nm.encodePush(mainId, "rule_impl");
+    const gl::NameId mainId = gl::NameMap::MAIN_ID;
+    const gl::NameId child = nm.encodePush(mainId, "hypo_child");
+    const gl::NameId sibling = nm.encodePush(mainId, "hypo_sibling");
+    const gl::NameId ruleId = nm.encodePush(mainId, "rule_impl");
 
     std::vector<gl::OwnerSet> cases(4);
     cases[0].partitionIds.insert(gl::makePartitionId(ruleId, mainId));
@@ -592,16 +593,371 @@ TEST(prover, ownerset_blob_has_comparable_matches_value) {
     cases[3].partitionIds.insert(gl::makePartitionId(ruleId, sibling));
     cases[3].partitionIds.insert(gl::makePartitionId(ruleId, mainId));
 
-    const int16_t reqVids[3] = { mainId, child, sibling };
+    const gl::NameId reqVids[3] = { mainId, child, sibling };
     for (const gl::OwnerSet& os : cases) {
         std::vector<char> buf = gl::Codec<gl::OwnerSet>::serialize(os);
         const gl::OwnerSetBlob v{ buf.data(), static_cast<int32_t>(buf.size()) };
-        for (int16_t reqVid : reqVids) {
+        for (gl::NameId reqVid : reqVids) {
             ASSERT_TRUE(
                 gl::ExpressionAnalyzer::ownerSetHasComparable(v, reqVid, nm) ==
                 gl::ExpressionAnalyzer::ownerSetHasComparable(os, reqVid, nm));
         }
     }
+}
+
+// ---- NameId 32-bit-widening battery (int16 -> int32 migration) --------------
+
+// The IntEncodedExpr POD is byte-hashed and pointer-keyed, so it must stay a
+// flat 88 x 32-bit record with zero padding (352 bytes on x64). Guards against
+// a future field-type edit reintroducing a narrow field or interior padding.
+TEST(memory, int_encoded_expr_layout_is_352_bytes) {
+    static_assert(sizeof(gl::IntEncodedExpr)
+                      == 88 * sizeof(int32_t),
+                  "IntEncodedExpr must be 88 uniform 32-bit fields");
+    static_assert(std::is_trivially_copyable_v<gl::IntEncodedExpr>,
+                  "IntEncodedExpr must be trivially copyable");
+    ASSERT_EQ(static_cast<int>(sizeof(gl::IntEncodedExpr)), 352);
+    // The id fields are NameId (32-bit); the whole record is uniform 4-byte.
+    ASSERT_EQ(static_cast<int>(sizeof(gl::NameId)), 4);
+    gl::IntEncodedExpr a{};
+    a.nameId = 200000;              // past the old 16-bit ceiling
+    a.argFullId[3] = 1000000;
+    a.maxIteration = -1;           // a sentinel field is int32_t, never NameId
+    gl::IntEncodedExpr b = a;      // trivially copyable
+    ASSERT_EQ(b.nameId, 200000);
+    ASSERT_EQ(b.argFullId[3], 1000000);
+    ASSERT_EQ(b.maxIteration, -1);
+}
+
+// ValidityNode holds two NameId parent/own-sub ids -> 8 bytes.
+TEST(memory, validity_node_is_8_bytes) {
+    ASSERT_EQ(static_cast<int>(sizeof(gl::ValidityNode)), 8);
+    gl::ValidityNode n{ 200000, 1000000 };   // both past the old ceiling
+    ASSERT_EQ(n.parentId, 200000);
+    ASSERT_EQ(n.ownSubId, 1000000);
+}
+
+// makePartitionId packs two NameId halves into an int64; halves past 65535 no
+// longer alias, the composite stays non-negative (bit 63 clear), and id % N
+// lands in [0, N) so the LB-split partitionAccepts test is well-defined.
+TEST(memory, makepartitionid_nonnegative_large_id) {
+    const gl::NameId ids[] = { 0, 1, 65535, 65536, 70000, 200000, 1000000 };
+    for (gl::NameId a : ids) {
+        for (gl::NameId b : ids) {
+            const int64_t p = gl::makePartitionId(a, b);
+            ASSERT_TRUE(p >= 0);                    // non-negative
+            ASSERT_EQ(gl::Codec<gl::StatementKey>::decode(p).orig, a);
+            ASSERT_EQ(gl::Codec<gl::StatementKey>::decode(p).validity, b);
+            for (int N = 1; N <= 8; ++N) {
+                const int64_t r = p % N;
+                ASSERT_TRUE(r >= 0 && r < N);
+            }
+        }
+    }
+    // Distinct large halves never collide (the aliasing bug the migration fixes).
+    ASSERT_TRUE(gl::makePartitionId(70000, 4464) != gl::makePartitionId(4464, 70000));
+    ASSERT_TRUE(gl::makePartitionId(1u << 16, 0) != gl::makePartitionId(0, 1u << 16));
+}
+
+// Codec<OwnerSet> + OwnerSetBlob round-trip with partition ids AND u_-signature
+// ids past the old 16-bit ceiling — the LB-split owner blob must carry full
+// 32-bit halves (partition ids int64, uSig pairs (int32, NameId)).
+TEST(memory, owner_set_blob_roundtrip_wide_id) {
+    gl::OwnerSet os;
+    os.partitionIds.insert(gl::makePartitionId(70000, 200000));
+    os.partitionIds.insert(gl::makePartitionId(1000000, 3));
+    os.partitionIds.insert(gl::makePartitionId(5, 999999));
+    os.hasLooseOwner = false;
+    os.uSignatures.insert(
+        std::vector<std::pair<int32_t, gl::NameId>>{ { 2, 70000 }, { 0, 1000000 } });
+    os.uSignatures.insert(
+        std::vector<std::pair<int32_t, gl::NameId>>{ { 1, 200000 } });
+
+    const std::vector<char> buf = gl::Codec<gl::OwnerSet>::serialize(os);
+    const gl::OwnerSetBlob v{ buf.data(), static_cast<int32_t>(buf.size()) };
+
+    // partitionIds — a std::set iterates ascending; the blob preserves order.
+    ASSERT_EQ(v.partitionCount(), static_cast<int32_t>(os.partitionIds.size()));
+    int32_t pi = 0;
+    for (int64_t id : os.partitionIds) ASSERT_EQ(v.partitionId(pi++), id);
+
+    // uSignatures — walk the blob and compare each wide (slot, id) pair.
+    ASSERT_EQ(v.uSigCount(), static_cast<int32_t>(os.uSignatures.size()));
+    int32_t off = v.firstSigOffset();
+    for (const auto& sig : os.uSignatures) {
+        ASSERT_EQ(v.sigPairCount(off), static_cast<int32_t>(sig.size()));
+        for (int32_t j = 0; j < static_cast<int32_t>(sig.size()); ++j) {
+            ASSERT_EQ(v.sigPairFirstAt(off, j), sig[static_cast<std::size_t>(j)].first);
+            ASSERT_EQ(v.sigPairSecondAt(off, j), sig[static_cast<std::size_t>(j)].second);
+        }
+        off += v.sigBytes(off);
+    }
+
+    // Full decode round-trips.
+    const gl::OwnerSet back =
+        gl::Codec<gl::OwnerSet>::deserialize(buf.data(), static_cast<int32_t>(buf.size()));
+    ASSERT_TRUE(back.partitionIds == os.partitionIds);
+    ASSERT_TRUE(back.uSignatures == os.uSignatures);
+}
+
+// Honest proof that the id STORAGE layer supports ids past the old 16-bit
+// ceiling: a raw ColdStringTable (no MAX_NAME_IDS guard) minting > 32767
+// distinct strings returns strictly-increasing ids that decode back verbatim.
+// The NameMap-level ceiling now admits the same range (MAX_NAME_IDS raised to
+// 1,000,000); the NameMap-level mint is proven directly in
+// namemap_encode_mints_past_int16_ceiling below.
+TEST(memory, cold_string_table_mints_past_int16_ceiling) {
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 64 << 20, 1 << 18 });
+    gl::LbArena lb(&g);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::ColdStringTable t(&lb, &dirty);
+
+    const int32_t kCount = 40000;   // > 32767, past the old int16 ceiling
+    for (int32_t i = 1; i <= kCount; ++i) {
+        const std::string s = "n" + std::to_string(i);
+        const int32_t id = t.intern(gl::StrSpan(s));
+        ASSERT_EQ(id, i);                       // ids are dense, monotone
+    }
+    ASSERT_EQ(t.count(), kCount);
+    // An id well past 32767 decodes back verbatim (no truncation / wrap).
+    const gl::NameId wide = 39999;
+    ASSERT_TRUE(wide > 32767);
+    const std::string expect = "n" + std::to_string(wide);
+    const gl::StrSpan got = t.view(wide);
+    ASSERT_TRUE(gl::equalSpans(got, gl::StrSpan(expect)));
+    // Re-interning an existing wide string returns its stable id (no new mint).
+    ASSERT_EQ(t.intern(gl::StrSpan(expect)), wide);
+}
+
+// The collectClosedSubtreeIds / wipe bitmap indexes bits[id>>6] |= 1<<(id&63)
+// DIRECTLY on the NameId (the uint16 cast was deleted). An id >= 65536 must set
+// a DIFFERENT bit than its low-16-bits alias — the exact wrap bug the deletion
+// fixes (THE most dangerous line in the migration).
+TEST(memory, closed_subtree_bit_index_no_uint16_wrap) {
+    uint64_t bits[2048] = {};                    // 131072 bits
+    const gl::NameId wide = 70000;               // >= 65536
+    const gl::NameId alias = wide & 0xFFFF;      // 4464 — the old wrapped bit
+    ASSERT_TRUE(wide != alias);
+    bits[wide >> 6] |= (1ull << (wide & 63));
+    // The wide bit is set; its 16-bit alias bit is NOT (a wrap would confuse them).
+    ASSERT_TRUE((bits[wide >> 6] >> (wide & 63)) & 1ull);
+    ASSERT_FALSE((bits[alias >> 6] >> (alias & 63)) & 1ull);
+    // A uint16 wrap would have indexed the alias slot instead — prove they differ.
+    ASSERT_TRUE((static_cast<uint32_t>(wide) >> 6) != (static_cast<uint32_t>(alias) >> 6)
+                || (wide & 63) != (alias & 63));
+}
+
+// Commit B raised MAX_NAME_IDS to 1,000,000, so the full > 32767 mint is now
+// legal at the NameMap level (not only the raw ColdStringTable): encode() mints
+// 40000 distinct names past the old int16 ceiling, every wide id round-trips
+// through decode()/decodeView() verbatim, re-encoding an existing wide name is
+// stable, and nameCount() stays aligned (main + 40000).
+TEST(memory, namemap_encode_mints_past_int16_ceiling) {
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 128 << 20, 1 << 18 });
+    gl::LbArena lb(&g);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::ColdStringTable names(&lb, &dirty);
+    gl::ColdStringTable subs(&lb, &dirty);
+    gl::PagedVector<gl::ValidityNode> nodes(&lb, &dirty);
+    gl::NameMap nm;
+    nm.bind(&names, &subs, &nodes);
+
+    // "main" is lazily interned as id 1 on first encode; flat names then mint
+    // densely from id 2 upward.
+    const gl::NameId mainId = nm.encode("main");
+    ASSERT_EQ(mainId, static_cast<gl::NameId>(gl::NameMap::MAIN_ID));
+
+    const gl::NameId kCount = 40000;   // > 32767, past the old int16 ceiling
+    for (gl::NameId i = 1; i <= kCount; ++i) {
+        const std::string s = "nm" + std::to_string(i);
+        const gl::NameId id = nm.encode(s);
+        ASSERT_EQ(id, i + 1);          // dense, monotone, offset from main by 1
+    }
+    ASSERT_EQ(nm.nameCount(), kCount + 1);   // main + 40000
+
+    // A wide id (well past 32767) round-trips through both decoders verbatim.
+    const gl::NameId wide = kCount + 1;      // last minted -> "nm40000"
+    ASSERT_TRUE(wide > 32767);
+    const std::string expect = "nm" + std::to_string(kCount);
+    ASSERT_EQ(nm.decode(wide), expect);
+    ASSERT_TRUE(gl::equalSpans(nm.decodeView(wide), gl::StrSpan(expect)));
+
+    // Re-encoding an existing wide name returns its stable id (no new mint).
+    ASSERT_EQ(nm.encode(expect), wide);
+    ASSERT_EQ(nm.nameCount(), kCount + 1);
+}
+
+// The forest-walk twin of closed_subtree_bit_index_no_uint16_wrap: a REAL
+// NameMap scope forest with a closed vid >= 65536 exercises the live
+// collectClosedSubtreeIds bitmap (bits[id>>6] |= 1<<(id&63)) directly on the
+// NameId. A minted parent past the 16-bit boundary and its two children must
+// land in the wide bit words, and NONE of their low-16-bit aliases (0/1/2 ==
+// "main" / fillers, which are NOT in the subtree) may be set — the exact wrap
+// the uint16 cast deletion fixes. Legal at the NameMap level only because
+// MAX_NAME_IDS now admits ids this large (Commit B).
+TEST(memory, namemap_collect_closed_subtree_ids_past_65535) {
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 256 << 20, 1 << 18 });
+    gl::LbArena lb(&g);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::ColdStringTable names(&lb, &dirty);
+    gl::ColdStringTable subs(&lb, &dirty);
+    gl::PagedVector<gl::ValidityNode> nodes(&lb, &dirty);
+    gl::NameMap nm;
+    nm.bind(&names, &subs, &nodes);
+
+    const gl::NameId mainId = nm.encode("main");           // id 1
+    // Flat fillers ids 2..65535 so the next scope mint lands at exactly 65536.
+    for (gl::NameId i = 1; i <= 65534; ++i) nm.encode("f" + std::to_string(i));
+    ASSERT_EQ(nm.nameCount(), 65535);
+
+    // A closed scope past the 16-bit boundary with two children under it.
+    const gl::NameId p = nm.encodePush(mainId, "P");       // id 65536
+    ASSERT_EQ(p, static_cast<gl::NameId>(65536));
+    const gl::NameId cx = nm.encodePush(p, "x");           // id 65537
+    const gl::NameId cy = nm.encodePush(p, "y");           // id 65538
+    ASSERT_EQ(nm.nameCount(), 65538);
+
+    uint64_t bits[2048] = {};                              // 131072 bits > 65538
+    gl::PagedVector<gl::NameId> ascendingOut(&lb, &dirty);
+    const int32_t matches = nm.collectClosedSubtreeIds(p, bits, 2048, ascendingOut);
+
+    // Exactly {P, x, y} — the closed scope (self-inclusive) plus its children.
+    ASSERT_EQ(matches, 3);
+    ASSERT_EQ(ascendingOut.size(), 3);
+    ASSERT_EQ(ascendingOut[0], p);
+    ASSERT_EQ(ascendingOut[1], cx);
+    ASSERT_EQ(ascendingOut[2], cy);
+    for (const gl::NameId id : { p, cx, cy })
+        ASSERT_TRUE((bits[id >> 6] >> (id & 63)) & 1ull);
+    // The three low-16-bit aliases are 0/1/2 ("main"/fillers, NOT in the
+    // subtree); a uint16 wrap would have set bits[0] here. It must be clean.
+    ASSERT_EQ(bits[0], 0ull);
+}
+
+// The production wipeSubtree caller sizes the closed-subtree bitmap from the
+// live nameCount at the call seam (words = nameCount/64 + 1) instead of a
+// fixed 512-word stack array (32768 bits — the old int16-era capacity, whose
+// tripwire fired the moment a run legitimately minted past 32767). This pins
+// that formula at a nameCount past that boundary: the capacity assert must
+// hold and membership must be exact.
+TEST(memory, namemap_collect_closed_subtree_ids_caller_sized_bitmap) {
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 256 << 20, 1 << 18 });
+    gl::LbArena lb(&g);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::ColdStringTable names(&lb, &dirty);
+    gl::ColdStringTable subs(&lb, &dirty);
+    gl::PagedVector<gl::ValidityNode> nodes(&lb, &dirty);
+    gl::NameMap nm;
+    nm.bind(&names, &subs, &nodes);
+
+    const gl::NameId mainId = nm.encode("main");           // id 1
+    // Flat fillers so the scope mints land past the old 32768-bit capacity.
+    for (gl::NameId i = 1; i <= 39999; ++i) nm.encode("f" + std::to_string(i));
+    ASSERT_EQ(nm.nameCount(), 40000);
+
+    const gl::NameId p = nm.encodePush(mainId, "P");       // id 40001
+    const gl::NameId cx = nm.encodePush(p, "x");           // id 40002
+    const gl::NameId cy = nm.encodePush(p, "y");           // id 40003
+
+    // The production caller's sizing formula: strictly nameCount < words * 64.
+    const int32_t words = nm.nameCount() / 64 + 1;
+    ASSERT_TRUE(nm.nameCount() < words * 64);
+    ASSERT_TRUE(words > 512);                              // past the old cap
+    std::vector<uint64_t> bits(static_cast<std::size_t>(words), 0ull);
+    gl::PagedVector<gl::NameId> ascendingOut(&lb, &dirty);
+    const int32_t matches =
+        nm.collectClosedSubtreeIds(p, bits.data(), words, ascendingOut);
+
+    ASSERT_EQ(matches, 3);
+    ASSERT_EQ(ascendingOut.size(), 3);
+    ASSERT_EQ(ascendingOut[0], p);
+    ASSERT_EQ(ascendingOut[1], cx);
+    ASSERT_EQ(ascendingOut[2], cy);
+    for (const gl::NameId id : { p, cx, cy })
+        ASSERT_TRUE((bits[static_cast<std::size_t>(id >> 6)] >> (id & 63)) & 1ull);
+    // No stray bits: exactly three set across the whole caller-sized bitmap.
+    int32_t setBits = 0;
+    for (int32_t w = 0; w < words; ++w) {
+        for (uint64_t v = bits[static_cast<std::size_t>(w)]; v; v &= v - 1) ++setBits;
+    }
+    ASSERT_EQ(setBits, 3);
+}
+
+// ChunkSortedOrdinals (the mail-absorb row-index chunk sort) merges its
+// per-block sorted chunks into the SAME unique sequence a single std::sort
+// yields under the same strict total order — multi-chunk, single-chunk, and
+// the reset() replay must all agree element-for-element.
+TEST(memory, chunk_sorted_ordinals_matches_single_sort) {
+    gl::ScratchArena arena;
+    arena.bind(&gl::staticMemory());
+    const gl::ArenaOffset mark = arena.cursor();
+    {
+        // Strict total order: key(i) = (i * 37) % 101 is injective on 1..100
+        // (37 and 101 coprime), so no two ordinals tie.
+        const auto less = [](int32_t a, int32_t b) {
+            return (a * 37) % 101 < (b * 37) % 101;
+        };
+        const int32_t n = 100;
+
+        // Reference: the single contiguous std::sort the helper generalizes.
+        std::vector<int32_t> ref(static_cast<std::size_t>(n));
+        for (int32_t i = 0; i < n; ++i) ref[static_cast<std::size_t>(i)] = i + 1;
+        std::sort(ref.begin(), ref.end(), less);
+
+        // Multi-chunk: chunkSlots=7 forces 15 chunks.
+        gl::ChunkSortedOrdinals<decltype(less)> multi(arena, n, 1, less, 7);
+        std::vector<int32_t> got;
+        got.reserve(static_cast<std::size_t>(n));
+        for (int32_t i = 0; i < n; ++i) got.push_back(multi.next());
+        ASSERT_TRUE(got == ref);
+
+        // reset() replays the identical sequence.
+        multi.reset();
+        for (int32_t i = 0; i < n; ++i) ASSERT_EQ(multi.next(), ref[static_cast<std::size_t>(i)]);
+
+        // Single-chunk (chunkSlots > n): the degenerate plain-walk case.
+        gl::ChunkSortedOrdinals<decltype(less)> single(arena, n, 1, less, 1000);
+        for (int32_t i = 0; i < n; ++i) ASSERT_EQ(single.next(), ref[static_cast<std::size_t>(i)]);
+
+        // Empty index constructs (and needs no next()).
+        gl::ChunkSortedOrdinals<decltype(less)> empty(arena, 0, 1, less, 7);
+        empty.reset();
+    }
+    arena.popTo(mark);
+}
+
+// The DEFAULT chunk size at production scale: 70,000 ordinals (a ~280 KB
+// index — past one 256 KiB pool block, the exact shape that fired at rung-2
+// burst 13 on the rejected-map-integration hook) forces exactly two chunks at
+// the default kFiringRecordSortChunk and must still merge into the unique
+// std::sort sequence.
+TEST(memory, chunk_sorted_ordinals_default_chunk_two_blocks) {
+    gl::ScratchArena arena;
+    arena.bind(&gl::staticMemory());
+    const gl::ArenaOffset mark = arena.cursor();
+    {
+        // key(i) = (i * 40503) % 70001 is injective on 0..69999 (40503 and
+        // 70001 coprime) — a strict total order with no ties.
+        const auto less = [](int32_t a, int32_t b) {
+            return (static_cast<int64_t>(a) * 40503) % 70001
+                 < (static_cast<int64_t>(b) * 40503) % 70001;
+        };
+        const int32_t n = 70000;
+        ASSERT_TRUE(n > gl::ExecutionParameters::kFiringRecordSortChunk);
+
+        std::vector<int32_t> ref(static_cast<std::size_t>(n));
+        for (int32_t i = 0; i < n; ++i) ref[static_cast<std::size_t>(i)] = i;
+        std::sort(ref.begin(), ref.end(), less);
+
+        gl::ChunkSortedOrdinals<decltype(less)> order(arena, n, 0, less);
+        for (int32_t i = 0; i < n; ++i)
+            ASSERT_EQ(order.next(), ref[static_cast<std::size_t>(i)]);
+    }
+    arena.popTo(mark);
 }
 
 // HashMemory smoke — default-constructed HashMemory is empty across every
@@ -614,7 +970,7 @@ TEST(memory, hashmemory_empty_and_clear) {
     gl::HashMemory hm(&lb, &d);
     ASSERT_EQ(hm.encodedMap.count(), 0);
     ASSERT_EQ(hm.normalizedEncodedKeys.count(), 0);
-    ASSERT_EQ(hm.maxKeyLength, static_cast<int16_t>(0));
+    ASSERT_EQ(hm.maxKeyLength, static_cast<gl::NameId>(0));
     ASSERT_EQ(hm.originals.count(), 0);
     ASSERT_EQ(hm.admissionMap.count(), 0);
     ASSERT_EQ(hm.rejectedMap.count(), 0);
@@ -673,6 +1029,823 @@ TEST(memory, work_instruction_build_and_read) {
     const gl::LogicalEntity le1 = wi.entityAt(1);
     ASSERT_EQ(le1.elements.size(), static_cast<std::size_t>(0));
     ASSERT_TRUE(le1.definedSet.empty());
+}
+
+// A disintegration cohort recursively absorbs every contiguous OR child in one
+// call, in expression order. A non-OR child remains one atomic leaf even when
+// its own entity has children, so flattening does not cross operator boundaries.
+TEST(memory, flatten_or_leaves_one_cohort) {
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 1 << 20, 1 << 18 });
+    gl::LbArena lb(&g);
+    gl::WorkInstruction wi(&lb);
+
+    const auto addEntity = [&](const char* category, const char* signature,
+                               const std::initializer_list<const char*>& elements) {
+        const int32_t mark = wi.elemMark();
+        for (const char* element : elements)
+            wi.addElement(gl::StrSpan(element, static_cast<int32_t>(std::strlen(element))));
+        wi.commitEntity(
+            gl::StrSpan(category, static_cast<int32_t>(std::strlen(category))),
+            gl::StrSpan(signature, static_cast<int32_t>(std::strlen(signature))),
+            gl::StrSpan(), static_cast<int32_t>(elements.size()), mark);
+    };
+
+    addEntity("or", "(or2[a,b,c,d])",
+              { "(or0[a,b])", "(and0[x,y])", "(or1[c,d])" });
+    addEntity("or", "(or0[a,b])", { "(=[a,X])", "(=[b,X])" });
+    addEntity("and", "(and0[x,y])", { "(or9[x])", "(or10[y])" });
+    addEntity("or", "(or1[c,d])", { "(=[c,X])", "(=[d,X])" });
+
+    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::StrSpan leaves[gl::ExecutionParameters::MAX_INSTRUCTION_ELEMENTS];
+    const int32_t leafCount = analyzer.flattenOrLeaves(
+        wi, 0, leaves, gl::ExecutionParameters::MAX_INSTRUCTION_ELEMENTS);
+
+    ASSERT_EQ(leafCount, 5);
+    ASSERT_TRUE(gl::equalSpans(leaves[0], gl::StrSpan("(=[a,X])", 8)));
+    ASSERT_TRUE(gl::equalSpans(leaves[1], gl::StrSpan("(=[b,X])", 8)));
+    ASSERT_TRUE(gl::equalSpans(leaves[2], gl::StrSpan("(and0[x,y])", 11)));
+    ASSERT_TRUE(gl::equalSpans(leaves[3], gl::StrSpan("(=[c,X])", 8)));
+    ASSERT_TRUE(gl::equalSpans(leaves[4], gl::StrSpan("(=[d,X])", 8)));
+}
+
+// Reverse OR integration uses the same ordered leaf cohort as
+// disintegration. The nested OR entity must not prepare a second opaque
+// cohort, and every atomic branch receives the negations of both peers.
+TEST(prover, prepare_integration_flattens_nested_or_once) {
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 1 << 20, 1 << 18 });
+    gl::LbArena lb(&g);
+    gl::WorkInstruction wi(&lb);
+
+    const auto addEntity = [&](const char* category, const char* signature,
+                               const std::initializer_list<const char*>& elements) {
+        const int32_t mark = wi.elemMark();
+        for (const char* element : elements)
+            wi.addElement(gl::StrSpan(
+                element, static_cast<int32_t>(std::strlen(element))));
+        wi.commitEntity(
+            gl::StrSpan(category, static_cast<int32_t>(std::strlen(category))),
+            gl::StrSpan(signature, static_cast<int32_t>(std::strlen(signature))),
+            gl::StrSpan(), static_cast<int32_t>(elements.size()), mark);
+    };
+
+    addEntity("or", "(or91[u_1,u_2,u_3])",
+              { "(or90[u_1,u_2])", "(=[u_3,X])" });
+    addEntity("or", "(or90[u_1,u_2])",
+              { "(=[u_1,X])", "(=[u_2,X])" });
+
+    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::Memory memory;
+    analyzer.prepareIntegrationCore2(
+        wi, nullptr, 0, memory, gl::StrSpan("main", 4), gl::StrSpan());
+
+    struct Branch {
+        std::string validity;
+        std::string signature;
+        std::string goal;
+    };
+    std::vector<Branch> branches;
+    const std::vector<gl::DecodedToBeProvedRow> goals =
+        gl::decodeToBeProvedSorted(memory.intToBeProved, memory.nameMap);
+    for (gl::NameId id = 2; id <= memory.nameMap.nameCount(); ++id) {
+        std::string signature;
+        std::string body;
+        if (analyzer.classifyOrScope(
+                memory.nameMap, id, signature, body)
+            == gl::ExpressionAnalyzer::OrScopeKind::Integration) {
+            const std::string validity = memory.nameMap.decode(id);
+            std::string goal;
+            for (const gl::DecodedToBeProvedRow& row : goals) {
+                if (row.validityName == validity) {
+                    ASSERT_TRUE(goal.empty());
+                    goal = row.original;
+                }
+            }
+            ASSERT_FALSE(goal.empty());
+            branches.push_back(Branch{ validity, signature, goal });
+        }
+    }
+
+    ASSERT_EQ(branches.size(), static_cast<std::size_t>(3));
+    ASSERT_EQ(memory.intToBeProved.count(), 3);
+    for (const Branch& branch : branches) {
+        ASSERT_TRUE(branch.signature.find("(or91[") == 0);
+        ASSERT_TRUE(branch.goal.find("(or90[") == std::string::npos);
+        for (const Branch& other : branches) {
+            if (other.goal == branch.goal) continue;
+            const std::string negated = "!" + other.goal;
+            int64_t originKey = 0;
+            ASSERT_TRUE(gl::lookupOriginKey(
+                memory.originInterner, gl::StrSpan(negated),
+                gl::StrSpan(branch.validity), originKey));
+            const int32_t originId = memory.exprOriginMap.lookup(originKey);
+            ASSERT_TRUE(originId != 0);
+            ASSERT_TRUE(memory.exprOriginMap.runLen(originId) > 0);
+        }
+    }
+}
+
+// Goal-carrying integration scopes: with a non-empty rootGoal, every Case A /
+// Case OR scope minted ON MAIN carries `<goal>_subproof_` in its payload, the
+// prep gates are goal-qualified (a second goal re-preps its own copies), and
+// statement-driven mints (empty rootGoal) keep the bare legacy payloads.
+TEST(prover, core2_goal_carrying_scope_payloads) {
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 1 << 20, 1 << 18 });
+    gl::LbArena lb(&g);
+
+    const auto buildWi = [&](gl::WorkInstruction& wi) {
+        const auto addEntity = [&](const char* category, const char* signature,
+                                   const std::initializer_list<const char*>& elements) {
+            const int32_t mark = wi.elemMark();
+            for (const char* element : elements)
+                wi.addElement(gl::StrSpan(
+                    element, static_cast<int32_t>(std::strlen(element))));
+            wi.commitEntity(
+                gl::StrSpan(category, static_cast<int32_t>(std::strlen(category))),
+                gl::StrSpan(signature, static_cast<int32_t>(std::strlen(signature))),
+                gl::StrSpan(), static_cast<int32_t>(elements.size()), mark);
+        };
+        addEntity("implication", "(implication90[u_1,u_2])",
+                  { "(=[u_1,X])", "(=[u_2,X])" });
+        addEntity("or", "(or90[u_1,u_2])",
+                  { "(=[u_1,X])", "(=[u_2,X])" });
+    };
+
+    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::Memory memory;
+    const char* GOAL_A = "(interval[1,4,2,7,10])";
+    const char* GOAL_B = "(interval[1,4,2,6,10])";
+
+    {
+        gl::WorkInstruction wi(&lb);
+        buildWi(wi);
+        analyzer.prepareIntegrationCore2(
+            wi, nullptr, 0, memory, gl::StrSpan("main", 4),
+            gl::StrSpan(GOAL_A, static_cast<int32_t>(std::strlen(GOAL_A))));
+    }
+
+    // Census over minted validity payloads: every non-root scope payload must
+    // split into (GOAL_A, bare); Case A yields the compact, Case OR yields
+    // orint_ branches that still classify as Integration.
+    const auto countScopes = [&](const char* goal, int32_t& subproofN,
+                                 int32_t& orintN) {
+        subproofN = 0; orintN = 0;
+        for (gl::NameId id = 2; id <= memory.nameMap.nameCount(); ++id) {
+            if (static_cast<std::size_t>(id)
+                    >= static_cast<std::size_t>(memory.nameMap.stackSize())
+                || memory.nameMap.stackEmpty(id))
+                continue;
+            gl::StrSpan gOut, bOut;
+            if (!analyzer.splitSubproofPayload(
+                    memory.nameMap.decodeSubView(memory.nameMap.stackBack(id)),
+                    gOut, bOut))
+                continue;
+            if (gOut.toStdString() != std::string(goal)) continue;
+            std::string sig, body;
+            if (analyzer.classifyOrScope(memory.nameMap, id, sig, body)
+                == gl::ExpressionAnalyzer::OrScopeKind::Integration) {
+                ++orintN;
+                ASSERT_TRUE(sig.find("(or90[") == 0);
+            } else {
+                ++subproofN;
+                ASSERT_TRUE(bOut.toStdString().find("(implication90[") == 0);
+            }
+        }
+    };
+
+    int32_t subA = 0, orA = 0;
+    countScopes(GOAL_A, subA, orA);
+    ASSERT_EQ(subA, 1);   // one Case A subproof scope for GOAL_A
+    ASSERT_EQ(orA, 2);    // two orint branch scopes for GOAL_A
+
+    // Second goal on the SAME memory: goal-qualified gates re-prep — per-goal
+    // duplication, not a silent skip.
+    {
+        gl::WorkInstruction wi(&lb);
+        buildWi(wi);
+        analyzer.prepareIntegrationCore2(
+            wi, nullptr, 0, memory, gl::StrSpan("main", 4),
+            gl::StrSpan(GOAL_B, static_cast<int32_t>(std::strlen(GOAL_B))));
+    }
+    int32_t subB = 0, orB = 0;
+    countScopes(GOAL_B, subB, orB);
+    ASSERT_EQ(subB, 1);
+    ASSERT_EQ(orB, 2);
+
+    // Statement-driven mint (empty rootGoal) on a fresh memory: bare legacy
+    // payloads, no `_subproof_` prefix anywhere.
+    gl::Memory legacy;
+    {
+        gl::WorkInstruction wi(&lb);
+        buildWi(wi);
+        analyzer.prepareIntegrationCore2(
+            wi, nullptr, 0, legacy, gl::StrSpan("main", 4), gl::StrSpan());
+    }
+    for (gl::NameId id = 2; id <= legacy.nameMap.nameCount(); ++id) {
+        if (static_cast<std::size_t>(id)
+                >= static_cast<std::size_t>(legacy.nameMap.stackSize())
+            || legacy.nameMap.stackEmpty(id))
+            continue;
+        gl::StrSpan gOut, bOut;
+        ASSERT_FALSE(analyzer.splitSubproofPayload(
+            legacy.nameMap.decodeSubView(legacy.nameMap.stackBack(id)),
+            gOut, bOut));
+    }
+}
+
+// templateMatchesGoalWithMarkers: verbatim goal, every marker variant, and
+// nothing else (different core / arity / non-marker argument / polarity).
+TEST(prover, template_matches_goal_with_markers) {
+    gl::ExpressionAnalyzer ea("Peano");
+    const auto m = [&](const char* t, const char* g) {
+        return ea.templateMatchesGoalWithMarkers(
+            gl::StrSpan(t, static_cast<int32_t>(std::strlen(t))),
+            gl::StrSpan(g, static_cast<int32_t>(std::strlen(g))));
+    };
+    const char* G = "(interval[1,4,2,7,10])";
+    ASSERT_TRUE(m(G, G));                                   // verbatim
+    ASSERT_TRUE(m("(interval[marker,4,2,7,10])", G));       // one marker
+    ASSERT_TRUE(m("(interval[marker,marker,marker,marker,marker])", G));
+    ASSERT_TRUE(m("!(interval[marker,4,2,7,10])", "!(interval[1,4,2,7,10])"));
+    ASSERT_FALSE(m("(interval[marker,4,2,6,10])", G));      // wrong arg
+    ASSERT_FALSE(m("(in[marker,4])", G));                   // wrong core/arity
+    ASSERT_FALSE(m("!(interval[marker,4,2,7,10])", G));     // polarity split
+    ASSERT_FALSE(m("(interval[1,4,2,7,10])", "!(interval[1,4,2,7,10])"));
+}
+
+// drainDisprovedGoals: a deposited seed that matches a MAIN goal erases the
+// goal row and the goal-template gates, queues every goal-owned MAIN scope for
+// the radical wipe, and leaves a second goal's machinery untouched; a seed
+// with no matching goal is a defined no-op.
+TEST(prover, drain_disproved_goals_wipes_goal_machinery) {
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 1 << 20, 1 << 18 });
+    gl::LbArena lb(&g);
+
+    const auto buildWi = [&](gl::WorkInstruction& wi) {
+        const auto addEntity = [&](const char* category, const char* signature,
+                                   const std::initializer_list<const char*>& elements) {
+            const int32_t mark = wi.elemMark();
+            for (const char* element : elements)
+                wi.addElement(gl::StrSpan(
+                    element, static_cast<int32_t>(std::strlen(element))));
+            wi.commitEntity(
+                gl::StrSpan(category, static_cast<int32_t>(std::strlen(category))),
+                gl::StrSpan(signature, static_cast<int32_t>(std::strlen(signature))),
+                gl::StrSpan(), static_cast<int32_t>(elements.size()), mark);
+        };
+        addEntity("implication", "(implication90[u_1,u_2])",
+                  { "(=[u_1,X])", "(=[u_2,X])" });
+        addEntity("or", "(or90[u_1,u_2])",
+                  { "(=[u_1,X])", "(=[u_2,X])" });
+    };
+
+    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::Memory memory;
+    const char* GOAL_A = "(interval[1,4,2,7,10])";
+    const char* GOAL_B = "(interval[1,4,2,6,10])";
+    const gl::StrSpan goalA(GOAL_A, static_cast<int32_t>(std::strlen(GOAL_A)));
+    const gl::StrSpan goalB(GOAL_B, static_cast<int32_t>(std::strlen(GOAL_B)));
+
+    // MAIN goal rows + the prepareIntegration-level gates the drain must
+    // erase for GOAL_A (goal template, marker form, startInt snapshot).
+    const gl::NameId mainId = memory.nameMap.encode("main");
+    ASSERT_EQ(mainId, gl::NameMap::MAIN_ID);
+    const gl::NameId idA = memory.nameMap.encode(goalA);
+    const gl::NameId idB = memory.nameMap.encode(goalB);
+    const int64_t pkA = gl::packStatementKey(idA, gl::NameMap::MAIN_ID);
+    const int64_t pkB = gl::packStatementKey(idB, gl::NameMap::MAIN_ID);
+    memory.intToBeProved.assignSet(pkA, nullptr, 0);
+    memory.intToBeProved.assignSet(pkB, nullptr, 0);
+    memory.integrationPrepared.mint(gl::mintTemplateKey(
+        memory.templateInterner, memory.nameMap, goalA,
+        gl::StrSpan("main", 4)));
+    const char* MARKER_A = "(interval[marker,4,2,7,10])";
+    memory.integrationPreparedMarker.mint(gl::mintTemplateKey(
+        memory.templateInterner, memory.nameMap,
+        gl::StrSpan(MARKER_A, static_cast<int32_t>(std::strlen(MARKER_A))),
+        gl::StrSpan("main", 4)));
+    memory.integrationStartIntMap.insert(
+        memory.templateInterner.encode(goalA), 5);
+
+    // Spawn both goals' integration machinery (goal-carrying scopes, orint
+    // branches, scoped subgoals, origin rows).
+    {
+        gl::WorkInstruction wi(&lb);
+        buildWi(wi);
+        analyzer.prepareIntegrationCore2(
+            wi, nullptr, 0, memory, gl::StrSpan("main", 4), goalA);
+    }
+    {
+        gl::WorkInstruction wi(&lb);
+        buildWi(wi);
+        analyzer.prepareIntegrationCore2(
+            wi, nullptr, 0, memory, gl::StrSpan("main", 4), goalB);
+    }
+    const int32_t goalsBefore = memory.intToBeProved.count();
+    ASSERT_TRUE(goalsBefore >= 6);   // 2 main goals + 2 orint subgoals each
+
+    // Deposit GOAL_A's seed (the disproof) + a never-a-goal seed (the
+    // complement-twin case — must be a defined no-op).
+    memory.pendingDisprovedGoals.mint(goalA);
+    memory.pendingDisprovedGoals.mint(gl::StrSpan("!(in[7,1])", 10));
+    analyzer.drainDisprovedGoals(memory);
+
+    // Goal row + gates gone; GOAL_B untouched.
+    ASSERT_TRUE(memory.intToBeProved.lookup(pkA) == 0);
+    ASSERT_TRUE(memory.intToBeProved.lookup(pkB) != 0);
+    ASSERT_EQ(memory.pendingDisprovedGoals.count(), 0);
+    {
+        int64_t gatePk = 0;
+        ASSERT_TRUE(!gl::lookupTemplateKey(memory.templateInterner,
+                        memory.nameMap, goalA, gl::StrSpan("main", 4), gatePk)
+                    || !memory.integrationPrepared.contains(gatePk));
+        ASSERT_TRUE(memory.integrationStartIntMap.lookup(
+                        memory.templateInterner.encode(goalA)) == 0);
+    }
+
+    // Every GOAL_A-owned MAIN scope queued for the wipe; GOAL_B's not.
+    int32_t queuedA = 0;
+    for (gl::NameId id = 2; id <= memory.nameMap.nameCount(); ++id) {
+        if (static_cast<std::size_t>(id)
+                >= static_cast<std::size_t>(memory.nameMap.stackSize())
+            || memory.nameMap.stackEmpty(id))
+            continue;
+        gl::StrSpan gOut, bOut;
+        if (!analyzer.splitSubproofPayload(
+                memory.nameMap.decodeSubView(memory.nameMap.stackBack(id)),
+                gOut, bOut))
+            continue;
+        const bool queued = memory.pendingWipeScopes.lookup(id) != 0;
+        if (gOut.toStdString() == std::string(GOAL_A)) {
+            ASSERT_TRUE(queued);
+            ++queuedA;
+        } else {
+            ASSERT_FALSE(queued);
+        }
+    }
+    ASSERT_EQ(queuedA, 3);   // 1 subproof + 2 orint branch scopes
+
+    // Run the queued wipes (the phase-3 follow-up) — GOAL_A's scoped
+    // subgoals and statements vanish, GOAL_B's machinery survives.
+    for (gl::NameId id = 2; id <= memory.nameMap.nameCount(); ++id) {
+        if (memory.pendingWipeScopes.lookup(id) != 0) memory.wipeSubtree(id);
+    }
+    memory.pendingWipeScopes.resetToFresh();
+    const std::vector<gl::DecodedToBeProvedRow> goalsAfter =
+        gl::decodeToBeProvedSorted(memory.intToBeProved, memory.nameMap);
+    for (const gl::DecodedToBeProvedRow& row : goalsAfter) {
+        ASSERT_TRUE(row.validityName.find(GOAL_A) == std::string::npos);
+    }
+    ASSERT_TRUE(static_cast<int32_t>(goalsAfter.size()) < goalsBefore);
+
+    // CLOSED-subproof skip: with the bare compact REGISTERED at main (the
+    // subproof closed before the disproof), the drain must leave the
+    // subproof root untouched — its product and history are load-bearing —
+    // while still erasing the goal row and queueing the orint branches.
+    gl::Memory closed;
+    closed.nameMap.encode("main");
+    const gl::NameId idC = closed.nameMap.encode(goalA);
+    const int64_t pkC = gl::packStatementKey(idC, gl::NameMap::MAIN_ID);
+    closed.intToBeProved.assignSet(pkC, nullptr, 0);
+    {
+        gl::WorkInstruction wi(&lb);
+        buildWi(wi);
+        analyzer.prepareIntegrationCore2(
+            wi, nullptr, 0, closed, gl::StrSpan("main", 4), goalA);
+    }
+    gl::upsertStatementKey(closed.intKnownStatements,
+        gl::packStatementKey(closed.nameMap.encode("(implication90[1,2])"),
+                             gl::NameMap::MAIN_ID),
+        /*local=*/true, /*registered=*/true, /*known=*/true);
+    closed.pendingDisprovedGoals.mint(goalA);
+    analyzer.drainDisprovedGoals(closed);
+    ASSERT_TRUE(closed.intToBeProved.lookup(pkC) == 0);
+    int32_t queuedSub = 0, queuedOr = 0;
+    for (gl::NameId id = 2; id <= closed.nameMap.nameCount(); ++id) {
+        if (static_cast<std::size_t>(id)
+                >= static_cast<std::size_t>(closed.nameMap.stackSize())
+            || closed.nameMap.stackEmpty(id))
+            continue;
+        gl::StrSpan gOut, bOut;
+        if (!analyzer.splitSubproofPayload(
+                closed.nameMap.decodeSubView(closed.nameMap.stackBack(id)),
+                gOut, bOut))
+            continue;
+        if (closed.pendingWipeScopes.lookup(id) == 0) {
+            ++queuedSub;   // not queued — must be the closed subproof root
+            ASSERT_TRUE(bOut.toStdString().find("(implication90[") == 0);
+        } else {
+            ++queuedOr;
+        }
+    }
+    ASSERT_EQ(queuedSub, 1);
+    ASSERT_EQ(queuedOr, 2);
+}
+
+// Dead _ordis_ branch retirement: a branch deposit whose asserted disjunct is
+// refuted at an ancestor stages the branch vid; the end-of-burst drain queues
+// the branch wipe, blocks future inserts, shrinks the cohort's disjunct count
+// and bookkeeping runs (an only-dead run leaves the container), and re-fires
+// convergence for a surviving row that reaches the reduced count. A branch
+// with an unrefuted disjunct never stages; a staged branch whose cohort has
+// no count row is a defined no-op.
+TEST(prover, drain_dead_or_branches_retires_refuted_branch) {
+    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::Memory memory;
+    const gl::NameId mainId = memory.nameMap.encode("main");
+    ASSERT_EQ(mainId, gl::NameMap::MAIN_ID);
+
+    const auto push = [&](gl::NameId parent, const char* payload) {
+        return memory.nameMap.encodePush(
+            parent, gl::StrSpan(
+                payload, static_cast<int32_t>(std::strlen(payload))));
+    };
+    // Cohort {A, B, C} under main; A's assumption (=[2,6]) will be refuted.
+    const gl::NameId brA = push(mainId, "ordis_(or90[2,6])_((=[2,6]))");
+    const gl::NameId brB = push(mainId, "ordis_(or90[2,6])_((=[6,6]))");
+    const gl::NameId brC = push(mainId, "ordis_(or90[2,6])_((=[7,6]))");
+    const std::string nameA = std::string(memory.nameMap.decode(brA));
+    const std::string nameB = std::string(memory.nameMap.decode(brB));
+    const std::string nameC = std::string(memory.nameMap.decode(brC));
+
+    const int32_t cohortId = gl::mintOrCohortId(memory.lbStateInterner,
+        memory.lbStateInterner.encode(gl::StrSpan("main", 4)),
+        memory.lbStateInterner.encode(gl::StrSpan("(or90[2,6])", 11)));
+    memory.orDisjunctCount.insert(cohortId, 3);
+
+    // The refutation of A's assumption, known at main.
+    gl::upsertStatementKey(memory.intKnownStatements,
+        gl::packStatementKey(memory.nameMap.encode("!(=[2,6])"), mainId),
+        /*local=*/true, /*registered=*/true, /*known=*/true);
+
+    // Deposits through ordisMerge (the staging site): exprX lands in A and B,
+    // exprY in B and C, exprZ in A only. Nothing converges (count 3).
+    const gl::StrSpan exprX("(p[1])", 6);
+    const gl::StrSpan exprY("(q[1])", 6);
+    const gl::StrSpan exprZ("(r[1])", 6);
+    int lv0[1] = { 0 };
+    const auto deposit = [&](const gl::StrSpan& e, const std::string& v) {
+        analyzer.ordisMerge(e, gl::StrSpan(v), lv0, 1, memory);
+    };
+    deposit(exprX, nameA);
+    deposit(exprX, nameB);
+    deposit(exprY, nameB);
+    deposit(exprY, nameC);
+    deposit(exprZ, nameA);
+
+    // Only the refuted branch staged (the second A deposit hit the dedup skip).
+    ASSERT_TRUE(memory.pendingDeadOrBranches.lookup(brA) != 0);
+    ASSERT_TRUE(memory.pendingDeadOrBranches.lookup(brB) == 0);
+    ASSERT_TRUE(memory.pendingDeadOrBranches.lookup(brC) == 0);
+    ASSERT_EQ(memory.pendingDeadOrBranches.count(), 1);
+
+    // The re-fire reads the promoted statement's levels at the run's first
+    // surviving branch (decoded-lex: B before C).
+    memory.intStatementLevelsMap.assignSet(
+        gl::packStatementKey(memory.nameMap.encode(exprY),
+                             memory.nameMap.encode(gl::StrSpan(nameB))),
+        lv0, 1);
+
+    analyzer.drainDeadOrBranches(memory);
+
+    // Inbox drained; branch A wiped-queued + filtered; B and C untouched.
+    ASSERT_EQ(memory.pendingDeadOrBranches.count(), 0);
+    ASSERT_TRUE(memory.pendingWipeScopes.lookup(brA) != 0);
+    ASSERT_TRUE(memory.pendingWipeScopes.lookup(brB) == 0);
+    ASSERT_TRUE(memory.pendingWipeScopes.lookup(brC) == 0);
+    ASSERT_TRUE(memory.intValidityNamesToFilter.lookup(brA) != 0);
+
+    // Cohort count 3 -> 2.
+    const int32_t cntRow = memory.orDisjunctCount.lookup(cohortId);
+    ASSERT_TRUE(cntRow != 0);
+    ASSERT_EQ(memory.orDisjunctCount.valueAt(cntRow), 2);
+
+    // Bookkeeping surgery: exprX keeps only B; exprZ's only-dead run is gone;
+    // exprY keeps {B, C}.
+    const int32_t djA = memory.lbStateInterner.encode(
+        gl::StrSpan("((=[2,6]))", 10));
+    const int32_t djB = memory.lbStateInterner.encode(
+        gl::StrSpan("((=[6,6]))", 10));
+    const int32_t djC = memory.lbStateInterner.encode(
+        gl::StrSpan("((=[7,6]))", 10));
+    const int32_t rowX = memory.orBookkeeping.lookup(gl::packLbStateKey(
+        memory.lbStateInterner.encode(exprX), cohortId));
+    ASSERT_TRUE(rowX != 0);
+    ASSERT_EQ(memory.orBookkeeping.runLen(rowX), 1);
+    ASSERT_EQ(memory.orBookkeeping.valueAt(rowX, 0), djB);
+    ASSERT_TRUE(memory.orBookkeeping.lookup(gl::packLbStateKey(
+        memory.lbStateInterner.encode(exprZ), cohortId)) == 0);
+    const int32_t rowY = memory.orBookkeeping.lookup(gl::packLbStateKey(
+        memory.lbStateInterner.encode(exprY), cohortId));
+    ASSERT_TRUE(rowY != 0);
+    ASSERT_EQ(memory.orBookkeeping.runLen(rowY), 2);
+    ASSERT_EQ(memory.orBookkeeping.valueAt(rowY, 0), djB);
+    ASSERT_EQ(memory.orBookkeeping.valueAt(rowY, 1), djC);
+    (void)djA;
+
+    // Convergence re-fired at the reduced count: exprY (run {B,C} == 2)
+    // promoted to main; exprX (run {B} == 1 < 2) did not.
+    bool promotedY = false, promotedX = false;
+    for (const auto& row : gl::decodeInternalMailStatements(
+             memory.sameIterationInternalMail, memory.nameMap)) {
+        if (row.first.validityName != "main") continue;
+        if (row.first.original == "(q[1])") promotedY = true;
+        if (row.first.original == "(p[1])") promotedX = true;
+    }
+    ASSERT_TRUE(promotedY);
+    ASSERT_FALSE(promotedX);
+
+    // Retired-disjunct record: branch A's disjunct with the shallowest scope
+    // where its refutation is known (main).
+    const int32_t retRow = memory.orRetiredDisjuncts.lookup(cohortId);
+    ASSERT_TRUE(retRow != 0);
+    ASSERT_EQ(memory.orRetiredDisjuncts.runLen(retRow), 1);
+    ASSERT_TRUE(memory.orRetiredDisjuncts.valueAt(retRow, 0)
+                == gl::packInt32Pair(djA, mainId));
+
+    // The re-fired `or convergence` history cites every disjunct: the two
+    // survivor derivations at B and C plus the retired branch's reductio
+    // ingredient (the refuted assumption's negation at main).
+    bool sawRetiredDep = false, sawSurvivorB = false, sawSurvivorC = false;
+    for (const auto& row : gl::decodeInternalMailOrigins(
+             memory.sameIterationInternalMail, memory.originInterner)) {
+        if (row.first.original != "(q[1])"
+            || row.first.validityName != "main") continue;
+        for (const auto& lineRec : row.second) {
+            if (lineRec.first != "or convergence") continue;
+            for (const auto& dep : lineRec.second) {
+                if (dep.original == "!(=[2,6])"
+                    && dep.validityName == "main") sawRetiredDep = true;
+                if (dep.original == "(q[1])"
+                    && dep.validityName == nameB) sawSurvivorB = true;
+                if (dep.original == "(q[1])"
+                    && dep.validityName == nameC) sawSurvivorC = true;
+            }
+        }
+    }
+    ASSERT_TRUE(sawRetiredDep);
+    ASSERT_TRUE(sawSurvivorB);
+    ASSERT_TRUE(sawSurvivorC);
+
+    // Defined no-op: a staged branch whose cohort has no count row (retired
+    // wholesale by the disproof drain) is skipped untouched.
+    const gl::NameId brOrphan = push(mainId, "ordis_(or91[9])_((=[9,8]))");
+    memory.pendingDeadOrBranches.mint(brOrphan);
+    analyzer.drainDeadOrBranches(memory);
+    ASSERT_EQ(memory.pendingDeadOrBranches.count(), 0);
+    ASSERT_TRUE(memory.pendingWipeScopes.lookup(brOrphan) == 0);
+
+    // Zero survivors: every disjunct refuted — the cohort retires wholesale
+    // (count row erased, every bookkeeping run empties out, all branches
+    // wiped); the joint contradiction is left to the K rules / contradiction
+    // machinery, not to this drain.
+    const gl::NameId brD = push(mainId, "ordis_(or92[8,9])_((=[8,9]))");
+    const gl::NameId brE = push(mainId, "ordis_(or92[8,9])_((=[9,8]))");
+    const gl::NameId brF = push(mainId, "ordis_(or92[8,9])_((=[10,9]))");
+    const int32_t cohort92 = gl::mintOrCohortId(memory.lbStateInterner,
+        memory.lbStateInterner.encode(gl::StrSpan("main", 4)),
+        memory.lbStateInterner.encode(gl::StrSpan("(or92[8,9])", 11)));
+    memory.orDisjunctCount.insert(cohort92, 3);
+    for (const char* neg : { "!(=[8,9])", "!(=[9,8])", "!(=[10,9])" }) {
+        gl::upsertStatementKey(memory.intKnownStatements,
+            gl::packStatementKey(memory.nameMap.encode(
+                gl::StrSpan(neg, static_cast<int32_t>(std::strlen(neg)))),
+                mainId),
+            /*local=*/true, /*registered=*/true, /*known=*/true);
+    }
+    const gl::StrSpan exprW("(w[1])", 6);
+    deposit(exprW, std::string(memory.nameMap.decode(brD)));
+    deposit(gl::StrSpan("(v[1])", 6), std::string(memory.nameMap.decode(brE)));
+    deposit(gl::StrSpan("(u[1])", 6), std::string(memory.nameMap.decode(brF)));
+    ASSERT_EQ(memory.pendingDeadOrBranches.count(), 3);
+
+    analyzer.drainDeadOrBranches(memory);
+
+    ASSERT_TRUE(memory.orDisjunctCount.lookup(cohort92) == 0);
+    ASSERT_TRUE(memory.orBookkeeping.lookup(gl::packLbStateKey(
+        memory.lbStateInterner.encode(exprW), cohort92)) == 0);
+    ASSERT_TRUE(memory.pendingWipeScopes.lookup(brD) != 0);
+    ASSERT_TRUE(memory.pendingWipeScopes.lookup(brE) != 0);
+    ASSERT_TRUE(memory.pendingWipeScopes.lookup(brF) != 0);
+    ASSERT_TRUE(memory.intValidityNamesToFilter.lookup(brD) != 0);
+}
+
+// Equal compiled OR signatures can be prepared under different validity
+// parents. Proving one cohort must queue only its direct sibling branches;
+// another parent and a nested same-signature cohort remain untouched.
+TEST(prover, or_integration_cleanup_is_parent_scoped) {
+    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::Memory memory;
+    const gl::NameId mainId = memory.nameMap.encode("main");
+    const gl::NameId parentA =
+        memory.nameMap.encodePush(mainId, gl::StrSpan("(implA)", 7));
+    const gl::NameId parentB =
+        memory.nameMap.encodePush(mainId, gl::StrSpan("(implB)", 7));
+
+    const auto push = [&](gl::NameId parent, const char* payload) {
+        return memory.nameMap.encodePush(
+            parent, gl::StrSpan(
+                payload, static_cast<int32_t>(std::strlen(payload))));
+    };
+    const gl::NameId a1 = push(parentA, "orint_(or7[x])_((=[a,X]))");
+    const gl::NameId a2 = push(parentA, "orint_(or7[x])_((=[b,X]))");
+    const gl::NameId b1 = push(parentB, "orint_(or7[x])_((=[a,X]))");
+    const gl::NameId b2 = push(parentB, "orint_(or7[x])_((=[b,X]))");
+    const gl::NameId nested = push(a1, "orint_(or7[x])_((=[c,X]))");
+    const gl::NameId otherSignature =
+        push(parentA, "orint_(or8[x])_((=[d,X]))");
+
+    analyzer.cleanUpOrIntegrationBranches(
+        gl::StrSpan("(or7[x])", 8), parentA, memory);
+
+    ASSERT_TRUE(memory.pendingWipeScopes.contains(a1));
+    ASSERT_TRUE(memory.pendingWipeScopes.contains(a2));
+    ASSERT_TRUE(memory.intValidityNamesToFilter.contains(a1));
+    ASSERT_TRUE(memory.intValidityNamesToFilter.contains(a2));
+
+    ASSERT_FALSE(memory.pendingWipeScopes.contains(parentA));
+    ASSERT_FALSE(memory.pendingWipeScopes.contains(b1));
+    ASSERT_FALSE(memory.pendingWipeScopes.contains(b2));
+    ASSERT_FALSE(memory.pendingWipeScopes.contains(nested));
+    ASSERT_FALSE(memory.pendingWipeScopes.contains(otherSignature));
+    ASSERT_FALSE(memory.intValidityNamesToFilter.contains(b1));
+    ASSERT_FALSE(memory.intValidityNamesToFilter.contains(b2));
+    ASSERT_FALSE(memory.intValidityNamesToFilter.contains(nested));
+    ASSERT_FALSE(memory.intValidityNamesToFilter.contains(otherSignature));
+}
+
+// A scoped goal can close from a fact that was already known at an ancestor
+// before the goal was prepared. Root-to-goal visibility selects main over a
+// nearer ancestor, and the emitted origin/levels identify that strongest
+// source without inserting the fact at the child. A second provable sibling
+// sorts later by expression; cleanup from the first goal suppresses it.
+TEST(prover, ancestor_visible_goal_uses_shallowest_source) {
+    gl::ExpressionAnalyzer analyzer("Peano");
+    analyzer.parameters.trackHistory = true;
+    gl::Memory memory;
+    const gl::NameId mainId = memory.nameMap.encode("main");
+    const gl::NameId parentId =
+        memory.nameMap.encodePush(mainId, gl::StrSpan("(implA)", 7));
+    const char* goalPayload = "orint_(or7[x])_((=[a,X]))";
+    const char* siblingPayload = "orint_(or7[x])_((=[b,X]))";
+    const gl::NameId goalId = memory.nameMap.encodePush(
+        parentId, gl::StrSpan(
+            goalPayload, static_cast<int32_t>(std::strlen(goalPayload))));
+    const gl::NameId siblingId = memory.nameMap.encodePush(
+        parentId, gl::StrSpan(
+            siblingPayload, static_cast<int32_t>(std::strlen(siblingPayload))));
+    const gl::NameId expressionId = memory.nameMap.encode("(=[a,X])");
+    const gl::NameId siblingExpressionId = memory.nameMap.encode("(=[b,X])");
+
+    const auto addKnown = [&](gl::NameId knownExpressionId,
+                              gl::NameId validityId, int level) {
+        const int64_t packed =
+            gl::packStatementKey(knownExpressionId, validityId);
+        memory.intKnownStatements.insert(
+            gl::StatementKey{ knownExpressionId, validityId },
+            gl::StatementFlags{ true, false, true, true });
+        memory.intStatementLevelsMap.insertSorted(packed, level);
+    };
+    addKnown(expressionId, mainId, 2);
+    addKnown(expressionId, parentId, 7);
+    addKnown(siblingExpressionId, mainId, 4);
+    memory.intToBeProved.assignSet(
+        gl::packStatementKey(expressionId, goalId), nullptr, 0);
+    memory.intToBeProved.assignSet(
+        gl::packStatementKey(siblingExpressionId, siblingId), nullptr, 0);
+
+    analyzer.dischargeToBeProved(
+        memory, 0, memory.sameIterationInternalMail);
+
+    const std::string parentName = memory.nameMap.decode(parentId);
+    const gl::ExpressionWithValidity emitted("(or7[x])", parentName);
+    const gl::Mail mail = gl::makeHeapMail(
+        memory.sameIterationInternalMail,
+        memory.nameMap, memory.originInterner);
+    const auto statementIt = mail.statements.find(
+        std::make_pair(emitted, std::set<int>{ 2 }));
+    ASSERT_TRUE(statementIt != mail.statements.end());
+    ASSERT_TRUE(statementIt->second == std::set<int>{ 2 });
+    const auto originIt = mail.exprOriginMap.find(emitted);
+    ASSERT_TRUE(originIt != mail.exprOriginMap.end());
+    ASSERT_EQ(originIt->second.size(), static_cast<std::size_t>(1));
+    ASSERT_EQ(originIt->second[0].first, std::string("or branch proven"));
+    ASSERT_EQ(originIt->second[0].second.size(), static_cast<std::size_t>(1));
+    ASSERT_EQ(originIt->second[0].second[0].original, std::string("(=[a,X])"));
+    ASSERT_EQ(originIt->second[0].second[0].validityName, std::string("main"));
+
+    ASSERT_TRUE(memory.pendingWipeScopes.contains(goalId));
+    ASSERT_TRUE(memory.pendingWipeScopes.contains(siblingId));
+    ASSERT_TRUE(memory.intKnownStatements.find(
+        gl::StatementKey{ expressionId, goalId }) == nullptr);
+    ASSERT_TRUE(memory.intKnownStatements.find(
+        gl::StatementKey{ siblingExpressionId, siblingId }) == nullptr);
+}
+
+// If the goal exists first and the ancestor fact arrives in the current delta,
+// the inherited post-pass closes it after the exact delta walk. Provenance and
+// levels come from the ancestor while cleanup remains anchored to the goal's
+// direct parent.
+TEST(prover, ancestor_visible_goal_closes_after_fact_arrival) {
+    gl::ExpressionAnalyzer analyzer("Peano");
+    analyzer.parameters.trackHistory = true;
+    gl::Memory memory;
+    const gl::NameId mainId = memory.nameMap.encode("main");
+    const gl::NameId parentId =
+        memory.nameMap.encodePush(mainId, gl::StrSpan("(implB)", 7));
+    const char* goalPayload = "orint_(or8[x])_((=[a,X]))";
+    const gl::NameId goalId = memory.nameMap.encodePush(
+        parentId, gl::StrSpan(
+            goalPayload, static_cast<int32_t>(std::strlen(goalPayload))));
+    const gl::NameId expressionId = memory.nameMap.encode("(=[a,X])");
+    memory.intToBeProved.assignSet(
+        gl::packStatementKey(expressionId, goalId), nullptr, 0);
+
+    const gl::EncodedExpression sourceExpression(
+        "(=[a,X])", memory.nameMap.decode(parentId));
+    const gl::IntEncodedExpr source =
+        gl::encodeExpression(sourceExpression, memory.nameMap);
+    const int64_t packedSource =
+        gl::packStatementKey(source.originalId, source.validityId);
+    memory.intKnownStatements.insert(
+        gl::StatementKey{ source.originalId, source.validityId },
+        gl::StatementFlags{ true, false, true, true });
+    memory.intStatementLevelsMap.insertSorted(packedSource, 5);
+    memory.intLocalEncodedStatementsDelta.push_back(source);
+
+    analyzer.dischargeToBeProved(
+        memory, 0, memory.sameIterationInternalMail);
+
+    const std::string parentName = memory.nameMap.decode(parentId);
+    const gl::ExpressionWithValidity emitted("(or8[x])", parentName);
+    const gl::Mail mail = gl::makeHeapMail(
+        memory.sameIterationInternalMail,
+        memory.nameMap, memory.originInterner);
+    const auto statementIt = mail.statements.find(
+        std::make_pair(emitted, std::set<int>{ 5 }));
+    ASSERT_TRUE(statementIt != mail.statements.end());
+    ASSERT_TRUE(statementIt->second == std::set<int>{ 5 });
+    const auto originIt = mail.exprOriginMap.find(emitted);
+    ASSERT_TRUE(originIt != mail.exprOriginMap.end());
+    ASSERT_EQ(originIt->second.size(), static_cast<std::size_t>(1));
+    ASSERT_EQ(originIt->second[0].first, std::string("or branch proven"));
+    ASSERT_EQ(originIt->second[0].second.size(), static_cast<std::size_t>(1));
+    ASSERT_EQ(originIt->second[0].second[0].original, std::string("(=[a,X])"));
+    ASSERT_EQ(originIt->second[0].second[0].validityName, parentName);
+    ASSERT_TRUE(memory.pendingWipeScopes.contains(goalId));
+    ASSERT_TRUE(memory.intKnownStatements.find(
+        gl::StatementKey{ expressionId, goalId }) == nullptr);
+}
+
+// Lexical visibility does not cross sibling scopes. A fact arriving under one
+// parent cannot close an equal-expression goal under another parent, and the
+// failed visibility probe creates neither mail nor a redundant child fact.
+TEST(prover, sibling_fact_does_not_close_scoped_goal) {
+    gl::ExpressionAnalyzer analyzer("Peano");
+    analyzer.parameters.trackHistory = true;
+    gl::Memory memory;
+    const gl::NameId mainId = memory.nameMap.encode("main");
+    const gl::NameId goalParent =
+        memory.nameMap.encodePush(mainId, gl::StrSpan("(implC)", 7));
+    const gl::NameId sourceParent =
+        memory.nameMap.encodePush(mainId, gl::StrSpan("(implD)", 7));
+    const char* goalPayload = "orint_(or9[x])_((=[a,X]))";
+    const gl::NameId goalId = memory.nameMap.encodePush(
+        goalParent, gl::StrSpan(
+            goalPayload, static_cast<int32_t>(std::strlen(goalPayload))));
+    const gl::NameId expressionId = memory.nameMap.encode("(=[a,X])");
+    const int64_t packedGoal =
+        gl::packStatementKey(expressionId, goalId);
+    memory.intToBeProved.assignSet(packedGoal, nullptr, 0);
+
+    const gl::EncodedExpression sourceExpression(
+        "(=[a,X])", memory.nameMap.decode(sourceParent));
+    const gl::IntEncodedExpr source =
+        gl::encodeExpression(sourceExpression, memory.nameMap);
+    const int64_t packedSource =
+        gl::packStatementKey(source.originalId, source.validityId);
+    memory.intKnownStatements.insert(
+        gl::StatementKey{ source.originalId, source.validityId },
+        gl::StatementFlags{ true, false, true, true });
+    memory.intStatementLevelsMap.insertSorted(packedSource, 6);
+    memory.intLocalEncodedStatementsDelta.push_back(source);
+
+    analyzer.dischargeToBeProved(
+        memory, 0, memory.sameIterationInternalMail);
+
+    const gl::Mail mail = gl::makeHeapMail(
+        memory.sameIterationInternalMail,
+        memory.nameMap, memory.originInterner);
+    ASSERT_TRUE(mail.statements.empty());
+    ASSERT_TRUE(mail.exprOriginMap.empty());
+    ASSERT_TRUE(memory.intToBeProved.lookup(packedGoal) != 0);
+    ASSERT_TRUE(memory.intKnownStatements.find(
+        gl::StatementKey{ expressionId, goalId }) == nullptr);
+    ASSERT_FALSE(memory.pendingWipeScopes.contains(goalId));
 }
 
 // WorkInstruction codecs are byte/id-identical to the heap encodeInstruction /
@@ -879,9 +2052,9 @@ TEST(memory, arena_integration_map_matches_heap) {
     //     assignRun(flatten()); buildFromCold deserializes the blob bytes straight
     //     back into the arena form. No intermediate heap IntegrationEntry crosses
     //     either boundary.
-    gl::TypedColdBlobMap<int32_t, gl::IntegrationEntry> coldDirect(&lb, &d);
-    gl::TypedColdBlobMap<int32_t, gl::IntegrationEntry> coldHeap(&lb, &d);
-    const int32_t pkCold = 0x00070003;
+    gl::TypedColdBlobMap<int64_t, gl::IntegrationEntry> coldDirect(&lb, &d);
+    gl::TypedColdBlobMap<int64_t, gl::IntegrationEntry> coldHeap(&lb, &d);
+    const int64_t pkCold = 0x00070003;
     am.writeToCold(coldDirect, pkCold);          // direct serialize (no heap record)
     coldHeap.assignRun(pkCold, am.flatten());     // the former heap write path
     const int32_t idD = coldDirect.lookup(pkCold);
@@ -1366,13 +2539,13 @@ TEST(memory, inttobeproved_persistent_pool_lifecycle) {
     ASSERT_EQ(m.persistentArena.blocksHeld(), static_cast<int64_t>(0));
     ASSERT_TRUE(m.persistentArena.resident());
 
-    const int32_t k = gl::packStatementKey(1, gl::NameMap::MAIN_ID);
+    const int64_t k = gl::packStatementKey(1, gl::NameMap::MAIN_ID);
     m.intToBeProved.insertSorted(k, 0);
     ASSERT_TRUE(m.persistentArena.blocksHeld() > 0);   // a persistent block is pinned
     ASSERT_EQ(m.intToBeProved.count(), static_cast<int32_t>(1));
-    // Low 16 bits of the key are the validity id — a main-scope goal (the
+    // Low 32 bits of the key are the validity id — a main-scope goal (the
     // deactivation survey's exact probe).
-    ASSERT_EQ(static_cast<int16_t>(m.intToBeProved.keyAt(1) & 0xFFFF),
+    ASSERT_EQ(gl::Codec<gl::StatementKey>::decode(m.intToBeProved.keyAt(1)).validity,
               gl::NameMap::MAIN_ID);
 
     // Discharge reclaims the persistent block and empties the registry.
@@ -1594,7 +2767,7 @@ TEST(prover, count_pattern_occurrences_matches_regex_oracle) {
     gl::ExpressionAnalyzer ea("Peano");
     gl::Memory m;
     // Two it_*_lev_*_* names; one is a recursion product (must be skipped).
-    const int16_t idProd = m.nameMap.encode("it_1_lev_2_3");
+    const gl::NameId idProd = m.nameMap.encode("it_1_lev_2_3");
     (void)m.nameMap.encode("it_4_lev_5_6");
     m.overallHashMemory.productsOfRecursionIds.mint(idProd);
 
@@ -1603,7 +2776,7 @@ TEST(prover, count_pattern_occurrences_matches_regex_oracle) {
         int counter = 0;
         for (std::sregex_iterator i(s.begin(), s.end(), kPat), e; i != e; ++i) {
             const std::string match = i->str();
-            const int16_t matchId = m.nameMap.lookup(match);
+            const gl::NameId matchId = m.nameMap.lookup(match);
             if (matchId == 0
                 || !m.overallHashMemory.productsOfRecursionIds.contains(matchId)) {
                 ++counter;
@@ -1770,13 +2943,16 @@ TEST(prover, find_all_u_args_span_distinct) {
 }
 
 // extractSubstringsForAuxy (S6c item 5) — the lexical twin produces the same
-// std::vector (order-sensitive) as the verbatim former std::sregex_iterator body
-// over \(([^>(\[]+\[[^\]]*\])\) (oracle in-test; std::regex lives in the TEST
-// only). Covers the offset-1 nested match, the excluded '>' run, unterminated
-// bracket, empty bracket, back-to-back, trailing paren, and ']'-not-followed-by-')'.
+// std::vector (order-sensitive) as the std::sregex_iterator body over
+// !?\(([^>(\[]+\[[^\]]*\])\) (oracle in-test; std::regex lives in the TEST
+// only). A leading '!' belongs to the subexpression — a negated leaf premise
+// keeps its negation so the induction-hypothesis rule stays sound. Covers the
+// offset-1 nested match, the excluded '>' run, unterminated bracket, empty
+// bracket, back-to-back, trailing paren, ']'-not-followed-by-')', and the
+// negated forms (leading, embedded, and negated-nested).
 TEST(prover, extract_substrings_for_auxy_matches_regex_oracle) {
     gl::ExpressionAnalyzer ea("Peano");
-    static const std::regex re(R"(\(([^>(\[]+\[[^\]]*\])\))");
+    static const std::regex re(R"(!?\(([^>(\[]+\[[^\]]*\])\))");
     const auto oracle = [&](const std::string& e) -> std::vector<std::string> {
         std::vector<std::string> out;
         for (std::sregex_iterator it(e.begin(), e.end(), re), end; it != end; ++it)
@@ -1793,10 +2969,21 @@ TEST(prover, extract_substrings_for_auxy_matches_regex_oracle) {
         "(f[x])(g[y])",    // back-to-back -> two
         "(f[x]))",         // trailing paren -> ["(f[x])"]
         "(f[x]y)",         // ']' followed by non-')' -> []
+        "!(f[x])",         // negated leaf -> ["!(f[x])"]
+        "(g[a])!(f[x])",   // embedded negation -> ["(g[a])", "!(f[x])"]
+        "(!(a[b]))",       // negated-nested: '!' before offset-2 match -> ["!(a[b])"]
+        "(>[]!(existence3[1,7,3])(=[7,2]))", // companion shape -> ["!(existence3[1,7,3])", "(=[7,2])"]
     };
     for (const std::string& s : cases) {
         ASSERT_TRUE(ea.extractSubstringsForAuxy(s) == oracle(s));
     }
+    // Pin the companion shape's expected output explicitly (not only via the
+    // oracle): the negated existence premise keeps its '!'.
+    const std::vector<std::string> companion =
+        ea.extractSubstringsForAuxy("(>[]!(existence3[1,7,3])(=[7,2]))");
+    ASSERT_EQ(companion.size(), 2u);
+    ASSERT_EQ(companion[0], "!(existence3[1,7,3])");
+    ASSERT_EQ(companion[1], "(=[7,2])");
 }
 
 // chooseCanonical — picks one representative for a whole equivalence class,
@@ -1862,7 +3049,7 @@ TEST(prover, apply_equi_admission_drops_and_rekeys) {
     gl::ExpressionAnalyzer ea("Peano");
     gl::Memory m;
 
-    const int32_t oldPk = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+    const int64_t oldPk = gl::mintTemplateKey(m.templateInterner, m.nameMap,
         "(in2[it_5_lev_1_2,marker,3])", "main");
     gl::AdmissionMapValue value;
     value.key = encodeValueVectorOracle(
@@ -1889,7 +3076,7 @@ TEST(prover, apply_equi_admission_drops_and_rekeys) {
     ASSERT_TRUE(m.overallHashMemory.admissionStatusMap.find(oldPk) == nullptr);
 
     // Canonical key inserted; status moved (true); value element rewritten.
-    int32_t newPk = 0;
+    int64_t newPk = 0;
     ASSERT_TRUE(gl::lookupTemplateKey(m.templateInterner, m.nameMap,
         "(in2[it_0_lev_1_2,marker,3])", "main", newPk));
     const int32_t newAdmId = m.overallHashMemory.admissionMap.lookup(newPk);
@@ -1915,7 +3102,7 @@ TEST(prover, apply_equi_rejected_drops_and_mails) {
     gl::ExpressionAnalyzer ea("Peano");
     gl::Memory m;
 
-    const int32_t oldPk = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+    const int64_t oldPk = gl::mintTemplateKey(m.templateInterner, m.nameMap,
         "(in2[it_5_lev_1_2,marker,3])", "main");
     gl::RejectedMapValue rv;
     rv.expression = m.valueInterner.encode("(in3[it_5_lev_1_2,7,3,plus])");
@@ -2105,7 +3292,7 @@ TEST(memory, rejected_value_blob_view_matches_codec) {
         ASSERT_EQ(view.levelCount(), static_cast<int32_t>(v.levels.size()));
         int lv[16];
         view.copyLevels(lv);
-        int32_t k = 0;
+        int64_t k = 0;
         for (const int x : v.levels) {
             ASSERT_EQ(lv[k], x);
             ++k;
@@ -2163,7 +3350,7 @@ TEST(memory, rejected_run_order_matches_decoded_set_oracle) {
     gl::ColdStringTable valTable(&lb, &d);
     gl::ValueInterner vi;
     vi.bind(&valTable);
-    gl::TypedColdBlobMap<int32_t, gl::RejectedMapValue> rm(&lb, &d);
+    gl::TypedColdBlobMap<int64_t, gl::RejectedMapValue> rm(&lb, &d);
 
     // Mint order deliberately anti-lex so id order != decoded-lex order.
     const int32_t renZZ = vi.encode("zz_ren");
@@ -2184,7 +3371,7 @@ TEST(memory, rejected_run_order_matches_decoded_set_oracle) {
     const gl::RejectedMapValue E(renAA, expr1, 2, conc1, {},
                                  std::set<int>{ 0, 3 });
 
-    const int32_t pk = 42;
+    const int64_t pk = 42;
     gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
         gl::genScratchArenas().slotCount() - 1);
     gl::insertRejectedValue(rm, pk, A, vi, tArena);
@@ -2230,8 +3417,8 @@ TEST(memory, insert_admission_ids_blob_matches_value_form) {
     gl::ColdStringTable valTable(&lb, &d);
     gl::ValueInterner vi;
     vi.bind(&valTable);
-    gl::TypedColdBlobMap<int32_t, gl::AdmissionMapValue> mapV(&lb, &d);
-    gl::TypedColdBlobMap<int32_t, gl::AdmissionMapValue> mapB(&lb, &d);
+    gl::TypedColdBlobMap<int64_t, gl::AdmissionMapValue> mapV(&lb, &d);
+    gl::TypedColdBlobMap<int64_t, gl::AdmissionMapValue> mapB(&lb, &d);
     gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
         gl::genScratchArenas().slotCount() - 1);
 
@@ -2248,7 +3435,7 @@ TEST(memory, insert_admission_ids_blob_matches_value_form) {
         { {k1}, {r1}, 7, 8, true },
         { {k1, k2}, {r1, r2}, 3, 4, false },   // duplicate of the first
     };
-    const int32_t pk = 42;
+    const int64_t pk = 42;
     for (const Rec& rc : recs) {
         gl::AdmissionMapValue v(rc.key, rc.rem, rc.depth, rc.sec, rc.flag);
         gl::insertAdmissionValue(mapV, pk, v, vi, tArena);
@@ -2284,7 +3471,7 @@ TEST(memory, snapshot_admission_run_matches_admissionRecordsAt) {
     gl::ColdStringTable valTable(&lb, &d);
     gl::ValueInterner vi;
     vi.bind(&valTable);
-    gl::TypedColdBlobMap<int32_t, gl::AdmissionMapValue> m(&lb, &d);
+    gl::TypedColdBlobMap<int64_t, gl::AdmissionMapValue> m(&lb, &d);
     gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
         gl::genScratchArenas().slotCount() - 1);
 
@@ -2300,7 +3487,7 @@ TEST(memory, snapshot_admission_run_matches_admissionRecordsAt) {
         { {k1}, {r1}, 7, 8, true },
         { {k1, k2}, {r1, r2}, 3, 4, false },   // duplicate (deduped by RMW)
     };
-    const int32_t pk = 42;
+    const int64_t pk = 42;
     for (const Rec& rc : recs) {
         gl::AdmissionMapValue v(rc.key, rc.rem, rc.depth, rc.sec, rc.flag);
         gl::insertAdmissionValue(m, pk, v, vi, tArena);
@@ -2346,7 +3533,7 @@ TEST(memory, snapshot_rejected_run_matches_set) {
     gl::ColdStringTable valTable(&lb, &d);
     gl::ValueInterner vi;
     vi.bind(&valTable);
-    gl::TypedColdBlobMap<int32_t, gl::RejectedMapValue> m(&lb, &d);
+    gl::TypedColdBlobMap<int64_t, gl::RejectedMapValue> m(&lb, &d);
     gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
         gl::genScratchArenas().slotCount() - 1);
 
@@ -2366,7 +3553,7 @@ TEST(memory, snapshot_rejected_run_matches_set) {
         { ren1, ex2, 7, cc1, { s2 }, { 1 } },
         { ren1, ex1, 3, cc1, { s1, s2 }, { 0, 2, 5 } }, // duplicate (RMW dedups)
     };
-    const int32_t pk = 42;
+    const int64_t pk = 42;
     for (const Rec& rc : recs) {
         gl::RejectedMapValue v(rc.ren, rc.ex, rc.it, rc.cc, rc.sib, rc.lv);
         gl::insertRejectedValue(m, pk, v, vi, tArena);
@@ -2411,7 +3598,7 @@ TEST(memory, snapshot_rejected_integration_run_matches_set) {
     gl::ColdStringTable valTable(&lb, &d);
     gl::ValueInterner vi;
     vi.bind(&valTable);
-    gl::TypedColdBlobMap<int32_t, gl::RejectedMapIntegrationValue> m(&lb, &d);
+    gl::TypedColdBlobMap<int64_t, gl::RejectedMapIntegrationValue> m(&lb, &d);
     gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
         gl::genScratchArenas().slotCount() - 1);
 
@@ -2428,7 +3615,7 @@ TEST(memory, snapshot_rejected_integration_run_matches_set) {
         { cc1, { s2 }, comp2 },
         { cc1, { s1, s2 }, comp1 },          // duplicate (RMW dedups)
     };
-    const int32_t pk = 7;
+    const int64_t pk = 7;
     for (const Rec& rc : recs) {
         gl::RejectedMapIntegrationValue v(rc.cc, rc.sib, rc.comp);
         gl::insertRejectedIntegrationValue(m, pk, v, vi);
@@ -3193,7 +4380,7 @@ TEST(memory, multiply_implication_span_matches_heap) {
 // Row-300 write doors (batch 7 c10) — each byte-identical to its owning-form
 // oracle. encodeNormKeyInto == Codec<NormKey>::encode.
 TEST(memory, encode_norm_key_into_matches_codec) {
-    struct C { int16_t ne; std::vector<int16_t> data; };
+    struct C { gl::NameId ne; std::vector<gl::NameId> data; };
     const std::vector<C> cases = {
         { 3, {} }, { 1, { 5 } }, { 2, { -1, 0, 7, 32000 } },
         { 8, { 1, 2, 3, 4, 5 } },
@@ -3222,7 +4409,7 @@ TEST(memory, merge_owner_record_raw_matches_owning) {
     gl::TypedColdBlobMap<gl::NormKey, gl::OwnerSet> mapRaw(&lb, &d);
     gl::NameMap nm;   // (void)nm inside — unused
 
-    struct M { int16_t ne; std::vector<int16_t> data; int32_t pid; };
+    struct M { gl::NameId ne; std::vector<gl::NameId> data; int32_t pid; };
     const std::vector<M> ms = {
         { 3, { 1, 2 }, 100 }, { 3, { 1, 2 }, 200 }, { 2, { 5 }, 100 },
         { 3, { 1, 2 }, 100 },   // duplicate partitionId (set no-op)
@@ -3261,9 +4448,9 @@ TEST(memory, build_usignature_run_matches_record_usignature) {
                                   gl::encodeExpression(e1, nm) };
 
     gl::OwnerSet osInt;                              // oracle
-    gl::recordUSignature(osInt, enc, static_cast<int16_t>(2));
+    gl::recordUSignature(osInt, enc, static_cast<gl::NameId>(2));
 
-    std::pair<int16_t, int16_t> run[2 * gl::ExecutionParameters::MAX_ARITY];
+    std::pair<gl::NameId, gl::NameId> run[2 * gl::ExecutionParameters::MAX_ARITY];
     bool hasUArg = false;
     const int32_t n = gl::buildUSignatureRunInto(enc, 2, run,
         2 * gl::ExecutionParameters::MAX_ARITY, hasUArg);
@@ -3271,7 +4458,7 @@ TEST(memory, build_usignature_run_matches_record_usignature) {
     ASSERT_EQ(hasUArg, !osInt.hasLooseOwner);
     ASSERT_TRUE(hasUArg);
     ASSERT_EQ((int)osInt.uSignatures.size(), 1);
-    const std::vector<std::pair<int16_t, int16_t>>& sig = *osInt.uSignatures.begin();
+    const std::vector<std::pair<gl::NameId, gl::NameId>>& sig = *osInt.uSignatures.begin();
     ASSERT_EQ((int)sig.size(), (int)n);
     for (int32_t i = 0; i < n; ++i) {
         ASSERT_EQ(run[i].first, sig[static_cast<size_t>(i)].first);
@@ -3282,7 +4469,7 @@ TEST(memory, build_usignature_run_matches_record_usignature) {
     gl::EncodedExpression e2("(in2[a,b])", "main");
     gl::IntEncodedExpr encLoose[1] = { gl::encodeExpression(e2, nm) };
     gl::OwnerSet osLoose;
-    gl::recordUSignature(osLoose, encLoose, static_cast<int16_t>(1));
+    gl::recordUSignature(osLoose, encLoose, static_cast<gl::NameId>(1));
     bool hasU2 = true;
     const int32_t n2 = gl::buildUSignatureRunInto(encLoose, 1, run,
         gl::ExecutionParameters::MAX_ARITY, hasU2);
@@ -3314,8 +4501,8 @@ TEST(memory, merge_owner_record_raw_blob_matches_owning) {
     gl::IntEncodedExpr iB = gl::encodeExpression(eB, nm);
     gl::IntEncodedExpr iC = gl::encodeExpression(eC, nm);
 
-    const int16_t ne = 3;
-    const std::vector<int16_t> data = { 1, 2 };
+    const gl::NameId ne = 3;
+    const std::vector<gl::NameId> data = { 1, 2 };
     const gl::NormKey nk{ ne, data };
 
     struct Step { int32_t pid; std::vector<gl::IntEncodedExpr> enc; };
@@ -3329,10 +4516,10 @@ TEST(memory, merge_owner_record_raw_blob_matches_owning) {
 
     for (const Step& s : steps) {
         gl::ExpressionAnalyzer::mergeOwnerRecord(mapOwn, nk, s.pid,
-            s.enc.data(), static_cast<int16_t>(s.enc.size()), nm);
+            s.enc.data(), static_cast<gl::NameId>(s.enc.size()), nm);
         gl::ExpressionAnalyzer::mergeOwnerRecord(mapRaw, ne, data.data(),
             static_cast<int32_t>(data.size()), s.pid,
-            s.enc.data(), static_cast<int16_t>(s.enc.size()), nm);
+            s.enc.data(), static_cast<gl::NameId>(s.enc.size()), nm);
         const int32_t io = mapOwn.lookup(nk);
         const int32_t ir = mapRaw.lookup(nk);
         ASSERT_TRUE(io != 0 && ir != 0);
@@ -3353,9 +4540,9 @@ TEST(memory, append_lmv_ids_record_matches_value) {
     gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
         gl::genScratchArenas().slotCount() - 1);
 
-    struct L { int16_t ne; std::vector<int16_t> data; int32_t valueId;
+    struct L { gl::NameId ne; std::vector<gl::NameId> data; int32_t valueId;
                bool isMarker; std::vector<int32_t> keyIds;
-               std::vector<int32_t> remIds; int32_t origImpl; int16_t vid; };
+               std::vector<int32_t> remIds; int32_t origImpl; gl::NameId vid; };
     const std::vector<L> ls = {
         { 3, { 1, 2 }, 42, true, { 7, 8 }, { 9 }, 100, 5 },
         { 3, { 1, 2 }, 43, false, {}, {}, 100, 5 },        // same key, second record
@@ -3405,17 +4592,18 @@ TEST(memory, append_lmv_ids_record_head_matches_value) {
     gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
         gl::genScratchArenas().slotCount() - 1);
 
-    struct H { int16_t ne; std::vector<int16_t> data; int32_t valueId;
+    struct H { gl::NameId ne; std::vector<gl::NameId> data; int32_t valueId;
                bool isMarker; std::vector<int32_t> keyIds;
-               std::vector<int32_t> remIds; int32_t origImpl; int16_t vid;
-               std::vector<int> levels; gl::RuleJustification just; bool pod; };
+               std::vector<int32_t> remIds; int32_t origImpl; gl::NameId vid;
+               std::vector<int> levels; gl::RuleJustification just; bool pod;
+               bool da; };
     const std::vector<H> hs = {
         { 3, { 1, 2 }, 42, false, { 7, 8 }, { 9 }, 100, 5,
-          { 1, 3, 7 }, gl::RuleJustification::implication, true },
+          { 1, 3, 7 }, gl::RuleJustification::implication, true, true },
         { 3, { 1, 2 }, 43, false, {}, {}, 100, 5,
-          {}, gl::RuleJustification::integration, false },   // same key, empty levels
+          {}, gl::RuleJustification::integration, false, false },   // same key, empty levels
         { 2, { 5 }, 44, true, { 1, 2, 3 }, { 4, 5 }, 200, 1,
-          { 2 }, gl::RuleJustification::implication, false },
+          { 2 }, gl::RuleJustification::implication, false, false },
     };
     std::vector<gl::NormKey> keys;
     for (const H& h : hs) {
@@ -3429,6 +4617,7 @@ TEST(memory, append_lmv_ids_record_head_matches_value) {
         lmv.levels = std::set<int>(h.levels.begin(), h.levels.end());
         lmv.justification = h.just;
         lmv.productOfDisintegration = h.pod;
+        lmv.disintegrationAllowed = h.da;
         const gl::NormKey nk{ h.ne, h.data };
         mapOwn.appendRecord(nk, lmv);
         gl::appendLmvIdsRecord(mapRaw, h.ne,
@@ -3439,7 +4628,7 @@ TEST(memory, append_lmv_ids_record_head_matches_value) {
             h.remIds.empty() ? nullptr : h.remIds.data(),
             static_cast<int32_t>(h.remIds.size()), h.origImpl, h.vid, tArena,
             h.levels.empty() ? nullptr : h.levels.data(),
-            static_cast<int32_t>(h.levels.size()), h.just, h.pod);
+            static_cast<int32_t>(h.levels.size()), h.just, h.pod, h.da);
         keys.push_back(nk);
     }
     for (const gl::NormKey& nk : keys) {
@@ -3557,21 +4746,21 @@ TEST(memory, insert_remaining_args_normkey_raw_matches_owning) {
     gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
         gl::genScratchArenas().slotCount() - 1);
 
-    struct I { std::vector<int16_t> arg; int16_t ne; std::vector<int16_t> data; };
+    struct I { std::vector<gl::NameId> arg; gl::NameId ne; std::vector<gl::NameId> data; };
     const std::vector<I> is = {
         { { 1, 2 }, 3, { 5, 6 } }, { { 1, 2 }, 3, { 4, 6 } },   // same key, sorts
         { { 7 }, 2, { 9 } }, { { 1, 2 }, 3, { 5, 6 } },         // duplicate (no-op)
     };
     std::vector<gl::Int16SetKey> keys;
     for (const I& it : is) {
-        const std::set<int16_t> argSet(it.arg.begin(), it.arg.end());
+        const std::set<gl::NameId> argSet(it.arg.begin(), it.arg.end());
         const gl::NormKey nk{ it.ne, it.data };
         gl::ExpressionAnalyzer::insertRemainingArgsNormKey(mapOwn, revOwn, argSet, nk, tArena);
         gl::ExpressionAnalyzer::insertRemainingArgsNormKey(mapRaw, revRaw,
             it.arg.data(), static_cast<int32_t>(it.arg.size()), it.ne,
             it.data.empty() ? nullptr : it.data.data(),
             static_cast<int32_t>(it.data.size()), tArena);
-        keys.push_back(gl::Int16SetKey{ std::vector<int16_t>(argSet.begin(), argSet.end()) });
+        keys.push_back(gl::Int16SetKey{ std::vector<gl::NameId>(argSet.begin(), argSet.end()) });
     }
     for (const gl::Int16SetKey& k : keys) {
         const int32_t io = mapOwn.lookup(k);
@@ -3594,8 +4783,8 @@ TEST(memory, insert_rejected_ids_blob_matches_value_form) {
     gl::ColdStringTable valTable(&lb, &d);
     gl::ValueInterner vi;
     vi.bind(&valTable);
-    gl::TypedColdBlobMap<int32_t, gl::RejectedMapValue> mapV(&lb, &d);
-    gl::TypedColdBlobMap<int32_t, gl::RejectedMapValue> mapB(&lb, &d);
+    gl::TypedColdBlobMap<int64_t, gl::RejectedMapValue> mapV(&lb, &d);
+    gl::TypedColdBlobMap<int64_t, gl::RejectedMapValue> mapB(&lb, &d);
     gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
         gl::genScratchArenas().slotCount() - 1);
 
@@ -3610,7 +4799,7 @@ TEST(memory, insert_rejected_ids_blob_matches_value_form) {
         { renAA, expr1, 2, conc1, {conc1}, {0, 2, 3} },
         { renZZ, expr1, 5, conc1, {conc1}, {1, 3} },  // duplicate of the first
     };
-    const int32_t pk = 7;
+    const int64_t pk = 7;
     for (const Rec& rc : recs) {
         gl::RejectedMapValue v(rc.ren, rc.expr, rc.iter, rc.conc,
             std::vector<int32_t>(rc.sibs),
@@ -3647,8 +4836,8 @@ TEST(memory, insert_rejected_integration_ids_blob_matches_value_form) {
     gl::ColdStringTable valTable(&lb, &d);
     gl::ValueInterner vi;
     vi.bind(&valTable);
-    gl::TypedColdBlobMap<int32_t, gl::RejectedMapIntegrationValue> mapV(&lb, &d);
-    gl::TypedColdBlobMap<int32_t, gl::RejectedMapIntegrationValue> mapB(&lb, &d);
+    gl::TypedColdBlobMap<int64_t, gl::RejectedMapIntegrationValue> mapV(&lb, &d);
+    gl::TypedColdBlobMap<int64_t, gl::RejectedMapIntegrationValue> mapB(&lb, &d);
     gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
         gl::genScratchArenas().slotCount() - 1);
 
@@ -3663,7 +4852,7 @@ TEST(memory, insert_rejected_integration_ids_blob_matches_value_form) {
         { cAA, {s1}, comp1 },
         { cZZ, {s1, comp1}, comp1 },     // duplicate of the first
     };
-    const int32_t pk = 9;
+    const int64_t pk = 9;
     for (const Rec& rc : recs) {
         gl::RejectedMapIntegrationValue v(rc.conc, std::vector<int32_t>(rc.sibs), rc.comp);
         gl::insertRejectedIntegrationValue(mapV, pk, v, vi);
@@ -4165,12 +5354,12 @@ TEST(prover, prepare_integration_set_flatten_matches_sorted_run) {
         int32_t nA = 0;
         for (const std::string& a : unchg) sortedA[nA++] = gl::StrSpan(a);
         ea.prepareIntegration(gl::StrSpan(expr), sortedA, nA, mA,
-                              gl::StrSpan(std::string("main")));
+                              gl::StrSpan(std::string("main")), gl::StrSpan());
 
         const std::string nStr = "N";
         const gl::StrSpan run[1] = { gl::StrSpan(nStr) };
         ea.prepareIntegration(gl::StrSpan(expr), run, 1, mB,
-                              gl::StrSpan(std::string("main")));
+                              gl::StrSpan(std::string("main")), gl::StrSpan());
     }
 
     // Case 2: three unchangeable args inserted out of lex order (pins the
@@ -4188,13 +5377,13 @@ TEST(prover, prepare_integration_set_flatten_matches_sorted_run) {
         int32_t nA = 0;
         for (const std::string& a : unchg) sortedA[nA++] = gl::StrSpan(a);
         ea.prepareIntegration(gl::StrSpan(expr), sortedA, nA, mA,
-                              gl::StrSpan(std::string("main")));
+                              gl::StrSpan(std::string("main")), gl::StrSpan());
 
         const std::string aStr = "a", bStr = "b", plusStr = "plus";
         const gl::StrSpan run[3] = { gl::StrSpan(aStr), gl::StrSpan(bStr),
                                      gl::StrSpan(plusStr) };
         ea.prepareIntegration(gl::StrSpan(expr), run, 3, mB,
-                              gl::StrSpan(std::string("main")));
+                              gl::StrSpan(std::string("main")), gl::StrSpan());
     }
 
     // Observable-state equality across the two rigs.
@@ -4238,7 +5427,7 @@ TEST(prover, prepare_integration_set_flatten_matches_sorted_run) {
     ASSERT_EQ(mA.nameMap.nameCount(), mB.nameMap.nameCount());
     ASSERT_EQ(mA.templateInterner.internedCount(),
               mB.templateInterner.internedCount());
-    for (int16_t i = 1; i <= mA.templateInterner.internedCount(); ++i) {
+    for (gl::NameId i = 1; i <= mA.templateInterner.internedCount(); ++i) {
         ASSERT_TRUE(mA.templateInterner.decode(i)
                     == mB.templateInterner.decode(i));
     }
@@ -4274,14 +5463,14 @@ TEST(memory, internal_disintegration_signal_span_door_twin) {
     const std::string e2 = "(=[2,repl_lev_1_0])", v2 = "main_boundary_x";
 
     gl::setInternalDisintegrationSignal(mA.sameIterationInternalMail,
-        mA.nameMap, gl::ExpressionWithValidity(e1, v1), true, false);
+        mA.nameMap, gl::ExpressionWithValidity(e1, v1), true, false, 1);
     gl::setInternalDisintegrationSignal(mA.sameIterationInternalMail,
-        mA.nameMap, gl::ExpressionWithValidity(e2, v2), false, true);
+        mA.nameMap, gl::ExpressionWithValidity(e2, v2), false, true, -1);
 
     gl::setInternalDisintegrationSignal(mB.sameIterationInternalMail,
-        mA.nameMap, gl::StrSpan(e1), gl::StrSpan(v1), true, false);
+        mA.nameMap, gl::StrSpan(e1), gl::StrSpan(v1), true, false, 1);
     gl::setInternalDisintegrationSignal(mB.sameIterationInternalMail,
-        mA.nameMap, gl::StrSpan(e2), gl::StrSpan(v2), false, true);
+        mA.nameMap, gl::StrSpan(e2), gl::StrSpan(v2), false, true, -1);
 
     auto& sigA = mA.sameIterationInternalMail.disintegrationSignals_;
     auto& sigB = mB.sameIterationInternalMail.disintegrationSignals_;
@@ -4300,7 +5489,7 @@ TEST(memory, internal_disintegration_signal_span_door_twin) {
 // the keyIds run.
 namespace {
     inline gl::LocalMemoryValue mkLmv(int32_t valueId, int32_t implId,
-        int16_t vid, bool marker, bool pod, std::set<int> levels,
+        gl::NameId vid, bool marker, bool pod, std::set<int> levels,
         std::vector<int32_t> keyIds, std::vector<int32_t> remaining) {
         gl::LocalMemoryValue v;
         v.valueId = valueId;
@@ -4402,7 +5591,7 @@ TEST(memory, eradicate_encoded_map_splice_matches_heap_oracle) {
     gl::TypedColdBlobMap<gl::NormKey, gl::LocalMemoryValue> B(&lb, &dB);
 
     const int32_t implId = 77;
-    const int16_t implVid = 3;
+    const gl::NameId implVid = 3;
 
     const gl::NormKey k1{ 1, { 100, 101 } };        // fully dropped
     const gl::NormKey k2{ 2, { 200 } };             // partially filtered
@@ -4504,8 +5693,8 @@ TEST(memory, best_sanitize_peer_matches_decoded_class_oracle) {
     gl::ScratchArena arena;
     arena.bind(&gl::staticMemory());
 
-    const int16_t mainId = m.nameMap.encode("main");
-    const int16_t childId = m.nameMap.encodePush(mainId, "(impl1[q])");
+    const gl::NameId mainId = m.nameMap.encode("main");
+    const gl::NameId childId = m.nameMap.encodePush(mainId, "(impl1[q])");
     const std::string mainN = m.nameMap.decode(mainId);
     const std::string childN = m.nameMap.decode(childId);
 
@@ -4522,7 +5711,7 @@ TEST(memory, best_sanitize_peer_matches_decoded_class_oracle) {
     auto oracleBestPeer = [&m](const std::string& argName,
                                const std::vector<std::string>& scopesToCheck,
                                std::string& bestPeer, bool& bestPeerIsInt) {
-        const int16_t argId = m.nameMap.lookup(argName);
+        const gl::NameId argId = m.nameMap.lookup(argName);
         bestPeer.clear();
         bestPeerIsInt = false;
         for (const std::string& scope : scopesToCheck) {
@@ -4532,7 +5721,7 @@ TEST(memory, best_sanitize_peer_matches_decoded_class_oracle) {
                 if (argId == 0
                     || std::find(clss.memberIds.begin(), clss.memberIds.end(),
                                  argId) == clss.memberIds.end()) continue;
-                for (const int16_t peerId : clss.memberIds) {
+                for (const gl::NameId peerId : clss.memberIds) {
                     if (peerId == argId) continue;
                     const gl::NameKind peerKind =
                         m.eqClassNameCaches.kindOf(peerId, m.nameMap);
@@ -4556,7 +5745,7 @@ TEST(memory, best_sanitize_peer_matches_decoded_class_oracle) {
         gl::StrSpan scopes[8];
         for (std::size_t i = 0; i < scopeNames.size(); ++i)
             scopes[i] = gl::StrSpan(scopeNames[i]);
-        const int16_t argId = m.nameMap.lookup(argName);
+        const gl::NameId argId = m.nameMap.lookup(argName);
         gl::StrSpan bestPeer;
         bool bestPeerIsInt = false;
         gl::bestSanitizePeer(m, argId, scopes,
@@ -4589,10 +5778,10 @@ TEST(memory, best_sanitize_peer_matches_decoded_class_oracle) {
 // shared original across two validities (both tie-break directions).
 TEST(memory, tbp_snapshot_idx_sort_matches_decode_to_be_proved_sorted) {
     gl::Memory m;
-    const int16_t mainId = m.nameMap.encode("main");
-    const int16_t subId = m.nameMap.encodePush(mainId, "(impl1[s])");
+    const gl::NameId mainId = m.nameMap.encode("main");
+    const gl::NameId subId = m.nameMap.encodePush(mainId, "(impl1[s])");
     const std::set<int> aux{ 1, 2 };
-    auto add = [&m, &aux](const char* o, int16_t vid) {
+    auto add = [&m, &aux](const char* o, gl::NameId vid) {
         const std::string os(o);
         m.intToBeProved.assignSetRange(
             gl::packStatementKey(m.nameMap.encode(os), vid),
@@ -4607,26 +5796,22 @@ TEST(memory, tbp_snapshot_idx_sort_matches_decode_to_be_proved_sorted) {
     add("(m5[c])", mainId);
 
     // The production comparator, copied verbatim from sanitizeToBeProved.
-    std::vector<int32_t> keys;
+    std::vector<int64_t> keys;
     const int32_t n = m.intToBeProved.count();
     for (int32_t id = 1; id <= n; ++id)
         keys.push_back(m.intToBeProved.keyAt(id));
     std::vector<int32_t> idx(static_cast<std::size_t>(n));
     for (int32_t k = 0; k < n; ++k) idx[static_cast<std::size_t>(k)] = k;
     std::sort(idx.begin(), idx.end(), [&](int32_t a, int32_t b) {
-        const int32_t ka = keys[static_cast<std::size_t>(a)];
-        const int32_t kb = keys[static_cast<std::size_t>(b)];
+        const int64_t ka = keys[static_cast<std::size_t>(a)];
+        const int64_t kb = keys[static_cast<std::size_t>(b)];
         const int c = gl::compareSpans(
-            m.nameMap.decodeView(static_cast<int16_t>(
-                (static_cast<uint32_t>(ka) >> 16) & 0xFFFF)),
-            m.nameMap.decodeView(static_cast<int16_t>(
-                (static_cast<uint32_t>(kb) >> 16) & 0xFFFF)));
+            m.nameMap.decodeView(gl::Codec<gl::StatementKey>::decode(ka).orig),
+            m.nameMap.decodeView(gl::Codec<gl::StatementKey>::decode(kb).orig));
         if (c != 0) return c < 0;
         return gl::compareSpans(
-            m.nameMap.decodeView(static_cast<int16_t>(
-                static_cast<uint32_t>(ka) & 0xFFFF)),
-            m.nameMap.decodeView(static_cast<int16_t>(
-                static_cast<uint32_t>(kb) & 0xFFFF))) < 0;
+            m.nameMap.decodeView(gl::Codec<gl::StatementKey>::decode(ka).validity),
+            m.nameMap.decodeView(gl::Codec<gl::StatementKey>::decode(kb).validity)) < 0;
     });
 
     // ORACLE — the retained production sort.
@@ -4780,7 +5965,7 @@ TEST(memory, cold_int_run_at_matches_cold_int_set) {
         const int32_t n =
             gl::coldIntRunAt(m.intStatementLevelsMap, id, run, 32);
         ASSERT_EQ(n, static_cast<int32_t>(oracle.size()));
-        int32_t k = 0;
+        int64_t k = 0;
         for (const int x : oracle) {
             ASSERT_EQ(run[k], x);
             ++k;
@@ -4813,7 +5998,7 @@ TEST(memory, insert_level_sorted_matches_set_insert) {
         n = gl::insertLevelSorted(run, n, v, 16);
         oracle.insert(v);
         ASSERT_EQ(n, static_cast<int32_t>(oracle.size()));
-        int32_t k = 0;
+        int64_t k = 0;
         for (const int x : oracle) {
             ASSERT_EQ(run[k], x);
             ++k;
@@ -4841,9 +6026,9 @@ TEST(memory, tbp_assign_set_range_run_matches_set) {
     gl::Memory mA;
     gl::Memory mB;
     const std::set<int> cases[] = { {}, { 0 }, { 0, 3, 7 } };
-    int16_t orig = 5;
+    gl::NameId orig = 5;
     for (const std::set<int>& s : cases) {
-        const int32_t pk = gl::packStatementKey(orig++, gl::NameMap::MAIN_ID);
+        const int64_t pk = gl::packStatementKey(orig++, gl::NameMap::MAIN_ID);
         mA.intToBeProved.assignSetRange(pk, s.begin(), s.end());
         int buf[8];
         int32_t bn = 0;
@@ -4918,7 +6103,7 @@ TEST(prover, integration_rejected_cold_roundtrip) {
     gl::Memory m;
     auto& rmi = m.overallHashMemory.rejectedMapIntegration;
 
-    const int32_t pk = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+    const int64_t pk = gl::mintTemplateKey(m.templateInterner, m.nameMap,
         "(in2[marker,7,3])", "main");
     gl::RejectedMapIntegrationValue a(
         m.valueInterner.encode("(in2[5,7,3])"),
@@ -4938,7 +6123,7 @@ TEST(prover, integration_rejected_cold_roundtrip) {
     ASSERT_EQ(got.size(), static_cast<std::size_t>(2));
 
     // Cold miss: a minted-but-never-written key reads as an empty set.
-    const int32_t absentPk = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+    const int64_t absentPk = gl::mintTemplateKey(m.templateInterner, m.nameMap,
         "(in2[marker,9,9])", "main");
     ASSERT_TRUE(gl::rejectedIntegrationRecordsAt(rmi, absentPk, m.valueInterner).empty());
 }
@@ -4952,7 +6137,7 @@ TEST(prover, integration_admission_cold_roundtrip) {
     gl::Memory m;
     auto& ami = m.overallHashMemory.admissionMapIntegration;
 
-    const int32_t pk = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+    const int64_t pk = gl::mintTemplateKey(m.templateInterner, m.nameMap,
         "(in2[u_a,marker,3])", "main");
 
     // One id-form instruction key.
@@ -4996,7 +6181,7 @@ TEST(prover, integration_admission_cold_roundtrip) {
     ASSERT_EQ(got2.begin()->second.size(), static_cast<std::size_t>(3));
 
     // Cold miss: a minted-but-never-written key reads as an empty nested map.
-    const int32_t absentPk = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+    const int64_t absentPk = gl::mintTemplateKey(m.templateInterner, m.nameMap,
         "(in2[u_z,marker,9])", "main");
     ASSERT_TRUE(gl::admissionIntegrationRecordsAt(ami, absentPk, m.valueInterner).empty());
 }
@@ -5005,9 +6190,9 @@ TEST(prover, integration_admission_cold_roundtrip) {
 // IntNormalizedKey hash determinism — equal keys hash to the same value;
 // distinct keys hash to (almost certainly) different values.
 TEST(memory, intnormalizedkey_hash_determinism) {
-    int16_t buf1[4] = {1, 0, 5, 1};
-    int16_t buf2[4] = {1, 0, 5, 1};
-    int16_t buf3[4] = {1, 0, 5, 2};
+    gl::NameId buf1[4] = {1, 0, 5, 1};
+    gl::NameId buf2[4] = {1, 0, 5, 1};
+    gl::NameId buf3[4] = {1, 0, 5, 2};
     gl::IntNormalizedKey k1(1, buf1, 4);
     gl::IntNormalizedKey k2(1, buf2, 4);
     gl::IntNormalizedKey k3(1, buf3, 4);
@@ -5088,17 +6273,21 @@ TEST(memory, lessbyoriginal_ordering) {
 // packStatementKey — int32_t pack of (originalId, validityId). Distinct
 // inputs map to distinct packed keys.
 TEST(memory, packstatementkey_uniqueness) {
-    int32_t a = gl::packStatementKey(0x1234, 0x5678);
-    int32_t b = gl::packStatementKey(0x1234, 0x5679);   // diff validityId
-    int32_t c = gl::packStatementKey(0x1235, 0x5678);   // diff originalId
-    int32_t d = gl::packStatementKey(0x1234, 0x5678);   // same as a
+    int64_t a = gl::packStatementKey(0x1234, 0x5678);
+    int64_t b = gl::packStatementKey(0x1234, 0x5679);   // diff validityId
+    int64_t c = gl::packStatementKey(0x1235, 0x5678);   // diff originalId
+    int64_t d = gl::packStatementKey(0x1234, 0x5678);   // same as a
     ASSERT_NE(a, b);
     ASSERT_NE(a, c);
     ASSERT_NE(b, c);
     ASSERT_EQ(a, d);
-    // High 16 bits are originalId; low 16 are validityId.
-    ASSERT_EQ((a >> 16) & 0xFFFF, static_cast<int32_t>(0x1234));
-    ASSERT_EQ(a & 0xFFFF,         static_cast<int32_t>(0x5678));
+    // High 32 bits are originalId; low 32 are validityId (int64 packing).
+    ASSERT_EQ(gl::Codec<gl::StatementKey>::decode(a).orig,
+              static_cast<gl::NameId>(0x1234));
+    ASSERT_EQ(gl::Codec<gl::StatementKey>::decode(a).validity,
+              static_cast<gl::NameId>(0x5678));
+    // The halves no longer alias past the old 16-bit ceiling.
+    ASSERT_NE(gl::packStatementKey(70000, 3), gl::packStatementKey(3, 70000));
 }
 
 // encodeExpression — round-trip through an EncodedExpression and a
@@ -5123,16 +6312,16 @@ TEST(memory, encodeexpression_roundtrip) {
     ASSERT_EQ(ie.nameId,                       nm.encode("myExpr"));
     ASSERT_EQ(ie.validityId,                   nm.encode("main"));
     ASSERT_EQ(ie.originalId,                   nm.encode("(myExpr[x,u_y])"));
-    ASSERT_EQ(ie.arity,                        static_cast<int16_t>(2));
-    ASSERT_EQ(ie.negation,                     static_cast<int16_t>(0));
-    ASSERT_EQ(ie.argUnchangeable[0],           static_cast<int16_t>(0));
-    ASSERT_EQ(ie.argUnchangeable[1],           static_cast<int16_t>(1));
+    ASSERT_EQ(ie.arity,                        static_cast<gl::NameId>(2));
+    ASSERT_EQ(ie.negation,                     static_cast<gl::NameId>(0));
+    ASSERT_EQ(ie.argUnchangeable[0],           static_cast<gl::NameId>(0));
+    ASSERT_EQ(ie.argUnchangeable[1],           static_cast<gl::NameId>(1));
     // argFullId is the un-prefixed name; argId is u_-prefixed for unchangeable.
     ASSERT_EQ(ie.argFullId[1],                 nm.encode("y"));
     ASSERT_EQ(ie.argId[1],                     nm.encode("u_y"));
     // Anchor / hypo flags are derived.
-    ASSERT_EQ(ie.isAnchor,                     static_cast<int16_t>(0));
-    ASSERT_EQ(ie.isHypo,                       static_cast<int16_t>(0));
+    ASSERT_EQ(ie.isAnchor,                     static_cast<gl::NameId>(0));
+    ASSERT_EQ(ie.isHypo,                       static_cast<gl::NameId>(0));
 }
 
 // EncodedExpression — operator< orders by (original, validityName).
@@ -5171,7 +6360,7 @@ TEST(memory, decodeexpression_roundtrip_negation) {
     gl::NameMap& nm = nmRig.nm;
     gl::EncodedExpression ee("!(=[i0,i1])", "main");
     gl::IntEncodedExpr ie = gl::encodeExpression(ee, nm);
-    ASSERT_EQ(ie.negation, static_cast<int16_t>(1));
+    ASSERT_EQ(ie.negation, static_cast<gl::NameId>(1));
     gl::EncodedExpression back = gl::decodeExpression(ie, nm);
     ASSERT_TRUE(back == ee);
     ASSERT_TRUE(back.negation);
@@ -5185,9 +6374,9 @@ TEST(memory, decodeexpression_roundtrip_u_and_itlev_args) {
     gl::NameMap& nm = nmRig.nm;
     gl::EncodedExpression ee("(myExpr[u_y,it_2_lev_1_x])", "main");
     gl::IntEncodedExpr ie = gl::encodeExpression(ee, nm);
-    ASSERT_EQ(ie.argUnchangeable[0], static_cast<int16_t>(1));
-    ASSERT_EQ(ie.argIteration[1],    static_cast<int16_t>(2));
-    ASSERT_EQ(ie.maxIteration,       static_cast<int16_t>(2));
+    ASSERT_EQ(ie.argUnchangeable[0], static_cast<gl::NameId>(1));
+    ASSERT_EQ(ie.argIteration[1],    static_cast<gl::NameId>(2));
+    ASSERT_EQ(ie.maxIteration,       static_cast<gl::NameId>(2));
     gl::EncodedExpression back = gl::decodeExpression(ie, nm);
     ASSERT_TRUE(back == ee);
 }
@@ -5450,11 +6639,11 @@ TEST(prover, recordpendingcompaction_appends_under_mutex) {
 TEST(memory, namemap_encode_grows_nextid_monotonically) {
     NameMapRig nmRig;
     gl::NameMap& nm = nmRig.nm;
-    const int16_t before = nm.encode("first");
-    const int16_t after  = nm.encode("second");
+    const gl::NameId before = nm.encode("first");
+    const gl::NameId after  = nm.encode("second");
     ASSERT_LT(before, after);   // monotonic id allocation
     // "main" was pre-registered at MAIN_ID == 1; first user root gets 2.
-    ASSERT_GE(before, static_cast<int16_t>(2));
+    ASSERT_GE(before, static_cast<gl::NameId>(2));
 }
 
 TEST(memory, namemap_encode_recursive_with_boundary_string) {
@@ -5463,31 +6652,31 @@ TEST(memory, namemap_encode_recursive_with_boundary_string) {
     // Encoding a fully-canonical "_boundary_"-bearing string registers
     // every prefix recursively: encode("main_boundary_x") creates the
     // child id and the parent ("main") is already mapped via the ctor.
-    const int16_t childId = nm.encode("main_boundary_x");
-    const int16_t parentId = nm.encode("main");
+    const gl::NameId childId = nm.encode("main_boundary_x");
+    const gl::NameId parentId = nm.encode("main");
     ASSERT_NE(childId, parentId);
     // The child's stack carries one payload depth.
     ASSERT_EQ(nm.stackLen(childId), 1);
     // verdict (derived from ancestorsOf) reflects the prefix relation that
     // encodePush would have created if invoked directly.
-    int16_t v = 0;
+    gl::NameId v = 0;
     ASSERT_TRUE(nm.verdict(parentId, childId, v));
-    ASSERT_EQ(v, static_cast<int16_t>(-1));
+    ASSERT_EQ(v, static_cast<gl::NameId>(-1));
 }
 
 // ---------- NameMap::encodePush ----------
 TEST(memory, namemap_encodepush_idtosub_grows_monotonically) {
     NameMapRig nmRig;
     gl::NameMap& nm = nmRig.nm;
-    const int16_t mainId = nm.encode("main");
-    const int16_t a = nm.encodePush(mainId, "alpha");
-    const int16_t b = nm.encodePush(mainId, "beta");
+    const gl::NameId mainId = nm.encode("main");
+    const gl::NameId a = nm.encodePush(mainId, "alpha");
+    const gl::NameId b = nm.encodePush(mainId, "beta");
     // The two payloads got distinct sub-ids, monotonically allocated.
-    const int16_t subA = nm.stackBack(a);
-    const int16_t subB = nm.stackBack(b);
+    const gl::NameId subA = nm.stackBack(a);
+    const gl::NameId subB = nm.stackBack(b);
     ASSERT_NE(subA, subB);
     // Re-pushing "alpha" reuses its sub-id (interning).
-    const int16_t a2 = nm.encodePush(mainId, "alpha");
+    const gl::NameId a2 = nm.encodePush(mainId, "alpha");
     ASSERT_EQ(a, a2);
     ASSERT_EQ(nm.stackBack(a2), subA);
 }
@@ -5495,10 +6684,10 @@ TEST(memory, namemap_encodepush_idtosub_grows_monotonically) {
 TEST(memory, namemap_encodepush_three_deep_chain) {
     NameMapRig nmRig;
     gl::NameMap& nm = nmRig.nm;
-    const int16_t mainId = nm.encode("main");
-    const int16_t s1 = nm.encodePush(mainId, "s1");
-    const int16_t s2 = nm.encodePush(s1, "s2");
-    const int16_t s3 = nm.encodePush(s2, "s3");
+    const gl::NameId mainId = nm.encode("main");
+    const gl::NameId s1 = nm.encodePush(mainId, "s1");
+    const gl::NameId s2 = nm.encodePush(s1, "s2");
+    const gl::NameId s3 = nm.encodePush(s2, "s3");
     ASSERT_EQ(nm.stackLen(s3), 3);
     // Strict-ancestor chain.
     ASSERT_TRUE(nm.isStrictAncestor("main", "main_boundary_s1"));
@@ -5522,7 +6711,7 @@ TEST(memory, namemap_decode_round_trip_after_encode) {
     NameMapRig nmRig;
     gl::NameMap& nm = nmRig.nm;
     const std::string canonical = "main_boundary_x_boundary_y";
-    const int16_t id = nm.encode(canonical);
+    const gl::NameId id = nm.encode(canonical);
     const std::string& decoded = nm.decode(id);
     ASSERT_EQ(decoded, canonical);
 }
@@ -5531,23 +6720,23 @@ TEST(memory, namemap_decode_round_trip_after_encode) {
 TEST(memory, namemap_comparable_self_equality) {
     NameMapRig nmRig;
     gl::NameMap& nm = nmRig.nm;
-    const int16_t a = nm.encode("main");
-    int16_t v = 0;
+    const gl::NameId a = nm.encode("main");
+    gl::NameId v = 0;
     ASSERT_TRUE(nm.verdict(a, a, v));
-    ASSERT_EQ(v, static_cast<int16_t>(0));
+    ASSERT_EQ(v, static_cast<gl::NameId>(0));
     ASSERT_TRUE(nm.comparable(a, a));
 }
 
 TEST(memory, namemap_comparable_grandparent) {
     NameMapRig nmRig;
     gl::NameMap& nm = nmRig.nm;
-    const int16_t mainId = nm.encode("main");
-    const int16_t s1 = nm.encodePush(mainId, "s1");
-    const int16_t s2 = nm.encodePush(s1, "s2");
-    int16_t v = 0;
+    const gl::NameId mainId = nm.encode("main");
+    const gl::NameId s1 = nm.encodePush(mainId, "s1");
+    const gl::NameId s2 = nm.encodePush(s1, "s2");
+    gl::NameId v = 0;
     // main is grandparent of s2 — strict prefix → -1.
     ASSERT_TRUE(nm.verdict(mainId, s2, v));
-    ASSERT_EQ(v, static_cast<int16_t>(-1));
+    ASSERT_EQ(v, static_cast<gl::NameId>(-1));
     ASSERT_TRUE(nm.comparable(mainId, s2));
 }
 
@@ -5555,8 +6744,8 @@ TEST(memory, namemap_comparable_grandparent) {
 TEST(memory, namemap_deeperof_returns_descendant) {
     NameMapRig nmRig;
     gl::NameMap& nm = nmRig.nm;
-    const int16_t mainId = nm.encode("main");
-    const int16_t child  = nm.encodePush(mainId, "x");
+    const gl::NameId mainId = nm.encode("main");
+    const gl::NameId child  = nm.encodePush(mainId, "x");
     ASSERT_EQ(nm.deeperOf(mainId, child), child);
     ASSERT_EQ(nm.deeperOf(child, mainId), child);
 }
@@ -5564,21 +6753,21 @@ TEST(memory, namemap_deeperof_returns_descendant) {
 TEST(memory, namemap_deeperof_self) {
     NameMapRig nmRig;
     gl::NameMap& nm = nmRig.nm;
-    const int16_t mainId = nm.encode("main");
+    const gl::NameId mainId = nm.encode("main");
     ASSERT_EQ(nm.deeperOf(mainId, mainId), mainId);
 }
 
 // ---------- Comparability span/id twins (I-138) ----------
 
-// isStrictAncestor(int16_t,int16_t) — id form agrees with the string form on
+// isStrictAncestor(gl::NameId,gl::NameId) — id form agrees with the string form on
 // every ordered pair of a three-deep chain, self is not strict, and the
 // slot-0 sentinel behaves like a lookup miss (ancestor of nothing).
 TEST(memory, namemap_is_strict_ancestor_id_form_matches_string) {
     NameMapRig nmRig;
     gl::NameMap& nm = nmRig.nm;
-    const int16_t mainId = nm.encode("main");
-    const int16_t s1 = nm.encodePush(mainId, "s1");
-    const int16_t s2 = nm.encodePush(s1, "s2");
+    const gl::NameId mainId = nm.encode("main");
+    const gl::NameId s1 = nm.encodePush(mainId, "s1");
+    const gl::NameId s2 = nm.encodePush(s1, "s2");
     const std::string mainN = nm.decode(mainId);
     const std::string s1N   = nm.decode(s1);
     const std::string s2N   = nm.decode(s2);
@@ -5593,8 +6782,8 @@ TEST(memory, namemap_is_strict_ancestor_id_form_matches_string) {
     ASSERT_FALSE(nm.isStrictAncestor(s1, s1));      // self is not strict
 
     // Slot-0 sentinel: an unknown id is an ancestor of nothing and has none.
-    ASSERT_FALSE(nm.isStrictAncestor(static_cast<int16_t>(0), s1));
-    ASSERT_FALSE(nm.isStrictAncestor(s1, static_cast<int16_t>(0)));
+    ASSERT_FALSE(nm.isStrictAncestor(static_cast<gl::NameId>(0), s1));
+    ASSERT_FALSE(nm.isStrictAncestor(s1, static_cast<gl::NameId>(0)));
 }
 
 // deeperOf(StrSpan,StrSpan) — returns whichever input span is the deeper
@@ -5603,8 +6792,8 @@ TEST(memory, namemap_is_strict_ancestor_id_form_matches_string) {
 TEST(memory, namemap_deeperof_span_matches_string) {
     NameMapRig nmRig;
     gl::NameMap& nm = nmRig.nm;
-    const int16_t mainId = nm.encode("main");
-    const int16_t child  = nm.encodePush(mainId, "x");
+    const gl::NameId mainId = nm.encode("main");
+    const gl::NameId child  = nm.encodePush(mainId, "x");
     const std::string mainN  = nm.decode(mainId);
     const std::string childN = nm.decode(child);
 
@@ -5631,9 +6820,9 @@ TEST(memory, namemap_deeperof_span_matches_string) {
 TEST(memory, namemap_strict_ancestor_names_span_matches_string) {
     NameMapRig nmRig;
     gl::NameMap& nm = nmRig.nm;
-    const int16_t mainId = nm.encode("main");
-    const int16_t s1 = nm.encodePush(mainId, "s1");
-    const int16_t s2 = nm.encodePush(s1, "s2");
+    const gl::NameId mainId = nm.encode("main");
+    const gl::NameId s1 = nm.encodePush(mainId, "s1");
+    const gl::NameId s2 = nm.encodePush(s1, "s2");
     const std::string mainN = nm.decode(mainId);
     const std::string s1N   = nm.decode(s1);
     const std::string s2N   = nm.decode(s2);
@@ -5664,11 +6853,11 @@ TEST(memory, namemap_strict_ancestor_names_span_matches_string) {
 TEST(memory, strict_ancestor_spans_matches_string_overload) {
     NameMapRig nmRig;
     gl::NameMap& nm = nmRig.nm;
-    const int16_t mainId = nm.encode("main");
-    const int16_t a = nm.encodePush(mainId, "(impl1[a])");
-    const int16_t b = nm.encodePush(a, "(in[b,N])");
-    const int16_t c = nm.encodePush(b, "(in[c,N])");
-    const int16_t flat = nm.encode("(in[7,1])");
+    const gl::NameId mainId = nm.encode("main");
+    const gl::NameId a = nm.encodePush(mainId, "(impl1[a])");
+    const gl::NameId b = nm.encodePush(a, "(in[b,N])");
+    const gl::NameId c = nm.encodePush(b, "(in[c,N])");
+    const gl::NameId flat = nm.encode("(in[7,1])");
 
     const std::string names[] = {
         nm.decode(mainId), nm.decode(a), nm.decode(b), nm.decode(c),
@@ -5799,32 +6988,32 @@ TEST(memory, expr_key_view_matches_string) {
 }
 
 // int16SetKey byte helpers (C1 _firing_check): count / id peeks off a
-// serialized Int16SetKey, and int16SetKeyLexCompare == std::set<int16_t>::
+// serialized Int16SetKey, and int16SetKeyLexCompare == std::set<gl::NameId>::
 // operator< (SIGNED element lex, shorter-is-prefix) — NOT the count-prefixed
 // byte order, the R1 candidate-enumeration-order trap.
 TEST(memory, int16_set_key_helpers_match_std_set) {
-    auto enc = [](const std::set<int16_t>& s) {
+    auto enc = [](const std::set<gl::NameId>& s) {
         gl::Int16SetKey k;
         k.ids.assign(s.begin(), s.end());   // ascending == std::set order
         return gl::Codec<gl::Int16SetKey>::encode(k);
     };
-    const std::vector<std::set<int16_t>> sets = {
+    const std::vector<std::set<gl::NameId>> sets = {
         {}, {5}, {1, 2, 3}, {-3, -1, 7}, {-32768, 0, 32767}, {2, 4}, {2, 4, 6} };
     // count + id peeks reproduce the set's ascending iteration.
-    for (const std::set<int16_t>& s : sets) {
+    for (const std::set<gl::NameId>& s : sets) {
         const std::string bytes = enc(s);
         const gl::StrSpan span(bytes);
-        ASSERT_EQ(gl::int16SetKeyCount(span), static_cast<int16_t>(s.size()));
+        ASSERT_EQ(gl::int16SetKeyCount(span), static_cast<gl::NameId>(s.size()));
         int idx = 0;
-        for (int16_t e : s) {
+        for (gl::NameId e : s) {
             ASSERT_EQ(gl::int16SetKeyIdAt(span, idx), e);
             ++idx;
         }
     }
-    // lex-compare sign == std::set<int16_t>::operator< over every ordered pair.
-    for (const std::set<int16_t>& a : sets) {
+    // lex-compare sign == std::set<gl::NameId>::operator< over every ordered pair.
+    for (const std::set<gl::NameId>& a : sets) {
         const std::string ba = enc(a);
-        for (const std::set<int16_t>& b : sets) {
+        for (const std::set<gl::NameId>& b : sets) {
             const std::string bb = enc(b);
             const int c =
                 gl::int16SetKeyLexCompare(gl::StrSpan(ba), gl::StrSpan(bb));
@@ -5912,14 +7101,14 @@ TEST(memory, hashmemory_clear_after_populate) {
     gl::LbArena lb(&g);
     gl::DirtyState d = gl::DirtyState::Clean;
     gl::HashMemory hm(&lb, &d);
-    int16_t buf[2] = {1, 2};
+    gl::NameId buf[2] = {1, 2};
     // encodedMap is now the cold blob map: NormKey -> run of LMVs.
-    gl::NormKey nk{ 1, std::vector<int16_t>(buf, buf + 2) };
+    gl::NormKey nk{ 1, std::vector<gl::NameId>(buf, buf + 2) };
     hm.encodedMap.assignRun(nk,
         std::vector<gl::LocalMemoryValue>{ gl::LocalMemoryValue{} });
     // D-72: the owner maps are cold blob maps too; assignRun one key (one
     // OwnerSet blob, run-length-1) for the count checks.
-    gl::NormKey nkOwner{ 1, std::vector<int16_t>(buf, buf + 2) };
+    gl::NormKey nkOwner{ 1, std::vector<gl::NameId>(buf, buf + 2) };
     hm.normalizedEncodedKeys.assignRun(nkOwner,
         std::vector<gl::OwnerSet>{ gl::OwnerSet{} });
     hm.maxKeyLength = 5;
@@ -5928,7 +7117,7 @@ TEST(memory, hashmemory_clear_after_populate) {
     hm.clear();
     ASSERT_EQ(hm.encodedMap.count(),            0);
     ASSERT_EQ(hm.normalizedEncodedKeys.count(), 0);
-    ASSERT_EQ(hm.maxKeyLength,                 static_cast<int16_t>(0));
+    ASSERT_EQ(hm.maxKeyLength,                 static_cast<gl::NameId>(0));
 }
 
 TEST(memory, hashmemory_clear_preserves_struct_validity) {
@@ -5940,8 +7129,8 @@ TEST(memory, hashmemory_clear_preserves_struct_validity) {
     hm.clear();          // clear on already-empty
     hm.clear();          // double clear
     // Struct still valid for re-use: insert a fresh entry.
-    int16_t buf[1] = {7};
-    gl::NormKey nk{ 1, std::vector<int16_t>(buf, buf + 1) };
+    gl::NameId buf[1] = {7};
+    gl::NormKey nk{ 1, std::vector<gl::NameId>(buf, buf + 1) };
     hm.normalizedEncodedKeys.assignRun(nk,
         std::vector<gl::OwnerSet>{ gl::OwnerSet{} });
     ASSERT_EQ(hm.normalizedEncodedKeys.count(), 1);
@@ -5951,8 +7140,8 @@ TEST(memory, hashmemory_clear_preserves_struct_validity) {
 
 // ---------- IntNormalizedKey hash + ordering ----------
 TEST(memory, intnormalizedkey_ordering_by_numberexpressions_first) {
-    int16_t b1[2] = {9, 9};
-    int16_t b2[2] = {1, 1};
+    gl::NameId b1[2] = {9, 9};
+    gl::NameId b2[2] = {1, 1};
     gl::IntNormalizedKey k1(1, b1, 2);
     gl::IntNormalizedKey k2(2, b2, 2);
     // numberExpressions=1 < numberExpressions=2, regardless of data.
@@ -5961,9 +7150,9 @@ TEST(memory, intnormalizedkey_ordering_by_numberexpressions_first) {
 }
 
 TEST(memory, intnormalizedkey_ordering_by_length_then_data) {
-    int16_t b1[2] = {3, 4};
-    int16_t b2[3] = {3, 4, 5};
-    int16_t b3[2] = {3, 5};
+    gl::NameId b1[2] = {3, 4};
+    gl::NameId b2[3] = {3, 4, 5};
+    gl::NameId b3[2] = {3, 5};
     gl::IntNormalizedKey k1(1, b1, 2);
     gl::IntNormalizedKey k2(1, b2, 3);
     gl::IntNormalizedKey k3(1, b3, 2);
@@ -5976,9 +7165,9 @@ TEST(memory, equivalenceclass_levels_map_carries_entries) {
     gl::Memory m;
     gl::EquivalenceClass cls;
     cls.setMembersFromNames({ "a", "b", "c" }, m.nameMap);
-    const int16_t idA = m.nameMap.encode("a");
-    const int16_t idB = m.nameMap.encode("b");
-    const int16_t idC = m.nameMap.encode("c");
+    const gl::NameId idA = m.nameMap.encode("a");
+    const gl::NameId idB = m.nameMap.encode("b");
+    const gl::NameId idC = m.nameMap.encode("c");
     cls.intEqualityLevelsMap[gl::packEqPairKey(idA, idB)] = { 0 };
     cls.intEqualityLevelsMap[gl::packEqPairKey(idB, idC)] = { 1, 2 };
     ASSERT_EQ(cls.memberIds.size(),            static_cast<std::size_t>(3));
@@ -6064,10 +7253,10 @@ TEST(memory, encodeexpression_zero_arity_predicate) {
     ee.original = "(zero[])";
     ee.validityName = "main";
     gl::IntEncodedExpr ie = gl::encodeExpression(ee, nm);
-    ASSERT_EQ(ie.arity,    static_cast<int16_t>(0));
+    ASSERT_EQ(ie.arity,    static_cast<gl::NameId>(0));
     ASSERT_EQ(ie.nameId,   nm.encode("zero"));
-    ASSERT_EQ(ie.isAnchor, static_cast<int16_t>(0));
-    ASSERT_EQ(ie.isHypo,   static_cast<int16_t>(0));
+    ASSERT_EQ(ie.isAnchor, static_cast<gl::NameId>(0));
+    ASSERT_EQ(ie.isHypo,   static_cast<gl::NameId>(0));
 }
 
 TEST(memory, encodeexpression_anchor_flag_set) {
@@ -6081,9 +7270,9 @@ TEST(memory, encodeexpression_anchor_flag_set) {
     ee.original = "(AnchorPeano[n])";
     ee.validityName = "main_boundary_hypo_x";
     gl::IntEncodedExpr ie = gl::encodeExpression(ee, nm);
-    ASSERT_EQ(ie.isAnchor, static_cast<int16_t>(1));   // name starts with "Anchor"
-    ASSERT_EQ(ie.isHypo,   static_cast<int16_t>(1));   // validityName has "_hypo_"
-    ASSERT_EQ(ie.arity,    static_cast<int16_t>(1));
+    ASSERT_EQ(ie.isAnchor, static_cast<gl::NameId>(1));   // name starts with "Anchor"
+    ASSERT_EQ(ie.isHypo,   static_cast<gl::NameId>(1));   // validityName has "_hypo_"
+    ASSERT_EQ(ie.arity,    static_cast<gl::NameId>(1));
 }
 
 // Span encodeExpression twin: byte-identical IntEncodedExpr to the
@@ -6119,7 +7308,7 @@ TEST(memory, encodeexpression_span_twin_byte_identical) {
         ASSERT_EQ(a.validityId,  b.validityId);
         ASSERT_EQ(a.isHypo,      b.isHypo);
         ASSERT_EQ(a.isAnchor,    b.isAnchor);
-        for (int16_t i = 0; i < a.arity; ++i) {
+        for (gl::NameId i = 0; i < a.arity; ++i) {
             ASSERT_EQ(a.argId[i],          b.argId[i]);
             ASSERT_EQ(a.argUnchangeable[i], b.argUnchangeable[i]);
             ASSERT_EQ(a.argIteration[i],   b.argIteration[i]);
@@ -6179,20 +7368,21 @@ TEST(memory, lessbyoriginal_strict_weak_ordering) {
 
 // ---------- packStatementKey ----------
 TEST(memory, packstatementkey_zero_pair) {
-    int32_t k = gl::packStatementKey(0, 0);
+    int64_t k = gl::packStatementKey(0, 0);
     ASSERT_EQ(k, static_cast<int32_t>(0));
 }
 
 TEST(memory, packstatementkey_handles_negative_ints_via_sign_extension) {
-    // int16_t -1 == 0xFFFF after uint16_t cast. High 16 bits should
-    // be 0xFFFF when originalId = -1, low 16 should be 0xFFFF when
-    // validityId = -1, and the combined value is 0xFFFFFFFF (-1
-    // viewed as signed 32-bit).
-    int32_t k = gl::packStatementKey(-1, -1);
-    ASSERT_EQ(k, static_cast<int32_t>(-1));
-    // High and low halves recoverable by mask.
-    ASSERT_EQ((k >> 16) & 0xFFFF,  static_cast<int32_t>(0xFFFF));
-    ASSERT_EQ(k & 0xFFFF,          static_cast<int32_t>(0xFFFF));
+    // A NameId -1 is 0xFFFFFFFF; packInt32Pair(-1, -1) is 0xFFFF...FFFF ==
+    // int64(-1). The UB-safe unsigned pack (via packInt32Pair) preserves the
+    // negative sentinel in both halves, and Codec<StatementKey>::decode
+    // recovers each -1 half.
+    const int64_t k = gl::packStatementKey(-1, -1);
+    ASSERT_EQ(k, static_cast<int64_t>(-1));
+    ASSERT_EQ(gl::Codec<gl::StatementKey>::decode(k).orig,
+              static_cast<gl::NameId>(-1));
+    ASSERT_EQ(gl::Codec<gl::StatementKey>::decode(k).validity,
+              static_cast<gl::NameId>(-1));
 }
 
 // ---------- ExpressionAnalyzer::addOrigin ----------
@@ -6375,7 +7565,7 @@ TEST(memory, record_usignature_tight_records_slot_and_literal) {
     gl::recordUSignature(os, encList, nm);
     ASSERT_FALSE(os.hasLooseOwner);
     ASSERT_EQ((int)os.uSignatures.size(), 1);
-    const std::vector<std::pair<int16_t,int16_t>>& sig = *os.uSignatures.begin();
+    const std::vector<std::pair<gl::NameId,gl::NameId>>& sig = *os.uSignatures.begin();
     ASSERT_EQ((int)sig.size(), 1);                 // only the u_p slot
     ASSERT_EQ((int)sig[0].first, 2);               // 3rd flattened arg slot
     ASSERT_EQ(sig[0].second, nm.lookup("p"));      // literal == argFullId
@@ -6421,13 +7611,13 @@ TEST(memory, record_usignature_int_arena_matches_string_oracle) {
     // Int arena-run path (statified).
     gl::OwnerSet osInt;
     gl::IntEncodedExpr encListInt[2] = { i0, i1 };
-    gl::recordUSignature(osInt, encListInt, static_cast<int16_t>(2));
+    gl::recordUSignature(osInt, encListInt, static_cast<gl::NameId>(2));
 
     ASSERT_EQ(osStr.hasLooseOwner, osInt.hasLooseOwner);
     ASSERT_FALSE(osInt.hasLooseOwner);
     ASSERT_TRUE(osStr.uSignatures == osInt.uSignatures);
     ASSERT_EQ((int)osInt.uSignatures.size(), 1);
-    const std::vector<std::pair<int16_t, int16_t>>& sig = *osInt.uSignatures.begin();
+    const std::vector<std::pair<gl::NameId, gl::NameId>>& sig = *osInt.uSignatures.begin();
     ASSERT_EQ((int)sig.size(), 2);
     ASSERT_EQ((int)sig[0].first, 2);
     ASSERT_EQ(sig[0].second, nm.lookup("p"));
@@ -6565,8 +7755,8 @@ TEST(memory, merge_owner_record_rmw) {
 
     NameMapRig nmRig;
     gl::NameMap& nm = nmRig.nm;
-    int16_t buf[2] = { 1, 2 };
-    gl::NormKey key{ 1, std::vector<int16_t>(buf, buf + 2) };
+    gl::NameId buf[2] = { 1, 2 };
+    gl::NormKey key{ 1, std::vector<gl::NameId>(buf, buf + 2) };
     std::vector<gl::EncodedExpression> enc = {
         gl::EncodedExpression("(in[a,b])", "main") };
 
@@ -6583,6 +7773,42 @@ TEST(memory, merge_owner_record_rmw) {
     ASSERT_TRUE(os.hasLooseOwner);                    // (in[a,b]) has no u_ args
 }
 
+// A wide (origId > 65535) makePartitionId composite survives the
+// mergeOwnerRecord store round-trip with BOTH halves intact: the stored
+// partition id must decode back to the nonzero orig, never a zero high half
+// (a caller-side int32_t truncation of the int64 composite drops the orig
+// half — the decode(0) crash the NameId-int32 migration fixed at the two
+// addToHashMemory install sites).
+TEST(memory, merge_owner_record_wide_orig_id_roundtrip) {
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 1 << 20, 1 << 18 });
+    gl::LbArena lb(&g);
+    gl::DirtyState d = gl::DirtyState::Clean;
+    gl::TypedColdBlobMap<gl::NormKey, gl::OwnerSet> map(&lb, &d);
+
+    NameMapRig nmRig;
+    gl::NameMap& nm = nmRig.nm;
+    gl::NameId buf[2] = { 1, 2 };
+    gl::NormKey key{ 1, std::vector<gl::NameId>(buf, buf + 2) };
+    std::vector<gl::EncodedExpression> enc = {
+        gl::EncodedExpression("(in[a,b])", "main") };
+
+    const gl::NameId wideOrig = 70001;                 // past the int16 ceiling
+    const gl::NameId scopeVid = 3;
+    const int64_t pid = gl::makePartitionId(wideOrig, scopeVid);
+    gl::ExpressionAnalyzer::mergeOwnerRecord(map, key, pid, enc, nm);
+
+    const int32_t id = map.lookup(key);
+    ASSERT_TRUE(id != 0);
+    const gl::OwnerSet os = map.recordAt(id, 0);
+    ASSERT_EQ(static_cast<int>(os.partitionIds.size()), 1);
+    const int64_t stored = *os.partitionIds.begin();
+    ASSERT_EQ(stored, pid);
+    ASSERT_EQ(gl::Codec<gl::StatementKey>::decode(stored).orig, wideOrig);
+    ASSERT_TRUE(gl::Codec<gl::StatementKey>::decode(stored).orig != 0);
+    ASSERT_EQ(gl::Codec<gl::StatementKey>::decode(stored).validity, scopeVid);
+}
+
 // insertRemainingArgsNormKey RMWs a NormKey into the cold secondary index: two
 // distinct NormKeys under one arg-set accumulate in ONE sorted-unique run; a
 // duplicate insert is a no-op; a different arg-set is a separate key.
@@ -6595,12 +7821,12 @@ TEST(memory, insert_remaining_args_norm_key_rmw) {
     gl::ReverseArgsIndex rev(&lb);
     gl::LbArena scratch(&g);   // separate RMW scratch arena (never the map's own)
 
-    const std::set<int16_t> argSetA{ 1, 2 };
-    const std::set<int16_t> argSetB{ 3 };
-    int16_t a1[1] = { 10 };
-    int16_t a2[1] = { 20 };
-    const gl::NormKey nk1{ 1, std::vector<int16_t>(a1, a1 + 1) };
-    const gl::NormKey nk2{ 1, std::vector<int16_t>(a2, a2 + 1) };
+    const std::set<gl::NameId> argSetA{ 1, 2 };
+    const std::set<gl::NameId> argSetB{ 3 };
+    gl::NameId a1[1] = { 10 };
+    gl::NameId a2[1] = { 20 };
+    const gl::NormKey nk1{ 1, std::vector<gl::NameId>(a1, a1 + 1) };
+    const gl::NormKey nk2{ 1, std::vector<gl::NameId>(a2, a2 + 1) };
 
     // Insert out of order; the run must come back sorted by (numberExpressions, data).
     gl::ExpressionAnalyzer::insertRemainingArgsNormKey(map, rev, argSetA, nk2, scratch);
@@ -6610,14 +7836,14 @@ TEST(memory, insert_remaining_args_norm_key_rmw) {
 
     ASSERT_EQ(map.count(), 2);                                       // two arg-set keys
     const int32_t idA = map.lookup(
-        gl::Int16SetKey{ std::vector<int16_t>(argSetA.begin(), argSetA.end()) });
+        gl::Int16SetKey{ std::vector<gl::NameId>(argSetA.begin(), argSetA.end()) });
     ASSERT_TRUE(idA != 0);
     const std::vector<gl::NormKey> runA = map.recordsAt(idA);
     ASSERT_EQ(static_cast<int>(runA.size()), 2);                     // deduped to nk1+nk2
-    ASSERT_EQ(runA[0].data[0], static_cast<int16_t>(10));            // sorted ascending by data
-    ASSERT_EQ(runA[1].data[0], static_cast<int16_t>(20));
+    ASSERT_EQ(runA[0].data[0], static_cast<gl::NameId>(10));            // sorted ascending by data
+    ASSERT_EQ(runA[1].data[0], static_cast<gl::NameId>(20));
     const int32_t idB = map.lookup(
-        gl::Int16SetKey{ std::vector<int16_t>(argSetB.begin(), argSetB.end()) });
+        gl::Int16SetKey{ std::vector<gl::NameId>(argSetB.begin(), argSetB.end()) });
     ASSERT_TRUE(idB != 0);
     ASSERT_EQ(static_cast<int>(map.recordsAt(idB).size()), 1);
 }
@@ -6639,8 +7865,8 @@ TEST(memory, insert_remaining_args_batch_matches_sequential) {
     gl::ReverseArgsIndex revSeq(&lbSeq);
     gl::ReverseArgsIndex revBatch(&lbBatch);
 
-    const std::set<int16_t> key{ 1, 2 };
-    int16_t keyArr[2] = { 1, 2 };
+    const std::set<gl::NameId> key{ 1, 2 };
+    gl::NameId keyArr[2] = { 1, 2 };
 
     // Pre-existing run installed the SAME way into both maps (sequential), so the
     // batch merges against a non-empty run.
@@ -6730,10 +7956,10 @@ TEST(memory, insert_remaining_args_batch_widening_preserves_existing_run) {
     std::vector<int32_t> lens;
     std::vector<gl::NormKey> expected;
     for (int32_t i = 0; i < kExisting; ++i) {
-        std::vector<int16_t> data(
+        std::vector<gl::NameId> data(
             static_cast<std::size_t>(gl::ExecutionParameters::MAX_KEY_SLOTS),
-            static_cast<int16_t>(0));
-        data[0] = static_cast<int16_t>(i);
+            static_cast<gl::NameId>(0));
+        data[0] = static_cast<gl::NameId>(i);
         expected.push_back(gl::NormKey{ 1, std::move(data) });
         const std::vector<char> bytes =
             gl::Codec<gl::NormKey>::serialize(expected.back());
@@ -6748,9 +7974,9 @@ TEST(memory, insert_remaining_args_batch_widening_preserves_existing_run) {
     map.inner().assignRun(gl::StrSpan(keyBytes), concat.data(), lens.data(),
                           kExisting);
 
-    std::vector<int16_t> newData(
+    std::vector<gl::NameId> newData(
         static_cast<std::size_t>(gl::ExecutionParameters::MAX_KEY_SLOTS),
-        static_cast<int16_t>(0));
+        static_cast<gl::NameId>(0));
     newData[0] = 250;
     newData[1] = 1;   // sorts between existing [250,0,...] and [251,0,...]
     const gl::NormKey added{ 1, std::move(newData) };
@@ -6766,7 +7992,7 @@ TEST(memory, insert_remaining_args_batch_widening_preserves_existing_run) {
     std::memcpy(lbScratch.resolve(addedOff), addedBytes.data(), addedBytes.size());
     batch.push_back(gl::ExpressionAnalyzer::RemArgsBatchBlob{
         addedOff, static_cast<int32_t>(addedBytes.size()) });
-    int16_t keyArr[2] = { 1, 2 };
+    gl::NameId keyArr[2] = { 1, 2 };
     gl::ExpressionAnalyzer::insertRemainingArgsNormKeyBatch(
         map, rev, keyArr, 2, batch, lbScratch);
     lbScratch.popTo(mark);
@@ -6789,8 +8015,8 @@ TEST(memory, owner_key_accepts_lookup_and_prune) {
 
     NameMapRig nmRig;
     gl::NameMap& nm = nmRig.nm;
-    int16_t kb[2] = { 5, 6 };
-    gl::NormKey key{ 1, std::vector<int16_t>(kb, kb + 2) };
+    gl::NameId kb[2] = { 5, 6 };
+    gl::NormKey key{ 1, std::vector<gl::NameId>(kb, kb + 2) };
     std::vector<gl::EncodedExpression> enc = {
         gl::EncodedExpression("(in[a,b])", "main") };
     gl::ExpressionAnalyzer::mergeOwnerRecord(
@@ -6803,7 +8029,7 @@ TEST(memory, owner_key_accepts_lookup_and_prune) {
     // Present key, main scope, loose owner -> kept.
     ASSERT_TRUE(gl::ExpressionAnalyzer::ownerKeyAccepts(map, kb, 2, nm, exprs, 1));
     // Absent key -> false (lookup miss, no predicate run).
-    int16_t miss[2] = { 9, 9 };
+    gl::NameId miss[2] = { 9, 9 };
     ASSERT_FALSE(
         gl::ExpressionAnalyzer::ownerKeyAccepts(map, miss, 2, nm, exprs, 1));
 }
@@ -6824,9 +8050,9 @@ TEST(memory, request_gates_pass_hypo_scope_and_length) {
     gl::Memory m;
     gl::NameMap& nm = m.nameMap;
 
-    const int16_t kMain = gl::NameMap::MAIN_ID;
-    const int16_t kHypoA = static_cast<int16_t>(kMain + 1);
-    const int16_t kHypoB = static_cast<int16_t>(kMain + 2);
+    const gl::NameId kMain = gl::NameMap::MAIN_ID;
+    const gl::NameId kHypoA = static_cast<gl::NameId>(kMain + 1);
+    const gl::NameId kHypoB = static_cast<gl::NameId>(kMain + 2);
 
     gl::IntEncodedExpr a =
         gl::encodeExpression(gl::EncodedExpression("(in[a,b])", "main"), nm);
@@ -6876,6 +8102,77 @@ TEST(memory, request_gates_pass_hypo_scope_and_length) {
     ea.parameters.maxLenHypoKey = savedHypoLen;
 }
 
+// requestGatesPass, scoped secondary widening: a request over the standard
+// distinct-secondary cap is admitted ONLY when (a) the widened cap
+// maxNumberSecondaryVariablesOrint covers it, (b) every premise sits at ONE
+// shared validity scope, and (c) that scope is an _orint_ branch. Anything
+// else over the standard cap stays rejected: widening unconfigured, mixed
+// scopes, a non-_orint_ shared scope, or a count above the widened cap.
+TEST(memory, request_gates_pass_orint_scoped_secondary_cap) {
+    gl::ExpressionAnalyzer ea("Peano");
+    gl::Memory m;
+    gl::NameMap& nm = m.nameMap;
+
+    const gl::NameId kMain = gl::NameMap::MAIN_ID;
+    const gl::NameId kOrint = nm.encodePush(
+        kMain, gl::StrSpan("orint_(or0[a,b])_((=[a,b]))"));
+    const gl::NameId kPlain = nm.encodePush(
+        kMain, gl::StrSpan("(implication9[1])"));
+
+    // Three premises carrying three DISTINCT it_-shaped secondary variables
+    // (argIteration 0 via the it_<iter>_lev_<lev>_<n> parse; plain lowercase
+    // args stay -1 and never count).
+    gl::IntEncodedExpr a = gl::encodeExpression(
+        gl::EncodedExpression("(in[it_0_lev_1_5,b])", "main"), nm);
+    gl::IntEncodedExpr b = gl::encodeExpression(
+        gl::EncodedExpression("(in2[it_0_lev_1_6,it_0_lev_1_5,c])", "main"), nm);
+    gl::IntEncodedExpr c = gl::encodeExpression(
+        gl::EncodedExpression("(in3[d,it_0_lev_1_7,it_0_lev_1_6,e])", "main"), nm);
+    a.isHypo = 0; a.isAnchor = 0;
+    b.isHypo = 0; b.isAnchor = 0;
+    c.isHypo = 0; c.isAnchor = 0;
+    const gl::IntEncodedExpr* three[3] = { &a, &b, &c };
+
+    m.overallHashMemory.maxKeyLength = 3;
+    ASSERT_EQ(ea.parameters.maxNumberSecondaryVariables, 2);
+
+    // --- negative: 3 distinct secondaries, widening unconfigured (orint cap
+    //     == standard cap) — rejected even at a shared _orint_ scope.
+    a.validityId = kOrint; b.validityId = kOrint; c.validityId = kOrint;
+    ASSERT_EQ(ea.parameters.maxNumberSecondaryVariablesOrint, 2);
+    ASSERT_FALSE(ea.requestGatesPass(three, 3, m, kMain));
+
+    ea.parameters.maxNumberSecondaryVariablesOrint = 3;
+
+    // --- positive: 3 distinct secondaries, ONE shared _orint_ scope, widened
+    //     cap 3 covers it.
+    ASSERT_TRUE(ea.requestGatesPass(three, 3, m, kMain));
+
+    // --- negative: same count, mixed scopes (one premise at main) — the
+    //     widening requires ALL premises at the one _orint_ scope.
+    c.validityId = kMain;
+    ASSERT_FALSE(ea.requestGatesPass(three, 3, m, kMain));
+
+    // --- negative: same count, shared but NON-_orint_ scope.
+    a.validityId = kPlain; b.validityId = kPlain; c.validityId = kPlain;
+    ASSERT_FALSE(ea.requestGatesPass(three, 3, m, kMain));
+
+    // --- negative: count above the widened cap at the shared _orint_ scope.
+    gl::IntEncodedExpr d = gl::encodeExpression(
+        gl::EncodedExpression("(in3[it_0_lev_1_8,it_0_lev_1_9,f,g])", "main"), nm);
+    d.isHypo = 0; d.isAnchor = 0;
+    a.validityId = kOrint; b.validityId = kOrint; c.validityId = kOrint;
+    d.validityId = kOrint;
+    const gl::IntEncodedExpr* five[4] = { &a, &b, &c, &d };
+    m.overallHashMemory.maxKeyLength = 4;
+    ASSERT_FALSE(ea.requestGatesPass(five, 4, m, kMain));
+
+    // --- positive control: dropping to 2 distinct secondaries passes under
+    //     the STANDARD cap regardless of scope shape.
+    const gl::IntEncodedExpr* twoOf[2] = { &a, &b };
+    ASSERT_TRUE(ea.requestGatesPass(twoOf, 2, m, kMain));
+}
+
 // filterIntEncodedStatements: the alsoAcceptFullKeys flag is the ONLY difference
 // between the main prover's statement universe and the counter-example filter's.
 // A statement whose single-element key exists only as a FULL key is growable by
@@ -6894,11 +8191,11 @@ TEST(memory, filter_int_encoded_statements_also_accept_full_keys) {
     // one (varId, changeable) pair per arg with varIds renumbered by first
     // appearance.
     const gl::IntEncodedExpr& s = m.intEncodedStatements[0];
-    int16_t keyBuf[6] = { s.nameId, s.negation, 1, 0, 2, 0 };
-    const gl::NormKey key{ 1, std::vector<int16_t>(keyBuf, keyBuf + 6) };
+    gl::NameId keyBuf[6] = { s.nameId, s.negation, 1, 0, 2, 0 };
+    const gl::NormKey key{ 1, std::vector<gl::NameId>(keyBuf, keyBuf + 6) };
     std::vector<gl::EncodedExpression> owner = { src };
 
-    int16_t out[8];
+    gl::NameId out[8];
 
     // --- key registered nowhere: dropped under both flags.
     ASSERT_EQ(ea.filterIntEncodedStatements(stmts, m.overallHashMemory, nm,
@@ -6954,14 +8251,14 @@ TEST(memory, generate_encoded_requests_static_all_stump_lengths) {
     const gl::IntEncodedExpr* pA = &m.intEncodedStatements[0];
     const gl::IntEncodedExpr* pB = &m.intEncodedStatements[1];
 
-    m.overallHashMemory.maxKeyLength = static_cast<int16_t>(2);
+    m.overallHashMemory.maxKeyLength = static_cast<gl::NameId>(2);
 
     // Build the three normalized keys exactly as the generator does.
-    int16_t kb[gl::ExecutionParameters::MAX_KEY_SLOTS];
-    const auto normKey = [&](const gl::IntEncodedExpr* const* ptrs, int16_t n) {
-        const int16_t len = ea.makeIntNormalizedKeyFromEncoded(
+    gl::NameId kb[gl::ExecutionParameters::MAX_KEY_SLOTS];
+    const auto normKey = [&](const gl::IntEncodedExpr* const* ptrs, gl::NameId n) {
+        const gl::NameId len = ea.makeIntNormalizedKeyFromEncoded(
             ptrs, n, kb, gl::ExecutionParameters::MAX_KEY_SLOTS);
-        return gl::NormKey{ n, std::vector<int16_t>(kb, kb + len) };
+        return gl::NormKey{ n, std::vector<gl::NameId>(kb, kb + len) };
     };
     const gl::IntEncodedExpr* justA[1] = { pA };
     const gl::IntEncodedExpr* justB[1] = { pB };
@@ -6990,8 +8287,8 @@ TEST(memory, generate_encoded_requests_static_all_stump_lengths) {
     pages.bind(&gl::staticMemory());
     std::atomic<bool> stop{ false };
 
-    const auto runWith = [&](int16_t stumpLen, const gl::Stump* stumps,
-                             int16_t stumpCount, gl::IntStmtView src1) {
+    const auto runWith = [&](gl::NameId stumpLen, const gl::Stump* stumps,
+                             gl::NameId stumpCount, gl::IntStmtView src1) {
         gl::ExpressionAnalyzer::g_growthMatchCount = 0;
         gl::BurstSink sink{ &ea, &m, 0u, &pages, &stop,
                             gl::SealedRecordCursor<gl::FiringRecord>(pages) };
@@ -7018,12 +8315,12 @@ TEST(memory, generate_encoded_requests_static_all_stump_lengths) {
     gl::Memory m2;
     gl::NameMap& nm2 = m2.nameMap;
     m2.intEncodedStatements.push_back(gl::encodeExpression(srcA, nm2));
-    m2.overallHashMemory.maxKeyLength = static_cast<int16_t>(2);
+    m2.overallHashMemory.maxKeyLength = static_cast<gl::NameId>(2);
     const gl::IntEncodedExpr* pA2 = &m2.intEncodedStatements[0];
     const gl::IntEncodedExpr* justA2[1] = { pA2 };
-    const int16_t lenA2 = ea.makeIntNormalizedKeyFromEncoded(
+    const gl::NameId lenA2 = ea.makeIntNormalizedKeyFromEncoded(
         justA2, 1, kb, gl::ExecutionParameters::MAX_KEY_SLOTS);
-    const gl::NormKey k1A2{ 1, std::vector<int16_t>(kb, kb + lenA2) };
+    const gl::NormKey k1A2{ 1, std::vector<gl::NameId>(kb, kb + lenA2) };
     std::vector<gl::EncodedExpression> ownerA = { srcA };
     gl::ExpressionAnalyzer::mergeOwnerRecord(
         m2.overallHashMemory.normalizedEncodedSubkeys, k1A2, pid, ownerA, nm2);
@@ -7059,13 +8356,13 @@ struct StumpWorld {
 
     /// Install `ptrs[0..n)` as a subkey owned by the rule with `origId`.
     void installSubkey(gl::ExpressionAnalyzer& ea,
-                       const gl::IntEncodedExpr* const* ptrs, int16_t n,
-                       int16_t origId,
+                       const gl::IntEncodedExpr* const* ptrs, gl::NameId n,
+                       gl::NameId origId,
                        std::vector<gl::EncodedExpression> owner) {
-        int16_t kb[gl::ExecutionParameters::MAX_KEY_SLOTS];
-        const int16_t len = ea.makeIntNormalizedKeyFromEncoded(
+        gl::NameId kb[gl::ExecutionParameters::MAX_KEY_SLOTS];
+        const gl::NameId len = ea.makeIntNormalizedKeyFromEncoded(
             ptrs, n, kb, gl::ExecutionParameters::MAX_KEY_SLOTS);
-        const gl::NormKey k{ n, std::vector<int16_t>(kb, kb + len) };
+        const gl::NormKey k{ n, std::vector<gl::NameId>(kb, kb + len) };
         gl::ExpressionAnalyzer::mergeOwnerRecord(
             m.overallHashMemory.normalizedEncodedSubkeys, k,
             gl::makePartitionId(origId, gl::NameMap::MAIN_ID), owner, m.nameMap);
@@ -7073,8 +8370,8 @@ struct StumpWorld {
 };
 
 /// Drain a producer run into a plain vector of (indices, count) pairs.
-std::vector<std::vector<int16_t>> drainStumps(gl::SealedPageSet& pages) {
-    std::vector<std::vector<int16_t>> got;
+std::vector<std::vector<gl::NameId>> drainStumps(gl::SealedPageSet& pages) {
+    std::vector<std::vector<gl::NameId>> got;
     pages.forEachRecord<gl::ExpressionStump>([&](const gl::ExpressionStump& s) {
         got.emplace_back(s.allIdx, s.allIdx + s.count);
     });
@@ -7084,32 +8381,32 @@ std::vector<std::vector<int16_t>> drainStumps(gl::SealedPageSet& pages) {
 /// Install one owner record for `ptrs[0..n)` into `map`.
 void putKey(gl::ExpressionAnalyzer& ea, gl::Memory& m,
             gl::TypedColdBlobMap<gl::NormKey, gl::OwnerSet>& map,
-            const gl::IntEncodedExpr* const* ptrs, int16_t n,
+            const gl::IntEncodedExpr* const* ptrs, gl::NameId n,
             const std::vector<gl::EncodedExpression>& owner) {
-    int16_t kb[gl::ExecutionParameters::MAX_KEY_SLOTS];
-    const int16_t len = ea.makeIntNormalizedKeyFromEncoded(
+    gl::NameId kb[gl::ExecutionParameters::MAX_KEY_SLOTS];
+    const gl::NameId len = ea.makeIntNormalizedKeyFromEncoded(
         ptrs, n, kb, gl::ExecutionParameters::MAX_KEY_SLOTS);
     gl::ExpressionAnalyzer::mergeOwnerRecord(
-        map, gl::NormKey{ n, std::vector<int16_t>(kb, kb + len) },
+        map, gl::NormKey{ n, std::vector<gl::NameId>(kb, kb + len) },
         gl::makePartitionId(3, gl::NameMap::MAIN_ID), owner, m.nameMap);
 }
 
 /// Run one request-generator pass and return the number of requests emitted.
 /// `splitStump` holds the sub-part's stump (statement indices), or is empty.
 /// Build a one-stump bucket from a run of statement indices.
-gl::ExpressionStump makeStump(const std::vector<int16_t>& idx,
+gl::ExpressionStump makeStump(const std::vector<gl::NameId>& idx,
                               bool terminalOnly = false) {
     gl::ExpressionStump s{};
-    s.count = static_cast<int16_t>(idx.size());
+    s.count = static_cast<gl::NameId>(idx.size());
     s.terminalOnly = terminalOnly ? 1 : 0;
     for (std::size_t k = 0; k < idx.size(); ++k) s.allIdx[k] = idx[k];
     return s;
 }
 
-int splitStumpRun(gl::ExpressionAnalyzer& ea, gl::Memory& m, int16_t stumpLen,
-                  const gl::Stump* stumps, int16_t stumpCount,
-                   gl::IntStmtView src1, const std::vector<int16_t>& splitStump,
-                   int16_t ordinal = 0, int16_t total = -1,
+int splitStumpRun(gl::ExpressionAnalyzer& ea, gl::Memory& m, gl::NameId stumpLen,
+                  const gl::Stump* stumps, gl::NameId stumpCount,
+                   gl::IntStmtView src1, const std::vector<gl::NameId>& splitStump,
+                   gl::NameId ordinal = 0, gl::NameId total = -1,
                    bool terminalOnly = false) {
     gl::g_splitCount = 1;
     gl::g_splitProcessID = 0;
@@ -7120,13 +8417,13 @@ int splitStumpRun(gl::ExpressionAnalyzer& ea, gl::Memory& m, int16_t stumpLen,
     gl::ExpressionAnalyzer::g_growthMatchCount = 0;
     gl::BurstSink sink{ &ea, &m, 0u, &pages, &stop,
                         gl::SealedRecordCursor<gl::FiringRecord>(pages) };
-    if (total < 0) total = static_cast<int16_t>(splitStump.empty() ? 0 : 1);
+    if (total < 0) total = static_cast<gl::NameId>(splitStump.empty() ? 0 : 1);
     const gl::ExpressionStump one = makeStump(splitStump, terminalOnly);
     ea.generateEncodedRequestsStatic(
         m, m.overallHashMemory, stumpLen, stumps, stumpCount,
         gl::IntStmtView(m.intEncodedStatements), src1,
         gl::SplitStumpRef{ splitStump.empty() ? nullptr : &one,
-                           static_cast<int16_t>(splitStump.empty() ? 0 : 1),
+                           static_cast<gl::NameId>(splitStump.empty() ? 0 : 1),
                            ordinal, total },
         0u, sink);
     gl::genScratchArenas().forSlot(0).releaseAll();
@@ -7137,10 +8434,10 @@ int splitStumpRun(gl::ExpressionAnalyzer& ea, gl::Memory& m, int16_t stumpLen,
 }
 
 /// Run the generator with a whole BUCKET of stumps; returns the requests emitted.
-int splitStumpBucketRun(gl::ExpressionAnalyzer& ea, gl::Memory& m, int16_t stumpLen,
-                        const gl::Stump* stumps, int16_t stumpCount,
+int splitStumpBucketRun(gl::ExpressionAnalyzer& ea, gl::Memory& m, gl::NameId stumpLen,
+                        const gl::Stump* stumps, gl::NameId stumpCount,
                         gl::IntStmtView src1,
-                        const std::vector<std::vector<int16_t>>& bucket) {
+                        const std::vector<std::vector<gl::NameId>>& bucket) {
     gl::g_splitCount = 1;
     gl::g_splitProcessID = 0;
     ea.ceFilteringActive = false;
@@ -7155,7 +8452,7 @@ int splitStumpBucketRun(gl::ExpressionAnalyzer& ea, gl::Memory& m, int16_t stump
     ea.generateEncodedRequestsStatic(
         m, m.overallHashMemory, stumpLen, stumps, stumpCount,
         gl::IntStmtView(m.intEncodedStatements), src1,
-        gl::SplitStumpRef{ run.data(), static_cast<int16_t>(run.size()), 0, 1 },
+        gl::SplitStumpRef{ run.data(), static_cast<gl::NameId>(run.size()), 0, 1 },
         0u, sink);
     gl::genScratchArenas().forSlot(0).releaseAll();
     const int produced = sink.produced;
@@ -7276,7 +8573,7 @@ TEST(memory, seed_phase_requests_are_dealt_across_the_stump_sub_parts) {
     // Three sub-parts: obligatory-stump index i goes to sub-part i % 3, so each
     // sub-part emits exactly one and the three together emit each seed once.
     int total = 0;
-    for (int16_t p = 0; p < 3; ++p) {
+    for (gl::NameId p = 0; p < 3; ++p) {
         const int got = splitStumpRun(ea, w.m, 1, oblig, 3, none, { p }, p, 3);
         ASSERT_EQ(got, 1);
         total += got;
@@ -7385,7 +8682,7 @@ TEST(memory, produce_expression_stumps_level_one_covers_every_filtered_statement
     ASSERT_EQ(got.size(), 3u);
     for (int i = 0; i < 3; ++i) {
         ASSERT_EQ(got[i].size(), 1u);
-        ASSERT_EQ(got[i][0], static_cast<int16_t>(i));
+        ASSERT_EQ(got[i][0], static_cast<gl::NameId>(i));
     }
     pages.seal();
     pages.freePages();
@@ -7420,7 +8717,7 @@ TEST(memory, produce_expression_stumps_grows_a_short_list_one_whole_level) {
     ASSERT_EQ(n, 3);  // the three pairs, not the three singletons
     const auto got = drainStumps(pages);
     ASSERT_EQ(got.size(), 3u);
-    const std::vector<std::vector<int16_t>> want = { {0,1}, {0,2}, {1,2} };
+    const std::vector<std::vector<gl::NameId>> want = { {0,1}, {0,2}, {1,2} };
     ASSERT_TRUE(got == want);
     pages.seal();
     pages.freePages();
@@ -7472,10 +8769,10 @@ TEST(memory, produce_expression_stumps_retains_recordable_dropped_nodes) {
     ASSERT_EQ(got[0].terminalOnly, 1);
     ASSERT_EQ(got[0].count, 1);
     ASSERT_EQ(got[0].allIdx[0], 0);
-    const std::vector<std::vector<int16_t>> wantPairs = { {0,1}, {0,2}, {1,2} };
+    const std::vector<std::vector<gl::NameId>> wantPairs = { {0,1}, {0,2}, {1,2} };
     for (std::size_t i = 0; i < wantPairs.size(); ++i) {
         ASSERT_EQ(got[i + 1].terminalOnly, 0);
-        ASSERT_EQ(std::vector<int16_t>(got[i + 1].allIdx,
+        ASSERT_EQ(std::vector<gl::NameId>(got[i + 1].allIdx,
                                       got[i + 1].allIdx + got[i + 1].count),
                   wantPairs[i]);
     }
@@ -7584,7 +8881,7 @@ TEST(memory, owner_set_u_satisfied_multi_premise_slot_alignment) {
     std::vector<gl::EncodedExpression> rule = { e0, e1 };
     gl::recordUSignature(os, rule, nm);
     ASSERT_EQ((int)os.uSignatures.size(), 1);
-    const std::vector<std::pair<int16_t,int16_t>>& sig = *os.uSignatures.begin();
+    const std::vector<std::pair<gl::NameId,gl::NameId>>& sig = *os.uSignatures.begin();
     ASSERT_EQ((int)sig.size(), 1);
     ASSERT_EQ((int)sig[0].first, 4);                      // 5th flattened slot
 
@@ -7607,8 +8904,8 @@ TEST(memory, clone_facts_template_deep_copy_outlives_template) {
 
     // Mirror a single status-4 fact load by hand.
     const gl::EncodedExpression e("(in2[i0,i1,s])", "main");
-    const int16_t oid = tmpl->nameMap.encode("(in2[i0,i1,s])");
-    const int16_t vid = tmpl->nameMap.encode("main");
+    const gl::NameId oid = tmpl->nameMap.encode("(in2[i0,i1,s])");
+    const gl::NameId vid = tmpl->nameMap.encode("main");
     tmpl->intEncodedStatements.push_back(gl::encodeExpression(e, tmpl->nameMap));
     tmpl->intStatementLevelsMap.insertSorted(gl::packStatementKey(oid, vid), 0);
     tmpl->intKnownStatements.insert(
@@ -7655,21 +8952,21 @@ TEST(memory, wipe_subtree_drops_packed_statement_index_rows) {
     const gl::EncodedExpression drop("(in[3,4])", closedScope);
 
     // Mirror a production local-statement deposit by hand.
-    auto insertLocal = [&](const gl::EncodedExpression& e) -> int32_t {
+    auto insertLocal = [&](const gl::EncodedExpression& e) -> int64_t {
         const gl::IntEncodedExpr ie = gl::encodeExpression(e, m.nameMap);
-        const int32_t pk = gl::packStatementKey(ie.originalId, ie.validityId);
+        const int64_t pk = gl::packStatementKey(ie.originalId, ie.validityId);
         m.intEncodedStatements.push_back(ie);
         m.intLocalEncodedStatements.push_back(ie);
         m.intLocalEncodedStatementsSet.mint(pk);
         m.intStatementLevelsMap.insertSorted(pk, 0);
         return pk;
     };
-    const int32_t pkKeep = insertLocal(keep);
-    const int32_t pkDrop = insertLocal(drop);
+    const int64_t pkKeep = insertLocal(keep);
+    const int64_t pkDrop = insertLocal(drop);
 
     // The wipe takes the closed scope's NameMap validity id (minted above
     // by the drop row's encodeExpression; lookup is the non-minting probe).
-    const int16_t closedVid = m.nameMap.lookup(closedScope);
+    const gl::NameId closedVid = m.nameMap.lookup(closedScope);
     ASSERT_TRUE(closedVid != 0);
     m.wipeSubtree(closedVid);
 
@@ -7707,27 +9004,27 @@ TEST(memory, wipe_step11_mint_order_facet_twin) {
         for (int pattern = 0; pattern < 2; ++pattern) {
             // Representative closed-id population shapes of a subtree wipe:
             // dense = ids 1..n; sparse = every 7th id starting at 3
-            // (n values; max 3 + 7*4095 = 28668, inside int16_t).
-            std::vector<int16_t> ascending;
+            // (n values; max 3 + 7*4095 = 28668, inside gl::NameId).
+            std::vector<gl::NameId> ascending;
             ascending.reserve(static_cast<std::size_t>(n));
-            for (int32_t k = 0; k < n; ++k)
-                ascending.push_back(static_cast<int16_t>(
+            for (int64_t k = 0; k < n; ++k)
+                ascending.push_back(static_cast<gl::NameId>(
                     pattern == 0 ? k + 1 : 3 + 7 * k));
-            const std::unordered_set<int16_t> closedIds(ascending.begin(),
+            const std::unordered_set<gl::NameId> closedIds(ascending.begin(),
                                                         ascending.end());
 
             // Fresh per-shape arena; the set is declared after it so it
             // destructs first, and the arena destructor returns the blocks.
             gl::LbArena lb(&g);
             gl::DirtyState dirty = gl::DirtyState::Clean;
-            gl::ColdHashSet<gl::PodKeyStore<int16_t>> filterSet(&lb, &dirty);
+            gl::ColdHashSet<gl::PodKeyStore<gl::NameId>> filterSet(&lb, &dirty);
 
             // The production step-11 shape: ascending id scan gated on
             // closed-set membership (the test's scan ceiling is the
             // population max; ids above it are not members, so the mint
             // sequence is identical to production's nameCount-bounded scan).
-            const int16_t hi = ascending.back();
-            for (int16_t id = 1; id <= hi; ++id)
+            const gl::NameId hi = ascending.back();
+            for (gl::NameId id = 1; id <= hi; ++id)
                 if (closedIds.count(id)) filterSet.mint(id);
 
             // The committed contract: decode(i) walks the id column in id
@@ -7750,7 +9047,7 @@ TEST(memory, wipe_step11_mint_order_facet_twin) {
 // children and long-shared-prefix names included.
 TEST(memory, wipe_drain_id_sort_matches_string_sort) {
     gl::Memory m;
-    std::vector<int16_t> ids;
+    std::vector<gl::NameId> ids;
     ids.push_back(m.nameMap.encode("main_boundary_(zz[1])"));
     ids.push_back(m.nameMap.encode("main_boundary_(aa[1])"));
     ids.push_back(m.nameMap.encodePush(ids[0], "(in[z,N])"));
@@ -7759,8 +9056,8 @@ TEST(memory, wipe_drain_id_sort_matches_string_sort) {
     ids.push_back(m.nameMap.encode("main_boundary_(aa[2])"));
 
     // Production comparator: sort the ids under compareSpans(decodeView).
-    std::vector<int16_t> byId = ids;
-    std::sort(byId.begin(), byId.end(), [&](int16_t a, int16_t b) {
+    std::vector<gl::NameId> byId = ids;
+    std::sort(byId.begin(), byId.end(), [&](gl::NameId a, gl::NameId b) {
         return gl::compareSpans(m.nameMap.decodeView(a),
                                 m.nameMap.decodeView(b)) < 0;
     });
@@ -7769,12 +9066,12 @@ TEST(memory, wipe_drain_id_sort_matches_string_sort) {
     // byte-lex std::sort + map back to ids via the non-minting lookup.
     std::vector<std::string> names;
     names.reserve(ids.size());
-    for (const int16_t id : ids) names.push_back(m.nameMap.decode(id));
+    for (const gl::NameId id : ids) names.push_back(m.nameMap.decode(id));
     std::sort(names.begin(), names.end());
-    std::vector<int16_t> byString;
+    std::vector<gl::NameId> byString;
     byString.reserve(names.size());
     for (const std::string& s : names) {
-        const int16_t id = m.nameMap.lookup(s);
+        const gl::NameId id = m.nameMap.lookup(s);
         ASSERT_TRUE(id != 0);
         byString.push_back(id);
     }
@@ -7784,7 +9081,7 @@ TEST(memory, wipe_drain_id_sort_matches_string_sort) {
         ASSERT_EQ(byId[i], byString[i]);
 }
 
-// Direct coverage of the wipeSubtree(int16_t) overload: a full sweep over
+// Direct coverage of the wipeSubtree(gl::NameId) overload: a full sweep over
 // statement registries + goal registry keyed by the closed scope's vid.
 // Positive: every row/key at the closed scope A and its descendant B is
 // gone. Negative (the guarded predicate): the literal-prefix sibling S —
@@ -7796,16 +9093,16 @@ TEST(memory, wipe_drain_id_sort_matches_string_sort) {
 // contains exactly {A, B}.
 TEST(memory, wipe_subtree_vid_scope_sweep) {
     gl::Memory m;
-    const int16_t A = m.nameMap.encodePush(gl::NameMap::MAIN_ID, "(impl1[a])");
-    const int16_t B = m.nameMap.encodePush(A, "(in[b,N])");
-    const int16_t S = m.nameMap.encodePush(gl::NameMap::MAIN_ID, "(impl1[a])x");
+    const gl::NameId A = m.nameMap.encodePush(gl::NameMap::MAIN_ID, "(impl1[a])");
+    const gl::NameId B = m.nameMap.encodePush(A, "(in[b,N])");
+    const gl::NameId S = m.nameMap.encodePush(gl::NameMap::MAIN_ID, "(impl1[a])x");
 
     // Populate the registries directly through the public members, one
     // statement per scope (main / A / B / S).
-    auto addRows = [&](const std::string& expr, int16_t vid) -> int32_t {
+    auto addRows = [&](const std::string& expr, gl::NameId vid) -> int64_t {
         const gl::EncodedExpression e(expr, m.nameMap.decode(vid));
         const gl::IntEncodedExpr ie = gl::encodeExpression(e, m.nameMap);
-        const int32_t pk = gl::packStatementKey(ie.originalId, ie.validityId);
+        const int64_t pk = gl::packStatementKey(ie.originalId, ie.validityId);
         m.intEncodedStatements.push_back(ie);
         m.intLocalEncodedStatements.push_back(ie);
         m.intLocalEncodedStatementsSet.mint(pk);
@@ -7816,10 +9113,10 @@ TEST(memory, wipe_subtree_vid_scope_sweep) {
         m.intToBeProved.assignSet(pk, nullptr, 0);
         return pk;
     };
-    const int32_t pkMain = addRows("(in[1,2])", gl::NameMap::MAIN_ID);
-    const int32_t pkA    = addRows("(in[3,4])", A);
-    const int32_t pkB    = addRows("(in[5,6])", B);
-    const int32_t pkS    = addRows("(in[7,8])", S);
+    const int64_t pkMain = addRows("(in[1,2])", gl::NameMap::MAIN_ID);
+    const int64_t pkA    = addRows("(in[3,4])", A);
+    const int64_t pkB    = addRows("(in[5,6])", B);
+    const int64_t pkS    = addRows("(in[7,8])", S);
 
     // expandedImplications entries — scope half minted into the
     // lbStateInterner: equal-to-closed, descendant (prefix WITH
@@ -7838,15 +9135,15 @@ TEST(memory, wipe_subtree_vid_scope_sweep) {
     m.wipeSubtree(A);
 
     // Closed scope A and descendant B: every row/key gone.
-    for (const int32_t pk : { pkA, pkB }) {
+    for (const int64_t pk : { pkA, pkB }) {
         ASSERT_FALSE(m.intLocalEncodedStatementsSet.contains(pk));
         ASSERT_EQ(m.intStatementLevelsMap.lookup(pk), 0);
         ASSERT_EQ(m.intToBeProved.lookup(pk), 0);
     }
     ASSERT_TRUE(m.intKnownStatements.find(
-        gl::StatementKey{ static_cast<int16_t>(pkA >> 16), A }) == nullptr);
+        gl::StatementKey{ gl::Codec<gl::StatementKey>::decode(pkA).orig, A }) == nullptr);
     ASSERT_TRUE(m.intKnownStatements.find(
-        gl::StatementKey{ static_cast<int16_t>(pkB >> 16), B }) == nullptr);
+        gl::StatementKey{ gl::Codec<gl::StatementKey>::decode(pkB).orig, B }) == nullptr);
     for (std::size_t i = 0; i < m.intEncodedStatements.size(); ++i) {
         ASSERT_NE(m.intEncodedStatements[i].validityId, A);
         ASSERT_NE(m.intEncodedStatements[i].validityId, B);
@@ -7854,7 +9151,7 @@ TEST(memory, wipe_subtree_vid_scope_sweep) {
 
     // Survivors: "main" and the literal-prefix sibling S (negative
     // coverage of the _boundary_-delimited prefix predicate).
-    for (const int32_t pk : { pkMain, pkS }) {
+    for (const int64_t pk : { pkMain, pkS }) {
         ASSERT_TRUE(m.intLocalEncodedStatementsSet.contains(pk));
         ASSERT_TRUE(m.intStatementLevelsMap.lookup(pk) != 0);
         ASSERT_TRUE(m.intToBeProved.lookup(pk) != 0);
@@ -7890,9 +9187,9 @@ TEST(memory, wipe_subtree_vid_scope_sweep) {
 // both must equal the oracle id-for-id.
 TEST(memory, collect_closed_subtree_matches_string_predicate) {
     gl::Memory m;
-    const int16_t A = m.nameMap.encodePush(gl::NameMap::MAIN_ID, "(impl1[a])");
-    const int16_t B = m.nameMap.encodePush(A, "(in[b,N])");
-    const int16_t C = m.nameMap.encodePush(B, "(in[c,N])");
+    const gl::NameId A = m.nameMap.encodePush(gl::NameMap::MAIN_ID, "(impl1[a])");
+    const gl::NameId B = m.nameMap.encodePush(A, "(in[b,N])");
+    const gl::NameId C = m.nameMap.encodePush(B, "(in[c,N])");
     (void)C;
     m.nameMap.encodePush(gl::NameMap::MAIN_ID, "(impl2[a])");   // sibling
     m.nameMap.encodePush(gl::NameMap::MAIN_ID, "(impl1[a])x");  // prefix trap
@@ -7902,7 +9199,7 @@ TEST(memory, collect_closed_subtree_matches_string_predicate) {
     m.nameMap.encode("(in[8,2])");
 
     const int32_t hi = m.nameMap.nameCount();
-    for (const int16_t closed : { A, B }) {
+    for (const gl::NameId closed : { A, B }) {
         // ORACLE — the retired decode-all-ids string predicate, verbatim.
         const std::string closedScope = m.nameMap.decode(closed);
         const std::string boundary = closedScope + "_boundary_";
@@ -7911,22 +9208,22 @@ TEST(memory, collect_closed_subtree_matches_string_predicate) {
             if (v.size() <= boundary.size()) return false;
             return v.compare(0, boundary.size(), boundary) == 0;
         };
-        std::vector<int16_t> oracleAsc;
-        for (int16_t id = 1; id <= hi; ++id)
+        std::vector<gl::NameId> oracleAsc;
+        for (gl::NameId id = 1; id <= hi; ++id)
             if (inClosed(m.nameMap.decode(id))) oracleAsc.push_back(id);
 
         // Production: one forest walk.
         gl::LbArena lb(&gl::staticMemory());
         gl::DirtyState d = gl::DirtyState::Clean;
-        gl::PagedVector<int16_t> asc(&lb, &d);
+        gl::PagedVector<gl::NameId> asc(&lb, &d);
         uint64_t bits[512];
         const int32_t matches =
             m.nameMap.collectClosedSubtreeIds(closed, bits, 512, asc);
 
-        // Per-id bit == oracle verdict, for EVERY minted id.
-        for (int16_t id = 1; id <= hi; ++id) {
-            const bool bit = ((bits[static_cast<uint16_t>(id) >> 6]
-                               >> (static_cast<uint16_t>(id) & 63)) & 1ull) != 0;
+        // Per-id bit == oracle verdict, for EVERY minted id (direct NameId
+        // indexing, matching the production bitmap — no uint16 wrap).
+        for (gl::NameId id = 1; id <= hi; ++id) {
+            const bool bit = ((bits[id >> 6] >> (id & 63)) & 1ull) != 0;
             ASSERT_EQ(bit, inClosed(m.nameMap.decode(id)));
         }
         // Ascending vector == the oracle's ascending matching-id list.
@@ -7941,7 +9238,7 @@ namespace {
     /// Assorted LocalMemoryValue shapes for the codec / peek / splice tests:
     /// empty and non-empty levels/keyIds/remainingArgIds, negative-ish ids,
     /// both bool combos, and a caller-chosen validityId.
-    gl::LocalMemoryValue makeLmv(int16_t validityId, int shape) {
+    gl::LocalMemoryValue makeLmv(gl::NameId validityId, int shape) {
         gl::LocalMemoryValue v;
         v.validityId = validityId;
         switch (shape % 4) {
@@ -7980,14 +9277,14 @@ namespace {
 // the codec wrote, for every value shape (empty / non-empty variable
 // sections, negative-ish ids, both bool combos).
 TEST(memory, lmv_blob_validity_id_peek_matches_codec) {
-    const int16_t vids[] = { 1, 7, 42, 32000 };
+    const gl::NameId vids[] = { 1, 7, 42, 32000 };
     for (int shape = 0; shape < 4; ++shape) {
-        for (const int16_t vid : vids) {
+        for (const gl::NameId vid : vids) {
             const gl::LocalMemoryValue v = makeLmv(vid, shape);
             const std::vector<char> blob =
                 gl::Codec<gl::LocalMemoryValue>::serialize(v);
             ASSERT_GE(static_cast<int32_t>(blob.size()), 16);
-            const int16_t peeked = gl::lmvBlobValidityId(
+            const gl::NameId peeked = gl::lmvBlobValidityId(
                 blob.data(), static_cast<int32_t>(blob.size()));
             ASSERT_EQ(peeked, v.validityId);
             ASSERT_EQ(peeked, gl::Codec<gl::LocalMemoryValue>::deserialize(
@@ -8033,13 +9330,13 @@ TEST(memory, wipe_encoded_map_filtered_splice_matches_heap_oracle) {
     gl::TypedColdBlobMap<gl::NormKey, gl::LocalMemoryValue> A(&lbA, &dA);
     gl::TypedColdBlobMap<gl::NormKey, gl::LocalMemoryValue> B(&lbB, &dB);
 
-    // Closed scope ids {3, 7}; ceiling 10.
+    // Closed scope ids {3, 7}; ceiling 10. Direct NameId indexing,
+    // matching the production bitmap — no uint16 wrap.
     const int32_t nameHighWater = 10;
     uint64_t closedBits[512] = {};
-    for (const int16_t id : { int16_t{ 3 }, int16_t{ 7 } })
-        closedBits[static_cast<uint16_t>(id) >> 6] |=
-            (1ull << (static_cast<uint16_t>(id) & 63));
-    const auto closedOracle = [](int16_t vid) {
+    for (const gl::NameId id : { gl::NameId{ 3 }, gl::NameId{ 7 } })
+        closedBits[id >> 6] |= (1ull << (id & 63));
+    const auto closedOracle = [](gl::NameId vid) {
         return vid == 3 || vid == 7;
     };
 
@@ -8122,13 +9419,13 @@ TEST(memory, wipe_owner_set_map_filtered_matches_heap_oracle) {
     gl::TypedColdBlobMap<gl::NormKey, gl::OwnerSet> A(&lbA, &dA);
     gl::TypedColdBlobMap<gl::NormKey, gl::OwnerSet> B(&lbB, &dB);
 
-    // Closed scope vids {3, 7}; ceiling 10.
+    // Closed scope vids {3, 7}; ceiling 10. Direct NameId indexing,
+    // matching the production bitmap — no uint16 wrap.
     const int32_t nameHighWater = 10;
     uint64_t closedBits[512] = {};
-    for (const int16_t id : { int16_t{ 3 }, int16_t{ 7 } })
-        closedBits[static_cast<uint16_t>(id) >> 6] |=
-            (1ull << (static_cast<uint16_t>(id) & 63));
-    const auto closedOracle = [](int16_t vid) {
+    for (const gl::NameId id : { gl::NameId{ 3 }, gl::NameId{ 7 } })
+        closedBits[id >> 6] |= (1ull << (id & 63));
+    const auto closedOracle = [](gl::NameId vid) {
         return vid == 3 || vid == 7;
     };
 
@@ -8183,8 +9480,8 @@ TEST(memory, wipe_owner_set_map_filtered_matches_heap_oracle) {
             gl::OwnerSet os = A.recordAt(id, 0);
             for (auto oit = os.partitionIds.begin();
                  oit != os.partitionIds.end(); ) {
-                const int16_t scopeVid =
-                    static_cast<int16_t>(*oit & 0xFFFF);
+                const gl::NameId scopeVid =
+                    gl::Codec<gl::StatementKey>::decode(*oit).validity;
                 if (closedOracle(scopeVid))
                     oit = os.partitionIds.erase(oit);
                 else ++oit;
@@ -8363,7 +9660,7 @@ TEST(memory, packed_statement_index_probes_are_non_minting) {
     gl::Memory m;
     const gl::EncodedExpression e("(in[1,2])", "main");
     const gl::IntEncodedExpr ie = gl::encodeExpression(e, m.nameMap);
-    const int32_t pk = gl::packStatementKey(ie.originalId, ie.validityId);
+    const int64_t pk = gl::packStatementKey(ie.originalId, ie.validityId);
     m.intLocalEncodedStatementsSet.mint(pk);
     m.intStatementLevelsMap.insertSorted(pk, 0);
     m.intStatementLevelsMap.insertSorted(pk, 2);
@@ -8391,7 +9688,7 @@ TEST(memory, packed_statement_index_probes_are_non_minting) {
     ASSERT_FALSE(gl::isLocalEncodedStatement(
         m.intLocalEncodedStatementsSet, m.nameMap, "(in[9,9])", "main"));
     ASSERT_EQ(m.nameMap.nameCount(), mintedBefore);
-    ASSERT_EQ(m.nameMap.lookup("(in[9,9])"), static_cast<int16_t>(0));
+    ASSERT_EQ(m.nameMap.lookup("(in[9,9])"), static_cast<gl::NameId>(0));
 }
 
 // countPatternOccurrences — the secondary-variable cap counter tests
@@ -8416,7 +9713,7 @@ TEST(prover, count_pattern_occurrences_skips_recursion_products) {
 
     // Non-minting read path: the never-interned lexeme stayed un-interned.
     ASSERT_EQ(mb.nameMap.nameCount(), mintedBefore);
-    ASSERT_EQ(mb.nameMap.lookup("it_7_lev_8_9"), static_cast<int16_t>(0));
+    ASSERT_EQ(mb.nameMap.lookup("it_7_lev_8_9"), static_cast<gl::NameId>(0));
 }
 
 // The three residual HashMemory sets are statified cold
@@ -8432,14 +9729,14 @@ TEST(prover, hashmemory_residual_sets_cold_roundtrip) {
     hm.admissionSetIntegration.mint(102);
     hm.triggersForAdmissionSetIntegration.mint(201);
     // int16 NameMap-id membership cache.
-    hm.productsOfRecursionIds.mint(static_cast<int16_t>(7));
+    hm.productsOfRecursionIds.mint(static_cast<gl::NameId>(7));
 
     ASSERT_TRUE(hm.admissionSetIntegration.contains(101));
     ASSERT_TRUE(hm.admissionSetIntegration.contains(102));
     ASSERT_FALSE(hm.admissionSetIntegration.contains(999));
     ASSERT_EQ(hm.admissionSetIntegration.count(), 2);
     ASSERT_TRUE(hm.triggersForAdmissionSetIntegration.contains(201));
-    ASSERT_TRUE(hm.productsOfRecursionIds.contains(static_cast<int16_t>(7)));
+    ASSERT_TRUE(hm.productsOfRecursionIds.contains(static_cast<gl::NameId>(7)));
 
     // Predicate erase drops only the matching key (the radical-wipe path).
     hm.admissionSetIntegration.eraseIf([](int32_t k) { return k == 101; });
@@ -8461,7 +9758,7 @@ TEST(prover, hashmemory_residual_sets_cold_roundtrip) {
 TEST(memory, upsert_statement_key_or_only_keep_first_local) {
     gl::Memory mb;
     auto& reg = mb.intKnownStatements;   // the cold registry
-    const int32_t k = gl::packStatementKey(7, 1);
+    const int64_t k = gl::packStatementKey(7, 1);
 
     gl::upsertStatementKey(reg, k, /*local=*/false, /*registered=*/true, /*known=*/false);
     ASSERT_TRUE(reg.inner().find(k)->registered);
@@ -8490,7 +9787,7 @@ TEST(memory, upsert_statement_key_or_only_keep_first_local) {
 // also nullptr.
 TEST(memory, lookup_statement_flags_non_minting_definitive_miss) {
     gl::Memory mb;
-    const int16_t oid = mb.nameMap.encode("(p[a])");
+    const gl::NameId oid = mb.nameMap.encode("(p[a])");
     gl::upsertStatementKey(mb.intKnownStatements,
         gl::packStatementKey(oid, gl::NameMap::MAIN_ID),
         /*local=*/true, /*registered=*/true, /*known=*/false);
@@ -8517,7 +9814,7 @@ TEST(memory, lookup_statement_flags_non_minting_definitive_miss) {
 // definitive nullptr without minting.
 TEST(memory, lookup_to_be_proved_non_minting_probe) {
     gl::Memory mb;
-    const int16_t oid = mb.nameMap.encode("(in[2,1])");
+    const gl::NameId oid = mb.nameMap.encode("(in[2,1])");
     mb.intToBeProved.insertSorted(
         gl::packStatementKey(oid, gl::NameMap::MAIN_ID), 7);
 
@@ -8537,7 +9834,7 @@ TEST(memory, lookup_to_be_proved_non_minting_probe) {
     ASSERT_EQ(gl::lookupToBeProved(mb.intToBeProved, mb.nameMap,
                                    "(in[9,9])", "main"), 0);
     ASSERT_EQ(mb.nameMap.nameCount(), mintedBefore);
-    ASSERT_EQ(mb.nameMap.lookup("(in[9,9])"), static_cast<int16_t>(0));
+    ASSERT_EQ(mb.nameMap.lookup("(in[9,9])"), static_cast<gl::NameId>(0));
 }
 
 // decodeToBeProvedSorted — the order-preserving walk vehicle. Rows come back
@@ -8547,9 +9844,9 @@ TEST(memory, lookup_to_be_proved_non_minting_probe) {
 TEST(memory, decode_to_be_proved_sorted_lex_order_not_id_order) {
     gl::Memory mb;
     // Mint deliberately in REVERSE lex order so id order != lex order.
-    const int16_t idC = mb.nameMap.encode("(in[3,1])");
-    const int16_t idB = mb.nameMap.encode("(in[2,1])");
-    const int16_t idA = mb.nameMap.encode("(in[1,1])");
+    const gl::NameId idC = mb.nameMap.encode("(in[3,1])");
+    const gl::NameId idB = mb.nameMap.encode("(in[2,1])");
+    const gl::NameId idA = mb.nameMap.encode("(in[1,1])");
     ASSERT_TRUE(idC < idB && idB < idA);  // mint order, reversed lex
 
     mb.intToBeProved.assignSet(
@@ -8581,10 +9878,10 @@ TEST(memory, sort_to_be_proved_keys_matches_decode_to_be_proved_sorted) {
     gl::Memory mb;
     // Mint in reverse lex so id order != lex order; a second scope on the same
     // original exercises the validity tie-break.
-    const int16_t vSub = mb.nameMap.encode("sub_1");
-    const int16_t idC = mb.nameMap.encode("(in[3,1])");
-    const int16_t idB = mb.nameMap.encode("(in[2,1])");
-    const int16_t idA = mb.nameMap.encode("(in[1,1])");
+    const gl::NameId vSub = mb.nameMap.encode("sub_1");
+    const gl::NameId idC = mb.nameMap.encode("(in[3,1])");
+    const gl::NameId idB = mb.nameMap.encode("(in[2,1])");
+    const gl::NameId idA = mb.nameMap.encode("(in[1,1])");
     mb.intToBeProved.assignSet(gl::packStatementKey(idC, gl::NameMap::MAIN_ID), nullptr, 0);
     mb.intToBeProved.assignSet(gl::packStatementKey(idB, gl::NameMap::MAIN_ID), nullptr, 0);
     mb.intToBeProved.assignSet(gl::packStatementKey(idA, gl::NameMap::MAIN_ID), nullptr, 0);
@@ -8599,14 +9896,12 @@ TEST(memory, sort_to_be_proved_keys_matches_decode_to_be_proved_sorted) {
     {
         gl::ScratchScope scope(sA);
         int32_t n = -1;
-        int32_t* keys = gl::sortToBeProvedKeys(mb.intToBeProved, mb.nameMap, sA, n);
+        int64_t* keys = gl::sortToBeProvedKeys(mb.intToBeProved, mb.nameMap, sA, n);
         ASSERT_EQ(static_cast<std::size_t>(n), oracle.size());
         ASSERT_TRUE(keys != nullptr);
         for (int32_t i = 0; i < n; ++i) {
-            const int16_t oid = static_cast<int16_t>(
-                (static_cast<uint32_t>(keys[i]) >> 16) & 0xFFFF);
-            const int16_t vid = static_cast<int16_t>(
-                static_cast<uint32_t>(keys[i]) & 0xFFFF);
+            const gl::NameId oid = gl::Codec<gl::StatementKey>::decode(keys[i]).orig;
+            const gl::NameId vid = gl::Codec<gl::StatementKey>::decode(keys[i]).validity;
             ASSERT_EQ(mb.nameMap.decode(oid),
                       oracle[static_cast<std::size_t>(i)].original);
             ASSERT_EQ(mb.nameMap.decode(vid),
@@ -8621,7 +9916,7 @@ TEST(memory, sort_to_be_proved_keys_matches_decode_to_be_proved_sorted) {
     {
         gl::ScratchScope scope(sB);
         int32_t n = -1;
-        int32_t* keys = gl::sortToBeProvedKeys(empty.intToBeProved, empty.nameMap, sB, n);
+        int64_t* keys = gl::sortToBeProvedKeys(empty.intToBeProved, empty.nameMap, sB, n);
         ASSERT_EQ(n, 0);
         ASSERT_TRUE(keys == nullptr);
     }
@@ -8745,7 +10040,7 @@ TEST(memory, origin_line_less_id_matches_std_sort_originline) {
                       static_cast<gl::OriginTag>(v.tag))),
                   oracle[i].first);
         ASSERT_EQ(v.depN, static_cast<int32_t>(oracle[i].second.size()));
-        for (int32_t k = 0; k < v.depN; ++k) {
+        for (int64_t k = 0; k < v.depN; ++k) {
             const std::pair<std::string, std::string> ev =
                 gl::decodeOriginKey(gl::mailOriginDepAt(v, k), oi);
             ASSERT_EQ(ev.first, oracle[i].second[static_cast<std::size_t>(k)].original);
@@ -8838,9 +10133,9 @@ TEST(memory, decoded_statement_less_matches_std_sort_pair) {
             const gl::IntMailStatementKey k =
                 gl::Codec<gl::IntMailStatementKey>::decode(
                     gl::StrSpan(keyBytes[order[i]]));
-            ASSERT_EQ(std::string(nm.decode(static_cast<int16_t>(k.originalId))),
+            ASSERT_EQ(std::string(nm.decode(static_cast<gl::NameId>(k.originalId))),
                       oracle[i].first.original);
-            ASSERT_EQ(std::string(nm.decode(static_cast<int16_t>(k.validityId))),
+            ASSERT_EQ(std::string(nm.decode(static_cast<gl::NameId>(k.validityId))),
                       oracle[i].first.validityName);
             ASSERT_EQ(k.levels.size(), oracle[i].second.size());
         }
@@ -8961,8 +10256,8 @@ TEST(prover, choose_canonical_id_matches_choose_canonical) {
 
     gl::EquivalenceClass c1;   // normal name wins
     c1.setMembersFromNames({ "it_0_lev_1_2", "int_lev_3_4", "repl_7", "zebra" }, m.nameMap);
-    const int16_t id1 = ea.chooseCanonicalId(c1, m, gl::StrSpan("main", 4));
-    ASSERT_NE(id1, static_cast<int16_t>(0));
+    const gl::NameId id1 = ea.chooseCanonicalId(c1, m, gl::StrSpan("main", 4));
+    ASSERT_NE(id1, static_cast<gl::NameId>(0));
     ASSERT_EQ(m.nameMap.decode(id1), ea.chooseCanonical(c1, m, "main"));
 
     gl::EquivalenceClass c2;   // int_ tier
@@ -8977,7 +10272,7 @@ TEST(prover, choose_canonical_id_matches_choose_canonical) {
 
     // Empty class: id 0, string overload empty.
     gl::EquivalenceClass empty;
-    ASSERT_EQ(ea.chooseCanonicalId(empty, m, gl::StrSpan("main", 4)), static_cast<int16_t>(0));
+    ASSERT_EQ(ea.chooseCanonicalId(empty, m, gl::StrSpan("main", 4)), static_cast<gl::NameId>(0));
     ASSERT_TRUE(ea.chooseCanonical(empty, m, "main").empty());
 
     // All-weak class: id 0, string overload empty.
@@ -8988,7 +10283,7 @@ TEST(prover, choose_canonical_id_matches_choose_canonical) {
         mWeak.nameMap.encode("it_0_lev_1_2"), gl::NameMap::MAIN_ID));
     gl::EquivalenceClass cWeak;
     cWeak.setMembersFromNames({ "int_lev_3_4", "it_0_lev_1_2" }, mWeak.nameMap);
-    ASSERT_EQ(ea.chooseCanonicalId(cWeak, mWeak, gl::StrSpan("main", 4)), static_cast<int16_t>(0));
+    ASSERT_EQ(ea.chooseCanonicalId(cWeak, mWeak, gl::StrSpan("main", 4)), static_cast<gl::NameId>(0));
     ASSERT_TRUE(ea.chooseCanonical(cWeak, mWeak, "main").empty());
 }
 
@@ -8997,9 +10292,9 @@ TEST(prover, choose_canonical_id_matches_choose_canonical) {
 TEST(memory, eqclass_name_caches_kind_of) {
     gl::Memory mb;
     // Mint in an order where id order disagrees with any tier order.
-    const int16_t idIt = mb.nameMap.encode("it_0_lev_1_2");
-    const int16_t idNormal = mb.nameMap.encode("repl_3");
-    const int16_t idInt = mb.nameMap.encode("int_lev_0_9");
+    const gl::NameId idIt = mb.nameMap.encode("it_0_lev_1_2");
+    const gl::NameId idNormal = mb.nameMap.encode("repl_3");
+    const gl::NameId idInt = mb.nameMap.encode("int_lev_0_9");
 
     ASSERT_TRUE(mb.eqClassNameCaches.kindOf(idInt, mb.nameMap) == gl::NameKind::IntLev);
     ASSERT_TRUE(mb.eqClassNameCaches.kindOf(idIt, mb.nameMap) == gl::NameKind::ItLev);
@@ -9121,8 +10416,8 @@ TEST(memory, tokens_view_of_facets_match_typed_assign_oracle) {
         "()",                                           // near-empty
     };
     for (const std::string& name : names) {
-        const int16_t idA = mA.nameMap.encode(name);
-        const int16_t idB = mB.nameMap.encode(name);
+        const gl::NameId idA = mA.nameMap.encode(name);
+        const gl::NameId idB = mB.nameMap.encode(name);
         ASSERT_EQ(idA, idB);   // same mint order -> same ids
 
         // ORACLE: the retired miss path, verbatim.
@@ -9158,8 +10453,8 @@ TEST(memory, tokens_view_of_facets_match_typed_assign_oracle) {
 
     // Hit-path pin: repeated probes serve the memoized record.
     for (const std::string& name : names) {
-        const int16_t idB = mB.nameMap.lookup(name);
-        ASSERT_NE(idB, static_cast<int16_t>(0));
+        const gl::NameId idB = mB.nameMap.lookup(name);
+        ASSERT_NE(idB, static_cast<gl::NameId>(0));
         const gl::SpecialTokenScanView v =
             mB.eqClassNameCaches.tokensViewOf(idB, mB.nameMap, peekArena);
         const int32_t cidA =
@@ -9179,13 +10474,16 @@ TEST(memory, tokens_view_of_facets_match_typed_assign_oracle) {
 // packEqPairKey — unordered-pair identity: {a,b} and {b,a} pack identically;
 // distinct pairs pack distinctly; a==b packs naturally.
 TEST(memory, pack_eq_pair_key_unordered) {
-    const int16_t a = 7, b = 12, c = 300;
+    const gl::NameId a = 7, b = 12, c = 300;
     ASSERT_EQ(gl::packEqPairKey(a, b), gl::packEqPairKey(b, a));
     ASSERT_EQ(gl::packEqPairKey(b, c), gl::packEqPairKey(c, b));
     ASSERT_NE(gl::packEqPairKey(a, b), gl::packEqPairKey(a, c));
     ASSERT_NE(gl::packEqPairKey(a, b), gl::packEqPairKey(b, c));
-    ASSERT_EQ(gl::packEqPairKey(a, a),
-              (static_cast<uint32_t>(7) << 16) | static_cast<uint32_t>(7));
+    // a==a packs the lo/hi halves equal (int64 via packInt32Pair).
+    ASSERT_EQ(gl::packEqPairKey(a, a), gl::packInt32Pair(7, 7));
+    // Member ids past the old 16-bit ceiling no longer alias.
+    ASSERT_NE(gl::packEqPairKey(70000, 3), gl::packEqPairKey(3, 5));
+    ASSERT_EQ(gl::packEqPairKey(70000, 200000), gl::packEqPairKey(200000, 70000));
 }
 
 // setMembersFromNames — memberIds comes out sorted by DECODED name even
@@ -9193,9 +10491,9 @@ TEST(memory, pack_eq_pair_key_unordered) {
 TEST(memory, eqclass_set_members_from_names) {
     gl::Memory mb;
     // Mint in reverse lex order so id order != decoded-lex order.
-    const int16_t idC = mb.nameMap.encode("it_2_lev_0_3");
-    const int16_t idB = mb.nameMap.encode("int_lev_0_9");
-    const int16_t idA = mb.nameMap.encode("a_normal");
+    const gl::NameId idC = mb.nameMap.encode("it_2_lev_0_3");
+    const gl::NameId idB = mb.nameMap.encode("int_lev_0_9");
+    const gl::NameId idA = mb.nameMap.encode("a_normal");
     ASSERT_TRUE(idC < idB && idB < idA); // mint order, reversed lex
 
     gl::EquivalenceClass cls;
@@ -9222,7 +10520,7 @@ TEST(memory, union_member_ids_by_name) {
     gl::EquivalenceClass right;
     right.setMembersFromNames({ "beta", "gamma" }, mb.nameMap);
 
-    const std::vector<int16_t> u =
+    const std::vector<gl::NameId> u =
         gl::unionMemberIdsByName(left.memberIds, right.memberIds, mb.nameMap);
     ASSERT_EQ(u.size(), static_cast<std::size_t>(4));
     ASSERT_EQ(u[0], mb.nameMap.encode("alpha"));
@@ -9231,12 +10529,12 @@ TEST(memory, union_member_ids_by_name) {
     ASSERT_EQ(u[3], mb.nameMap.encode("zeta"));
 
     // Symmetric content; empty operands are identities.
-    const std::vector<int16_t> u2 =
+    const std::vector<gl::NameId> u2 =
         gl::unionMemberIdsByName(right.memberIds, left.memberIds, mb.nameMap);
     ASSERT_EQ(u2.size(), static_cast<std::size_t>(4));
     ASSERT_EQ(u2[0], u[0]);
-    const std::vector<int16_t> none;
-    const std::vector<int16_t> u3 =
+    const std::vector<gl::NameId> none;
+    const std::vector<gl::NameId> u3 =
         gl::unionMemberIdsByName(none, left.memberIds, mb.nameMap);
     ASSERT_EQ(u3.size(), left.memberIds.size());
 }
@@ -9262,7 +10560,7 @@ TEST(prover, first_special_member_id) {
     gl::EquivalenceClass cNormal;
     cNormal.setMembersFromNames({ "a", "b" }, m.nameMap);
     ASSERT_EQ(ea.firstSpecialMemberId(cNormal, m),
-              static_cast<int16_t>(0));
+              static_cast<gl::NameId>(0));
 }
 
 // filterIterations — a statement carrying a non-canonical special member of
@@ -9275,9 +10573,9 @@ TEST(prover, filter_iterations_id_and_string_overloads) {
     gl::EquivalenceClass cls;
     cls.setMembersFromNames({ "int_lev_0_1", "int_lev_0_2", "x" }, m.nameMap);
 
-    const int16_t okId = m.nameMap.encode("(in2[int_lev_0_1,7])");
-    const int16_t badId = m.nameMap.encode("(in2[int_lev_0_2,7])");
-    const int16_t foreignId = m.nameMap.encode("(in2[int_lev_4_4,7])");
+    const gl::NameId okId = m.nameMap.encode("(in2[int_lev_0_1,7])");
+    const gl::NameId badId = m.nameMap.encode("(in2[int_lev_0_2,7])");
+    const gl::NameId foreignId = m.nameMap.encode("(in2[int_lev_4_4,7])");
 
     // Canonical member passes; non-canonical member rejects.
     ASSERT_TRUE(ea.filterIterations(okId, cls, m));
@@ -9319,10 +10617,10 @@ TEST(prover, reduce_eq_class_ids_run_matches_vector) {
 
     // Retained heap oracle — the retired vector-returning form's logic, inline.
     auto oracle = [&](gl::StrSpan validity) {
-        std::vector<int16_t> out;
-        const int16_t valId = m.nameMap.lookup(validity);
+        std::vector<gl::NameId> out;
+        const gl::NameId valId = m.nameMap.lookup(validity);
         for (int32_t i = 0; i < cls.memberCount(); ++i) {
-            const int16_t id = cls.memberId(i);
+            const gl::NameId id = cls.memberId(i);
             if (valId != 0
                 && m.intWeakVariables.contains(gl::packStatementKey(id, valId)))
                 continue;
@@ -9333,8 +10631,8 @@ TEST(prover, reduce_eq_class_ids_run_matches_vector) {
 
     // Run vs oracle, element-for-element.
     auto check = [&](gl::StrSpan validity) -> int32_t {
-        const std::vector<int16_t> expected = oracle(validity);
-        int16_t run[16];
+        const std::vector<gl::NameId> expected = oracle(validity);
+        gl::NameId run[16];
         const int32_t w = ea.reduceEqClassIds(cls, m, validity, run, 16);
         ASSERT_EQ(w, static_cast<int32_t>(expected.size()));
         for (int32_t i = 0; i < w; ++i)
@@ -9343,7 +10641,7 @@ TEST(prover, reduce_eq_class_ids_run_matches_vector) {
     };
 
     // Mixed: int_lev_0_1 is weak at main -> 2 strong (int_lev_0_2, zebra).
-    int16_t run[16];
+    gl::NameId run[16];
     const int32_t wMixed = ea.reduceEqClassIds(cls, m, gl::StrSpan("main", 4), run, 16);
     ASSERT_EQ(wMixed, 2);
     ASSERT_EQ(run[0], m.nameMap.encode("int_lev_0_2"));
@@ -9354,13 +10652,13 @@ TEST(prover, reduce_eq_class_ids_run_matches_vector) {
     ASSERT_EQ(check(gl::StrSpan("never_interned_scope", 20)), 3);
 
     // Exact-cap: cap == strong count (3) fits exactly (no overflow assert).
-    int16_t run3[3];
+    gl::NameId run3[3];
     const int32_t w3 = ea.reduceEqClassIds(
         cls, m, gl::StrSpan("never_interned_scope", 20), run3, 3);
     ASSERT_EQ(w3, 3);
 
     // All-weak: mark every member weak at a fresh scope -> w == 0.
-    const int16_t sc = m.nameMap.encode("all_weak_scope");
+    const gl::NameId sc = m.nameMap.encode("all_weak_scope");
     for (int32_t i = 0; i < cls.memberCount(); ++i)
         m.intWeakVariables.mint(gl::packStatementKey(cls.memberId(i), sc));
     ASSERT_EQ(check(gl::StrSpan("all_weak_scope", 14)), 0);
@@ -9400,11 +10698,11 @@ TEST(memory, template_interner_encode_lookup_decode) {
     ASSERT_EQ(ti.internedCount(), 0);
 
     // Non-minting miss before any encode.
-    ASSERT_EQ(ti.lookup("(in2[x,marker,3])"), static_cast<int16_t>(0));
+    ASSERT_EQ(ti.lookup("(in2[x,marker,3])"), static_cast<gl::NameId>(0));
     ASSERT_EQ(ti.internedCount(), 0); // no mint
 
-    const int16_t idA = ti.encode("(in2[x,marker,3])");
-    const int16_t idB = ti.encode("(in2[u_x,int_0_1,u_z])");
+    const gl::NameId idA = ti.encode("(in2[x,marker,3])");
+    const gl::NameId idB = ti.encode("(in2[u_x,int_0_1,u_z])");
     ASSERT_TRUE(idA > 0 && idB > 0);
     ASSERT_NE(idA, idB);
 
@@ -9425,17 +10723,17 @@ TEST(memory, template_interner_space_is_disjoint_from_namemap) {
     gl::Memory m;
     const int32_t nameMapSizeBefore = m.nameMap.nameCount();
 
-    const int16_t tid = m.templateInterner.encode("(p[a,marker])");
+    const gl::NameId tid = m.templateInterner.encode("(p[a,marker])");
     ASSERT_TRUE(tid > 0);
     // NameMap untouched — the whole point of the dedicated space.
     ASSERT_EQ(m.nameMap.nameCount(), nameMapSizeBefore);
-    ASSERT_EQ(m.nameMap.lookup("(p[a,marker])"), static_cast<int16_t>(0));
+    ASSERT_EQ(m.nameMap.lookup("(p[a,marker])"), static_cast<gl::NameId>(0));
 
     // Packed admission key: template id high half, validity id low half.
-    const int32_t pk = gl::packStatementKey(tid, gl::NameMap::MAIN_ID);
-    ASSERT_EQ(static_cast<int16_t>((static_cast<uint32_t>(pk) >> 16) & 0xFFFF), tid);
-    ASSERT_EQ(static_cast<int16_t>(static_cast<uint32_t>(pk) & 0xFFFF),
-              static_cast<int16_t>(gl::NameMap::MAIN_ID));
+    const int64_t pk = gl::packStatementKey(tid, gl::NameMap::MAIN_ID);
+    ASSERT_EQ(gl::Codec<gl::StatementKey>::decode(pk).orig, tid);
+    ASSERT_EQ(gl::Codec<gl::StatementKey>::decode(pk).validity,
+              static_cast<gl::NameId>(gl::NameMap::MAIN_ID));
 }
 
 
@@ -9447,12 +10745,12 @@ TEST(memory, template_key_helpers) {
 
     // Read-half misses before any mint: unknown template, then unknown
     // validity.
-    int32_t pk = 0;
+    int64_t pk = 0;
     ASSERT_FALSE(gl::lookupTemplateKey(m.templateInterner, m.nameMap,
                                        "(p[a,marker])", "main", pk));
     const int32_t internerCountBefore = m.templateInterner.internedCount();
 
-    const int32_t minted = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+    const int64_t minted = gl::mintTemplateKey(m.templateInterner, m.nameMap,
                                                "(p[a,marker])", "main");
     ASSERT_TRUE(gl::lookupTemplateKey(m.templateInterner, m.nameMap,
                                       "(p[a,marker])", "main", pk));
@@ -9478,7 +10776,7 @@ TEST(memory, statement_index_span_probes_match_string) {
     gl::Memory m;
     const gl::EncodedExpression e("(in[1,2])", "main");
     const gl::IntEncodedExpr ie = gl::encodeExpression(e, m.nameMap);
-    const int32_t pk = gl::packStatementKey(ie.originalId, ie.validityId);
+    const int64_t pk = gl::packStatementKey(ie.originalId, ie.validityId);
     m.intLocalEncodedStatementsSet.mint(pk);
     m.intStatementLevelsMap.insertSorted(pk, 0);
     m.intStatementLevelsMap.insertSorted(pk, 2);
@@ -9522,13 +10820,13 @@ TEST(memory, template_key_span_overloads_match_string) {
     const std::string templS = "(in2[u_a,marker,3])";
     const std::string valS   = "main";
 
-    const int32_t viaStr  = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+    const int64_t viaStr  = gl::mintTemplateKey(m.templateInterner, m.nameMap,
                                                 templS, valS);
-    const int32_t viaSpan = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+    const int64_t viaSpan = gl::mintTemplateKey(m.templateInterner, m.nameMap,
         gl::StrSpan(templS), gl::StrSpan(valS));
     ASSERT_EQ(viaSpan, viaStr);   // idempotent interners -> same packed key
 
-    int32_t keySpan = 0, keyStr = 0;
+    int64_t keySpan = 0, keyStr = 0;
     const bool okSpan = gl::lookupTemplateKey(m.templateInterner, m.nameMap,
         gl::StrSpan(templS), gl::StrSpan(valS), keySpan);
     const bool okStr = gl::lookupTemplateKey(m.templateInterner, m.nameMap,
@@ -9538,7 +10836,7 @@ TEST(memory, template_key_span_overloads_match_string) {
     ASSERT_EQ(keySpan, viaStr);
 
     // Span lookup miss: unknown validity -> false, outKey left untouched.
-    int32_t sink = -12345;
+    int64_t sink = -12345;
     ASSERT_FALSE(gl::lookupTemplateKey(m.templateInterner, m.nameMap,
         gl::StrSpan(templS), gl::StrSpan(std::string("never_interned_scope")), sink));
     ASSERT_EQ(sink, -12345);
@@ -9567,16 +10865,16 @@ TEST(memory, encode_eq_class_key_from_view_scratch_matches_heap) {
     const std::vector<char> blob = gl::serializeEquivalenceClass(cls);
     const gl::EquivalenceClassView view{ blob.data(),
                                          static_cast<int32_t>(blob.size()) };
-    const int16_t vid = gl::NameMap::MAIN_ID;
+    const gl::NameId vid = gl::NameMap::MAIN_ID;
 
     const std::string heapKey = gl::encodeEqClassKeyFromView(vid, view);
     const gl::ScratchString scratchKey =
         gl::encodeEqClassKeyFromViewScratch(arena, vid, view);
     ASSERT_TRUE(gl::equalSpans(gl::StrSpan(scratchKey), gl::StrSpan(heapKey)));
     ASSERT_EQ(static_cast<int32_t>(scratchKey.size()),
-              static_cast<int32_t>(2 * (view.memberCount() + 1)));
+              static_cast<int32_t>(sizeof(gl::NameId) * (view.memberCount() + 1)));
 
-    // Empty class: just the 2-byte validity id, still byte-identical.
+    // Empty class: just the NameId validity id, still byte-identical.
     gl::EquivalenceClass empty;
     const std::vector<char> emptyBlob = gl::serializeEquivalenceClass(empty);
     const gl::EquivalenceClassView emptyView{ emptyBlob.data(),
@@ -9596,12 +10894,12 @@ TEST(memory, encode_eqclass_key_from_view_into_matches_heap) {
     const std::vector<char> blob = gl::serializeEquivalenceClass(cls);
     const gl::EquivalenceClassView view{ blob.data(),
                                          static_cast<int32_t>(blob.size()) };
-    const int16_t vid = gl::NameMap::MAIN_ID;
+    const gl::NameId vid = gl::NameMap::MAIN_ID;
 
     char buf[gl::ExecutionParameters::kMaxEqClassKeyBytes];
     const int32_t n = gl::encodeEqClassKeyFromViewInto(
         buf, gl::ExecutionParameters::kMaxEqClassKeyBytes, vid, view);
-    ASSERT_EQ(n, static_cast<int32_t>(2 * (view.memberCount() + 1)));
+    ASSERT_EQ(n, static_cast<int32_t>(sizeof(gl::NameId) * (view.memberCount() + 1)));
     ASSERT_TRUE(gl::equalSpans(gl::StrSpan(buf, n),
         gl::StrSpan(gl::encodeEqClassKeyFromView(vid, view))));
 
@@ -9624,12 +10922,12 @@ TEST(memory, encode_eqclass_key_from_accum_into_matches_heap) {
     gl::LbArena lb(&g);
     gl::MergeClassAccum accum(&lb);
     accum.addMember(3); accum.addMember(7); accum.addMember(12);
-    const int16_t vid = static_cast<int16_t>(5);
+    const gl::NameId vid = static_cast<gl::NameId>(5);
 
     char buf[gl::ExecutionParameters::kMaxEqClassKeyBytes];
     const int32_t n = gl::encodeEqClassKeyFromAccumInto(
         buf, gl::ExecutionParameters::kMaxEqClassKeyBytes, vid, accum);
-    ASSERT_EQ(n, static_cast<int32_t>(2 * (accum.members.size() + 1)));
+    ASSERT_EQ(n, static_cast<int32_t>(sizeof(gl::NameId) * (accum.members.size() + 1)));
     ASSERT_TRUE(gl::equalSpans(gl::StrSpan(buf, n),
         gl::StrSpan(gl::encodeEqClassKeyFromAccum(vid, accum))));
 
@@ -9672,8 +10970,8 @@ TEST(memory, value_interner_basics) {
 TEST(memory, namemap_decode_sub_view_matches_decode_sub) {
     NameMapRig nmRig;
     gl::NameMap& nm = nmRig.nm;
-    const int16_t sid1 = nm.encodeSub("child");
-    const int16_t sid2 = nm.encodeSub("x_lev_3");
+    const gl::NameId sid1 = nm.encodeSub("child");
+    const gl::NameId sid2 = nm.encodeSub("x_lev_3");
     // Idempotent: re-encoding a payload returns the same sub-id.
     ASSERT_EQ(nm.encodeSub("child"), sid1);
     // Span equals the owning copy byte-for-byte, and toStdString round-trips.
@@ -9692,21 +10990,21 @@ TEST(memory, template_interner_span_overloads_byte_identical) {
     gl::TemplateInterner& ti = m.templateInterner;
 
     // Span encode mints the same id as string encode (hit, not a second mint).
-    const int16_t viaStr = ti.encode(std::string("(in2[x,marker,3])"));
-    const int16_t viaSpan = ti.encode(gl::StrSpan(std::string("(in2[x,marker,3])")));
+    const gl::NameId viaStr = ti.encode(std::string("(in2[x,marker,3])"));
+    const gl::NameId viaSpan = ti.encode(gl::StrSpan(std::string("(in2[x,marker,3])")));
     ASSERT_EQ(viaSpan, viaStr);
     ASSERT_EQ(ti.internedCount(), 1);
 
     // Span lookup agrees with string lookup; a never-interned span is 0.
     ASSERT_EQ(ti.lookup(gl::StrSpan(std::string("(in2[x,marker,3])"))), viaStr);
     ASSERT_EQ(ti.lookup(gl::StrSpan(std::string("(never[y])"))),
-              static_cast<int16_t>(0));
+              static_cast<gl::NameId>(0));
     ASSERT_EQ(ti.internedCount(), 1); // lookup never mints
 
     // Sub-slice safety: a span over the first 5 bytes interns "alpha", never
     // "alphaZZZ" (only [ptr, len) is read).
     const std::string buf = "alphaZZZ";
-    const int16_t sliced = ti.encode(gl::StrSpan(buf.data(), 5));
+    const gl::NameId sliced = ti.encode(gl::StrSpan(buf.data(), 5));
     ASSERT_EQ(sliced, ti.encode(std::string("alpha")));
     ASSERT_EQ(ti.lookup(gl::StrSpan(buf.data(), 5)),
               ti.lookup(std::string("alpha")));
@@ -10418,9 +11716,12 @@ TEST(memory, lb_state_interner_basics) {
 // coldIntSetAt, which would re-sort by raw int).
 TEST(memory, or_bookkeeping_decoded_order) {
     gl::Memory m;
-    const int64_t pk = gl::packLbStateKey(
-        m.lbStateInterner.encode("(in2[x,y,z])"),
-        m.lbStateInterner.encode("(or3[a,b,c])"));
+    const int32_t parentId = m.lbStateInterner.encode("main");
+    const int32_t sigId = m.lbStateInterner.encode("(or3[a,b,c])");
+    const int32_t cohortId =
+        gl::mintOrCohortId(m.lbStateInterner, parentId, sigId);
+    const gl::LbStatePairKey pk{
+        m.lbStateInterner.encode("(in2[x,y,z])"), cohortId };
     const gl::DecodedIdLess cmp{ &m.lbStateInterner };
 
     // Mint in reverse lex order so id order != decoded order.
@@ -10439,16 +11740,60 @@ TEST(memory, or_bookkeeping_decoded_order) {
               std::string("((in[7,1]))"));
 }
 
+// Parent validity is part of OR cohort identity. Identical conclusions and OR
+// signatures at different stack positions keep independent counts and branch
+// runs, so deposits from one scope cannot complete the other scope's cohort.
+TEST(memory, or_bookkeeping_parent_scopes_do_not_mix) {
+    gl::Memory m;
+    const int32_t exprId = m.lbStateInterner.encode("(preorder[0,2])");
+    const int32_t sigId = m.lbStateInterner.encode("(or2[a,b])");
+    const int32_t parentA = m.lbStateInterner.encode("main");
+    const int32_t parentB =
+        m.lbStateInterner.encode("main_boundary_(implication24[x])");
+    const int32_t cohortA =
+        gl::mintOrCohortId(m.lbStateInterner, parentA, sigId);
+    const int32_t cohortB =
+        gl::mintOrCohortId(m.lbStateInterner, parentB, sigId);
+
+    ASSERT_NE(cohortA, cohortB);
+    ASSERT_EQ(gl::decodeOrCohortIds(m.lbStateInterner, cohortA),
+              (gl::LbStatePairKey{ parentA, sigId }));
+    ASSERT_EQ(gl::decodeOrCohortIds(m.lbStateInterner, cohortB),
+              (gl::LbStatePairKey{ parentB, sigId }));
+
+    m.orDisjunctCount.insert(cohortA, 2);
+    m.orDisjunctCount.insert(cohortB, 2);
+    const gl::DecodedIdLess cmp{ &m.lbStateInterner };
+    const int32_t a0 = m.lbStateInterner.encode("((=[0,x]))");
+    const int32_t a1 = m.lbStateInterner.encode("((=[1,x]))");
+    const int32_t b0 = m.lbStateInterner.encode("((=[2,x]))");
+    const int32_t rowA = m.orBookkeeping.insertSorted(
+        gl::LbStatePairKey{ exprId, cohortA }, a0, cmp);
+    const int32_t rowB = m.orBookkeeping.insertSorted(
+        gl::LbStatePairKey{ exprId, cohortB }, b0, cmp);
+
+    ASSERT_NE(rowA, rowB);
+    ASSERT_EQ(m.orBookkeeping.runLen(rowA), 1);
+    ASSERT_EQ(m.orBookkeeping.runLen(rowB), 1);
+    ASSERT_EQ(*m.orDisjunctCount.find(cohortA), 2);
+    ASSERT_EQ(*m.orDisjunctCount.find(cohortB), 2);
+
+    m.orBookkeeping.insertSorted(
+        gl::LbStatePairKey{ exprId, cohortA }, a1, cmp);
+    ASSERT_EQ(m.orBookkeeping.runLen(rowA), 2);
+    ASSERT_EQ(m.orBookkeeping.runLen(rowB), 1);
+}
+
 // eqClassSttmntIndexMapMap (flattened to a byte-key map, Batch 2) — the
 // encode/lookup/upsert/erase helpers round-trip a (validity, memberIds) ->
 // waterline cache: an absent read is 0, upsert sets-or-inserts, erase removes,
 // and the byte key is bijective over (validity, members).
 TEST(memory, eq_class_index_flatten_round_trip) {
     gl::Memory m;
-    const int16_t vA = m.nameMap.encode("main");
-    const int16_t vB = m.nameMap.encode("main_boundary_x");
-    const std::vector<int16_t> mem1{ 3, 7, 9 };
-    const std::vector<int16_t> mem2{ 3, 7 };
+    const gl::NameId vA = m.nameMap.encode("main");
+    const gl::NameId vB = m.nameMap.encode("main_boundary_x");
+    const std::vector<gl::NameId> mem1{ 3, 7, 9 };
+    const std::vector<gl::NameId> mem2{ 3, 7 };
 
     // Absent -> 0 (the heap operator[] default).
     ASSERT_EQ(gl::lookupEqClassIndex(m.eqClassSttmntIndexMapMap, vA, mem1), 0);
@@ -10596,8 +11941,8 @@ TEST(memory, eqclass_view_reads_every_field) {
         ASSERT_EQ(v.memberId(i), a.memberIds[static_cast<std::size_t>(i)]);
 
     // Per-pair levels — rebuild through the view and compare to the source map.
-    std::map<uint32_t, std::set<int> > levels;
-    v.forEachLevelKey([&](uint32_t key, const char* lp, int32_t m) {
+    std::map<int64_t, std::set<int> > levels;
+    v.forEachLevelKey([&](int64_t key, const char* lp, int32_t m) {
         std::set<int>& s = levels[key];
         for (int32_t j = 0; j < m; ++j)
             s.insert(static_cast<int>(
@@ -10687,13 +12032,13 @@ TEST(memory, merge_accum_add_origin_id_cap_preference) {
 TEST(memory, merge_accum_union_members_decoded_lex) {
     gl::Memory mb;                                   // pool-backed NameMap
     gl::LbArena lb{ &gl::staticMemory() };
-    const int16_t a = mb.nameMap.encode("a");
-    const int16_t b = mb.nameMap.encode("b");
-    const int16_t c = mb.nameMap.encode("c");
-    const int16_t d = mb.nameMap.encode("d");
+    const gl::NameId a = mb.nameMap.encode("a");
+    const gl::NameId b = mb.nameMap.encode("b");
+    const gl::NameId c = mb.nameMap.encode("c");
+    const gl::NameId d = mb.nameMap.encode("d");
     gl::MergeClassAccum accum(&lb);
     accum.addMember(b); accum.addMember(d);          // seed {b, d} (decoded-lex)
-    const int16_t other[] = { a, c, d };             // {a, c, d} (decoded-lex)
+    const gl::NameId other[] = { a, c, d };             // {a, c, d} (decoded-lex)
     accum.unionMembersByName(other, 3, mb.nameMap);
     ASSERT_EQ(accum.members.size(), 4);
     ASSERT_EQ(accum.members[0], a);
@@ -10754,9 +12099,9 @@ TEST(memory, merge_accum_levels_bbase_matches_heap) {
     gl::GlobalMemoryManager g;
     g.init(gl::StaticMemoryConfig{ 1 << 20, 1 << 18 });
     gl::LbArena lb(&g);
-    const uint32_t kShared = gl::packEqPairKey(3, 7);
-    const uint32_t kAonly  = gl::packEqPairKey(3, 9);
-    const uint32_t kBonly  = gl::packEqPairKey(5, 8);
+    const int64_t kShared = gl::packEqPairKey(3, 7);
+    const int64_t kAonly  = gl::packEqPairKey(3, 9);
+    const int64_t kBonly  = gl::packEqPairKey(5, 8);
     gl::EquivalenceClass A, B;
     A.intEqualityLevelsMap[kShared] = { 1, 4 };   // A wins the shared key
     A.intEqualityLevelsMap[kAonly]  = { 2 };
@@ -10764,7 +12109,7 @@ TEST(memory, merge_accum_levels_bbase_matches_heap) {
     B.intEqualityLevelsMap[kBonly]  = { 0, 6 };
 
     // Heap reference: newLevels = B; overwriteLevels(newLevels, A) (A replaces).
-    std::map<uint32_t, std::set<int> > heapLv = B.intEqualityLevelsMap;
+    std::map<int64_t, std::set<int> > heapLv = B.intEqualityLevelsMap;
     for (const auto& kv : A.intEqualityLevelsMap) heapLv[kv.first] = kv.second;
     gl::EquivalenceClass heapClass; heapClass.intEqualityLevelsMap = heapLv;
     const std::vector<char> want = gl::serializeEquivalenceClass(heapClass);
@@ -10788,16 +12133,16 @@ TEST(memory, merge_accum_levels_from_accum_matches_heap) {
     gl::GlobalMemoryManager g;
     g.init(gl::StaticMemoryConfig{ 1 << 20, 1 << 18 });
     gl::LbArena lb(&g);
-    const uint32_t kShared = gl::packEqPairKey(3, 7);
-    const uint32_t kAonly  = gl::packEqPairKey(3, 9);
-    const uint32_t kOonly  = gl::packEqPairKey(5, 8);
+    const int64_t kShared = gl::packEqPairKey(3, 7);
+    const int64_t kAonly  = gl::packEqPairKey(3, 9);
+    const int64_t kOonly  = gl::packEqPairKey(5, 8);
     gl::EquivalenceClass A, O;
     A.intEqualityLevelsMap[kShared] = { 1, 4 };
     A.intEqualityLevelsMap[kAonly]  = { 2 };
     O.intEqualityLevelsMap[kShared] = { 9 };
     O.intEqualityLevelsMap[kOonly]  = { 0, 6 };
 
-    std::map<uint32_t, std::set<int> > heapLv = O.intEqualityLevelsMap;
+    std::map<int64_t, std::set<int> > heapLv = O.intEqualityLevelsMap;
     for (const auto& kv : A.intEqualityLevelsMap) heapLv[kv.first] = kv.second;
     gl::EquivalenceClass heapClass; heapClass.intEqualityLevelsMap = heapLv;
     const std::vector<char> want = gl::serializeEquivalenceClass(heapClass);
@@ -10860,10 +12205,10 @@ TEST(memory, merge_accum_origins_from_accum_matches_heap) {
 TEST(memory, merge_accum_union_members_from_view) {
     gl::Memory mb;
     gl::LbArena lb{ &gl::staticMemory() };
-    const int16_t a = mb.nameMap.encode("a");
-    const int16_t b = mb.nameMap.encode("b");
-    const int16_t c = mb.nameMap.encode("c");
-    const int16_t d = mb.nameMap.encode("d");
+    const gl::NameId a = mb.nameMap.encode("a");
+    const gl::NameId b = mb.nameMap.encode("b");
+    const gl::NameId c = mb.nameMap.encode("c");
+    const gl::NameId d = mb.nameMap.encode("d");
     gl::EquivalenceClass B;
     B.memberIds = { a, c, d };                       // {a, c, d} decoded-lex
     const std::vector<char> bBlob = gl::serializeEquivalenceClass(B);
@@ -10932,14 +12277,14 @@ TEST(memory, changed_classes_buffer_push_from_bytes) {
     gl::DirtyState d1 = gl::DirtyState::Clean, d2 = gl::DirtyState::Clean;
     gl::ChangedClassesBuffer buf1(&lb, &d1), buf2(&lb, &d2);
     const gl::EquivalenceClass cls = makeSampleClass(false);
-    buf1.push(static_cast<int16_t>(7), cls);
+    buf1.push(static_cast<gl::NameId>(7), cls);
     const std::vector<char> blob = gl::serializeEquivalenceClass(cls);
-    buf2.push(static_cast<int16_t>(7), blob.data(),
+    buf2.push(static_cast<gl::NameId>(7), blob.data(),
               static_cast<int32_t>(blob.size()));
     ASSERT_EQ(buf1.size(), 1);
     ASSERT_EQ(buf2.size(), 1);
-    ASSERT_EQ(buf1.validityAt(0), static_cast<int16_t>(7));
-    ASSERT_EQ(buf2.validityAt(0), static_cast<int16_t>(7));
+    ASSERT_EQ(buf1.validityAt(0), static_cast<gl::NameId>(7));
+    ASSERT_EQ(buf2.validityAt(0), static_cast<gl::NameId>(7));
     const gl::EquivalenceClass c1 = buf1.classAt(0);
     const gl::EquivalenceClass c2 = buf2.classAt(0);
     ASSERT_TRUE(c1.memberIds == c2.memberIds);
@@ -10957,12 +12302,12 @@ TEST(memory, upsert_eq_class_index_from_accum) {
     gl::TypedColdMap<gl::EqClassKey, int> idx(&lb, &dd);
     gl::MergeClassAccum accum(&lb);
     accum.addMember(3); accum.addMember(7); accum.addMember(12);
-    gl::upsertEqClassIndex(idx, static_cast<int16_t>(5), accum, 42);
-    ASSERT_EQ(gl::lookupEqClassIndex(idx, static_cast<int16_t>(5),
-                                     std::vector<int16_t>{ 3, 7, 12 }), 42);
-    gl::upsertEqClassIndex(idx, static_cast<int16_t>(5), accum, 99);   // in place
-    ASSERT_EQ(gl::lookupEqClassIndex(idx, static_cast<int16_t>(5),
-                                     std::vector<int16_t>{ 3, 7, 12 }), 99);
+    gl::upsertEqClassIndex(idx, static_cast<gl::NameId>(5), accum, 42);
+    ASSERT_EQ(gl::lookupEqClassIndex(idx, static_cast<gl::NameId>(5),
+                                     std::vector<gl::NameId>{ 3, 7, 12 }), 42);
+    gl::upsertEqClassIndex(idx, static_cast<gl::NameId>(5), accum, 99);   // in place
+    ASSERT_EQ(gl::lookupEqClassIndex(idx, static_cast<gl::NameId>(5),
+                                     std::vector<gl::NameId>{ 3, 7, 12 }), 99);
 }
 
 // upsert/lookupEqClassIndex from an EquivalenceClassView build the same byte key
@@ -10981,13 +12326,13 @@ TEST(memory, eq_class_index_from_view) {
     const gl::EquivalenceClassView view{ blob.data(),
                                          static_cast<int32_t>(blob.size()) };
 
-    gl::upsertEqClassIndex(idx, static_cast<int16_t>(5), view, 42);
-    ASSERT_EQ(gl::lookupEqClassIndex(idx, static_cast<int16_t>(5), view), 42);
+    gl::upsertEqClassIndex(idx, static_cast<gl::NameId>(5), view, 42);
+    ASSERT_EQ(gl::lookupEqClassIndex(idx, static_cast<gl::NameId>(5), view), 42);
     // Same key the std::vector overload builds.
-    ASSERT_EQ(gl::lookupEqClassIndex(idx, static_cast<int16_t>(5),
-                                     std::vector<int16_t>{ 3, 7, 12 }), 42);
-    gl::upsertEqClassIndex(idx, static_cast<int16_t>(5), view, 99);   // in place
-    ASSERT_EQ(gl::lookupEqClassIndex(idx, static_cast<int16_t>(5), view), 99);
+    ASSERT_EQ(gl::lookupEqClassIndex(idx, static_cast<gl::NameId>(5),
+                                     std::vector<gl::NameId>{ 3, 7, 12 }), 42);
+    gl::upsertEqClassIndex(idx, static_cast<gl::NameId>(5), view, 99);   // in place
+    ASSERT_EQ(gl::lookupEqClassIndex(idx, static_cast<gl::NameId>(5), view), 99);
 
     // A miss (different members) reads 0, like the base overload's findOr default.
     gl::EquivalenceClass other;
@@ -10995,7 +12340,7 @@ TEST(memory, eq_class_index_from_view) {
     const std::vector<char> ob = gl::serializeEquivalenceClass(other);
     const gl::EquivalenceClassView ov{ ob.data(),
                                        static_cast<int32_t>(ob.size()) };
-    ASSERT_EQ(gl::lookupEqClassIndex(idx, static_cast<int16_t>(5), ov), 0);
+    ASSERT_EQ(gl::lookupEqClassIndex(idx, static_cast<gl::NameId>(5), ov), 0);
 }
 
 // addOriginEnc — the accumulator twin of the free addOriginEncoded(IdOriginMap):
@@ -11030,12 +12375,12 @@ TEST(memory, merge_full_serialize_matches_heap) {
         ? ea.parameters.compressor_max_origins_per_expr
         : ea.parameters.max_origin_per_expr;
     gl::LbArena lb{ &gl::staticMemory() };
-    const int16_t a = m.nameMap.encode("a"), b = m.nameMap.encode("b"),
+    const gl::NameId a = m.nameMap.encode("a"), b = m.nameMap.encode("b"),
                   c = m.nameMap.encode("c"), d = m.nameMap.encode("d");
 
     // Seed an accumulator from a heap class A's content.
     const auto seedAccum = [&](gl::MergeClassAccum& acc, const gl::EquivalenceClass& A) {
-        for (const int16_t id : A.memberIds) acc.addMember(id);
+        for (const gl::NameId id : A.memberIds) acc.addMember(id);
         for (const auto& kv : A.intEqualityLevelsMap) {
             const std::vector<int32_t> lv(kv.second.begin(), kv.second.end());
             acc.setLevel(kv.first, lv.data(), static_cast<int32_t>(lv.size()));
@@ -11047,8 +12392,8 @@ TEST(memory, merge_full_serialize_matches_heap) {
                                   static_cast<int32_t>(ln.second.size()));
     };
     // overwriteLevels twin (A-wins REPLACE).
-    const auto overLevels = [](std::map<uint32_t, std::set<int> >& dst,
-                               const std::map<uint32_t, std::set<int> >& src) {
+    const auto overLevels = [](std::map<int64_t, std::set<int> >& dst,
+                               const std::map<int64_t, std::set<int> >& src) {
         for (const auto& kv : src) dst[kv.first] = kv.second;
     };
 
@@ -11076,7 +12421,7 @@ TEST(memory, merge_full_serialize_matches_heap) {
         const std::vector<char> bBlob = gl::serializeEquivalenceClass(B);
         const gl::EquivalenceClassView bView{ bBlob.data(),
                                               static_cast<int32_t>(bBlob.size()) };
-        const std::vector<int16_t> eqArgsV{ a, b };
+        const std::vector<gl::NameId> eqArgsV{ a, b };
         ea.mergeTwoEquivalenceClasses(accA, bView, eqArgsV.data(),
                                       static_cast<int32_t>(eqArgsV.size()),
                                       nullptr, 0, m, gl::StrSpan("main", 4), gl::StrSpan("main", 4));
@@ -11097,7 +12442,7 @@ TEST(memory, merge_full_serialize_matches_heap) {
         // Heap oracle (trackHistory off -> no equality2 / mergedOriginMap): the
         // single pair (idA=a, idB=c), bridge b:
         // mergedMap[{a,c}] = lv0 ∪ A{b,a} ∪ B{b,c}.
-        std::map<uint32_t, std::set<int> > mergedMap;
+        std::map<int64_t, std::set<int> > mergedMap;
         {
             std::set<int> nl = lv0;
             nl.insert(A.intEqualityLevelsMap.at(gl::packEqPairKey(a, b)).begin(),
@@ -11111,7 +12456,7 @@ TEST(memory, merge_full_serialize_matches_heap) {
         exp.intEqualityLevelsMap = B.intEqualityLevelsMap;      // (B | A)
         overLevels(exp.intEqualityLevelsMap, A.intEqualityLevelsMap);
         {
-            std::map<uint32_t, std::set<int> > tmp = mergedMap;  // mergedMap | (B|A)
+            std::map<int64_t, std::set<int> > tmp = mergedMap;  // mergedMap | (B|A)
             overLevels(tmp, exp.intEqualityLevelsMap);
             exp.intEqualityLevelsMap = tmp;
         }
@@ -11123,7 +12468,7 @@ TEST(memory, merge_full_serialize_matches_heap) {
         const std::vector<char> bBlob = gl::serializeEquivalenceClass(B);
         const gl::EquivalenceClassView bView{ bBlob.data(),
                                               static_cast<int32_t>(bBlob.size()) };
-        const std::vector<int16_t> eqArgsV{ a, b };
+        const std::vector<gl::NameId> eqArgsV{ a, b };
         const int lv0Run[1] = { 7 };
         ea.mergeTwoEquivalenceClasses(accA, bView, eqArgsV.data(),
                                       static_cast<int32_t>(eqArgsV.size()),
@@ -11156,7 +12501,7 @@ TEST(memory, eqclass_raw_door_run_splice) {
     concat.insert(concat.end(), bc.begin(), bc.end());
     const int32_t lens[2] = { static_cast<int32_t>(ba.size()),
                               static_cast<int32_t>(bc.size()) };
-    const int16_t vId = m.nameMap.encode("spliceScope");
+    const gl::NameId vId = m.nameMap.encode("spliceScope");
     m.equivalenceClassesMap.inner().assignRun(vId, concat.data(), lens, 2);
 
     const std::vector<gl::EquivalenceClass> got = m.decodeClassesById(vId);
@@ -11222,7 +12567,7 @@ TEST(memory, codec_local_memory_value_round_trip) {
         gl::Codec<gl::LocalMemoryValue>::deserialize(
             b.data(), static_cast<int32_t>(b.size()));
     ASSERT_EQ(back.valueId, 42);
-    ASSERT_EQ(back.validityId, static_cast<int16_t>(3));
+    ASSERT_EQ(back.validityId, static_cast<gl::NameId>(3));
     ASSERT_TRUE(back.isMarker);
     ASSERT_FALSE(back.productOfDisintegration);
     ASSERT_TRUE(back.levels == v.levels);
@@ -11236,9 +12581,9 @@ TEST(memory, codec_owner_set_round_trip) {
     gl::OwnerSet v;
     v.hasLooseOwner = true;
     v.partitionIds = { -3, 0, 7, 1000 };
-    v.uSignatures.insert({ { int16_t(1), int16_t(2) },
-                           { int16_t(3), int16_t(4) } });
-    v.uSignatures.insert({ { int16_t(-5), int16_t(9) } });
+    v.uSignatures.insert({ { gl::NameId(1), gl::NameId(2) },
+                           { gl::NameId(3), gl::NameId(4) } });
+    v.uSignatures.insert({ { gl::NameId(-5), gl::NameId(9) } });
     const std::vector<char> b = gl::Codec<gl::OwnerSet>::serialize(v);
     const gl::OwnerSet back = gl::Codec<gl::OwnerSet>::deserialize(
         b.data(), static_cast<int32_t>(b.size()));
@@ -11384,15 +12729,15 @@ TEST(memory, changed_classes_view_matches_class) {
     }
 
     // classHasMember is uniform over the view and the heap class.
-    ASSERT_TRUE(gl::classHasMember(v, static_cast<int16_t>(7)));
-    ASSERT_TRUE(gl::classHasMember(a, static_cast<int16_t>(7)));
-    ASSERT_FALSE(gl::classHasMember(v, static_cast<int16_t>(999)));
+    ASSERT_TRUE(gl::classHasMember(v, static_cast<gl::NameId>(7)));
+    ASSERT_TRUE(gl::classHasMember(a, static_cast<gl::NameId>(7)));
+    ASSERT_FALSE(gl::classHasMember(v, static_cast<gl::NameId>(999)));
 
     // forEachLevel: present keys yield identical ascending levels; an absent key
     // yields nothing on both.
-    const uint32_t keys[] = { gl::packEqPairKey(3, 7), gl::packEqPairKey(7, 12),
+    const int64_t keys[] = { gl::packEqPairKey(3, 7), gl::packEqPairKey(7, 12),
                               gl::packEqPairKey(1, 2) };
-    for (const uint32_t key : keys) {
+    for (const int64_t key : keys) {
         std::vector<int> fromView, fromHeap;
         v.forEachLevel(key, [&](int lv) { fromView.push_back(lv); });
         a.forEachLevel(key, [&](int lv) { fromHeap.push_back(lv); });
@@ -11419,12 +12764,12 @@ TEST(memory, changed_classes_view_arena_matches_vector) {
 
     // Entry 1: a class with 5000 members -> the member section alone is
     // 4 + 2*5000 = 10004 B, so its blob straddles the 8192-B blobPool_ page.
-    // 5000 fits int16_t and is far under the 256-KiB byte-bump block, so the
+    // 5000 fits gl::NameId and is far under the 256-KiB byte-bump block, so the
     // arena assembles the straddle in ONE alloc (no block-ceiling assert).
     gl::EquivalenceClass big;
     big.memberIds.reserve(5000);
     for (int i = 1; i <= 5000; ++i)
-        big.memberIds.push_back(static_cast<int16_t>(i));
+        big.memberIds.push_back(static_cast<gl::NameId>(i));
     buf.push(20, big);
 
     // ScratchArena === LbArena; bind a distinct byte-bump arena to the pool.
@@ -11488,8 +12833,8 @@ TEST(memory, special_token_scan_codec_round_trip) {
 // emptied them in time — a regression would fire the freePage out-of-range
 // assert during destruction.
 TEST(memory, dtor_empties_arena_backed_encodedmap_before_arena) {
-    int16_t buf[2] = { 7, 9 };
-    const gl::NormKey nk{ 1, std::vector<int16_t>(buf, buf + 2) };
+    gl::NameId buf[2] = { 7, 9 };
+    const gl::NormKey nk{ 1, std::vector<gl::NameId>(buf, buf + 2) };
     {
         gl::Memory m;
         m.overallHashMemory.encodedMap.assignRun(
@@ -11514,8 +12859,8 @@ TEST(memory, dtor_empties_arena_backed_encodedmap_before_arena) {
 TEST(prover, destroygrid_deletes_children_and_clears_grid) {
     gl::ExpressionAnalyzer ea("Peano");
     gl::Memory* child = ea.lbStore.create<gl::Memory>();
-    int16_t buf[2] = { 3, 5 };
-    const gl::NormKey nk{ 1, std::vector<int16_t>(buf, buf + 2) };
+    gl::NameId buf[2] = { 3, 5 };
+    const gl::NormKey nk{ 1, std::vector<gl::NameId>(buf, buf + 2) };
     child->overallHashMemory.encodedMap.assignRun(
         nk, std::vector<gl::LocalMemoryValue>{ gl::LocalMemoryValue{} });
     ea.simpleMapStore.linkChild(&ea.body, "destroygrid-test-child", child);
@@ -11642,7 +12987,7 @@ TEST(prover, parse_hypo_scope_vars_matches_string_oracle) {
 
 // reactToHypo's vid snapshot + decoded-lex sort — the production comparator
 // (compareSpans over decodeView, copied verbatim) must reproduce the retired
-// std::pair<std::string,int16_t> snapshot sorted by a.first < b.first (the
+// std::pair<std::string,gl::NameId> snapshot sorted by a.first < b.first (the
 // oracle, replicated below). Mint order deliberately disagrees with lex
 // order so an id-order regression fails.
 TEST(memory, react_to_hypo_vid_sort_matches_string_pair_sort) {
@@ -11651,7 +12996,7 @@ TEST(memory, react_to_hypo_vid_sort_matches_string_pair_sort) {
         "zeta_scope", "alpha", "mid_scope", "beta_x", "aa", "omega_9",
     };
     for (const char* nm : names) {
-        const int16_t vid = m.nameMap.encode(nm);
+        const gl::NameId vid = m.nameMap.encode(nm);
         m.assignClassesById(
             vid, std::vector<gl::EquivalenceClass>{ gl::EquivalenceClass{} });
     }
@@ -11660,23 +13005,23 @@ TEST(memory, react_to_hypo_vid_sort_matches_string_pair_sort) {
     // decoded-name comparator (the reactToHypo copy).
     const int32_t n = m.equivalenceClassesMap.count();
     ASSERT_EQ(n, 6);
-    std::vector<int16_t> vids(static_cast<size_t>(n));
+    std::vector<gl::NameId> vids(static_cast<size_t>(n));
     for (int32_t kid = 1; kid <= n; ++kid)
         vids[static_cast<size_t>(kid - 1)] = m.equivalenceClassesMap.keyAt(kid);
-    std::sort(vids.begin(), vids.end(), [&](int16_t a, int16_t b) {
+    std::sort(vids.begin(), vids.end(), [&](gl::NameId a, gl::NameId b) {
         return gl::compareSpans(m.nameMap.decodeView(a),
                                 m.nameMap.decodeView(b)) < 0;
     });
 
     // Oracle: the retired snapshot code.
-    std::vector<std::pair<std::string, int16_t>> classRows;
+    std::vector<std::pair<std::string, gl::NameId>> classRows;
     for (int32_t kid = 1; kid <= n; ++kid) {
-        const int16_t vId = m.equivalenceClassesMap.keyAt(kid);
+        const gl::NameId vId = m.equivalenceClassesMap.keyAt(kid);
         classRows.emplace_back(std::string(m.nameMap.decode(vId)), vId);
     }
     std::sort(classRows.begin(), classRows.end(),
-              [](const std::pair<std::string, int16_t>& a,
-                 const std::pair<std::string, int16_t>& b) {
+              [](const std::pair<std::string, gl::NameId>& a,
+                 const std::pair<std::string, gl::NameId>& b) {
                   return a.first < b.first;
               });
 
@@ -11694,7 +13039,7 @@ TEST(memory, react_to_hypo_vid_sort_matches_string_pair_sort) {
 // single-member, and the empty-class edge.
 TEST(memory, hypo_member_snapshot_matches_decode_classes_by_id) {
     gl::Memory m;
-    const int16_t vid = m.nameMap.encode("snapshot_scope");
+    const gl::NameId vid = m.nameMap.encode("snapshot_scope");
 
     gl::EquivalenceClass c1;
     c1.setMembersFromNames({ "int_lev_0_1", "x", "it_2_lev_0_3" }, m.nameMap);
@@ -11706,7 +13051,7 @@ TEST(memory, hypo_member_snapshot_matches_decode_classes_by_id) {
     // Production snapshot idiom (reactToHypo copy) on a test-local arena.
     gl::ScratchArena snapArena{ &gl::staticMemory() };
     gl::DirtyState poolDirty = gl::DirtyState::Clean;
-    gl::PagedVector<int16_t> memberPool(&snapArena, &poolDirty);
+    gl::PagedVector<gl::NameId> memberPool(&snapArena, &poolDirty);
     gl::PagedVector<int32_t> classStarts(&snapArena, &poolDirty);
 
     const int32_t bucketId = m.equivalenceClassesMap.lookup(vid);
@@ -11719,7 +13064,7 @@ TEST(memory, hypo_member_snapshot_matches_decode_classes_by_id) {
         const gl::EquivalenceClassView cls{ bp, blen };
         classStarts.push_back(static_cast<int32_t>(memberPool.size()));
         const int32_t memberCount = cls.memberCount();
-        for (int32_t k = 0; k < memberCount; ++k)
+        for (int64_t k = 0; k < memberCount; ++k)
             memberPool.push_back(cls.memberId(k));
     }
 
@@ -11735,7 +13080,7 @@ TEST(memory, hypo_member_snapshot_matches_decode_classes_by_id) {
         ASSERT_EQ(mEnd - mStart,
                   static_cast<int32_t>(ref[static_cast<size_t>(j)]
                                            .memberIds.size()));
-        for (int32_t k = 0; k < mEnd - mStart; ++k) {
+        for (int64_t k = 0; k < mEnd - mStart; ++k) {
             ASSERT_EQ(memberPool[mStart + k],
                       ref[static_cast<size_t>(j)]
                           .memberIds[static_cast<size_t>(k)]);
@@ -11926,14 +13271,14 @@ TEST(memory, insert_admission_blob_sorted_matches_set_rmw_oracle) {
     ValueMapRig rig;
     gl::DirtyState dA = gl::DirtyState::Clean;
     gl::DirtyState dB = gl::DirtyState::Clean;
-    gl::TypedColdBlobMap<int32_t, gl::AdmissionMapValue> mapA(&rig.lb, &dA);
-    gl::TypedColdBlobMap<int32_t, gl::AdmissionMapValue> mapB(&rig.lb, &dB);
+    gl::TypedColdBlobMap<int64_t, gl::AdmissionMapValue> mapA(&rig.lb, &dA);
+    gl::TypedColdBlobMap<int64_t, gl::AdmissionMapValue> mapB(&rig.lb, &dB);
     gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
         gl::genScratchArenas().slotCount() - 1);
 
     // Test-local VERBATIM replica of the retired set-RMW helper body.
     const auto oracleInsert =
-        [](gl::TypedColdBlobMap<int32_t, gl::AdmissionMapValue>& m,
+        [](gl::TypedColdBlobMap<int64_t, gl::AdmissionMapValue>& m,
            int32_t pk, const gl::AdmissionMapValue& value,
            const gl::ValueInterner& vi) {
             gl::AdmissionValueSet s(gl::DecodedAdmissionValueLess{ &vi });
@@ -12007,13 +13352,13 @@ TEST(memory, insert_admission_blob_sorted_widens_past_one_block) {
 
     gl::DirtyState dA = gl::DirtyState::Clean;
     gl::DirtyState dB = gl::DirtyState::Clean;
-    gl::TypedColdBlobMap<int32_t, gl::AdmissionMapValue> mapA(&lb, &dA);
-    gl::TypedColdBlobMap<int32_t, gl::AdmissionMapValue> mapB(&lb, &dB);
+    gl::TypedColdBlobMap<int64_t, gl::AdmissionMapValue> mapA(&lb, &dA);
+    gl::TypedColdBlobMap<int64_t, gl::AdmissionMapValue> mapB(&lb, &dB);
     gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
         gl::genScratchArenas().slotCount() - 1);
 
     const auto oracleInsert =
-        [](gl::TypedColdBlobMap<int32_t, gl::AdmissionMapValue>& m,
+        [](gl::TypedColdBlobMap<int64_t, gl::AdmissionMapValue>& m,
            int32_t pk, const gl::AdmissionMapValue& value,
            const gl::ValueInterner& vi) {
             gl::AdmissionValueSet s(gl::DecodedAdmissionValueLess{ &vi });
@@ -12095,13 +13440,13 @@ TEST(memory, insert_rejected_blob_sorted_matches_set_rmw_oracle) {
     ValueMapRig rig;
     gl::DirtyState dA = gl::DirtyState::Clean;
     gl::DirtyState dB = gl::DirtyState::Clean;
-    gl::TypedColdBlobMap<int32_t, gl::RejectedMapValue> mapA(&rig.lb, &dA);
-    gl::TypedColdBlobMap<int32_t, gl::RejectedMapValue> mapB(&rig.lb, &dB);
+    gl::TypedColdBlobMap<int64_t, gl::RejectedMapValue> mapA(&rig.lb, &dA);
+    gl::TypedColdBlobMap<int64_t, gl::RejectedMapValue> mapB(&rig.lb, &dB);
     gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
         gl::genScratchArenas().slotCount() - 1);
 
     const auto oracleInsert =
-        [](gl::TypedColdBlobMap<int32_t, gl::RejectedMapValue>& m,
+        [](gl::TypedColdBlobMap<int64_t, gl::RejectedMapValue>& m,
            int32_t pk, const gl::RejectedMapValue& value,
            const gl::ValueInterner& vi) {
             gl::RejectedValueSet s(gl::DecodedRejectedValueLess{ &vi });
@@ -12231,7 +13576,7 @@ TEST(prover, clean_admission_map_span_door_consume_path) {
         gl::genScratchArenas().slotCount() - 1);
 
     const auto seedEntry = [&tArena](gl::Memory& m, const std::string& key) {
-        const int32_t pk = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+        const int64_t pk = gl::mintTemplateKey(m.templateInterner, m.nameMap,
                                                key, "main");
         gl::AdmissionMapValue v;
         v.key = encodeValueVectorOracle(
@@ -12246,7 +13591,7 @@ TEST(prover, clean_admission_map_span_door_consume_path) {
     // (a) Non-operator core: zero state change (early return).
     {
         gl::Memory m;
-        const int32_t pk = seedEntry(m, "(zzz[5,marker])");
+        const int64_t pk = seedEntry(m, "(zzz[5,marker])");
         ea.cleanAdmissionMap(std::string("(zzz[5,marker])"),
                              std::string("main"), m);
         ASSERT_TRUE(m.overallHashMemory.admissionMap.lookup(pk) != 0);
@@ -12257,7 +13602,7 @@ TEST(prover, clean_admission_map_span_door_consume_path) {
     //     marker sits at input slot 0): zero consume.
     {
         gl::Memory m;
-        const int32_t pk = seedEntry(m, "(in2[marker,7,3])");
+        const int64_t pk = seedEntry(m, "(in2[marker,7,3])");
         ea.cleanAdmissionMap(std::string("(in2[marker,7,3])"),
                              std::string("main"), m);
         ASSERT_TRUE(m.overallHashMemory.admissionMap.lookup(pk) != 0);
@@ -12268,7 +13613,7 @@ TEST(prover, clean_admission_map_span_door_consume_path) {
     //     string-fed (mA) and mid-buffer span-fed (mB) end states equal.
     {
         gl::Memory mA;
-        const int32_t pkA = seedEntry(mA, "(in2[5,marker,3])");
+        const int64_t pkA = seedEntry(mA, "(in2[5,marker,3])");
         ea.cleanAdmissionMap(std::string("(in2[5,marker,3])"),
                              std::string("main"), mA);
         ASSERT_TRUE(mA.overallHashMemory.consumedAdmissionKeys.contains(pkA));
@@ -12277,7 +13622,7 @@ TEST(prover, clean_admission_map_span_door_consume_path) {
                     == nullptr);
 
         gl::Memory mB;
-        const int32_t pkB = seedEntry(mB, "(in2[5,marker,3])");
+        const int64_t pkB = seedEntry(mB, "(in2[5,marker,3])");
         const char buf[] = "xx(in2[5,marker,3])yy";
         const char vbuf[] = "zzmainww";
         ea.cleanAdmissionMap(gl::StrSpan(buf + 2, 17),

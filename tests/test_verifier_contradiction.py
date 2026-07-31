@@ -131,6 +131,20 @@ def test_contradiction_line_expr_not_negated_clean_op():
 
 
 @register
+def test_contradiction_positive_expr_clean_op_not_its_negation():
+    """Complement polarity requires clean_op == '!' + line.expression;
+    a positive row with an unrelated clean_op is rejected."""
+    state = make_state_with_binaries(("Peano",))
+    line = make_proof_line(
+        "(in[a,N])", "main", "contradiction",
+        "(in[a,N])", "main",
+        "!(in[a,N])", "main",
+        "!(in[b,N])", "main",
+    )
+    assert_failure(check_contradiction, line, [line], state)
+
+
+@register
 def test_contradiction_expr_and_neg_unrelated():
     """expr and neg_expr are NOT negations of each other."""
     state = make_state_with_binaries(("Peano",))

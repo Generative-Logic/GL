@@ -89,11 +89,11 @@ namespace gl {
         PagedVector<uint8_t> kindById_;
         /// @brief Token scan per full-expression NameMap id — one canonical
         ///        `SpecialTokenScan` blob per id.
-        TypedColdBlobMap<int16_t, SpecialTokenScan> tokensByExprId_;
-        TypedColdBlobMap<int16_t, SpecialTokenScan>::KeysView tokensKeys;
-        TypedColdBlobMap<int16_t, SpecialTokenScan>::RunStartsView tokensRunStarts;
-        TypedColdBlobMap<int16_t, SpecialTokenScan>::BlobStartsView tokensBlobStarts;
-        TypedColdBlobMap<int16_t, SpecialTokenScan>::BlobPoolView tokensBlobPool;
+        TypedColdBlobMap<NameId, SpecialTokenScan> tokensByExprId_;
+        TypedColdBlobMap<NameId, SpecialTokenScan>::KeysView tokensKeys;
+        TypedColdBlobMap<NameId, SpecialTokenScan>::RunStartsView tokensRunStarts;
+        TypedColdBlobMap<NameId, SpecialTokenScan>::BlobStartsView tokensBlobStarts;
+        TypedColdBlobMap<NameId, SpecialTokenScan>::BlobPoolView tokensBlobPool;
 
         /// @brief Bind the paged columns + the token-map facets to the LB's
         ///        deloadable arena + dirty.
@@ -119,7 +119,7 @@ namespace gl {
         /// @param id NameMap id of a bare variable name; must be a real id (`>0`).
         /// @param nm The owning LB's NameMap (read-only; no minting).
         /// @return The name's tier.
-        NameKind kindOf(int16_t id, const NameMap& nm);
+        NameKind kindOf(NameId id, const NameMap& nm);
 
         /// @brief Memoized token scan of `nm.decode(exprId)` — zero-heap on
         ///        hit and miss, returned as a zero-copy VIEW over the cold
@@ -144,7 +144,7 @@ namespace gl {
         /// @return View over the memoized canonical blob.
         /// @invariant See `I-134`
         ///            (`docs/agentic_swdd/30_invariants.md`).
-        SpecialTokenScanView tokensViewOf(int16_t exprId, const NameMap& nm,
+        SpecialTokenScanView tokensViewOf(NameId exprId, const NameMap& nm,
                                           ScratchArena& peekArena);
 
         /// @brief Drop the columns' page capacity — the grid-teardown release.

@@ -1383,29 +1383,37 @@ inline bool staysOutputVariable(const std::string& fullExpr,
     return false;
 }
 
-/// @brief Produce the *mirrored* form of an external theorem expression,
-/// keeping the anchor's role-arguments in place but permuting the
-/// non-anchor premises.
+/// @brief Produce the *mirrored* form of an external theorem expression —
+/// the reverse direction obtained by swapping the head with the premise
+/// that shares the head's output variable, anchor pinned in place.
 ///
 /// @details
 /// Used by the `--mirror-externals` entry-point in `main.cpp` and by the
 /// external-theorem ingest path inside `run_modes::fullRun`. Given an
 /// external theorem `expr`, the anchor name (`anchorName`), a flag
-/// indicating whether the anchor is on the left or right side of the
-/// implication, and the relevant `coreExpressionMap`, this function:
+/// controlling whether the anchor is forced to premise position 0, and
+/// the relevant `coreExpressionMap`, this function:
 ///
-/// 1. Identifies the anchor's role arguments inside `expr`.
-/// 2. Permutes the non-anchor premises while keeping the anchor's role
-///    arguments fixed (the *mirror* operation; the canonical
-///    `mirrored from` provenance tag).
-/// 3. Returns the mirrored expression text, or empty if the input
-///    cannot be mirrored (e.g. no anchor present or anchor in a
-///    role-incompatible position).
+/// 1. Disintegrates the implication into its premise chain plus head and
+///    reads the head's output variable from the head operator's
+///    `outputIndices`.
+/// 2. Promotes the unique premise whose own output slot holds that
+///    variable (`ce::staysOutputVariable`) to be the new head, demotes
+///    the old head to the last premise, and keeps the anchor premise in
+///    place (`prioritizeAnchor` when `anchorFirst`).
+/// 3. Redistributes binder groups by first body occurrence and renames
+///    bound variables into canonical occurrence order, then returns the
+///    mirrored expression text — or empty when the input is not
+///    mirrorable (head not an operator with an output slot, or no
+///    premise shares the output variable): a defined "no distinct
+///    reverse direction" result, not a failure fallback.
 ///
-/// The mirroring used here corresponds to the sound `reformulated from`
-/// path used for real-math output. The incubator pipeline emits a
-/// distinct `incubator back reformulation` tag for its unsound
-/// counterpart; the two must never be conflated downstream.
+/// The free-function twin of `Conjecturer::createReshuffledMirrored`
+/// (which canonicalises via `reshuffle` instead of the rename step) —
+/// the two implementations have diverged internally, which is why the
+/// CE filter's mirror-refutation pass matches pairs through the
+/// conjecturer-authored `mirror_pairs.txt` rather than recomputing
+/// mirrors with this function.
 inline std::string createReshuffledMirrored(const std::string& expr,
     const std::string& anchorName,
     bool anchorFirst,

@@ -49,11 +49,11 @@ namespace gl {
     /// parent-pointer forest that replaced the jagged stack/ancestor lists.
     /// `parentId == 0` marks a root (`"main"` and any flat `encode` root); a
     /// non-root's own `_boundary_` payload sub-id is `ownSubId`. Ancestor and
-    /// payload-stack queries walk the `parentId` chain. The node is 4 bytes,
-    /// trivially copyable, streamed verbatim on deload.
+    /// payload-stack queries walk the `parentId` chain. The node is 8 bytes
+    /// (two `NameId`s), trivially copyable, streamed verbatim on deload.
     struct ValidityNode {
-        int16_t parentId;
-        int16_t ownSubId;
+        NameId parentId;
+        NameId ownSubId;
     };
 
     // The blob-map equivalenceClassesMap stores EquivalenceClass records keyed by
@@ -147,7 +147,8 @@ namespace gl {
             IntStatementLevelsMapKeys = 38,
             IntStatementLevelsMapRunStarts = 39,
             IntStatementLevelsMapValues = 40,
-            // orBookkeeping (OR convergence tracking): key64 -> a set of
+            // orBookkeeping (OR convergence tracking): packed
+            // (expression id, parent-scoped cohort id) key64 -> a set of
             // disjunct ids kept in DECODED order (a per-call DecodedIdLess
             // comparator). Dischargeable, reset at destroyGrid like
             // orDisjunctCount (the lbStateInterner ids it holds persist, but
@@ -367,46 +368,48 @@ namespace gl {
         // blocks for a transient Memory). Flat + trivially copyable, so it
         // deloads as ONE tag, visited directly like the statement vectors.
         PagedVector<ValidityNode> validityNodes;
-        // Batch 1 flat int16 id sets (NameMap ids), migrated off the heap onto
+        // Batch 1 flat NameId id sets (NameMap ids), migrated off the heap onto
         // the cold-map family (D-170). Each is one
-        // ColdHashSet<PodKeyStore<int16_t>> plus its KeysView deload facet (one
+        // ColdHashSet<PodKeyStore<NameId>> plus its KeysView deload facet (one
         // tag). All DISCHARGEABLE (tags 19+, outside survivesDischarge) — dead
         // weight on a discharged LB. Exposed on Memory via reference alias like
         // the statement vectors. pendingWipeScopes is drained (and reset) every
         // burst; the others reset at destroyGrid.
-        ColdHashSet<PodKeyStore<int16_t>> intValidityNamesToFilter;
-        ColdHashSet<PodKeyStore<int16_t>>::KeysView intValidityNamesToFilterKeys;
-        ColdHashSet<PodKeyStore<int16_t>> intAxedVariables;
-        ColdHashSet<PodKeyStore<int16_t>>::KeysView intAxedVariablesKeys;
-        ColdHashSet<PodKeyStore<int16_t>> canBeSentIds;
-        ColdHashSet<PodKeyStore<int16_t>>::KeysView canBeSentIdsKeys;
-        ColdHashSet<PodKeyStore<int16_t>> canBeSentMarkerIds;
-        ColdHashSet<PodKeyStore<int16_t>>::KeysView canBeSentMarkerIdsKeys;
-        ColdHashSet<PodKeyStore<int16_t>> pendingWipeScopes;
-        ColdHashSet<PodKeyStore<int16_t>>::KeysView pendingWipeScopesKeys;
+        ColdHashSet<PodKeyStore<NameId>> intValidityNamesToFilter;
+        ColdHashSet<PodKeyStore<NameId>>::KeysView intValidityNamesToFilterKeys;
+        ColdHashSet<PodKeyStore<NameId>> intAxedVariables;
+        ColdHashSet<PodKeyStore<NameId>>::KeysView intAxedVariablesKeys;
+        ColdHashSet<PodKeyStore<NameId>> canBeSentIds;
+        ColdHashSet<PodKeyStore<NameId>>::KeysView canBeSentIdsKeys;
+        ColdHashSet<PodKeyStore<NameId>> canBeSentMarkerIds;
+        ColdHashSet<PodKeyStore<NameId>>::KeysView canBeSentMarkerIdsKeys;
+        ColdHashSet<PodKeyStore<NameId>> pendingWipeScopes;
+        ColdHashSet<PodKeyStore<NameId>>::KeysView pendingWipeScopesKeys;
         // Batch 1 write-once int->int maps (D-170):
         // ColdHashMap with a key facet + a value facet (two tags each). Both
-        // dischargeable. orDisjunctCount: OR-signature id (lbStateInterner) ->
-        // disjunct count; integrationStartIntMap: template id -> startInt snapshot.
+        // dischargeable. orDisjunctCount: parent-scoped OR cohort id
+        // (lbStateInterner) -> disjunct count; integrationStartIntMap: template
+        // id -> startInt snapshot.
         ColdHashMap<PodKeyStore<int32_t>, int> orDisjunctCount;
         ColdHashMap<PodKeyStore<int32_t>, int>::KeysView orDisjunctCountKeys;
         ColdHashMap<PodKeyStore<int32_t>, int>::ValuesView orDisjunctCountValues;
-        ColdHashMap<PodKeyStore<int16_t>, int> integrationStartIntMap;
-        ColdHashMap<PodKeyStore<int16_t>, int>::KeysView integrationStartIntMapKeys;
-        ColdHashMap<PodKeyStore<int16_t>, int>::ValuesView integrationStartIntMapValues;
-        // Batch 1 erase-needing packed int32 sets (D-170):
+        ColdHashMap<PodKeyStore<NameId>, int> integrationStartIntMap;
+        ColdHashMap<PodKeyStore<NameId>, int>::KeysView integrationStartIntMapKeys;
+        ColdHashMap<PodKeyStore<NameId>, int>::ValuesView integrationStartIntMapValues;
+        // Batch 1 erase-needing packed int64 sets (D-170):
         // each a ColdHashSet + its KeysView facet (one tag). erased per-key in
-        // wipeSubtree / eradicate. intLocalEncodedStatementsSet SURVIVES discharge
-        // (the recursion-node gate reads it post-prove); the other three are
-        // dischargeable.
-        ColdHashSet<PodKeyStore<int32_t>> intLocalEncodedStatementsSet;
-        ColdHashSet<PodKeyStore<int32_t>>::KeysView intLocalEncodedStatementsSetKeys;
-        ColdHashSet<PodKeyStore<int32_t>> intWeakVariables;
-        ColdHashSet<PodKeyStore<int32_t>>::KeysView intWeakVariablesKeys;
-        ColdHashSet<PodKeyStore<int32_t>> integrationPrepared;
-        ColdHashSet<PodKeyStore<int32_t>>::KeysView integrationPreparedKeys;
-        ColdHashSet<PodKeyStore<int32_t>> integrationPreparedMarker;
-        ColdHashSet<PodKeyStore<int32_t>>::KeysView integrationPreparedMarkerKeys;
+        // wipeSubtree / eradicate. Keyed by packStatementKey / mintTemplateKey,
+        // both of which pack two NameId halves into an int64. intLocalEncoded-
+        // StatementsSet SURVIVES discharge (the recursion-node gate reads it
+        // post-prove); the other three are dischargeable.
+        ColdHashSet<PodKeyStore<int64_t>> intLocalEncodedStatementsSet;
+        ColdHashSet<PodKeyStore<int64_t>>::KeysView intLocalEncodedStatementsSetKeys;
+        ColdHashSet<PodKeyStore<int64_t>> intWeakVariables;
+        ColdHashSet<PodKeyStore<int64_t>>::KeysView intWeakVariablesKeys;
+        ColdHashSet<PodKeyStore<int64_t>> integrationPrepared;
+        ColdHashSet<PodKeyStore<int64_t>>::KeysView integrationPreparedKeys;
+        ColdHashSet<PodKeyStore<int64_t>> integrationPreparedMarker;
+        ColdHashSet<PodKeyStore<int64_t>>::KeysView integrationPreparedMarkerKeys;
         // expandedImplications: packed (implTextId, implScopeId) lbStateInterner
         // pairs. DISCHARGEABLE (tag 32, outside survivesDischarge) but NOT reset
         // at destroyGrid — it outlives the grid like its lbStateInterner keys.
@@ -428,10 +431,10 @@ namespace gl {
         TypedColdSetMap<StatementKey, int>::KeysView intStatementLevelsMapKeys;
         TypedColdSetMap<StatementKey, int>::RunStartsView intStatementLevelsMapRunStarts;
         TypedColdSetMap<StatementKey, int>::RunValuesView intStatementLevelsMapValues;
-        // orBookkeeping: key64 (packed lbStateInterner id pair) -> a set of
-        // branch-disjunct ids kept in DECODED order (the run is built by
-        // insertSorted with a per-call DecodedIdLess; never coldIntSetAt for
-        // reads, which would re-sort by raw int).
+        // orBookkeeping: key64 (packed expression id + parent-scoped cohort id)
+        // -> a set of branch-disjunct ids kept in DECODED order (the run is
+        // built by insertSorted with a per-call DecodedIdLess; never
+        // coldIntSetAt for reads, which would re-sort by raw int).
         TypedColdSetMap<LbStatePairKey, int32_t> orBookkeeping;
         TypedColdSetMap<LbStatePairKey, int32_t>::KeysView orBookkeepingKeys;
         TypedColdSetMap<LbStatePairKey, int32_t>::RunStartsView orBookkeepingRunStarts;
@@ -448,11 +451,11 @@ namespace gl {
         // store). Key = validity id; value = the validity's class list, each
         // class one canonical byte blob. Four facets: keys, run-starts,
         // blob-starts, blob-pool. Dischargeable; reset at destroyGrid.
-        TypedColdBlobMap<int16_t, EquivalenceClass> equivalenceClassesMap;
-        TypedColdBlobMap<int16_t, EquivalenceClass>::KeysView equivalenceClassesMapKeys;
-        TypedColdBlobMap<int16_t, EquivalenceClass>::RunStartsView equivalenceClassesMapRunStarts;
-        TypedColdBlobMap<int16_t, EquivalenceClass>::BlobStartsView equivalenceClassesMapBlobStarts;
-        TypedColdBlobMap<int16_t, EquivalenceClass>::BlobPoolView equivalenceClassesMapBlobPool;
+        TypedColdBlobMap<NameId, EquivalenceClass> equivalenceClassesMap;
+        TypedColdBlobMap<NameId, EquivalenceClass>::KeysView equivalenceClassesMapKeys;
+        TypedColdBlobMap<NameId, EquivalenceClass>::RunStartsView equivalenceClassesMapRunStarts;
+        TypedColdBlobMap<NameId, EquivalenceClass>::BlobStartsView equivalenceClassesMapBlobStarts;
+        TypedColdBlobMap<NameId, EquivalenceClass>::BlobPoolView equivalenceClassesMapBlobPool;
         // Batch 5: exprOriginMap on the cold BLOB map (the record value store).
         // Key = packed (expressionId, validityId) int64; value = the key's run of
         // IdOrigin history lines, each line one canonical blob (Codec<IdOrigin>).

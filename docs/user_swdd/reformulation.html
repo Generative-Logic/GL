@@ -155,7 +155,7 @@ User-oriented SwDD — Chapter 10: Reformulation & head switch.
 several angles. This chapter is GL's machinery for that — the head-switch walk
 that produces a theorem's contrapositive, the way the reverse direction of a
 theorem is now proved for real, the contradiction-theorem reconstruction that
-lifts a self-refuting branch into a parent-scope claim, the OR-theorem assembly that
+discharges a main-scope contradiction inside its owning logic block, the OR-theorem assembly that
 fuses a mutually-exclusive pair into a single disjunction, and the difference
 between sound (main) and unsound (incubator) reformulation.</p>
 
@@ -363,6 +363,14 @@ direct</code> or <code>induction</code> and carries its own proof chapter; a fal
 one simply fails to prove and never appears. The proof is now explicit in both
 directions.
 </p>
+<p>
+The refutation side is paired too: the conjecturer records each operator-only
+<code>(source, mirror)</code> couple in <code>mirror_pairs.txt</code>, and when
+the counterexample filter refutes either member the other is heuristically
+discarded as well rather than surviving to waste prover time (see
+<a href="auxiliary.html#ce">§11.2.3</a>). Discarding produces no proof
+artifact, so the no-unproven-rows guarantee below is untouched.
+</p>
 
 <div class="key">
 <p><b>No unproven rows.</b> There is no longer a <code>mirrored statement</code>
@@ -422,58 +430,61 @@ set.
 <!-- ===================== 10.6 ===================== -->
 <h2 id="contra">10.6 &nbsp;Contradiction-theorem reconstruction</h2>
 <p>
-An OR branch (§4.4) is opened with a disjunct asserted as a local assumption.
-If the branch's other facts contradict that assumption — both <code>X</code>
-and <code>!X</code> become derivable inside the branch — the branch is
-self-refuting. Mathematically, this proves <code>¬(assumption)</code> in the
-parent scope. The prover reconstructs this as a theorem and discharges it
-upward.
+A contradiction logic block carries the opposite of its target as its proof
+assumption. It may discharge that assumption only when both <code>X</code> and
+<code>!X</code> are derivable at the block's exact <code>main</code> scope. This
+is the shallowest-scope test: deeper conditional copies neither qualify nor hide
+a separate main copy. The stored <code>contradictionTheoremId</code> is then
+emitted as the block's proved conclusion. Both polarities exist at registration:
+the classic block assumes a conjecture's head to disprove it, and — where the
+batch enables it — a complementary block assumes the head's negation to prove
+the conjecture itself by reductio. Once the conjecture is settled through any
+path, both of its contradiction blocks retire — a fire retires the sibling, an
+ordinary proof retires the pair — so no block outlives its purpose.
 </p>
 
 <figure>
-<svg viewBox="0 0 760 250" role="img" aria-label="Contradiction discharge: from a refuted branch to a parent-scope theorem">
+<svg viewBox="0 0 760 250" role="img" aria-label="Contradiction discharge requires both opposing expressions at the logic block main scope">
   <defs><marker id="ct-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
   <rect x="20" y="40" width="200" height="84" rx="10" fill="#1C1F2B" stroke="#B084EB"/>
-  <text x="120" y="62" fill="#B084EB" font-size="11" font-weight="bold" text-anchor="middle">branch scope</text>
-  <text x="120" y="80" fill="#F0E8DC" font-size="10" text-anchor="middle">assume D₁</text>
-  <text x="120" y="96" fill="#F0E8DC" font-size="10" text-anchor="middle">derive X and !X</text>
+  <text x="120" y="62" fill="#B084EB" font-size="11" font-weight="bold" text-anchor="middle">contradiction LB</text>
+  <text x="120" y="80" fill="#F0E8DC" font-size="10" text-anchor="middle">proof assumption</text>
+  <text x="120" y="96" fill="#F0E8DC" font-size="10" text-anchor="middle">derive X @ main and !X @ main</text>
   <text x="120" y="114" fill="#8B8FA5" font-size="9" text-anchor="middle">primedForContradiction kept alive</text>
 
   <path d="M220 82 L246 82" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ct-ar)"/>
 
   <rect x="246" y="40" width="240" height="84" rx="10" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
   <text x="366" y="62" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">contradictionTheoremId</text>
-  <text x="366" y="80" fill="#F0E8DC" font-size="10" text-anchor="middle">reconstruct the implication:</text>
-  <text x="366" y="98" fill="#F0E8DC" font-size="10" text-anchor="middle">P₁ ∧ … ∧ P_k → ¬D₁</text>
-  <text x="366" y="116" fill="#8B8FA5" font-size="9" text-anchor="middle">(P_i = branch-local premises that survive)</text>
+  <text x="366" y="80" fill="#F0E8DC" font-size="10" text-anchor="middle">stored target theorem</text>
+  <text x="366" y="98" fill="#F0E8DC" font-size="10" text-anchor="middle">supported by the main/main pair</text>
+  <text x="366" y="116" fill="#8B8FA5" font-size="9" text-anchor="middle">no branch-local discharge</text>
 
   <path d="M486 82 L512 82" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ct-ar)"/>
 
   <rect x="512" y="40" width="220" height="84" rx="10" fill="#1C1F2B" stroke="#5DCAA5"/>
-  <text x="622" y="62" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">parent scope</text>
-  <text x="622" y="80" fill="#F0E8DC" font-size="10" text-anchor="middle">emit ¬D₁ as derived fact</text>
-  <text x="622" y="98" fill="#F0E8DC" font-size="10" text-anchor="middle">discharge the assumption</text>
-  <text x="622" y="116" fill="#8B8FA5" font-size="9" text-anchor="middle">branch closes; OR continues</text>
+  <text x="622" y="62" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">LB conclusion</text>
+  <text x="622" y="80" fill="#F0E8DC" font-size="10" text-anchor="middle">emit proved theorem</text>
+  <text x="622" y="98" fill="#F0E8DC" font-size="10" text-anchor="middle">discharge proof assumption</text>
+  <text x="622" y="116" fill="#8B8FA5" font-size="9" text-anchor="middle">block closes</text>
 
   <rect x="240" y="156" width="280" height="60" rx="10" fill="#262938" stroke="#3A3D4A"/>
-  <text x="380" y="178" fill="#F0E8DC" font-size="10.5" text-anchor="middle">If every branch refutes:</text>
-  <text x="380" y="196" fill="#F0E8DC" font-size="10.5" text-anchor="middle">parent holds ¬D₁ ∧ ¬D₂ ∧ … ∧ ¬D_K</text>
-  <text x="380" y="212" fill="#8B8FA5" font-size="9" text-anchor="middle">(OR itself unproved — no convergence fires)</text>
+  <text x="380" y="178" fill="#F0E8DC" font-size="10.5" text-anchor="middle">Branch-local X + inherited !X:</text>
+  <text x="380" y="196" fill="#F0E8DC" font-size="10.5" text-anchor="middle">does not discharge the logic block</text>
+  <text x="380" y="212" fill="#8B8FA5" font-size="9" text-anchor="middle">(_ordis_ branch replacement remains a known gap)</text>
 </svg>
-<figcaption><b>Discharge mechanics.</b> The branch's local proof of
-contradiction becomes the parent's positive fact <code>¬D₁</code>. The flag
-<code>primedForContradiction</code> on the branch LB is the trick that keeps
-it alive long enough to harvest the result.</figcaption>
+<figcaption><b>Discharge mechanics.</b> The two opposing facts must both exist at
+the contradiction block's <code>main</code>. The flag
+<code>primedForContradiction</code> keeps that block alive long enough to emit
+its stored theorem.</figcaption>
 </figure>
 
 <h3>10.6.1 &nbsp;What <code>primedForContradiction</code> does</h3>
 <p>
-A branch that proves a contradiction satisfies the normal “my goal is done”
-criterion: the contradiction <i>is</i> the goal in the negated head sense.
-Without intervention, <code>deactivateRecursively</code> would tear the branch
-down immediately — but the parent still needs the branch alive for one more
-cycle to harvest the reconstructed theorem. <code>primedForContradiction</code>
-is a per-LB flag that suspends deactivation until the discharge has fired.
+A contradiction block that reaches a main/main pair satisfies the normal “my goal
+is done” criterion. Without intervention, <code>deactivateRecursively</code>
+could tear the block down before the stored theorem is emitted.
+<code>primedForContradiction</code> is a per-LB flag that suspends deactivation until the discharge has fired.
 After discharge it is cleared and the normal lifecycle resumes.
 </p>
 
@@ -581,9 +592,10 @@ the row's tag should be the incubator one. See [V-6 / V-7 in the rung-1
 verifier report].</dd>
 
 <dt>“Contradiction discharge fires but parent shows no negated fact”</dt>
-<dd>The branch LB was deactivated before discharge had a chance to fire —
-<code>primedForContradiction</code> was not set. <em>Check</em>: the OR
-branch construction sets the flag at branch open; deactivation respects it.</dd>
+<dd>First check scope: both opposing expressions must exist at the contradiction
+LB's exact <code>main</code>; a branch-local copy does not qualify. If both main
+rows exist, check that <code>primedForContradiction</code> kept the block alive
+until its stored theorem was emitted.</dd>
 
 <dt>“OR theorem assembled from a pair where one was head-switched and the
 other was not — they look mutex but aren't”</dt>

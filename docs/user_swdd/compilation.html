@@ -155,7 +155,7 @@ User-oriented SwDD — Chapter 8: Compilation & names (deep dive).
 syntactically-different writings of the same idea must hash <i>identically</i>. This
 chapter is everything that makes that true: the structural-operator compile, the
 five name families, the counters that keep names unique, the encoder that packs a
-string into a 16-bit integer key, and the static memory pool the hot path lives in.</p>
+string into a 32-bit integer key, and the static memory pool the hot path lives in.</p>
 
 <div class="toc">
   <strong>On this page</strong>
@@ -206,7 +206,7 @@ two layers in lock-step — so the same idea always picks up the same string
   <rect x="496" y="90" width="228" height="98" rx="10" fill="#1C1F2B" stroke="#EF9F27"/>
   <text x="610" y="111" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">IntNormalizedKey</text>
   <text x="610" y="131" fill="#F0E8DC" font-size="9.5" text-anchor="middle">[ headId · arg₀ · arg₁ · arg₂ · arg₃ ]</text>
-  <text x="610" y="148" fill="#8B8FA5" font-size="9.5" text-anchor="middle">packed int16_t array</text>
+  <text x="610" y="148" fill="#8B8FA5" font-size="9.5" text-anchor="middle">packed int32_t array</text>
   <text x="610" y="166" fill="#8B8FA5" font-size="9.5" text-anchor="middle">used by: encodedMap, hot path</text>
 </svg>
 <figcaption><b>Two faces, one expression.</b> Every fact in the prover is in both
@@ -533,7 +533,7 @@ and recycled on demand.
 <p>
 <code>NameMap::encodePush(parentId, payload)</code> is the single function that
 creates a non-<code>"main"</code> scope. It does three things in one atomic step:
-returns a fresh <code>int16_t</code>; interns the canonical string
+returns a fresh <code>int32_t</code>; interns the canonical string
 <code>parent + "_boundary_" + payload</code> into the cold name table; records
 its parent ID and own payload sub-id in <code>validityNodes</code> (the scope
 forest) so <code>comparable</code> and <code>deeperOf</code> can answer ancestor
@@ -640,8 +640,8 @@ integer projection of that wrapper — the actual key into
 <tr><th>Wrapper</th><th>What it adds</th></tr>
 <tr><td><code>EncodedExpression</code></td><td>The full pair: original MPL string + the parsed head/args + top-level negation flag + iteration level + the <code>validityName</code>. Used by emit paths that need the string and the structure.</td></tr>
 <tr><td><code>ExpressionWithValidity</code></td><td>A lighter pair — just <code>(expression, validityName)</code>. The currency of <code>newStatements</code>, of mail, and of the chapter walker.</td></tr>
-<tr><td><code>IntNormalizedKey</code></td><td>A pointer+length view — <code>numberExpressions</code>, <code>length</code>, and a non-owning <code>const int16_t* data</code> into <code>KeyArena</code> — over the packed run <code>[ headId, arg0Id, arg1Id, … ]</code>. Cheap to hash, cheap to compare. The hot-path key.</td></tr>
-<tr><td><code>NameMap-Id</code></td><td>The <code>int16_t</code> a string lives at in the active name registry. Up to <code>MAX_NAME_IDS</code> (32000, near the <code>int16_t</code> ceiling 32767) names per registry — large enough for every spontaneous and bound name in a run.</td></tr>
+<tr><td><code>IntNormalizedKey</code></td><td>A pointer+length view — <code>numberExpressions</code>, <code>length</code>, and a non-owning <code>const int32_t* data</code> into <code>KeyArena</code> — over the packed run <code>[ headId, arg0Id, arg1Id, … ]</code>. Cheap to hash, cheap to compare. The hot-path key.</td></tr>
+<tr><td><code>NameMap-Id</code></td><td>The <code>int32_t</code> id (<code>NameId</code>) a string lives at in the active name registry. Up to <code>MAX_NAME_IDS</code> (1,000,000) names per registry — large enough for every spontaneous and bound name in a run.</td></tr>
 </table>
 
 <figure>
@@ -662,7 +662,7 @@ integer projection of that wrapper — the actual key into
   <text x="324" y="120" fill="#8B8FA5" font-size="10" text-anchor="middle">NameMap::encode</text>
 
   <rect x="348" y="60"  width="392" height="148" rx="10" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
-  <text x="544" y="82" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">IntNormalizedKey  (packed int16_t)</text>
+  <text x="544" y="82" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">IntNormalizedKey  (packed int32_t)</text>
   <rect x="364" y="94"  width="86" height="38" rx="5" fill="#262938" stroke="#3A3D4A"/><text x="407" y="118" fill="#F0E8DC" font-size="10.5" text-anchor="middle">[0]&nbsp;in3 → 71</text>
   <rect x="454" y="94"  width="86" height="38" rx="5" fill="#262938" stroke="#3A3D4A"/><text x="497" y="118" fill="#F0E8DC" font-size="10.5" text-anchor="middle">[1]&nbsp;v1 → 14</text>
   <rect x="544" y="94"  width="86" height="38" rx="5" fill="#262938" stroke="#3A3D4A"/><text x="587" y="118" fill="#F0E8DC" font-size="10.5" text-anchor="middle">[2]&nbsp;zero → 5</text>
@@ -687,7 +687,7 @@ encoder; it has been rewritten to <code>or&lt;N&gt;</code> by §8.2.</li>
 assigned by a fixed left-to-right walk, so two alpha-equivalent theorems pick
 the same names.</li>
 <li><b>Single name registry.</b> Every name passes through
-<code>NameMap::encode</code>, which returns the same <code>int16_t</code> for
+<code>NameMap::encode</code>, which returns the same <code>int32_t</code> for
 the same string — the second character of the proof.</li>
 </ul>
 

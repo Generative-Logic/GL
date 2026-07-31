@@ -98,6 +98,10 @@ Full table:
 
 **Cross-doc check.** `TAG_CHECKERS` has **30 entries, 30 unique tags** — verified by `python -c "from verifier import TAG_CHECKERS; print(len(TAG_CHECKERS))"`. The historical `equalize variable` alias was retired (only `multiplied from` was ever emitted), so there is no shared-checker entry today; `multiplied from` → `check_equalize_variable` is the only naming asymmetry, and it occupies one entry. The two `or branch proven` / `or branch assumption` entries were promoted from "claimed retired" to first-class by [D-35](../40_decisions.md#d-35).
 
+### Goal-carrying subproof namespaces
+
+`check_premise_element` accepts a namespace whose LAST `_boundary_`-delimited payload is either the bare compact `cleanSig` (legacy / statement-driven subproof scopes) or the goal-carrying `<goal>_subproof_<cleanSig>` form ([I-170](../30_invariants.md#i-170)), parsed by `verifier.py::_split_subproof_payload` — the Python twin of the prover's `splitSubproofPayload`. The bare half must equal `cleanSig` EXACTLY; the goal half is validated structurally (optionally-negated balanced group + the exact separator) but deliberately NOT matched against the chapter's rows: a subproof's compact statement at main is shared, so a chapter proving a DIFFERENT goal may legitimately cite machinery owned by another goal. `check_validity_name` needs no change — the scoped-goal closure deposits the STRIPPED bare compact. The three OR-family checkers (`or disintegration` / `or branch proven` / `or branch assumption`) still reconstruct bare `orint_`/`ordis_` namespaces: a goal-carrying orint scope on MAIN cannot occur in the current pipeline (OR branches spawn at subproof scopes), and if a future batch mints one into a chapter these checkers fail LOUDLY — the deliberate I-16 posture until a real case exists to extend them against.
+
 ### Validity matching on dep cells
 
 Each checker that compares a row's dep validity to a stored validity uses **exact `==`** equality where possible. Per `D-56`, `buildStack` emits every chapter cell (`row[1]` and every dep cell) at the **closest-to-`main` ancestor of the requested validity for which an origin entry exists in the emitting LB's `exprOriginMap`**, so a row's `row[1]` and each cited dep's recorded validity are already at the same lifted scope by construction. The `_ns_matches_or_strict_prefix` helper at `verifier.py` is consumed by **three checkers**: `check_implication` (the validity-stack deposit pair-check), `check_equality1`, and `check_equality2` — the latter two because the source/target validity relationship is on the *expression* side of an equivalence-class rewrite, not the rule-application side. The helper requires `tgt_ns == src_ns` or `tgt_ns == src_ns + "_boundary_" + …` (separator-aware ancestor); a bare byte-prefix that does not respect the `_boundary_` separator is rejected.
@@ -241,7 +245,7 @@ Since [D-54](../40_decisions.md#d-54) the auto-detect for the incubator-side `ba
 
 The `state.gl_binaries` map is consulted by:
 
-- `check_expansion` — to expand a named expression into its compiled-structure form.
+- `check_expansion` — to expand a named expression into its compiled-structure form. Its `_try_expand` core accepts, per category: the reconstructed AND / implication / existence / De-Morgan-or forms; for `or`, additionally the K per-branch sub-implication forms (D-52); and for `implication`, additionally the per-leaf OR-INTRO forms `(>[bv](D_k)(orPremise))` for each premise element that is a compiled OR (D-237 — the producer's `disintegrateExprCore2` implication branch emits one intro implication per flattened disjunct alongside the main rule; the acceptance resolves the premise's `or<N>` entry through the supplied binaries and admits exactly the compiled leaves).
 - `_check_reformulation` — to expand an existence head via the binary into left+right elements.
 - `check_anchor_handling` — to match anchor-slot positions.
 
@@ -503,7 +507,7 @@ These checkers structurally pass any row meeting trivial gates. Soundness of the
 
 ### Tightening that deliberately fails on current production
 
-- **`check_or_convergence`** — emits the post-clean-fail row-layout contract. The producer side has not yet been updated to emit the new layout (the buildstack + history-tracking follow-on), so every `or convergence` row on current chapters fails the `len(rest) >= 6` step. This is **intentional** per the "Failures are first-class" guidance; once the producer-side fix lands, the layout will match. Until then, expect non-zero `or convergence` failures on baseline runs.
+- **`check_or_convergence`** — validates the D-36 row layout, extended for dead-branch retirement ([D-238](../40_decisions.md#d-238)): each of the K entries is either a survivor's branch derivation of the conclusion or a retired branch's reductio ingredient (the disjunct's negation at a parent-visible scope), with exactly-once disjunct coverage and per-entry chapter evidence. Producer (`ordisMerge`) and checker emit/accept the same contract; baseline runs pass with zero `or convergence` failures.
 
 ### Parsing tolerance for malformed rows
 

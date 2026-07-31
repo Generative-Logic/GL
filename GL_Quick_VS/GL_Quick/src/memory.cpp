@@ -71,8 +71,8 @@ namespace gl {
     // because it reaches genScratchArenas() + ExpressionAnalyzer::g_currentCoreId,
     // which an inline header body cannot see (the encodePush(StrSpan) precedent).
     void recordUSignature(OwnerSet& os,
-                          const IntEncodedExpr* encList, int16_t count) {
-        using Pair = std::pair<int16_t, int16_t>;
+                          const IntEncodedExpr* encList, NameId count) {
+        using Pair = std::pair<int32_t, NameId>;
         // Single-threaded install (mergeOwnerRecord, I-83): workers publish
         // g_currentCoreId; -1 (setup contexts) maps to the reserved last slot.
         const unsigned uSlot = (ExpressionAnalyzer::g_currentCoreId >= 0)
@@ -93,13 +93,13 @@ namespace gl {
             : nullptr;
 
         int32_t n = 0;
-        int16_t slot = 0;
+        int32_t slot = 0;
         bool hasUArg = false;
-        for (int16_t e = 0; e < count; ++e) {
+        for (NameId e = 0; e < count; ++e) {
             const IntEncodedExpr& expr = encList[e];
-            const int16_t arity = std::min(expr.arity,
-                static_cast<int16_t>(ExecutionParameters::MAX_ARITY));
-            for (int16_t j = 0; j < arity; ++j) {
+            const int32_t arity = std::min<int32_t>(expr.arity,
+                static_cast<int32_t>(ExecutionParameters::MAX_ARITY));
+            for (int32_t j = 0; j < arity; ++j) {
                 if (expr.argUnchangeable[j] != 0) {
                     hasUArg = true;
                     assert(n < cap);
@@ -120,6 +120,91 @@ namespace gl {
     // Path 2 — marker LMV inserts via makeNormalizedKeysForAdmission.
     // ------------------------------------------------------------------
 
+    /// @brief Whether a rule install has the or-INTRO shape — a single
+    ///        premise that is one flattened leaf of its or-category head.
+    ///
+    /// @details
+    /// The install-time detector behind the `LocalMemoryValue::
+    /// disintegrationAllowed` derivation
+    /// (D-241). An or-intro rule —
+    /// `(>[bound](D_k)(or…))`, emitted per flattened leaf by
+    /// `disintegrateExprCore2`'s implication branch
+    /// (D-237) — states a disjunction as a FACT from one
+    /// true disjunct; its fired head is consumed flat, so it must never
+    /// re-disintegrate into `_ordis_` branch scopes. Detection is by shape,
+    /// not emission provenance, so a status-3 mail-recovered intro rule
+    /// re-marks at its receiver-side reinstall exactly like a local install.
+    ///
+    /// The leaf flattening is the compiled-map recursion the emission site
+    /// uses: substitute each level's signature args by the instance args,
+    /// recurse into or-category elements only (I-166), compare each non-or
+    /// leaf byte-for-byte against the premise. A compiled-map miss on the
+    /// head is a defined negative (atomic or uncompiled head — not an
+    /// or-intro), mirroring the emission site's probe contract.
+    ///
+    /// @param keyRun   The ordered implication-chain premises.
+    /// @param keyN     Number of premises; only `keyN == 1` can match.
+    /// @param headSpan The head (implication consequent).
+    /// @return Whether the install is or-intro-shaped.
+    /// @invariant Heap-free: compiled-map read-out probes plus scratch-arena
+    ///            string builds under a per-call `ScratchScope` (Rule 28).
+    /// @see `disintegrateExprCore2` — the intro emission;
+    ///      `addToHashMemory` — the sole production caller;
+    ///      `LocalMemoryValue::disintegrationAllowed` — the derived flag.
+    bool ExpressionAnalyzer::isOrIntroInstall(const StrSpan* keyRun,
+                                              int32_t keyN,
+                                              StrSpan headSpan) {
+        if (keyN != 1) return false;
+        if (headSpan.len < 1 || headSpan.ptr[0] != '(') return false;
+        const LogicalEntity* orLe =
+            compiledEntity(extractExpressionUniversalSpan(headSpan));
+        if (orLe == nullptr || orLe->category != "or") return false;
+
+        const unsigned slot = (g_currentCoreId >= 0)
+            ? static_cast<unsigned>(g_currentCoreId)
+            : scratchArenas().slotCount() - 1;
+        ScratchArena& sArena = scratchArenas().forSlot(slot);
+        ScratchScope scope(sArena);
+
+        const StrSpan premise = keyRun[0];
+        bool matched = false;
+        const auto walk = [&](const LogicalEntity& node, StrSpan instance,
+                              const auto& self) -> void {
+            StrSpan sigArgs[ExecutionParameters::MAX_ARITY];
+            const int32_t sigN = getArgsSpans(StrSpan(node.signature), sigArgs,
+                                              ExecutionParameters::MAX_ARITY);
+            StrSpan instArgs[ExecutionParameters::MAX_ARITY];
+            const int32_t instN = getArgsSpans(instance, instArgs,
+                                               ExecutionParameters::MAX_ARITY);
+            assert(sigN == instN
+                && "isOrIntroInstall: instance arity differs from compiled or");
+            StrReplacement pairs[ExecutionParameters::MAX_ARITY];
+            int32_t pairN = 0;
+            for (int32_t a = 0; a < sigN; ++a) {
+                pairs[pairN].key = sigArgs[a];
+                pairs[pairN].value = instArgs[a];
+                ++pairN;
+            }
+            for (const std::string& rawElem : node.elements) {
+                if (matched) return;
+                const ScratchString subst =
+                    replaceKeysScratch(sArena, StrSpan(rawElem), pairs, pairN);
+                const StrSpan substSpan(subst);
+                const LogicalEntity* childLe =
+                    (substSpan.len >= 1 && substSpan.ptr[0] == '(')
+                    ? compiledEntity(extractExpressionUniversalSpan(substSpan))
+                    : nullptr;
+                if (childLe != nullptr && childLe->category == "or") {
+                    self(*childLe, substSpan, self);
+                } else if (equalSpans(substSpan, premise)) {
+                    matched = true;
+                }
+            }
+        };
+        walk(*orLe, headSpan, walk);
+        return matched;
+    }
+
     /// @brief Install one or more `LocalMemoryValue` records into a `HashMemory`,
     /// keyed on the canonical normalization of `key`.
     ///
@@ -139,7 +224,7 @@ namespace gl {
     ///    mirror) under the `"multiplied from"` tag, capped per `max_origin_per_expr`
     ///    (`compressor_max_origins_per_expr` in compressor mode).
     /// 2. **Per-copy normalization + dedupe.** For each copy, build the
-    ///    `IntNormalizedKey` from the int16_t-encoded key bytes; consult
+    ///    `IntNormalizedKey` from the NameId-encoded key bytes; consult
     ///    `normalizedEncodedKeys` and `normalizedEncodedSubkeys*` for fast
     ///    rejection; if novel, allocate on the gen scratch arena byte-bump tier so the key
     ///    pointer stays stable for the rest of the LB's lifetime.
@@ -155,7 +240,7 @@ namespace gl {
     ///    is registered in `targetIntMemory.admissionMap`.
     ///
     /// @param key                     Pre-built normalization key (string form;
-    ///                                int16_t mirror is computed inside).
+    ///                                NameId mirror is computed inside).
     /// @param value                   Head expression text (what the rule produces).
     /// @param remainingArgs           Argument names not consumed by the key
     ///                                that must travel with the head.
@@ -398,25 +483,25 @@ namespace gl {
             // D-105: encode the rule's owner scope id
             // once per install; the owner-set inserts below store it with each
             // owner so the validity prune never re-encodes.
-            const int16_t ownerVid = nm.encode(validityNameSpan);
+            const NameId ownerVid = nm.encode(validityNameSpan);
 
             // D-119: composite id of this rule's
             // (expanded-original, validity) pair. nm.encode(copySpan) is the
-            // int16 id of the full expanded implication (idempotent — minted at
+            // NameId of the full expanded implication (idempotent — minted at
             // first install, returned thereafter). Stored in every (sub)key's
             // partitionIds below so a split executor claims the keys of the
             // rules assigned to it via id % splitCount.
-            const int32_t partitionId = makePartitionId(nm.encode(copySpan), ownerVid);
+            const int64_t partitionId = makePartitionId(nm.encode(copySpan), ownerVid);
 
             // intRemainingArgs: mint NameMap in curRemRun (sorted-lex) order ==
             // the former set-lex mint order (I-84), then a sorted-ASCENDING copy
-            // for the Int16SetKey == the former std::set<int16_t> iteration.
-            int16_t intRemArgs[ExecutionParameters::MAX_ADMISSION_REM_ARGS];
+            // for the Int16SetKey == the former std::set<NameId> iteration.
+            NameId intRemArgs[ExecutionParameters::MAX_ADMISSION_REM_ARGS];
             for (int32_t i = 0; i < curRemN; ++i) intRemArgs[i] = nm.encode(curRemRun[i]);
-            int16_t intRemArgsSorted[ExecutionParameters::MAX_ADMISSION_REM_ARGS];
+            NameId intRemArgsSorted[ExecutionParameters::MAX_ADMISSION_REM_ARGS];
             if (curRemN > 0)
                 std::memcpy(intRemArgsSorted, intRemArgs,
-                    static_cast<std::size_t>(curRemN) * sizeof(int16_t));
+                    static_cast<std::size_t>(curRemN) * sizeof(NameId));
             std::sort(intRemArgsSorted, intRemArgsSorted + curRemN);
 
             std::map<int, std::vector<std::vector<int>>>::const_iterator pit =
@@ -432,8 +517,8 @@ namespace gl {
             for (int32_t i = 0; i < n; ++i)
                 idsRun[i] = extractExpressionSpan(curKeyRun[i]);
 
-            int16_t bufIgnored[ExecutionParameters::MAX_KEY_SLOTS];
-            int16_t bufNotIgnored[ExecutionParameters::MAX_KEY_SLOTS];
+            NameId bufIgnored[ExecutionParameters::MAX_KEY_SLOTS];
+            NameId bufNotIgnored[ExecutionParameters::MAX_KEY_SLOTS];
 
             const unsigned genSlot = (g_currentCoreId >= 0)
                 ? static_cast<unsigned>(g_currentCoreId)
@@ -475,7 +560,7 @@ namespace gl {
                 // the encodeExpression span twin, then makeIntNormalizedKeyFromEncoded*
                 // (byte-identical outBuf + reverseMap to the EncodedExpression form).
                 IntEncodedExpr intEncoded[ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS];
-                const int16_t intEncCount = static_cast<int16_t>(permutation.size());
+                const NameId intEncCount = static_cast<NameId>(permutation.size());
                 assert(intEncCount <= ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS
                     && "addToHashMemory: key element count exceeds cap");
                 for (std::size_t k = 0; k < permutation.size(); ++k) {
@@ -483,14 +568,14 @@ namespace gl {
                         curKeyRun[permutation[k]], StrSpan("main", 4), nm);
                 }
 
-                int16_t reverseMap[ExecutionParameters::MAX_KEY_SLOTS];
+                NameId reverseMap[ExecutionParameters::MAX_KEY_SLOTS];
                 std::memset(reverseMap, 0, sizeof(reverseMap));
-                int16_t numNormVars = 0;
-                int16_t lenIgnored = makeIntNormalizedKeyFromEncodedWithMap(
+                NameId numNormVars = 0;
+                NameId lenIgnored = makeIntNormalizedKeyFromEncodedWithMap(
                     intEncoded, intEncCount, true, bufIgnored,
                     ExecutionParameters::MAX_KEY_SLOTS, reverseMap, numNormVars);
 
-                int16_t lenNotIgnored = makeIntNormalizedKeyFromEncoded(
+                NameId lenNotIgnored = makeIntNormalizedKeyFromEncoded(
                     intEncoded, intEncCount, false, bufNotIgnored,
                     ExecutionParameters::MAX_KEY_SLOTS);
 
@@ -501,7 +586,7 @@ namespace gl {
                 // std::map (replaceKeysScratch is greedy-longest, order-independent).
                 StrReplacement mp2Pairs[ExecutionParameters::MAX_KEY_SLOTS];
                 int32_t mp2PairsN = 0;
-                for (int16_t id = 1; id <= numNormVars; ++id) {
+                for (NameId id = 1; id <= numNormVars; ++id) {
                     assert(mp2PairsN < ExecutionParameters::MAX_KEY_SLOTS
                         && "addToHashMemory: rename pair count exceeds cap");
                     char decTmp[12];
@@ -543,32 +628,42 @@ namespace gl {
                     }
                 }
 
+                // D-241: may heads fired
+                // by this rule be disintegrated. False for integration
+                // instructions and for or-intro-shaped rules (their heads are
+                // integration instructions consumed flat); the firing site
+                // reads this as the rule-intrinsic half of
+                // FiringRecord::doNotDisintegrate.
+                const bool disintegrationAllowed =
+                    just != RuleJustification::integration
+                    && !isOrIntroInstall(curKeyRun, curKeyN, curValueSpan);
+
                 // encodedMap HEAD record + owner record + remaining-args index,
                 // all via the raw / id-run doors (no owning NormKey / LMV). The
                 // levels run is caller-owned ascending-unique (I-136) == the former
                 // std::set<int> serialize order.
                 appendLmvIdsRecord(targetIntMemory.encodedMap,
-                    static_cast<int16_t>(n), bufIgnored, lenIgnored,
+                    static_cast<NameId>(n), bufIgnored, lenIgnored,
                     valueId, isMarker, nullptr, 0, remIds, curRemN,
                     originalImplId, ownerVid, genArena,
-                    levels, levelCount, just, productOf);
+                    levels, levelCount, just, productOf, disintegrationAllowed);
                 mergeOwnerRecord(targetIntMemory.normalizedEncodedKeys,
-                    static_cast<int16_t>(n), bufNotIgnored, lenNotIgnored,
+                    static_cast<NameId>(n), bufNotIgnored, lenNotIgnored,
                     partitionId, intEncoded, intEncCount, nm);
                 // Accumulate this permutation's NormKey (Codec<NormKey> bytes:
                 // int16 numberExpressions ++ int16 length ++ data) for the one
                 // batched insert after the loop.
                 {
                     const int32_t nkBlobLen = (lenNotIgnored + 2)
-                        * static_cast<int32_t>(sizeof(int16_t));
+                        * static_cast<int32_t>(sizeof(NameId));
                     const ArenaOffset nkBlobOff = genArena.alloc(
-                        nkBlobLen, static_cast<int32_t>(alignof(int16_t)));
-                    int16_t* pnk =
-                        reinterpret_cast<int16_t*>(genArena.resolve(nkBlobOff));
-                    pnk[0] = static_cast<int16_t>(n);
+                        nkBlobLen, static_cast<int32_t>(alignof(NameId)));
+                    NameId* pnk =
+                        reinterpret_cast<NameId*>(genArena.resolve(nkBlobOff));
+                    pnk[0] = static_cast<NameId>(n);
                     pnk[1] = lenNotIgnored;
                     std::memcpy(pnk + 2, bufNotIgnored,
-                        static_cast<std::size_t>(lenNotIgnored) * sizeof(int16_t));
+                        static_cast<std::size_t>(lenNotIgnored) * sizeof(NameId));
                     remArgsBatch.push_back(RemArgsBatchBlob{ nkBlobOff, nkBlobLen });
                 }
             }
@@ -599,15 +694,15 @@ namespace gl {
                     if (toBreak) break;
 
                     IntEncodedExpr subEncoded[ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS];
-                    const int16_t subEncCount = static_cast<int16_t>(index + 1);
+                    const NameId subEncCount = static_cast<NameId>(index + 1);
                     assert(subEncCount <= ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS
                         && "addToHashMemory subkey: element count exceeds cap");
                     for (int32_t t = 0; t <= index; ++t) {
                         subEncoded[t] = encodeExpression(tempRun[t], StrSpan("main", 4), nm);
                     }
 
-                    int16_t subBuf[ExecutionParameters::MAX_KEY_SLOTS];
-                    int16_t subLen = makeIntNormalizedKeyFromEncoded(
+                    NameId subBuf[ExecutionParameters::MAX_KEY_SLOTS];
+                    NameId subLen = makeIntNormalizedKeyFromEncoded(
                         subEncoded, subEncCount, false, subBuf,
                         ExecutionParameters::MAX_KEY_SLOTS);
 
@@ -615,20 +710,20 @@ namespace gl {
                     // id is the LB-split partition cover), via the raw-key door
                     // (no owning NormKey).
                     mergeOwnerRecord(targetIntMemory.normalizedEncodedSubkeys,
-                        static_cast<int16_t>(index + 1), subBuf, subLen,
+                        static_cast<NameId>(index + 1), subBuf, subLen,
                         partitionId, subEncoded, subEncCount, nm);
                     if (index + 1 == n - 1)
                         mergeOwnerRecord(targetIntMemory.normalizedEncodedSubkeysMinusOne,
-                            static_cast<int16_t>(index + 1), subBuf, subLen,
+                            static_cast<NameId>(index + 1), subBuf, subLen,
                             partitionId, subEncoded, subEncCount, nm);
                     if (index + 1 == n - 2)
                         mergeOwnerRecord(targetIntMemory.normalizedEncodedSubkeysMinusTwo,
-                            static_cast<int16_t>(index + 1), subBuf, subLen,
+                            static_cast<NameId>(index + 1), subBuf, subLen,
                             partitionId, subEncoded, subEncCount, nm);
                 }
             }
 
-            targetIntMemory.maxKeyLength = std::max(static_cast<int16_t>(n), targetIntMemory.maxKeyLength);
+            targetIntMemory.maxKeyLength = std::max(static_cast<NameId>(n), targetIntMemory.maxKeyLength);
         }
     }
 
@@ -659,7 +754,7 @@ namespace gl {
     ///      prover.hpp); admits a wider class of subkeys but only when the
     ///      key has a `u_`-prefixed arg meeting the local-u criterion.
     /// 4. Emits the marker LMV via the same gen scratch arena byte-bump storage
-    ///    contract as `addToHashMemory` — the int16_t key bytes live in the
+    ///    contract as `addToHashMemory` — the NameId key bytes live in the
     ///    arena so the resulting `IntNormalizedKey::data` pointer stays
     ///    stable for the rest of the LB's lifetime.
     ///
@@ -670,7 +765,7 @@ namespace gl {
     /// @param intHashMemory       Target hash memory (typically the same as
     ///                            `targetIntMemory` in the matching
     ///                            `addToHashMemory` call).
-    /// @param nameMap             `NameMap` for int16_t encoding.
+    /// @param nameMap             `NameMap` for NameId encoding.
     /// @param arena               Gen scratch arena for stable storage of the
     ///                            normalized key bytes.
     /// @param value               Head expression text — used by the
@@ -724,12 +819,12 @@ namespace gl {
         const Memory* mbTrap) {
 
         (void)mbTrap;
-        const int16_t ownerVid = nameMap.encode(validityName);
+        const NameId ownerVid = nameMap.encode(validityName);
 
         // D-119: composite id of this marker rule's
         // (expanded-original, validity) pair — same packing as addToHashMemory
         // so a rule's head and marker entries carry the same partition id.
-        const int32_t partitionId = makePartitionId(nameMap.encode(originalImpl), ownerVid);
+        const int64_t partitionId = makePartitionId(nameMap.encode(originalImpl), ownerVid);
 
         if (!implicationIsQualified(key, keyN, value, minNumOperatorsKey)) {
             return;
@@ -855,27 +950,27 @@ namespace gl {
                             if (toBreak) break;
 
                             IntEncodedExpr subEncoded[ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS];
-                            const int16_t subEncCount = static_cast<int16_t>(si + 1);
+                            const NameId subEncCount = static_cast<NameId>(si + 1);
                             assert(subEncCount <= ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS
                                 && "makeNormalizedKeysForAdmission subkey: element count exceeds cap");
                             for (int32_t t = 0; t <= si; ++t)
                                 subEncoded[t] = encodeExpression(
                                     tempList[t], StrSpan("main", 4), nameMap);
 
-                            int16_t subBuf[ExecutionParameters::MAX_KEY_SLOTS];
-                            int16_t subLen = makeIntNormalizedKeyFromEncoded(
+                            NameId subBuf[ExecutionParameters::MAX_KEY_SLOTS];
+                            NameId subLen = makeIntNormalizedKeyFromEncoded(
                                 subEncoded, subEncCount, false, subBuf, ExecutionParameters::MAX_KEY_SLOTS);
                             // Owner maps via the raw-key door (no owning NormKey).
                             mergeOwnerRecord(intHashMemory.normalizedEncodedSubkeys,
-                                static_cast<int16_t>(si + 1), subBuf, subLen,
+                                static_cast<NameId>(si + 1), subBuf, subLen,
                                 partitionId, subEncoded, subEncCount, nameMap);
                             if (si + 1 == sn - 1)
                                 mergeOwnerRecord(intHashMemory.normalizedEncodedSubkeysMinusOne,
-                                    static_cast<int16_t>(si + 1), subBuf, subLen,
+                                    static_cast<NameId>(si + 1), subBuf, subLen,
                                     partitionId, subEncoded, subEncCount, nameMap);
                             if (si + 1 == sn - 2)
                                 mergeOwnerRecord(intHashMemory.normalizedEncodedSubkeysMinusTwo,
-                                    static_cast<int16_t>(si + 1), subBuf, subLen,
+                                    static_cast<NameId>(si + 1), subBuf, subLen,
                                     partitionId, subEncoded, subEncCount, nameMap);
                         }
                     }
@@ -899,23 +994,23 @@ namespace gl {
                 // former std::set<std::string> order. MINT the NameMap ids in that
                 // run order (I-84: mint order reaches the deload stream), then a
                 // SORTED-ASCENDING copy is the Int16SetKey (the former
-                // std::set<int16_t> iteration order). The lmv.remainingArgIds mint
+                // std::set<NameId> iteration order). The lmv.remainingArgIds mint
                 // (ruleInterner) walks the run order = former set-lex order.
                 StrSpan remScratch[ExecutionParameters::MAX_ADMISSION_REM_ARGS];
                 const int32_t remScratchN = getRemainingArgs(
                     subkey, subCount, remScratch,
                     ExecutionParameters::MAX_ADMISSION_REM_ARGS);
-                int16_t intRemArgs[ExecutionParameters::MAX_ADMISSION_REM_ARGS];
+                NameId intRemArgs[ExecutionParameters::MAX_ADMISSION_REM_ARGS];
                 for (int32_t i = 0; i < remScratchN; ++i)
                     intRemArgs[i] = nameMap.encode(remScratch[i]);   // mint in run order
-                int16_t intRemArgsSorted[ExecutionParameters::MAX_ADMISSION_REM_ARGS];
+                NameId intRemArgsSorted[ExecutionParameters::MAX_ADMISSION_REM_ARGS];
                 if (remScratchN > 0)
                     std::memcpy(intRemArgsSorted, intRemArgs,
-                        static_cast<std::size_t>(remScratchN) * sizeof(int16_t));
+                        static_cast<std::size_t>(remScratchN) * sizeof(NameId));
                 std::sort(intRemArgsSorted, intRemArgsSorted + remScratchN);
 
-                int16_t bufIgnored[ExecutionParameters::MAX_KEY_SLOTS];
-                int16_t bufNotIgnored[ExecutionParameters::MAX_KEY_SLOTS];
+                NameId bufIgnored[ExecutionParameters::MAX_KEY_SLOTS];
+                NameId bufNotIgnored[ExecutionParameters::MAX_KEY_SLOTS];
 
                 // Batch the remaining-args insert across the permutation loop:
                 // the key (intRemArgsSorted/remScratchN) is loop-invariant, so
@@ -949,20 +1044,20 @@ namespace gl {
                     // (byte-identical outBuf) so its reverseMap can rebuild the
                     // value-variant mapping without makeNormalizedEncodedKey.
                     IntEncodedExpr intEncoded[ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS];
-                    const int16_t intEncCount = static_cast<int16_t>(permutation.size());
+                    const NameId intEncCount = static_cast<NameId>(permutation.size());
                     assert(intEncCount <= ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS
                         && "makeNormalizedKeysForAdmission: subkey element count exceeds cap");
                     for (std::size_t k = 0; k < permutation.size(); ++k)
                         intEncoded[k] = encodeExpression(
                             subkey[permutation[k]], StrSpan("main", 4), nameMap);
 
-                    int16_t reverseMap[ExecutionParameters::MAX_KEY_SLOTS];
+                    NameId reverseMap[ExecutionParameters::MAX_KEY_SLOTS];
                     std::memset(reverseMap, 0, sizeof(reverseMap));
-                    int16_t numNormVars = 0;
-                    int16_t lenIgnored = makeIntNormalizedKeyFromEncodedWithMap(
+                    NameId numNormVars = 0;
+                    NameId lenIgnored = makeIntNormalizedKeyFromEncodedWithMap(
                         intEncoded, intEncCount, true, bufIgnored,
                         ExecutionParameters::MAX_KEY_SLOTS, reverseMap, numNormVars);
-                    int16_t lenNotIgnored = makeIntNormalizedKeyFromEncoded(
+                    NameId lenNotIgnored = makeIntNormalizedKeyFromEncoded(
                         intEncoded, intEncCount, false, bufNotIgnored, ExecutionParameters::MAX_KEY_SLOTS);
 
                     // Rename run { normalized-var name -> decimal id } from
@@ -974,7 +1069,7 @@ namespace gl {
                     // ruleInterner), so decodeView is I-3-safe (proved per-site).
                     StrReplacement mp2Pairs[ExecutionParameters::MAX_KEY_SLOTS];
                     int32_t mp2PairsN = 0;
-                    for (int16_t id = 1; id <= numNormVars; ++id) {
+                    for (NameId id = 1; id <= numNormVars; ++id) {
                         assert(mp2PairsN < ExecutionParameters::MAX_KEY_SLOTS
                             && "makeNormalizedKeysForAdmission valueVariant: rename pair count exceeds cap");
                         char decTmp[12];
@@ -1020,25 +1115,25 @@ namespace gl {
                     // all via the raw / id-run doors (no owning NormKey / LMV). D-72:
                     // the LMV carries the admitting implication + scope.
                     appendLmvIdsRecord(intHashMemory.encodedMap,
-                        static_cast<int16_t>(sn), bufIgnored, lenIgnored,
+                        static_cast<NameId>(sn), bufIgnored, lenIgnored,
                         valueId, isMarker, keyIds, keyIdsN, remIds, remScratchN,
                         originalImplId, ownerVid, mnkGenArena);
                     mergeOwnerRecord(intHashMemory.normalizedEncodedKeys,
-                        static_cast<int16_t>(sn), bufNotIgnored, lenNotIgnored,
+                        static_cast<NameId>(sn), bufNotIgnored, lenNotIgnored,
                         partitionId, intEncoded, intEncCount, nameMap);
                     // Accumulate this permutation's NormKey (Codec<NormKey> bytes)
                     // for the one batched insert after the loop.
                     {
                         const int32_t nkBlobLen = (lenNotIgnored + 2)
-                            * static_cast<int32_t>(sizeof(int16_t));
+                            * static_cast<int32_t>(sizeof(NameId));
                         const ArenaOffset nkBlobOff = mnkGenArena.alloc(
-                            nkBlobLen, static_cast<int32_t>(alignof(int16_t)));
-                        int16_t* pnk = reinterpret_cast<int16_t*>(
+                            nkBlobLen, static_cast<int32_t>(alignof(NameId)));
+                        NameId* pnk = reinterpret_cast<NameId*>(
                             mnkGenArena.resolve(nkBlobOff));
-                        pnk[0] = static_cast<int16_t>(sn);
+                        pnk[0] = static_cast<NameId>(sn);
                         pnk[1] = lenNotIgnored;
                         std::memcpy(pnk + 2, bufNotIgnored,
-                            static_cast<std::size_t>(lenNotIgnored) * sizeof(int16_t));
+                            static_cast<std::size_t>(lenNotIgnored) * sizeof(NameId));
                         remArgsBatch.push_back(
                             RemArgsBatchBlob{ nkBlobOff, nkBlobLen });
                     }
@@ -1108,20 +1203,20 @@ namespace gl {
     /// @post `outStumps[0..return-1]` is the surviving subset, sorted
     ///       ascending by `originalId`.
     /// @see `generateEncodedRequestsStatic` — the consumer, at stump length 1.
-    int16_t ExpressionAnalyzer::makeMandatoryEncodedStatementLists1Static(
+    NameId ExpressionAnalyzer::makeMandatoryEncodedStatementLists1Static(
         const HashMemory& mem, const NameMap& nm,
         IntStmtView stmts,
-        Stump* outStumps, int16_t maxOut)
+        Stump* outStumps, NameId maxOut)
     {
         RT_SCOPE_HERE("MAKE_MANDATORY_LISTS_1_STATIC");
         // Filter, then sort by originalId (proxy for stable sort by original string)
-        int16_t filtBuf[4096];
-        int16_t nFilt = filterIntEncodedStatements(stmts, mem, nm, false, filtBuf, 4096);
+        NameId filtBuf[4096];
+        NameId nFilt = filterIntEncodedStatements(stmts, mem, nm, false, filtBuf, 4096);
 
         // Insertion sort filtered indices by originalId (counts are small)
-        for (int16_t i = 1; i < nFilt; ++i) {
-            int16_t key = filtBuf[i];
-            int16_t j = i - 1;
+        for (NameId i = 1; i < nFilt; ++i) {
+            NameId key = filtBuf[i];
+            NameId j = i - 1;
             while (j >= 0 && stmts[filtBuf[j]].originalId > stmts[key].originalId) {
                 filtBuf[j + 1] = filtBuf[j];
                 --j;
@@ -1129,8 +1224,8 @@ namespace gl {
             filtBuf[j + 1] = key;
         }
 
-        int16_t nOut = std::min(nFilt, maxOut);
-        for (int16_t i = 0; i < nOut; ++i) {
+        NameId nOut = std::min(nFilt, maxOut);
+        for (NameId i = 0; i < nOut; ++i) {
             outStumps[i].idx0 = filtBuf[i];
             outStumps[i].idx1 = -1;
         }
@@ -1185,37 +1280,37 @@ namespace gl {
     /// @invariant The prune never drops a statement that could take part in a
     ///            firing request ([I-70](../../docs/agentic_swdd/30_invariants.md#i-70),
     ///            [I-79](../../docs/agentic_swdd/30_invariants.md#i-79)).
-    int16_t ExpressionAnalyzer::filterIntEncodedStatements(
+    NameId ExpressionAnalyzer::filterIntEncodedStatements(
         IntStmtView stmts,
         const HashMemory& mem, const NameMap& nm,
         bool alsoAcceptFullKeys,
-        int16_t* outIndices, int16_t maxOut) {
+        NameId* outIndices, NameId maxOut) {
 
-        const int16_t count = static_cast<int16_t>(stmts.size());
-        int16_t buf[ExecutionParameters::MAX_KEY_SLOTS];
-        int16_t nOut = 0;
+        const NameId count = static_cast<NameId>(stmts.size());
+        NameId buf[ExecutionParameters::MAX_KEY_SLOTS];
+        NameId nOut = 0;
 
-        for (int16_t i = 0; i < count && nOut < maxOut; ++i) {
+        for (NameId i = 0; i < count && nOut < maxOut; ++i) {
             const IntEncodedExpr& s = stmts[i];
 
             // Build single-expr IntNormalizedKey on stack
-            int16_t pos = 0;
+            NameId pos = 0;
             buf[pos++] = s.nameId;
             buf[pos++] = s.negation;
-            for (int16_t j = 0; j < s.arity; ++j) {
+            for (NameId j = 0; j < s.arity; ++j) {
                 buf[pos++] = s.argId[j];
                 buf[pos++] = 0; // changeable (ignoreU=false)
             }
             // Normalize: sequential IDs by first appearance
             {
-                int16_t varMap[ExecutionParameters::MAX_KEY_SLOTS];
-                int16_t nV = 0;
-                int16_t nextN = 1;
+                NameId varMap[ExecutionParameters::MAX_KEY_SLOTS];
+                NameId nV = 0;
+                NameId nextN = 1;
                 // Start after nameId+negation (pos 2), step by 2 (varId, changeable)
-                for (int16_t p = 2; p < pos; p += 2) {
-                    int16_t raw = buf[p];
-                    int16_t norm = 0;
-                    for (int16_t v = 0; v < nV; ++v) {
+                for (NameId p = 2; p < pos; p += 2) {
+                    NameId raw = buf[p];
+                    NameId norm = 0;
+                    for (NameId v = 0; v < nV; ++v) {
                         if (varMap[v * 2] == raw) { norm = varMap[v * 2 + 1]; break; }
                     }
                     if (norm == 0) {
@@ -1283,8 +1378,8 @@ namespace gl {
     void ExpressionAnalyzer::generateEncodedRequestsStatic(
         const Memory& body,
         const HashMemory& intMemory,
-        int16_t stumpLen,
-        const Stump* stumps, int16_t stumpCount,
+        NameId stumpLen,
+        const Stump* stumps, NameId stumpCount,
         IntStmtView stumpSrc0,
         IntStmtView stumpSrc1,
         const SplitStumpRef& splitStump,
@@ -1295,7 +1390,7 @@ namespace gl {
         // This sub-part's bucket of stumps: the search below runs once per stump,
         // over one shared filtered statement list.
         const ExpressionStump* const bucket = splitStump.stumps;
-        const int16_t bucketCount = splitStump.count;
+        const NameId bucketCount = splitStump.count;
         assert(stumpLen >= 0 && stumpLen <= 2
             && "generateEncodedRequestsStatic: the obligatory stump is 0, 1 or 2 elements");
         assert((bucketCount == 0) == (bucket == nullptr)
@@ -1325,7 +1420,7 @@ namespace gl {
             && "generateEncodedRequestsStatic: an empty stump implies an unsplit LB");
 
         const NameMap& nm = body.nameMap;
-        const int16_t mainValidityId = NameMap::MAIN_ID;
+        const NameId mainValidityId = NameMap::MAIN_ID;
         const int maxKeyLen = intMemory.maxKeyLength;
         const int targetLen = std::max(0, maxKeyLen - stumpLen);
 
@@ -1343,15 +1438,15 @@ namespace gl {
         ScratchArena& genArena = genScratchArenas().forSlot(coreId);
         StaticRequestEmitter<Consumer> emitter(genArena, consumer);
 
-        int16_t buf[ExecutionParameters::MAX_KEY_SLOTS];
+        NameId buf[ExecutionParameters::MAX_KEY_SLOTS];
 
         // Copy an accepted key off the stack onto the arena, where a StaticRequest
         // can point at it for the whole task.
-        const auto arenaKey = [&genArena](const int16_t* src, int16_t len) -> int16_t* {
-            int16_t* dst = reinterpret_cast<int16_t*>(genArena.resolve(
-                genArena.alloc(len * static_cast<int32_t>(sizeof(int16_t)),
-                               static_cast<int32_t>(alignof(int16_t)))));
-            std::memcpy(dst, src, static_cast<std::size_t>(len) * sizeof(int16_t));
+        const auto arenaKey = [&genArena](const NameId* src, NameId len) -> NameId* {
+            NameId* dst = reinterpret_cast<NameId*>(genArena.resolve(
+                genArena.alloc(len * static_cast<int32_t>(sizeof(NameId)),
+                               static_cast<int32_t>(alignof(NameId)))));
+            std::memcpy(dst, src, static_cast<std::size_t>(len) * sizeof(NameId));
             return dst;
         };
 
@@ -1368,7 +1463,7 @@ namespace gl {
         DirtyState stumpsDirty = DirtyState::Clean;
         PagedVector<SortedStump> sortedStumps(&genArena, &stumpsDirty);
 
-        for (int16_t i = 0; i < stumpCount; ++i) {
+        for (NameId i = 0; i < stumpCount; ++i) {
             const IntEncodedExpr& e0 = stumpSrc0[stumps[i].idx0];
             SortedStump ss;
             if (stumpLen == 1) {
@@ -1389,7 +1484,7 @@ namespace gl {
         // ---------------------------------------------------------------
         // Phase 2: seed — a stump that is already a complete key is a request.
         // ---------------------------------------------------------------
-        for (int16_t i = 0; i < stumpCount; ++i) {
+        for (NameId i = 0; i < stumpCount; ++i) {
             if (!sortedStumps[i].valid) continue;
             // A seed request IS the obligatory stump, so it contains no split
             // stump and every sub-part of this rule-part would emit it. Deal them
@@ -1398,8 +1493,8 @@ namespace gl {
             if (splitStump.total > 1 && (i % splitStump.total) != splitStump.ordinal)
                 continue;
             const IntEncodedExpr* ptrs[2] = { nullptr, nullptr };
-            for (int16_t k = 0; k < stumpLen; ++k) ptrs[k] = &sortedStumps[i].sorted[k];
-            const int16_t len = makeIntNormalizedKeyFromEncoded(ptrs, stumpLen, buf,
+            for (NameId k = 0; k < stumpLen; ++k) ptrs[k] = &sortedStumps[i].sorted[k];
+            const NameId len = makeIntNormalizedKeyFromEncoded(ptrs, stumpLen, buf,
                 ExecutionParameters::MAX_KEY_SLOTS);
             // D-105/D-120: keep the seed only if an owner of the matched key is at a
             // comparable scope and its u_ literals are satisfiable.
@@ -1430,10 +1525,10 @@ namespace gl {
         // have done.
         // ---------------------------------------------------------------
         const IntStmtView allIntStmts(body.intEncodedStatements);
-        int16_t filteredIdx[8192];
+        NameId filteredIdx[8192];
         // An empty stump admits statements that are whole keys on their own; a
         // non-empty one admits only growable subkeys.
-        int16_t nFiltered = filterIntEncodedStatements(allIntStmts,
+        NameId nFiltered = filterIntEncodedStatements(allIntStmts,
             intMemory, nm, /*alsoAcceptFullKeys=*/stumpLen == 0, filteredIdx, 8192);
         // Name-only stable_sort. Emergence-order tie resolution is deterministic by
         // the stable_sort contract across MSVC STL and libstdc++ — cross-host
@@ -1441,7 +1536,7 @@ namespace gl {
         // tie order once the integration-side admission machinery closed the
         // asymmetry that had previously made the fold proof's search path
         // tie-order-sensitive.
-        std::stable_sort(filteredIdx, filteredIdx + nFiltered, [&](int16_t a, int16_t b) {
+        std::stable_sort(filteredIdx, filteredIdx + nFiltered, [&](NameId a, NameId b) {
             return compareSpans(nm.decodeView(allIntStmts[a].nameId),
                                 nm.decodeView(allIntStmts[b].nameId)) < 0;
         });
@@ -1456,50 +1551,50 @@ namespace gl {
 
         struct StackItem {
             int start;
-            int16_t allIdx[ExecutionParameters::MAX_EXPRESSIONS];
-            int16_t count;
-            int16_t validityId;
+            NameId allIdx[ExecutionParameters::MAX_EXPRESSIONS];
+            NameId count;
+            NameId validityId;
         };
 
         // The stump of the run in progress. Its elements ascend by (decoded name,
         // statement index), the same total order the filtered list is sorted into,
         // so the union with a candidate is one linear merge.
-        const int16_t* curIdx = nullptr;
-        int16_t curCount = 0;
-        int16_t curVid = mainValidityId;
+        const NameId* curIdx = nullptr;
+        NameId curCount = 0;
+        NameId curVid = mainValidityId;
 
-        const auto stmtLess = [&](int16_t a, int16_t b) {
+        const auto stmtLess = [&](NameId a, NameId b) {
             const int c = compareSpans(nm.decodeView(allIntStmts[a].nameId),
                                        nm.decodeView(allIntStmts[b].nameId));
             return (c != 0) ? (c < 0) : (a < b);
         };
-        const auto inSplitStump = [&](int16_t allIdx) {
-            for (int16_t k = 0; k < curCount; ++k)
+        const auto inSplitStump = [&](NameId allIdx) {
+            for (NameId k = 0; k < curCount; ++k)
                 if (curIdx[k] == allIdx) return true;
             return false;
         };
         // Merge the run's stump into `cand` (both ascending, disjoint — the search
         // skips the stump's own statements). Fills `outIdx` and `outPtrs`, returns
         // the union size. The unsplit path copies straight through.
-        const auto unionWithStump = [&](const int16_t* cand, int16_t candCount,
-                                        int16_t* outIdx,
-                                        const IntEncodedExpr** outPtrs) -> int16_t {
-            int16_t o = 0;
+        const auto unionWithStump = [&](const NameId* cand, NameId candCount,
+                                        NameId* outIdx,
+                                        const IntEncodedExpr** outPtrs) -> NameId {
+            NameId o = 0;
             if (curCount == 0) {
-                for (int16_t k = 0; k < candCount; ++k) outIdx[o++] = cand[k];
+                for (NameId k = 0; k < candCount; ++k) outIdx[o++] = cand[k];
             } else {
-                int16_t a = 0, b = 0;
+                NameId a = 0, b = 0;
                 while (a < curCount && b < candCount)
                     outIdx[o++] = stmtLess(curIdx[a], cand[b]) ? curIdx[a++]
                                                                : cand[b++];
                 while (a < curCount) outIdx[o++] = curIdx[a++];
                 while (b < candCount) outIdx[o++] = cand[b++];
             }
-            for (int16_t k = 0; k < o; ++k) outPtrs[k] = &allIntStmts[outIdx[k]];
+            for (NameId k = 0; k < o; ++k) outPtrs[k] = &allIntStmts[outIdx[k]];
             return o;
         };
 
-        int16_t unionIdx[ExecutionParameters::MAX_EXPRESSIONS];
+        NameId unionIdx[ExecutionParameters::MAX_EXPRESSIONS];
         const IntEncodedExpr* unionPtrs[ExecutionParameters::MAX_EXPRESSIONS];
 
         // The DFS frontier rides the byte-bump tier: grow on push, reclaim on
@@ -1509,8 +1604,8 @@ namespace gl {
 
         // One search per stump; one search with no stump when the LB is not
         // stump-split.
-        const int16_t runCount = (bucketCount > 0) ? bucketCount : 1;
-        for (int16_t si = 0; si < runCount; ++si) {
+        const NameId runCount = (bucketCount > 0) ? bucketCount : 1;
+        for (NameId si = 0; si < runCount; ++si) {
             const bool terminalOnly = bucketCount > 0
                 && bucket[si].terminalOnly != 0;
             if (bucketCount > 0) {
@@ -1528,7 +1623,7 @@ namespace gl {
                 // Its scope is the fold of its elements' scopes; the producer built
                 // it under that comparability, so the fold cannot fail.
                 curVid = mainValidityId;
-                for (int16_t k = 0; k < curCount; ++k) {
+                for (NameId k = 0; k < curCount; ++k) {
                     const IntEncodedExpr& se = allIntStmts[curIdx[k]];
                     assert((k == 0 || nm.comparable(curVid, se.validityId))
                         && "split stump elements must be pairwise scope-comparable");
@@ -1547,11 +1642,11 @@ namespace gl {
             // under subsets), and a stump the subkey map rejects cannot grow (every
             // superset of a non-subkey is a non-subkey).
             if (curCount > 0) {
-                for (int16_t k = 0; k < curCount; ++k)
+                for (NameId k = 0; k < curCount; ++k)
                     unionPtrs[k] = &allIntStmts[curIdx[k]];
                 if (!requestGatesPass(unionPtrs, curCount, body, mainValidityId))
                     continue;
-                const int16_t keyLen = makeIntNormalizedKeyFromEncoded(unionPtrs,
+                const NameId keyLen = makeIntNormalizedKeyFromEncoded(unionPtrs,
                     curCount, buf, ExecutionParameters::MAX_KEY_SLOTS);
                 const bool subOk = ownerKeyAccepts(intMemory.normalizedEncodedSubkeys,
                                                    buf, keyLen, nm, unionPtrs, curCount);
@@ -1560,7 +1655,7 @@ namespace gl {
                                              unionPtrs, curCount)) {
                     BaseCandidate bc;
                     std::memcpy(bc.allIdx, curIdx,
-                        static_cast<std::size_t>(curCount) * sizeof(int16_t));
+                        static_cast<std::size_t>(curCount) * sizeof(NameId));
                     bc.count = curCount;
                     bc.validityId = curVid;
                     baseCandidates.push_back(bc);
@@ -1598,7 +1693,7 @@ namespace gl {
                     // unsplit (I-76); under split it never observes a sibling's stop.
                     if (!consumer.canAccept()) return;
 
-                    const int16_t allIdx = filteredIdx[i];
+                    const NameId allIdx = filteredIdx[i];
                     // One copy of each expression: the stump is already in the union,
                     // so a candidate never repeats it. This is what makes the union a
                     // plain merge of two disjoint ascending runs.
@@ -1606,22 +1701,22 @@ namespace gl {
                     const IntEncodedExpr& ie = allIntStmts[allIdx];
 
                     if (!nm.comparable(top.validityId, ie.validityId)) continue;
-                    const int16_t newValidityId = nm.deeperOf(top.validityId, ie.validityId);
+                    const NameId newValidityId = nm.deeperOf(top.validityId, ie.validityId);
 
                     // The growing candidate itself, then the union it is PROBED as.
                     // The stump is attached here and dropped again; it becomes part
                     // of the candidate only where the record probe accepts (below).
-                    int16_t cand[ExecutionParameters::MAX_EXPRESSIONS];
-                    std::memcpy(cand, top.allIdx, top.count * sizeof(int16_t));
+                    NameId cand[ExecutionParameters::MAX_EXPRESSIONS];
+                    std::memcpy(cand, top.allIdx, top.count * sizeof(NameId));
                     cand[top.count] = allIdx;
-                    const int16_t newCount = static_cast<int16_t>(top.count + 1);
-                    const int16_t unionCount =
+                    const NameId newCount = static_cast<NameId>(top.count + 1);
+                    const NameId unionCount =
                         unionWithStump(cand, newCount, unionIdx, unionPtrs);
 
                     // The map-independent request-shape gates, then the key. Both
                     // maps below are probed with this one key.
                     if (!requestGatesPass(unionPtrs, unionCount, body, mainValidityId)) continue;
-                    const int16_t keyLen = makeIntNormalizedKeyFromEncoded(unionPtrs, unionCount,
+                    const NameId keyLen = makeIntNormalizedKeyFromEncoded(unionPtrs, unionCount,
                         buf, ExecutionParameters::MAX_KEY_SLOTS);
 
                     // Growth probe: may this candidate be extended? These are the
@@ -1645,7 +1740,7 @@ namespace gl {
                             // Now the stump joins permanently: the base candidate is
                             // the union, and the merge appends the obligatory stump.
                             BaseCandidate bc;
-                            std::memcpy(bc.allIdx, unionIdx, unionCount * sizeof(int16_t));
+                            std::memcpy(bc.allIdx, unionIdx, unionCount * sizeof(NameId));
                             bc.count = unionCount;
                             bc.validityId = newValidityId;
                             baseCandidates.push_back(bc);
@@ -1655,7 +1750,7 @@ namespace gl {
                     if (subOk && unionCount < targetLen) {
                         StackItem next;
                         next.start = i + 1;
-                        std::memcpy(next.allIdx, cand, newCount * sizeof(int16_t));
+                        std::memcpy(next.allIdx, cand, newCount * sizeof(NameId));
                         next.count = newCount;
                         next.validityId = newValidityId;
                         stack.push(next);
@@ -1673,22 +1768,22 @@ namespace gl {
             RT_REFRESH_HERE();
             const BaseCandidate& base = baseCandidates[bi];
 
-            for (int16_t si = 0; si < stumpCount; ++si) {
+            for (NameId si = 0; si < stumpCount; ++si) {
                 if (!sortedStumps[si].valid) continue;
                 const IntEncodedExpr* stump[2] = { nullptr, nullptr };
-                for (int16_t k = 0; k < stumpLen; ++k) stump[k] = &sortedStumps[si].sorted[k];
+                for (NameId k = 0; k < stumpLen; ++k) stump[k] = &sortedStumps[si].sorted[k];
 
                 // The stump's own elements are comparable (checked in phase 1), so
                 // deeperOf over them is the stump's scope.
-                int16_t stumpVid = stump[0]->validityId;
-                for (int16_t k = 1; k < stumpLen; ++k)
+                NameId stumpVid = stump[0]->validityId;
+                for (NameId k = 1; k < stumpLen; ++k)
                     stumpVid = nm.deeperOf(stumpVid, stump[k]->validityId);
                 if (!nm.comparable(base.validityId, stumpVid)) continue;
 
                 bool dup = false;
-                for (int16_t k = 0; k < base.count && !dup; ++k) {
+                for (NameId k = 0; k < base.count && !dup; ++k) {
                     const IntEncodedExpr& bIe = allIntStmts[base.allIdx[k]];
-                    for (int16_t t = 0; t < stumpLen; ++t) {
+                    for (NameId t = 0; t < stumpLen; ++t) {
                         if (bIe.originalId == stump[t]->originalId
                             && nm.comparable(bIe.validityId, stump[t]->validityId)) {
                             dup = true;
@@ -1704,10 +1799,10 @@ namespace gl {
                 // the tie order does not decide hit/miss — but it is observable
                 // downstream (dedup bytes, firing-check probe). Do not reorder.
                 const IntEncodedExpr* merged[ExecutionParameters::MAX_EXPRESSIONS + 2];
-                int16_t mc = 0;
-                for (int16_t k = 0; k < base.count; ++k)
+                NameId mc = 0;
+                for (NameId k = 0; k < base.count; ++k)
                     merged[mc++] = &allIntStmts[base.allIdx[k]];
-                for (int16_t k = 0; k < stumpLen; ++k)
+                for (NameId k = 0; k < stumpLen; ++k)
                     merged[mc++] = stump[k];
                 std::stable_sort(merged, merged + mc,
                     [&](const IntEncodedExpr* a, const IntEncodedExpr* b) {
@@ -1759,11 +1854,11 @@ namespace gl {
         // The statement universe, pruned to this rule-part's rules by the
         // partition filter inside ownerKeyAccepts, then name-sorted exactly as
         // the search sorts it (ties keep ascending statement index).
-        int16_t filteredIdx[8192];
-        const int16_t nFiltered = filterIntEncodedStatements(allIntStmts,
+        NameId filteredIdx[8192];
+        const NameId nFiltered = filterIntEncodedStatements(allIntStmts,
             mem, nm, /*alsoAcceptFullKeys=*/false, filteredIdx, 8192);
         if (nFiltered == 0) return 0;
-        std::stable_sort(filteredIdx, filteredIdx + nFiltered, [&](int16_t a, int16_t b) {
+        std::stable_sort(filteredIdx, filteredIdx + nFiltered, [&](NameId a, NameId b) {
             return compareSpans(nm.decodeView(allIntStmts[a].nameId),
                                 nm.decodeView(allIntStmts[b].nameId)) < 0;
         });
@@ -1772,13 +1867,13 @@ namespace gl {
         // current one. PAGE tier of this slot's gen scratch arena, released with
         // the task.
         struct Node {
-            int16_t pos[ExecutionParameters::MAX_EXPRESSIONS];
-            int16_t count;
-            int16_t validityId;
+            NameId pos[ExecutionParameters::MAX_EXPRESSIONS];
+            NameId count;
+            NameId validityId;
         };
         DirtyState nodesDirty = DirtyState::Clean;
         PagedVector<Node> nodes(&genArena, &nodesDirty);
-        for (int16_t i = 0; i < nFiltered; ++i) {
+        for (NameId i = 0; i < nFiltered; ++i) {
             Node n;
             n.pos[0] = i;
             n.count = 1;
@@ -1788,15 +1883,15 @@ namespace gl {
         int32_t levelBegin = 0;
         int32_t levelEnd = nodes.size();
 
-        const int16_t maxStumpLen = static_cast<int16_t>(std::min<int>(
+        const NameId maxStumpLen = static_cast<NameId>(std::min<int>(
             ExecutionParameters::MAX_EXPRESSIONS, mem.maxKeyLength));
 
-        int16_t buf[ExecutionParameters::MAX_KEY_SLOTS];
+        NameId buf[ExecutionParameters::MAX_KEY_SLOTS];
         const IntEncodedExpr* ptrs[ExecutionParameters::MAX_EXPRESSIONS];
 
         // Build the key of a level node into buf/ptrs; returns the key length.
-        const auto keyOf = [&](const Node& n) -> int16_t {
-            for (int16_t k = 0; k < n.count; ++k)
+        const auto keyOf = [&](const Node& n) -> NameId {
+            for (NameId k = 0; k < n.count; ++k)
                 ptrs[k] = &allIntStmts[filteredIdx[n.pos[k]]];
             return makeIntNormalizedKeyFromEncoded(ptrs, n.count, buf,
                 ExecutionParameters::MAX_KEY_SLOTS);
@@ -1806,7 +1901,7 @@ namespace gl {
             ExpressionStump s{};
             s.count = n.count;
             s.terminalOnly = terminalOnly;
-            for (int16_t k = 0; k < n.count; ++k)
+            for (NameId k = 0; k < n.count; ++k)
                 s.allIdx[k] = filteredIdx[n.pos[k]];
             out.appendRecord(s);
         };
@@ -1818,17 +1913,17 @@ namespace gl {
             const int32_t nextBegin = nodes.size();
             for (int32_t ni = levelBegin; ni < levelEnd; ++ni) {
                 const Node p = nodes[ni];
-                for (int16_t j = static_cast<int16_t>(p.pos[p.count - 1] + 1);
+                for (NameId j = static_cast<NameId>(p.pos[p.count - 1] + 1);
                      j < nFiltered; ++j) {
                     const IntEncodedExpr& ie = allIntStmts[filteredIdx[j]];
                     if (!nm.comparable(p.validityId, ie.validityId)) continue;
-                    for (int16_t k = 0; k < p.count; ++k)
+                    for (NameId k = 0; k < p.count; ++k)
                         ptrs[k] = &allIntStmts[filteredIdx[p.pos[k]]];
                     ptrs[p.count] = &ie;
-                    const int16_t newCount = static_cast<int16_t>(p.count + 1);
+                    const NameId newCount = static_cast<NameId>(p.count + 1);
                     if (!requestGatesPass(ptrs, newCount, body, NameMap::MAIN_ID))
                         continue;
-                    const int16_t keyLen = makeIntNormalizedKeyFromEncoded(ptrs,
+                    const NameId keyLen = makeIntNormalizedKeyFromEncoded(ptrs,
                         newCount, buf, ExecutionParameters::MAX_KEY_SLOTS);
                     // A stump survives the filter — nothing more is asked of it.
                     if (!ownerKeyAccepts(mem.normalizedEncodedSubkeys, buf, keyLen,
@@ -1851,7 +1946,7 @@ namespace gl {
             // remains the sole owner of all larger base candidates.
             for (int32_t ni = levelBegin; ni < levelEnd; ++ni) {
                 const Node& p = nodes[ni];
-                const int16_t keyLen = keyOf(p);
+                const NameId keyLen = keyOf(p);
                 const bool recordable =
                     ownerKeyAccepts(mem.normalizedEncodedSubkeysMinusOne, buf,
                                     keyLen, nm, ptrs, p.count)
@@ -1972,15 +2067,15 @@ namespace gl {
         // of it is reclaimed in one popTo at the single function exit; no
         // early return follows the mark.
         ScratchArena& genArena = genScratchArenas().forSlot(coreId);
-        const int16_t reqCount = req.count;
+        const NameId reqCount = req.count;
         const int iteration = req.maxIteration + 1;
         const IntNormalizedKey& tple = req.normalizedKey;
 
         // 1. Validity check using int fields
-        const int16_t mainValidityId = NameMap::MAIN_ID;
-        int16_t consensusValidityId = mainValidityId;
-        for (int16_t i = 0; i < reqCount; ++i) {
-            const int16_t vid = req.intExprs[i]->validityId;
+        const NameId mainValidityId = NameMap::MAIN_ID;
+        NameId consensusValidityId = mainValidityId;
+        for (NameId i = 0; i < reqCount; ++i) {
+            const NameId vid = req.intExprs[i]->validityId;
             if (!nm.comparable(consensusValidityId, vid)) {
                 return;
             }
@@ -1993,7 +2088,7 @@ namespace gl {
         const StrSpan validityView = nm.decodeView(consensusValidityId);
 
         if (containsSpan(validityView, StrSpan("_hypo_", 6))) {
-            for (int16_t i = 0; i < reqCount; ++i) {
+            for (NameId i = 0; i < reqCount; ++i) {
                 if (req.intExprs[i]->validityId != consensusValidityId) {
                     if (!req.intExprs[i]->isAnchor) {
                         return;
@@ -2012,16 +2107,16 @@ namespace gl {
         // inserts the int id into intValidityNamesToFilter.
         for (int32_t ancK = 0, ancN = nm.ancLen(consensusValidityId);
              ancK < ancN; ++ancK) {
-            const int16_t anc = nm.ancAt(consensusValidityId, ancK);
+            const NameId anc = nm.ancAt(consensusValidityId, ancK);
             if (memoryBlock.intValidityNamesToFilter.contains(anc)) return;
         }
 
         // 2. productsOfRecursion check using int fields
         int algebraicCounter = 0;
         const auto& prodRecIds = memoryBlock.overallHashMemory.productsOfRecursionIds;
-        for (int16_t i = 0; i < reqCount; ++i) {
+        for (NameId i = 0; i < reqCount; ++i) {
             const IntEncodedExpr& ex = *req.intExprs[i];
-            for (int16_t a = 0; a < ex.arity; ++a) {
+            for (NameId a = 0; a < ex.arity; ++a) {
                 if (ex.argIteration[a] > -1) {
                     if (!prodRecIds.contains(ex.argFullId[a])) {
                         algebraicCounter++;
@@ -2041,11 +2136,11 @@ namespace gl {
         // membership in the candidate loop below.
         constexpr int kMaxIntAllArgs =
             (ExecutionParameters::MAX_EXPRESSIONS + 2) * ExecutionParameters::MAX_ARITY;
-        int16_t intAllArgs[kMaxIntAllArgs];
+        NameId intAllArgs[kMaxIntAllArgs];
         int intAllArgsCount = 0;
-        for (int16_t i = 0; i < reqCount; ++i) {
+        for (NameId i = 0; i < reqCount; ++i) {
             const IntEncodedExpr& ex = *req.intExprs[i];
-            for (int16_t a = 0; a < ex.arity; ++a) {
+            for (NameId a = 0; a < ex.arity; ++a) {
                 assert(intAllArgsCount < kMaxIntAllArgs);
                 intAllArgs[intAllArgsCount++] = ex.argFullId[a];
             }
@@ -2064,7 +2159,7 @@ namespace gl {
         const auto genReqMark = genArena.cursor();
         int32_t levelLvIds[ExecutionParameters::MAX_EXPRESSIONS + 2];
         int combinedRawN = 0;
-        for (int16_t i = 0; i < reqCount; ++i) {
+        for (NameId i = 0; i < reqCount; ++i) {
             levelLvIds[i] = memoryBlock.intStatementLevelsMap.lookup(
                 packStatementKey(req.intExprs[i]->originalId,
                                  req.intExprs[i]->validityId));
@@ -2078,7 +2173,7 @@ namespace gl {
                 genArena.alloc(combinedRawN * static_cast<int32_t>(sizeof(int)),
                                static_cast<int32_t>(alignof(int)))));
             int w = 0;
-            for (int16_t i = 0; i < reqCount; ++i) {
+            for (NameId i = 0; i < reqCount; ++i) {
                 if (levelLvIds[i] == 0) continue;
                 const int32_t rl = memoryBlock.intStatementLevelsMap.runLen(levelLvIds[i]);
                 for (int32_t j = 0; j < rl; ++j)
@@ -2094,9 +2189,9 @@ namespace gl {
         // normalized key (tpleNorm). The reverse index answers the run-contains
         // half in ONE hash probe (I-154), replacing the
         // former O(keys) forward scan + per-candidate O(run) byte-peek recheck.
-        // Surviving ids are enumerated in std::set<int16_t> lex order (R1) via a
+        // Surviving ids are enumerated in std::set<NameId> lex order (R1) via a
         // decoded-lex INDEX: int16SetKeyLexCompare is the byte-for-byte twin of
-        // std::set<int16_t>::operator< (signed element lex, shorter-is-prefix --
+        // std::set<NameId>::operator< (signed element lex, shorter-is-prefix --
         // NOT the count-prefixed Int16SetKey byte order, which compares the
         // count field first). raMap keys are pairwise distinct AND the reverse
         // index yields each owner once -> a tie-free total order -> the identical
@@ -2109,14 +2204,14 @@ namespace gl {
         // BOTH the reverse-index probe key AND the stored blob bytes the reverse
         // index was built from (Codec<NormKey>::serialize == encode), so the
         // reverse answer is EXACTLY {key id : that key's run contains tpleNorm}.
-        int16_t tpleProbe[2 + ExecutionParameters::MAX_KEY_SLOTS];
+        NameId tpleProbe[2 + ExecutionParameters::MAX_KEY_SLOTS];
         assert(2 + tple.length <= 2 + ExecutionParameters::MAX_KEY_SLOTS);
         tpleProbe[0] = tple.numberExpressions;
         tpleProbe[1] = tple.length;
         std::memcpy(tpleProbe + 2, tple.data,
-            static_cast<std::size_t>(tple.length) * sizeof(int16_t));
+            static_cast<std::size_t>(tple.length) * sizeof(NameId));
         const int32_t tpleProbeLen =
-            (2 + tple.length) * static_cast<int32_t>(sizeof(int16_t));
+            (2 + tple.length) * static_cast<int32_t>(sizeof(NameId));
 
         // Passing candidate ids on the PAGE tier -- the run-contains set is
         // unbounded at Gauss scale, never a stack array. Freed by candIds' own
@@ -2130,8 +2225,8 @@ namespace gl {
                 // Both branches are defined outcomes (keep / drop), not a failure
                 // fallback.
                 const StrSpan k = raMap.keyAt(kid);
-                const int16_t cn = int16SetKeyCount(k);
-                for (int16_t a = 0; a < cn; ++a) {
+                const NameId cn = int16SetKeyCount(k);
+                for (NameId a = 0; a < cn; ++a) {
                     if (!std::binary_search(intAllArgs, intAllArgs + intAllArgsCount,
                                             int16SetKeyIdAt(k, a))) {
                         return;   // not a subset -- drop this owner
@@ -2139,7 +2234,7 @@ namespace gl {
                 }
                 candIds.push_back(kid);
             });
-        // Decoded-lex index (std::set<int16_t> order == R1) on the gen-scratch
+        // Decoded-lex index (std::set<NameId> order == R1) on the gen-scratch
         // byte-bump tier -- coexists with the page-tier candIds (independent
         // substrates). Reclaimed by the function-exit popTo(genReqMark).
         const int32_t candN = candIds.size();
@@ -2166,18 +2261,18 @@ namespace gl {
             // makeIntNormalizedKeyFromEncodedWithMap; an edge materialization per
             // HIT, not the per-candidate heap the scan above retired.
             const Int16SetKey candKey = raMap.decodeKey(kid);
-            const std::set<int16_t> intSt(candKey.ids.begin(), candKey.ids.end());
+            const std::set<NameId> intSt(candKey.ids.begin(), candKey.ids.end());
 
-            int16_t buf[ExecutionParameters::MAX_KEY_SLOTS];
-            int16_t reverseMap[ExecutionParameters::MAX_KEY_SLOTS];
+            NameId buf[ExecutionParameters::MAX_KEY_SLOTS];
+            NameId reverseMap[ExecutionParameters::MAX_KEY_SLOTS];
             std::memset(reverseMap, 0, sizeof(reverseMap));
-            int16_t numNormVars = 0;
+            NameId numNormVars = 0;
 
             // Build pointer array from request
             const IntEncodedExpr* reqExprs[ExecutionParameters::MAX_EXPRESSIONS];
-            for (int16_t i = 0; i < reqCount; ++i) reqExprs[i] = req.intExprs[i];
+            for (NameId i = 0; i < reqCount; ++i) reqExprs[i] = req.intExprs[i];
 
-            const int16_t len = makeIntNormalizedKeyFromEncodedWithMap(
+            const NameId len = makeIntNormalizedKeyFromEncodedWithMap(
                 reqExprs, reqCount, intSt,
                 buf, ExecutionParameters::MAX_KEY_SLOTS,
                 reverseMap, numNormVars);
@@ -2186,15 +2281,15 @@ namespace gl {
             // layout: int16 numberExpressions, int16 length, length x int16
             // data) and raw-StrSpan lookup -- no per-probe heap key on the
             // engine's hottest path.
-            int16_t probeBuf[2 + ExecutionParameters::MAX_KEY_SLOTS];
+            NameId probeBuf[2 + ExecutionParameters::MAX_KEY_SLOTS];
             probeBuf[0] = reqCount;
             probeBuf[1] = len;
             std::memcpy(probeBuf + 2, buf,
-                static_cast<std::size_t>(len) * sizeof(int16_t));
+                static_cast<std::size_t>(len) * sizeof(NameId));
             const int32_t encId =
                 memoryBlock.overallHashMemory.encodedMap.lookup(
                     StrSpan(reinterpret_cast<const char*>(probeBuf),
-                            static_cast<int32_t>((2 + len) * sizeof(int16_t))));
+                            static_cast<int32_t>((2 + len) * sizeof(NameId))));
             if (encId == 0) {
                 continue;
             }
@@ -2210,7 +2305,7 @@ namespace gl {
             // replaceKeysScratch's greedy-longest dispatch is KeyTrie-identical,
             // so the substitution outcome is byte-equal.
             StrReplacement brPairs[ExecutionParameters::MAX_KEY_SLOTS];
-            for (int16_t v = 1; v <= numNormVars; ++v) {
+            for (NameId v = 1; v <= numNormVars; ++v) {
                 char digits[8];
                 const int digitLen = std::snprintf(
                     digits, sizeof(digits), "%d", static_cast<int>(v));
@@ -2276,7 +2371,7 @@ namespace gl {
             int32_t premOrder[ExecutionParameters::MAX_EXPRESSIONS + 2];
             assert(reqCount <= ExecutionParameters::MAX_EXPRESSIONS + 2
                 && "checkLocalEncodedMemoryStatic: premise count exceeds cap");
-            for (int16_t i = 0; i < reqCount; ++i) premOrder[i] = i;
+            for (NameId i = 0; i < reqCount; ++i) premOrder[i] = i;
             std::sort(premOrder, premOrder + reqCount, [&](int32_t a, int32_t b) {
                 const int c = compareSpans(nm.decodeView(req.intExprs[a]->originalId),
                                            nm.decodeView(req.intExprs[b]->originalId));
@@ -2311,22 +2406,53 @@ namespace gl {
                 const ScratchString rplScratch2 =
                     replaceUSubstringsScratch(scratchArena, StrSpan(rplScratch1));
 
-                if (!lmv.isMarker()) {
-                    // Cross-scope validity check (D-55): comparability, not
-                    // strict equality — a rule registered at an ancestor scope
-                    // of the consensus (e.g. K mutual-exclusion implications at
-                    // the OR's parent scope, fact at an OR-introduction subproof
-                    // descendant) is a legitimate firing. Mirrors the
-                    // request-generation-side rule documented in
-                    // `02_hash_engine.md` §Locality semantics.
-                    // The rule's scope id was minted at install and rides on
-                    // the LMV — no per-firing lookup (D-116's read-only burst
-                    // is preserved; this is not even a read of the NameMap).
-                    const int16_t lmvVid = lmv.validityId();
-                    if (!nm.comparable(lmvVid, consensusValidityId)) {
-                        continue;
-                    }
+                // Cross-scope validity check (D-55): comparability, not
+                // strict equality — a rule registered at an ancestor scope
+                // of the consensus (e.g. K mutual-exclusion implications at
+                // the OR's parent scope, fact at an OR-introduction subproof
+                // descendant) is a legitimate firing. Mirrors the
+                // request-generation-side rule documented in
+                // `02_hash_engine.md` §Locality semantics.
+                // The rule's scope id was minted at install and rides on
+                // the LMV — no per-firing lookup (D-116's read-only burst
+                // is preserved; this is not even a read of the NameMap).
+                const NameId lmvVid = lmv.validityId();
+                if (!nm.comparable(lmvVid, consensusValidityId)) {
+                    continue;
+                }
 
+                // I-38: the deposit scope is deeperOf over ALL
+                // constituents — the premises AND the rule. A rule deeper
+                // than the premise consensus (e.g. a K rule of an
+                // or-statement living at a branch scope, fired on main
+                // facts) deposits at the RULE's scope: its knowledge is
+                // conditioned on that branch context and must never leak
+                // into the shallower consensus. The comparability check
+                // above guarantees the pair has a deeperOf. Shared by the
+                // head-record and marker-staging branches below.
+                const NameId hitValidityId =
+                    nm.deeperOf(consensusValidityId, lmvVid);
+                const StrSpan hitValidityView =
+                    (hitValidityId == consensusValidityId)
+                        ? validityView : nm.decodeView(hitValidityId);
+                if (hitValidityId != consensusValidityId) {
+                    // The closed-scope wipe filter ran on the consensus
+                    // ancestors only (per-request); a deeper deposit
+                    // target must bounce on the same filter.
+                    bool hitFiltered = false;
+                    for (int32_t ancK = 0,
+                         ancN = nm.ancLen(hitValidityId);
+                         ancK < ancN; ++ancK) {
+                        if (memoryBlock.intValidityNamesToFilter.contains(
+                                nm.ancAt(hitValidityId, ancK))) {
+                            hitFiltered = true;
+                            break;
+                        }
+                    }
+                    if (hitFiltered) continue;
+                }
+
+                if (!lmv.isMarker()) {
                     // Per-firing level set: the request's combinedLevels plus
                     // this rule's own levels, sorted-unique on the gen-scratch
                     // byte-bump tier, then sealed onto the page set as the
@@ -2355,7 +2481,7 @@ namespace gl {
                     // record fill below: the implication source, then the
                     // hit's sorted premises (sealed once per hit, lazily).
                     if (!premisesSealed) {
-                        for (int16_t i = 0; i < reqCount; ++i) {
+                        for (NameId i = 0; i < reqCount; ++i) {
                             const IntEncodedExpr* pe = req.intExprs[premOrder[i]];
                             sealedPremises[sealedPremisesCount++] =
                                 SealedExpressionWithValidity{
@@ -2365,7 +2491,13 @@ namespace gl {
                         premisesSealed = true;
                     }
 
-                    bool doNotDisintegrate = (lmv.justification() == RuleJustification::integration);
+                    // Rule-intrinsic half of the disintegration decision:
+                    // derived once at install (integration justification /
+                    // or-intro shape => not allowed,
+                    // D-241). The D-29
+                    // clauses below are the firing-context half and can only
+                    // further restrict.
+                    bool doNotDisintegrate = !lmv.disintegrationAllowed();
                     // D-29 two-part disintegration gate (only active when
                     // incubator_mode && !ban_disintegration — the SE2 /
                     // FTA-rung-1 combination):
@@ -2405,7 +2537,7 @@ namespace gl {
                             // (the premOrder index sorts the premises for the
                             // origin tail only).
                             bool hasLocalPremise = false;
-                            for (int16_t i = 0; i < reqCount; ++i) {
+                            for (NameId i = 0; i < reqCount; ++i) {
                                 if (memoryBlock.intLocalEncodedStatementsSet.contains(
                                         packStatementKey(req.intExprs[i]->originalId,
                                                          req.intExprs[i]->validityId))) {
@@ -2418,8 +2550,8 @@ namespace gl {
                     }
 
 
-                    bool allGood = (consensusValidityId == NameMap::MAIN_ID);
-                    for (int16_t i = 0; i < reqCount; ++i) {
+                    bool allGood = (hitValidityId == NameMap::MAIN_ID);
+                    for (NameId i = 0; i < reqCount; ++i) {
                         if (!allowedForMail(nm.decodeView(req.intExprs[i]->originalId), memoryBlock)) {
                             allGood = false;
                         }
@@ -2445,12 +2577,12 @@ namespace gl {
                         // Span probe over the value-scratch bytes — the
                         // NameMap span lookup overload is non-minting, so no
                         // per-firing heap std::string on this hot path.
-                        const int16_t origId =
+                        const NameId origId =
                             memoryBlock.nameMap.lookup(StrSpan(rplScratch2));
-                        const int16_t valId  = consensusValidityId;
+                        const NameId valId  = hitValidityId;
                         for (int32_t ancK = 0, ancN = memoryBlock.nameMap.ancLen(valId);
                              ancK < ancN; ++ancK) {
-                            const int16_t anc = memoryBlock.nameMap.ancAt(valId, ancK);
+                            const NameId anc = memoryBlock.nameMap.ancAt(valId, ancK);
                             const StatementFlags* kf = memoryBlock.intKnownStatements.find(StatementKey{ origId, anc });
                             if (kf != nullptr && kf->known) {
                                 alreadyKnown = true;
@@ -2473,7 +2605,7 @@ namespace gl {
                         rec.isMarker = false;
                         rec.rplExpr2 = seal(StrSpan(rplScratch2));
                         rec.validityName =
-                            seal(validityView);
+                            seal(hitValidityView);
                         rec.levels = levelsSpan;
                         rec.originTag = seal(StrSpan("implication", 11));
                         // Origin run: the implication source, then the hit's
@@ -2494,6 +2626,7 @@ namespace gl {
                         rec.allowOrDisintegration = lmv.productOfDisintegration();
                         rec.allGood = allGood;
                         rec.alreadyKnown = alreadyKnown;
+                        rec.iteration = iteration;
                         sealedPages.appendRecord(rec);
                     }
                 }
@@ -2507,7 +2640,7 @@ namespace gl {
                     // Anywhere else (main / hypo / non-or boundary) the
                     // original purity gate stands, to prevent runaway fan-out.
                     const bool inOrBranch =
-                        containsSpan(validityView,
+                        containsSpan(hitValidityView,
                                      StrSpan("_boundary_orint_", 16));
                     if (!pure && !inOrBranch) {
                         continue;
@@ -2574,7 +2707,7 @@ namespace gl {
                                     sealedPages, remBuf, uniq);
                         }
                     }
-                    admv.standardMaxAdmissionDepth = parameters.standardMaxAdmissionDepth;
+                    admv.standardMaxAdmissionDepth = parameters.maxIterationNumberVariable;
                     admv.standardMaxSecondaryNumber = parameters.standardMaxSecondaryNumber;
                     admv.flag = false;
 
@@ -2587,12 +2720,12 @@ namespace gl {
 
                     // Non-minting probe — this runs in the phase-2 parallel
                     // staging path (I-83); a never-interned template was
-                    // never consumed. validityView is the decodeView of
-                    // consensusValidityId (mint-free path, cannot dangle).
+                    // never consumed. hitValidityView is a decodeView on the
+                    // mint-free burst path, so it cannot dangle.
                     {
-                        int32_t consumedPk = 0;
+                        int64_t consumedPk = 0;
                         if (lookupTemplateKey(memoryBlock.templateInterner, memoryBlock.nameMap,
-                                              StrSpan(rplScratch2), validityView, consumedPk)
+                                              StrSpan(rplScratch2), hitValidityView, consumedPk)
                             && memoryBlock.overallHashMemory.consumedAdmissionKeys.contains(consumedPk)) {
                             continue;
                         }
@@ -2649,7 +2782,7 @@ namespace gl {
                         rec.isMarker = true;
                         rec.rplExpr2 = seal(StrSpan(rplScratch2));
                         rec.validityName =
-                            seal(validityView);
+                            seal(hitValidityView);
                         // Bare args are bounded by MAX_ARITY, so seal them
                         // through a stack buffer onto the page set as one span.
                         SealedString markerArgsBuf[ExecutionParameters::MAX_ARITY];
@@ -2903,7 +3036,8 @@ namespace gl {
                     setInternalDisintegrationSignal(
                         memoryBlock.sameIterationInternalMail,
                         memoryBlock.nameMap, expr, validity,
-                        rec.doNotDisintegrate, rec.allowOrDisintegration);
+                        rec.doNotDisintegrate, rec.allowOrDisintegration,
+                        rec.iteration);
                 }
             } else {
                 // Marker deposits stay sealed end-to-end: the staging
@@ -2997,7 +3131,7 @@ namespace gl {
             // sweep, so they stay valid across the whole record replay.
             const StrSpan keyOriginal(rec.key.original);
             const StrSpan keyValidity(rec.key.validityName);
-            const int32_t recPk = mintTemplateKey(memoryBlock.templateInterner,
+            const int64_t recPk = mintTemplateKey(memoryBlock.templateInterner,
                 memoryBlock.nameMap, keyOriginal, keyValidity);
 
             // (1) Consumed-key gate, re-applied per record: an earlier record's
@@ -3095,8 +3229,11 @@ namespace gl {
                 assert((i == 0 || compareSpans(args[i - 1], args[i]) < 0)
                     && "deferred integration args not sorted-unique — producer contract broken");
             }
+            // Marker replays are statement-driven — no owning goal, so no
+            // goal-carrying payload (the replay's mints nest under scopes the
+            // admission machinery already owns, or stay bare on main).
             prepareIntegration(StrSpan(rec.expression), args, n,
-                               memoryBlock, StrSpan(rec.validityName));
+                               memoryBlock, StrSpan(rec.validityName), StrSpan());
         }
     }
 
@@ -3126,25 +3263,25 @@ namespace gl {
     /// @pre  `first` and `second` live for the duration of the call.
     /// @post `outStumps[0..return-1]` contains the surviving pairs.
     /// @see `generateEncodedRequestsStatic` — the consumer, at stump length 2.
-    int16_t ExpressionAnalyzer::makeMandatoryEncodedStatementLists2Static(
+    NameId ExpressionAnalyzer::makeMandatoryEncodedStatementLists2Static(
         const Memory& body, const HashMemory& mem,
         IntStmtView first,
         IntStmtView second,
-        Stump* outStumps, int16_t maxOut)
+        Stump* outStumps, NameId maxOut)
     {
         RT_SCOPE_HERE("MAKE_MANDATORY_LISTS_2_STATIC");
         if (first.empty() || second.empty()) return 0;
 
         // Filter both layers
-        int16_t filt1Buf[4096], filt2Buf[4096];
-        int16_t nF1 = filterIntEncodedStatements(first, mem, body.nameMap, false, filt1Buf, 4096);
-        int16_t nF2 = filterIntEncodedStatements(second, mem, body.nameMap, false, filt2Buf, 4096);
+        NameId filt1Buf[4096], filt2Buf[4096];
+        NameId nF1 = filterIntEncodedStatements(first, mem, body.nameMap, false, filt1Buf, 4096);
+        NameId nF2 = filterIntEncodedStatements(second, mem, body.nameMap, false, filt2Buf, 4096);
 
         // Sort by originalId
-        auto sortByOriginal = [](int16_t* arr, int16_t n, IntStmtView stmts) {
-            for (int16_t i = 1; i < n; ++i) {
-                int16_t key = arr[i];
-                int16_t j = i - 1;
+        auto sortByOriginal = [](NameId* arr, NameId n, IntStmtView stmts) {
+            for (NameId i = 1; i < n; ++i) {
+                NameId key = arr[i];
+                NameId j = i - 1;
                 while (j >= 0 && stmts[arr[j]].originalId > stmts[key].originalId) {
                     arr[j + 1] = arr[j];
                     --j;
@@ -3156,14 +3293,14 @@ namespace gl {
         sortByOriginal(filt2Buf, nF2, second);
 
         // "main" ID is guaranteed to be NameMap::MAIN_ID (== 1).
-        int16_t mainId = NameMap::MAIN_ID;
+        NameId mainId = NameMap::MAIN_ID;
 
-        int16_t nOut = 0;
-        int16_t buf[ExecutionParameters::MAX_KEY_SLOTS];
+        NameId nOut = 0;
+        NameId buf[ExecutionParameters::MAX_KEY_SLOTS];
 
-        for (int16_t i = 0; i < nF1 && nOut < maxOut; ++i) {
+        for (NameId i = 0; i < nF1 && nOut < maxOut; ++i) {
             const IntEncodedExpr& e1 = first[filt1Buf[i]];
-            for (int16_t j = 0; j < nF2 && nOut < maxOut; ++j) {
+            for (NameId j = 0; j < nF2 && nOut < maxOut; ++j) {
                 const IntEncodedExpr& e2 = second[filt2Buf[j]];
 
                 // Validity check
@@ -3183,7 +3320,7 @@ namespace gl {
                 if (compareSpans(name1, name2) <= 0) { sorted[0] = e1; sorted[1] = e2; }
                 else { sorted[0] = e2; sorted[1] = e1; }
 
-                int16_t len = makeIntNormalizedKeyFromEncoded(sorted, 2, false, buf,
+                NameId len = makeIntNormalizedKeyFromEncoded(sorted, 2, false, buf,
                     ExecutionParameters::MAX_KEY_SLOTS);
 
                 // D-105/D-120: keep the mandatory pair only if an owner of the
@@ -3226,7 +3363,7 @@ namespace gl {
     // `expandedImplications`' lbStateInterner scope half — keeps the text
     // gate as a zero-copy span twin.
     // ------------------------------------------------------------------
-    void Memory::wipeSubtree(int16_t closedVid) {
+    void Memory::wipeSubtree(NameId closedVid) {
         assert(closedVid > 0 && closedVid <= nameMap.nameCount()
             && "wipeSubtree: closedVid is not a minted NameMap id");
         assert(closedVid != NameMap::MAIN_ID
@@ -3239,29 +3376,39 @@ namespace gl {
         // closedScope + "_boundary_"` (I-139: the
         // encodePush payload assert makes every name's delimiter
         // decomposition unique and equal to its recorded parent chain).
-        // The 4 KB bitmap is stack; the ascending id vector rides the
-        // per-slot gen-scratch PAGE tier (I-124) and doubles as the
-        // step-11 mint order. Every int-keyed sweep below consults the
-        // bitmap; one O(nameCount x depth) walk amortizes the membership
-        // cost across all of them.
+        // The bitmap is sized from the live nameCount at this call seam
+        // (one bit per minted id; words * 64 > nameCount strictly, re-checked
+        // by the collectClosedSubtreeIds capacity assert) and rides the
+        // per-slot gen-scratch BYTE-BUMP tier — a fixed stack array cannot
+        // follow MAX_NAME_IDS (1M ids = 125 KB of stack). The ascending id
+        // vector rides the same arena's PAGE tier (I-124) and doubles as the
+        // step-11 mint order; both share the per-task releaseAll lifetime.
+        // Every int-keyed sweep below consults the bitmap; one
+        // O(nameCount x depth) walk amortizes the membership cost across
+        // all of them.
         const unsigned slot = (ExpressionAnalyzer::g_currentCoreId >= 0)
             ? static_cast<unsigned>(ExpressionAnalyzer::g_currentCoreId)
             : genScratchArenas().slotCount() - 1;
         ScratchArena& gArena = genScratchArenas().forSlot(slot);
-        uint64_t closedBits[512];                       // 32768 bits, stack
         DirtyState ascDirty = DirtyState::Clean;
-        PagedVector<int16_t> closedAsc(&gArena, &ascDirty);
+        PagedVector<NameId> closedAsc(&gArena, &ascDirty);
         const int32_t nameHighWater = nameMap.nameCount();
-        nameMap.collectClosedSubtreeIds(closedVid, closedBits, 512, closedAsc);
+        const int32_t closedWords = nameHighWater / 64 + 1;
+        uint64_t* closedBits = reinterpret_cast<uint64_t*>(gArena.resolve(
+            gArena.alloc(closedWords * static_cast<int32_t>(sizeof(uint64_t)),
+                         static_cast<int32_t>(alignof(uint64_t)))));
+        nameMap.collectClosedSubtreeIds(closedVid, closedBits, closedWords,
+                                        closedAsc);
         const auto inClosedBit = [&](int32_t v) -> bool {
             // EXACT twin of the former closedIds.count(x): x can arrive
-            // from int16_t casts whose value is NEGATIVE (e.g. the low
-            // half of a GLOBAL mailIn id at the routing-mail filter) —
-            // count(negative) was false; the bitmap guards the index the
-            // same way, never indexing out of range.
+            // NEGATIVE (e.g. the low half of a GLOBAL mailIn id at the
+            // routing-mail filter) — count(negative) was false; the
+            // `v >= 1` guard short-circuits before the bitmap index, so
+            // the index is always a non-negative NameId (no uint16 wrap —
+            // a wrap would alias ids >= 65536 into the wrong bit once the
+            // ceiling rises).
             return v >= 1 && v <= nameHighWater
-                && ((closedBits[static_cast<uint16_t>(v) >> 6]
-                     >> (static_cast<uint16_t>(v) & 63)) & 1ull) != 0;
+                && ((closedBits[v >> 6] >> (v & 63)) & 1ull) != 0;
         };
 
         // ---- 1. statement registry ----
@@ -3277,8 +3424,8 @@ namespace gl {
         // ---- 2. local statement registry + Set + Delta ----
         // The set mirrors the local-statement vector (I-86); drop its closed
         // keys in ONE eraseIf (O(n)) rather than a cold-index rebuild per row.
-        intLocalEncodedStatementsSet.eraseIf([&](int32_t k) {
-            return inClosedBit(static_cast<int16_t>(k & 0xFFFF));
+        intLocalEncodedStatementsSet.eraseIf([&](int64_t k) {
+            return inClosedBit(Codec<StatementKey>::decode(k).validity);
         });
         for (int32_t i = intLocalEncodedStatements.size(); i-- > 0; ) {
             if (inClosedBit(intLocalEncodedStatements[i].validityId)) {
@@ -3323,7 +3470,7 @@ namespace gl {
         // ---- 7. equivalenceClassesMap (keyed by validity id) ----
         // Safe to wipe at end-of-burst (see step 5 comment). Run-aware
         // compacting erase on the cold blob map (Batch 3).
-        equivalenceClassesMap.eraseBlobIf([&](int16_t vId) {
+        equivalenceClassesMap.eraseBlobIf([&](NameId vId) {
             return inClosedBit(vId);
         });
 
@@ -3353,18 +3500,18 @@ namespace gl {
         }
         // Packed template-space twins — same low-16-bits validity
         // predicate as the other packed sweeps.
-        auto filterPackedSet = [&](ColdHashSet<PodKeyStore<int32_t>>& s) {
-            s.eraseIf([&](int32_t k) {
-                return inClosedBit(static_cast<int16_t>(k & 0xFFFF));
+        auto filterPackedSet = [&](ColdHashSet<PodKeyStore<int64_t>>& s) {
+            s.eraseIf([&](int64_t k) {
+                return inClosedBit(Codec<StatementKey>::decode(k).validity);
             });
         };
         filterPackedSet(integrationPrepared);
         filterPackedSet(integrationPreparedMarker);
 
-        // Packed twin of weakVariables — same low-16-bits validity
+        // Packed twin of weakVariables — same low-32-bits validity
         // predicate as the intKnownStatements sweep in step 6.
-        intWeakVariables.eraseIf([&](int32_t k) {
-            return inClosedBit(static_cast<int16_t>(k & 0xFFFF));
+        intWeakVariables.eraseIf([&](int64_t k) {
+            return inClosedBit(Codec<StatementKey>::decode(k).validity);
         });
 
         // ---- 9. Mail statements (in / out / internal) ----
@@ -3396,7 +3543,7 @@ namespace gl {
         // sweeps use (no decode).
         sameIterationInternalMail.filterStatements(
             [&](const IntMailStatementKey& k) {
-                return inClosedBit(static_cast<int16_t>(k.validityId));
+                return inClosedBit(static_cast<NameId>(k.validityId));
             });
 
         // ---- 10. HashMemory wipe (overall / local / delta) ----
@@ -3441,11 +3588,10 @@ namespace gl {
 
             // Cold admission/rejection containers
             // (D-172, D-173)
-            // use the compacting / run-aware cold erase with the same low-16-bits
-            // closed-scope predicate.
-            const auto coldScopeWipe = [&](int32_t k) {
-                return inClosedBit(static_cast<int16_t>(
-                    static_cast<uint32_t>(k) & 0xFFFF));
+            // use the compacting / run-aware cold erase with the same low-32-bits
+            // closed-scope predicate (the packed template key is int64).
+            const auto coldScopeWipe = [&](int64_t k) {
+                return inClosedBit(Codec<StatementKey>::decode(k).validity);
             };
             hm.admissionMap.eraseBlobIf(coldScopeWipe);
             hm.admissionStatusMap.eraseIf(coldScopeWipe);
@@ -3978,6 +4124,9 @@ namespace gl {
         // pages into a released arena and assert). A discharged LB never reads
         // intToBeProved again (it is !isActive; ensureLoaded asserts the flag).
         intToBeProved.resetToFresh();
+        pendingDisprovedGoals.resetToFresh();
+        pendingDeadOrBranches.resetToFresh();
+        orRetiredDisjuncts.resetToFresh();
         persistentArena.releaseAll();
         lbMemory.clearDischargeableContainers();
         lbMemory.reshuffle(scr);
@@ -4115,7 +4264,7 @@ namespace gl {
     // Explicit instantiation of the request-generator member template for the
     // streaming consumer (the only consumer; see BurstSink in prover.hpp).
     template void ExpressionAnalyzer::generateEncodedRequestsStatic<BurstSink>(
-        const Memory&, const HashMemory&, int16_t, const Stump*, int16_t,
+        const Memory&, const HashMemory&, NameId, const Stump*, NameId,
         IntStmtView, IntStmtView, const SplitStumpRef&, unsigned, BurstSink&);
 
     // ---- NameMap::encodePush (span overload) --------------------------------
@@ -4125,7 +4274,7 @@ namespace gl {
     // body. Byte-identical to the former inline heap-std::string body — same
     // canonical bytes (decodeView == decode), same dedup, same subs-then-names
     // mint order.
-    int16_t NameMap::encodePush(int16_t parentId, const StrSpan& payload) {
+    NameId NameMap::encodePush(NameId parentId, const StrSpan& payload) {
         // Delimiter self-overlap contract (I-139): the payload may not contain
         // "_boundary_", nor end "_boundary" / start "boundary_".
         const std::string_view pv(payload.ptr,
@@ -4163,12 +4312,12 @@ namespace gl {
                     static_cast<std::size_t>(payload.len));
         const StrSpan canonical(buf, total);
 
-        const int16_t existing = lookup(canonical);
+        const NameId existing = lookup(canonical);
         if (existing != 0) return existing;
 
         // Mint order (subs payload, then names canonical) preserved.
-        const int16_t subId = encodeSub(payload);
-        const int16_t newId = mintName(canonical);
+        const NameId subId = encodeSub(payload);
+        const NameId newId = mintName(canonical);
         nodes->push_back(ValidityNode{parentId, subId});
         return newId;
     }

@@ -99,19 +99,20 @@ The active innermost scope is tracked by the prover's traversal; when `addStatem
 
 ## Payloads — encoding the scope role
 
-A scope's `payload` is the arbitrary string handed to `encodePush`. Convention: the payload *prefix* encodes the role. Current roles (inferred from `classifyOrScope`'s classification into `NotOrScope | Integration | Disintegration`):
+A scope's `payload` is the arbitrary string handed to `encodePush`. Convention: the payload encodes the role (self-describing — no Memory side table; memory file ). Current shapes, verified against the live mint sites:
 
-| Role | Payload prefix | Meaning |
+| Role | Payload shape | Mint site |
 |---|---|---|
-| `"main"` | N/A (reserved root) | The top-level scope. Every theorem's head sits here. |
-| Hypothesis | `"hypo_"` (and similar) | Opened when a premise is assumed. |
-| Integration | `"int_"` + specifier | Opened during reformulation-for-integration. |
-| OR branch (disintegration) | `"ordis_"` + index | Opened per disjunct on an OR disintegration. |
-| OR branch (integration) | `"orint_"` + index | Opened during OR re-integration. |
-| Hypothetical-disintegration sentinel | `"hypothetical_disintegration"` (single canonical scope `main_boundary_hypothetical_disintegration`) | Throw-away structural-probe scope used by `disintegrateExprHypothetically`. Its products MUST never reach chapter emission — `visualizer.cpp::buildStack` carries a hard-assert TRIPWIRE at entry (substring match `"_boundary_hypothetical_disintegration"`) that fires if any expression on this scope reaches the chapter walker. If the TRIPWIRE fires, a new leak path has appeared; the assertion message names the offending expression. |
-| Sentinel | `"sentinel_"` | Placeholder scope used for specific bookkeeping. |
+| `"main"` | N/A (reserved root, id 1) | The top-level scope. Every theorem's head sits here. |
+| Sub-implication subproof, goal-driven on MAIN | `<goal>_subproof_(implicationN[…])` | `prepareIntegrationCore2` Case A: `<goal>` is the root `toBeProved` goal (verbatim, optionally `!`-negated) whose integration spawned the subproof, so a disproof of the goal can enumerate and wipe its scopes. Parsed by `splitSubproofPayload` / `stripSubproofPrefixView`. |
+| Sub-implication subproof, statement-driven or non-main | `(implicationN[…])` | `prepareIntegrationCore2` Case A with an empty `rootGoal` (admission / marker replays, load-time prefill) or a non-main parent (nested subproofs — they sit inside a goal-owned subtree already). |
+| OR branch (integration) | `orint_<cleanSig>_(<head>)`; goal-driven on MAIN: `<goal>_subproof_orint_<cleanSig>_(<head>)` | `prepareIntegrationCore2` Case OR. `classifyOrScope` / `classifyOrScopeView` strip the goal prefix before classifying. |
+| OR branch (disintegration) | `ordis_<orSig>_(<cleanExpr>)` | `disintegrateExpr2`. |
+| Hypothetical-disintegration working scope | `_var0_<x>[_var1_<y>…]_hypo_<expr>` | `disintegrateExprHypothetically` (embeds the integrated expression — self-identifying). |
+| Hypothetical-disintegration sentinel | `product_of_hypo_disintegration_of_integration_goal_<expr>` | `disintegrateExprHypothetically` — throw-away structural-probe scope; its products must never reach chapter emission (`visualizer.cpp::buildStack` tripwire). |
+| Main-goal closure boundary | `<head>` pushed on MAIN (`main_boundary_<head>`) | `dischargeToBeProved` — derived purely as the wipe-subtree root for the proved goal. |
 
-*Specific payload prefixes subject to drift — grep for `"encodePush("` to enumerate current use sites. Memory file documents the convention: scope role must live in the payload, not in a Memory side table.*
+The goal-carrying `<goal>_subproof_` prefix and the goal-qualified prep gates exist for disproof cleanup ([D-239](../40_decisions.md#d-239), [I-170](../30_invariants.md#i-170)): two goals needing the same compact each prep their own subproof (accepted duplication), so wiping one goal's machinery cannot starve the other.
 
 ---
 
@@ -179,7 +180,7 @@ An OR disintegration opens one scope per disjunct via `encodePush(current, "ordi
 
 ### Contradiction
 
-Opens a hypothetical scope with the conclusion's negation. When the branch derives both `X` and `!X`, the assumption discharges and the original conclusion is emitted into the parent scope. The contradiction-LB stays alive via `primedForContradiction` long enough for the discharge to fire.
+A contradiction LB carries its proof assumption structurally, while its inference scopes still begin at that LB's `main`. The assumption discharges only when both `X` and `!X` are present at that `main`; a pair whose shallowest common validity is an `_ordis_` branch cannot discharge the LB. If an expression also has a deeper duplicate, its separate main row still qualifies. The contradiction LB stays alive via `primedForContradiction` long enough for the main-scope discharge to fire. Contradictory-branch rejection and `_ordis_` cohort rewriting remain unimplemented.
 
 ### Integration
 
@@ -192,6 +193,10 @@ When an implication subproof at rooted scope `S = main_boundary_…_boundary_(im
 **Deferral to burst boundary.** The wipe does not run immediately at the impl-discharge call site. The closed scope's validity id is queued into `Memory::pendingWipeScopes`; at the end of the burst (`performElemPhase3`, after `sanitizeHashMemory` + `sanitizeToBeProved`, before the EXIT trap) the queue is drained and `wipeSubtree` runs once per queued scope id. Immediate mid-kernel wipe would erase `intStatementLevelsMap` / `equivalenceClassesMap` entries that subsequent iterations of `addExprToMemoryBlockKernel`'s `sortedNew` loop assert-look-up. See [I-50](../30_invariants.md#i-50).
 
 `cleanUpOrIntegrationBranches` (the OR-convergence sibling-wipe path) routes through the same queue — each victim scope is inserted into `pendingWipeScopes` rather than processed inline.
+
+### Cleanup on disproof — the disproved-goal drain
+
+When a primed `__contradiction__` child disproves a MAIN goal, the post-join theorem drain deposits the contradiction seed onto the parent's `Memory::pendingDisprovedGoals` (persistent-pool byte set, writable while the parent is cold); the parent's next end-of-burst `drainDisprovedGoals` — running immediately before the `pendingWipeScopes` drain — erases the goal row, queues every goal-embedding MAIN scope for the radical wipe (the `<goal>_subproof_` payloads plus the two hypo shapes), erases the goal-template gates, the dead goal's `exprOriginMap` rows, internal-mail origin runs at wiped scopes, and dead OR cohorts. Full mechanism, the two disproof-only deviations (origin-map erase vs I-44; cohort erase vs I-167), and the sanctioned-remnant list: [D-240](../40_decisions.md#d-240).
 
 The full structure list (containers wiped, containers preserved on purpose) lives at [D-72](../40_decisions.md#d-72). Known interaction with monotonic iter-var counters: [G-43](../50_gotchas.md#g-43).
 
@@ -209,6 +214,7 @@ The full structure list (containers wiped, containers preserved on purpose) live
 - **Payload-prefix convention is load-bearing but not asserted.** `classifyOrScope` scans the payload prefix. If a new scope kind is added with a prefix that accidentally collides with an existing one, classification silently misroutes.
 - **Validity-metadata growth.** Every `encodePush` appends one `ValidityNode` to `validityNodes` (4 bytes); it is never pruned (the forest grows monotonically), even for discharged scopes. It is paged on the LB arena and deloads with the LB, so the footprint is cold rather than heap, and the flat parent-pointer form is ~7× leaner than the earlier jagged lists — but still a memory-budget consideration for FTA-era runs. (The former `pairMap` hash that compounded this is gone — `verdict` walks the forest.)
 - **Cross-LB scope consistency.** Each LB has its own `NameMap`. When a statement broadcasts from one LB to another, the receiver must translate the sender's scope ID to its own. This happens through the canonical payload string — but a mismatch in payload convention between LBs would silently misroute.
+- **Disproof-cleanup verbatim match.** `drainDisprovedGoals` matches the deposited contradiction seed against MAIN goals and scope payloads verbatim; a goal rewritten by equivalence classes between spawn and disproof would miss the probe indistinguishably from the legitimate complement-twin miss. Not exercised today — the contradiction pipeline runs only in incubator batches, which skip equivalence classes ([D-240](../40_decisions.md#d-240)). A canonicalization-aware fallback (`canonicalizeUnderClasses` on both sides) is the known fix if a main batch ever combines classes with `try_contradiction`.
 
 ### Not exercised by tests
 

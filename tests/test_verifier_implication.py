@@ -547,10 +547,13 @@ def test_task_formulation_completely_unrelated_expression():
 @register
 def test_task_formulation_negated_premise_mismatched():
     """Premise list contains `(in[v1,N])`; task formulation row carries
-    `!(in[v1,N])` (the negation). That isn't a premise."""
+    `!(in[v1,N])` (the negation). That isn't a premise — and with the
+    head being a different expression, it isn't the reductio seed
+    (the head's exact negation) either."""
     state = make_state_with_binaries(("Peano",))
     set_chapter_context(state,
-                        thm=("(>[v1](in[v1,N])(in[v1,N]))", "direct", "ref"))
+                        thm=("(>[v1](in[v1,N])(in[(s[v1]),N]))",
+                             "direct", "ref"))
     line = make_proof_line(
         "!(in[v1,N])",
         "main", "task formulation",

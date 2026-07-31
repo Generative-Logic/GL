@@ -185,6 +185,57 @@ TEST(lb_split, apply_firing_records_head_deposit) {
                 != mailSnap.disintegrationSignals.end());
 }
 
+TEST(lb_split, apply_firing_records_carries_iteration_min_merged) {
+    // The witness-generation stamp rides the FiringRecord into the
+    // disintegration-signal column (D-233); two
+    // firings depositing the same statement min-merge their iterations
+    // (order-free, so the merged value is partition-independent).
+    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    ana.parameters.trackHistory = true;
+    ana.parameters.compressor_mode = false;
+    ana.parameters.max_origin_per_expr = 2;
+    RecordRig rig;
+    gl::Memory mb;
+    gl::FiringRecord r3 =
+        makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", true, false);
+    r3.iteration = 3;
+    gl::FiringRecord r1 =
+        makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impB)", true, false);
+    r1.iteration = 1;
+    rig.pages.appendRecord(r3);
+    rig.pages.appendRecord(r1);
+    gl::SealedPageSet* parts[1] = { &rig.pages };
+    ana.applyFiringRecords(mb, parts, 1);
+
+    const gl::Mail mailSnap = gl::makeHeapMail(mb.sameIterationInternalMail,
+                                               mb.nameMap, mb.originInterner);
+    const gl::ExpressionWithValidity key("(in[2,1])", "main");
+    const auto it = mailSnap.disintegrationSignals.find(key);
+    ASSERT_TRUE(it != mailSnap.disintegrationSignals.end());
+    ASSERT_EQ(it->second.iteration, 1);
+}
+
+TEST(lb_split, deposit_iteration_reaches_witness_mint) {
+    // The iteration parameter of addExprToMemoryBlock — what the absorb now
+    // passes from the carried signal instead of -1 — names the disintegration
+    // witnesses it_<iteration>_lev_...: a status-0 preorder fact (definition:
+    // an existence) deposited at iteration 2 mints an it_2_lev witness.
+    gl::ExpressionAnalyzer ana(std::string("IncubatorGauss3"));
+    const int lv[1] = { 0 };
+    const gl::TransientOrigin origin{
+        true, gl::OriginTag::taskFormulation, nullptr, 0 };
+    const std::string fact = "(preorder[1,4,6,7])";
+    ana.addExprToMemoryBlock(gl::StrSpan(fact), ana.body, 2, 0, lv, 1,
+        origin, -1, -1, gl::StrSpan("main", 4), false);
+
+    bool minted = false;
+    for (int32_t id = 1; id <= ana.body.nameMap.nameCount() && !minted; ++id) {
+        const std::string n(ana.body.nameMap.decode(id));
+        minted = n.rfind("it_2_lev", 0) == 0;
+    }
+    ASSERT_TRUE(minted);
+}
+
 TEST(lb_split, apply_firing_records_already_known_skips_deposit) {
     // alreadyKnown gates the statement/origin deposit off, but the
     // mail-eligibility memo is still populated for an `int_lev_*`-carrying
@@ -201,7 +252,7 @@ TEST(lb_split, apply_firing_records_already_known_skips_deposit) {
     ana.applyFiringRecords(mb, parts, 1);
     ASSERT_TRUE(mb.sameIterationInternalMail.statementsEmpty());
     ASSERT_TRUE(mb.sameIterationInternalMail.exprOriginMapEmpty());
-    const int16_t headId = mb.nameMap.lookup(std::string("(in[int_lev_1_2,1])"));
+    const gl::NameId headId = mb.nameMap.lookup(std::string("(in[int_lev_1_2,1])"));
     ASSERT_TRUE(headId != 0);
     ASSERT_TRUE(mb.canBeSentIds.contains(headId));
 }
@@ -219,7 +270,7 @@ TEST(lb_split, apply_firing_records_marker_deposit) {
     ana.applyFiringRecords(mb, parts, 1);
     ASSERT_EQ((int)mb.deferredIntegrationPreps.size(), 1);
     ASSERT_EQ((int)mb.admissionKeysAlgebra.size(), 1);
-    const int16_t markerId = mb.nameMap.lookup(std::string("(in3[1,marker,2,3])"));
+    const gl::NameId markerId = mb.nameMap.lookup(std::string("(in3[1,marker,2,3])"));
     ASSERT_TRUE(markerId != 0);
     ASSERT_TRUE(mb.canBeSentMarkerIds.contains(markerId));
 }
@@ -488,18 +539,18 @@ TEST(lb_split, pointer_index_sort_matches_vector_sort) {
 }
 
 TEST(lb_split, make_partition_id_packs_and_is_injective) {
-    // makePartitionId packs origId in the high 16 bits and scopeVid (as
-    // uint16) in the low 16 — the composite id stored in OwnerSet::partitionIds.
-    // Layout:
-    ASSERT_EQ(gl::makePartitionId(0, 0), (std::int32_t)0);
-    ASSERT_EQ(gl::makePartitionId(1, 0), (std::int32_t)(1 << 16));
-    ASSERT_EQ(gl::makePartitionId(0, 5), (std::int32_t)5);
-    ASSERT_EQ(gl::makePartitionId(7, 3), (std::int32_t)((7 << 16) | 3));
-    // Max non-negative int16 inputs (the ids NameMap mints) stay a positive
-    // int32 — so id % N is well-defined and non-negative for any N > 0:
-    ASSERT_TRUE(gl::makePartitionId(32767, 32767) > 0);
-    ASSERT_EQ(gl::makePartitionId(32767, 32767),
-              (std::int32_t)((32767 << 16) | 32767));
+    // makePartitionId packs origId in the high 32 bits and scopeVid in the low
+    // 32 (int64, via packInt32Pair) — the composite id stored in
+    // OwnerSet::partitionIds. Layout:
+    ASSERT_EQ(gl::makePartitionId(0, 0), (std::int64_t)0);
+    ASSERT_EQ(gl::makePartitionId(1, 0), gl::packInt32Pair(1, 0));
+    ASSERT_EQ(gl::makePartitionId(0, 5), gl::packInt32Pair(0, 5));
+    ASSERT_EQ(gl::makePartitionId(7, 3), gl::packInt32Pair(7, 3));
+    // Large NameId inputs (past the old 16-bit ceiling) stay a positive int64 —
+    // so id % N is well-defined and non-negative for any N > 0:
+    ASSERT_TRUE(gl::makePartitionId(200000, 1000000) > 0);
+    ASSERT_EQ(gl::makePartitionId(200000, 1000000),
+              gl::packInt32Pair(200000, 1000000));
     // Injective: differing in EITHER half yields a different id — distinct
     // (original, validity) owners never collide.
     ASSERT_TRUE(gl::makePartitionId(3, 4) != gl::makePartitionId(4, 3));
@@ -517,12 +568,12 @@ TEST(lb_split, partition_accepts_filters_by_residue) {
     const int savedPid = gl::g_splitProcessID;
     const int savedN = gl::g_splitCount;
 
-    std::set<std::int32_t> ids = { 3, 7, 12 };
+    std::set<std::int64_t> ids = { 3, 7, 12 };
 
     // N <= 1 is the unsplit identity: always true, set untouched (even empty).
     gl::g_splitCount = 1; gl::g_splitProcessID = 0;
     ASSERT_TRUE(gl::partitionAccepts(ids));
-    std::set<std::int32_t> empty;
+    std::set<std::int64_t> empty;
     ASSERT_TRUE(gl::partitionAccepts(empty));
 
     // N = 4: residues present are {3%4=3, 7%4=3, 12%4=0} = {0, 3}.
@@ -624,6 +675,26 @@ TEST(lb_split, min_split_work_defaults_positive) {
     ASSERT_TRUE(ana.parameters.min_split_work > 0);
 }
 
+TEST(lb_split, lb_split_defaults_true) {
+    // The split master switch defaults ON: a config without the key (Peano /
+    // Gauss) keeps the statistics-driven split active, so a future main-batch
+    // config cannot silently regress to unsplit. Opting out is explicit
+    // ("lb_split": false). See D-231.
+    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    ASSERT_TRUE(ana.parameters.lb_split);
+}
+
+TEST(lb_split, lb_split_config_wiring) {
+    // The per-batch wiring that replaced the hard incubator exclusion (the
+    // proveKernel gate no longer consults incubator_mode): IncubatorGauss3 opts
+    // IN so its heavy rung LBs split; the small-LB incubator configs opt OUT.
+    // See D-231.
+    gl::ExpressionAnalyzer ig3(std::string("IncubatorGauss3"));
+    ASSERT_TRUE(ig3.parameters.lb_split);
+    gl::ExpressionAnalyzer ip1(std::string("IncubatorPeano1"));
+    ASSERT_FALSE(ip1.parameters.lb_split);
+}
+
 TEST(lb_split, max_split_parts_bounds_the_expression_split) {
     // The one split dimension is the expression/bucket split, fanned to logicalCores
     // buckets, so the machine core count must fit under kMaxSplitParts (the
@@ -651,7 +722,7 @@ TEST(lb_split, name_map_lookup_is_non_minting) {
     ASSERT_EQ(nm.lookup(fresh), 0);
 
     // encode mints it (non-zero id); lookup now returns that same id.
-    const int16_t id = nm.encode(fresh);
+    const gl::NameId id = nm.encode(fresh);
     ASSERT_NE(id, 0);
     ASSERT_EQ(nm.lookup(fresh), id);
 }
@@ -665,19 +736,38 @@ TEST(lb_split, burst_deactivates_symbol_signature) {
 }
 
 TEST(lb_split, burst_deactivates_contradiction) {
-    // primedForContradiction + neg(head) known at an ancestor scope -> doomed.
+    // primedForContradiction + head and neg(head) both at main -> doomed.
     gl::ExpressionAnalyzer ana(std::string("Peano"));
     ana.parameters.compressor_mode = false;
     RecordRig rig;
     gl::Memory mb;
     mb.primedForContradiction = true;
-    const int16_t negId = mb.nameMap.encode("!(in[2,1])");
+    const gl::NameId negId = mb.nameMap.encode("!(in[2,1])");
     mb.intKnownStatements.insert(gl::StatementKey{ negId, gl::NameMap::MAIN_ID },
                                  gl::StatementFlags{ true, false, true, true });
 
     gl::FiringRecord fr =
         makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", true, false);
     ASSERT_TRUE(ana.burstDeactivates(mb, fr));
+}
+
+TEST(lb_split, burst_deactivates_rejects_branch_local_contradiction) {
+    // A branch-local head opposed by a main-scope negation is not a full LB
+    // contradiction, so the phase-2 early-exit mirror must keep the burst alive.
+    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    ana.parameters.compressor_mode = false;
+    RecordRig rig;
+    gl::Memory mb;
+    mb.primedForContradiction = true;
+    const gl::NameId negId = mb.nameMap.encode("!(in[2,1])");
+    mb.intKnownStatements.insert(gl::StatementKey{ negId, gl::NameMap::MAIN_ID },
+                                 gl::StatementFlags{ true, false, true, true });
+
+    gl::FiringRecord fr = makeHeadRecord(
+        rig, "(in[2,1])",
+        "main_boundary_ordis_(or0[2,1])_((in[2,1]))",
+        "implication", "(impA)", true, false);
+    ASSERT_FALSE(ana.burstDeactivates(mb, fr));
 }
 
 TEST(lb_split, burst_deactivates_requires_known_negation) {
@@ -699,7 +789,7 @@ TEST(lb_split, burst_deactivates_plain_lb_never_fires) {
     ana.parameters.compressor_mode = false;
     RecordRig rig;
     gl::Memory mb;
-    const int16_t negId = mb.nameMap.encode("!(in[2,1])");
+    const gl::NameId negId = mb.nameMap.encode("!(in[2,1])");
     mb.intKnownStatements.insert(gl::StatementKey{ negId, gl::NameMap::MAIN_ID },
                                  gl::StatementFlags{ true, false, true, true });
 
@@ -715,7 +805,7 @@ TEST(lb_split, burst_deactivates_vacuous_truth) {
     RecordRig rig;
     gl::Memory mb;
     mb.isPartOfRecursion = true;
-    const int16_t negId = mb.nameMap.encode("!(in[2,1])");
+    const gl::NameId negId = mb.nameMap.encode("!(in[2,1])");
     mb.intKnownStatements.insert(gl::StatementKey{ negId, gl::NameMap::MAIN_ID },
                                  gl::StatementFlags{ true, false, true, true });
 
@@ -784,7 +874,7 @@ TEST(lb_split, burst_deactivates_ce_filter) {
     RecordRig rig;
     gl::Memory mb;
     mb.contradictionIndex = 5;          // CE LB under test; not primed, not recursion
-    const int16_t negId = mb.nameMap.encode("!(in[2,1])");
+    const gl::NameId negId = mb.nameMap.encode("!(in[2,1])");
     mb.intKnownStatements.insert(gl::StatementKey{ negId, gl::NameMap::MAIN_ID },
                                  gl::StatementFlags{ true, false, true, true });
 

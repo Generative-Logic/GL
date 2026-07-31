@@ -329,7 +329,7 @@ namespace gl {
         this->addToHashMemory(chainRun, chainRunN, StrSpan(head), nullptr, 0,
             *mb, mb->overallHashMemory, lvl0, 1,
             StrSpan(replacedConjecture),
-            parameters.standardMaxAdmissionDepth,
+            parameters.maxIterationNumberVariable,
             parameters.standardMaxSecondaryNumber,
             false,
             parameters.minNumOperatorsKeyCE,
@@ -575,6 +575,17 @@ namespace gl {
         // Extra explicit cleanup “as if between batches” (no-op if already clean)
         this->releaseCEBatchMemory();
 
+        // Mirror refutation: a CE-refuted operator-only conjecture dooms its
+        // pool mirror too (D-229). Runs
+        // single-threaded between the pool join and survivor collection so
+        // the flip is a pure function of this pass's CE verdicts.
+        if (parameters.mirror_refutation) {
+            const int flipped = applyMirrorRefutations(
+                contradictionTable, conjectures, mirrorPartnerMap);
+            std::cout << "CE filter: mirror refutation flipped " << flipped
+                      << " conjectures." << std::endl;
+        }
+
         // Keep non-contradictory conjectures
         std::vector<std::string> filtered;
         filtered.reserve(conjectures.size());
@@ -583,6 +594,124 @@ namespace gl {
 
         ceFilteringActive = false;
         return filtered;
+    }
+
+    /// @brief Load `mirror_pairs.txt` into a symmetric partner map.
+    ///
+    /// @details
+    /// Reads the conjecturer-written pairs artifact (one
+    /// `source<TAB>mirror` row per operator-only conjecture whose mirror
+    /// entered the pool; both columns byte-identical to `conjectures.txt`
+    /// lines) and inserts BOTH directions — `source → mirror` and
+    /// `mirror → source` — with per-key duplicate suppression, so the CE
+    /// filter's flip pass can follow the relation from whichever member a
+    /// counterexample refutes. Rows are read in file order (source-sorted by
+    /// the writer), keeping each key's partner vector deterministic.
+    /// Trailing `\r` is stripped; empty lines are skipped (an empty file is
+    /// a defined result: no pairs, no flips).
+    ///
+    /// The file's existence is part of the pipeline contract: the
+    /// conjecturer writes it unconditionally whenever `conjectures.txt` is
+    /// written, so absence means the pipeline was invoked out of order —
+    /// asserted, not tolerated.
+    ///
+    /// @param path Full path to `files/theorems/mirror_pairs.txt`.
+    /// @return Symmetric partner map; empty when the file has no rows.
+    /// @see [D-229](../../docs/agentic_swdd/40_decisions.md#d-229)
+    MirrorPartnerMap loadMirrorPairs(const std::filesystem::path& path) {
+        assert(std::filesystem::exists(path)
+            && "loadMirrorPairs: mirror_pairs.txt missing - the conjecturer "
+               "writes it whenever conjectures.txt is written; run "
+               "--conjecture <Tag> first");
+
+        MirrorPartnerMap partners;
+        auto addDirected = [&partners](const std::string& from, const std::string& to) {
+            auto& vec = partners[from];
+            if (std::find(vec.begin(), vec.end(), to) == vec.end()) {
+                vec.push_back(to);
+            }
+        };
+
+        std::ifstream in(path);
+        assert(in && "loadMirrorPairs: mirror_pairs.txt exists but cannot be opened");
+        std::string line;
+        while (std::getline(in, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.empty()) continue;
+            const std::size_t tabPos = line.find('\t');
+            assert(tabPos != std::string::npos
+                && "loadMirrorPairs: malformed row - every non-empty line is "
+                   "source<TAB>mirror by the writer contract");
+            std::string source = line.substr(0, tabPos);
+            std::string mirror = line.substr(tabPos + 1);
+            assert(!source.empty() && !mirror.empty()
+                && "loadMirrorPairs: empty column - violates the writer contract");
+            addDirected(source, mirror);
+            addDirected(mirror, source);
+        }
+        return partners;
+    }
+
+    /// @brief Flip the mirror partners of CE-refuted conjectures to refuted.
+    ///
+    /// @details
+    /// The mirror-refutation heuristic's flip pass. Snapshots which slots the
+    /// CE bursts refuted (`table[i].successful` seeds), then sweeps them in
+    /// ascending index order: for every seeded conjecture, each partner from
+    /// `partners` that is present in this batch has its slot's `successful`
+    /// set `true`. Only CE-confirmed refutations seed — a flipped slot never
+    /// seeds further flips (no cascading) — so the outcome is a pure function
+    /// of the CE verdicts plus the pairs file, independent of sweep order. A
+    /// partner absent from `conjectures` is a defined case (refuted or
+    /// flipped in an earlier fact-file pass, or deduplicated at generation),
+    /// not a failure.
+    ///
+    /// Refutation-side only: this marks conjectures as dropped pre-prover; no
+    /// mirror ever re-enters as a proof step
+    /// ([I-81](../../docs/agentic_swdd/30_invariants.md#i-81) / D-112).
+    ///
+    /// @param table       The CE contradiction table, one slot per
+    ///                    conjecture; flipped in place.
+    /// @param conjectures The batch's conjecture strings, index-aligned with
+    ///                    `table`.
+    /// @param partners    Symmetric partner map from `loadMirrorPairs`.
+    /// @return Number of slots flipped by this pass.
+    /// @see loadMirrorPairs — builds `partners`.
+    int applyMirrorRefutations(std::vector<ContradictionItem>& table,
+        const std::vector<std::string>& conjectures,
+        const MirrorPartnerMap& partners) {
+        assert(table.size() == conjectures.size()
+            && "applyMirrorRefutations: table and conjecture list must be "
+               "index-aligned");
+        if (partners.empty()) return 0;
+
+        std::unordered_map<std::string, int> slotOf;
+        slotOf.reserve(conjectures.size());
+        for (int i = 0; i < static_cast<int>(conjectures.size()); ++i) {
+            slotOf.emplace(conjectures[i], i);
+        }
+
+        std::vector<char> seed(table.size(), 0);
+        for (std::size_t i = 0; i < table.size(); ++i) {
+            seed[i] = table[i].successful ? 1 : 0;
+        }
+
+        int flipped = 0;
+        for (int i = 0; i < static_cast<int>(table.size()); ++i) {
+            if (!seed[i]) continue;
+            const auto it = partners.find(conjectures[i]);
+            if (it == partners.end()) continue;
+            for (const std::string& partner : it->second) {
+                const auto slotIt = slotOf.find(partner);
+                if (slotIt == slotOf.end()) continue;
+                ContradictionItem& row = table[slotIt->second];
+                if (!row.successful) {
+                    row.successful = true;
+                    ++flipped;
+                }
+            }
+        }
+        return flipped;
     }
 
 } // namespace gl

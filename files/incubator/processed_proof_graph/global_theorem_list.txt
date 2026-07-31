@@ -844,6 +844,7 @@
 (>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(in3[i3,i3,i2,*]))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(in3[i3,i3,i3,+]))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(in3[i3,i3,i3,*]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])(>[v1,v2](in2[v1,v2,s])(>[v3,v4](in2[v3,v4,s])(>[](=[v1,v3])(=[v2,v4])))))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])(>[v1](in2[i4,v1,s])(=[v1,i5])))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])(>[v1](in2[i5,v1,s])(=[v1,i6])))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])(>[v1](in2[i6,v1,s])(=[v1,i7])))	direct	-1
@@ -1134,6 +1135,8 @@
 (>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])!(in3[i3,i1,i2,+]))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])!(in3[i3,i1,i2,*]))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])!(in3[i3,i1,i3,+]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])(>[v1,v2](in2[v1,v2,s])(>[v3,v4](in2[v3,v4,s])(>[]!(=[v2,v4])!(=[v1,v3])))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])(>[v1,v2](in2[v1,v2,s])(>[v3,v4](in2[v3,v4,s])(>[](=[v1,v3])(=[v2,v4])))))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])(>[v1](in2[i0,v1,s])(=[v1,i1])))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])(>[v1](in2[i1,v1,s])(=[v1,i2])))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])(>[v1](in2[i2,v1,s])(=[v1,i3])))	direct	-1
@@ -1293,12 +1296,39 @@
 (>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(in2[i3,i1,id]))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(in2[i3,i2,id]))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i4,i0]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i4,i1]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i4,i2]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i4,i3]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i5,i4]))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i5,i0]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i5,i1]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i5,i2]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i5,i3]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i6,i4]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i6,i5]))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i6,i0]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i6,i1]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i6,i2]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i6,i3]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i7,i4]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i7,i5]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i7,i6]))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i7,i0]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i7,i1]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i7,i2]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i7,i3]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i8,i4]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i8,i5]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i8,i6]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i8,i7]))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i8,i0]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i8,i2]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i8,i3]))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i2,i0]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i2,i1]))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i3,i0]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i3,i1]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])!(preorder[N,+,i3,i2]))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])(>[v1](fold[N,s,+,id,i0,i0,v1])(=[v1,i0])))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])(>[v1](fold[N,s,+,id,i0,i1,v1])(=[v1,i1])))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8](AnchorIncubator8[N,i0,s,+,*,i1,i2,id,i3,i4,i5,i6,i7,i8])(>[v1](fold[N,s,+,id,i0,i2,v1])(=[v1,i3])))	direct	-1
@@ -1394,6 +1424,7 @@
 (>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])!(in2[i3,i2,id]))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])!(preorder[N,+,i2,i0]))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])!(preorder[N,+,i3,i0]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])!(preorder[N,+,i3,i2]))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])(>[v1](fold[N,s,+,id,i0,i0,v1])(=[v1,i0])))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])(>[v1](fold[N,s,+,id,i0,i1,v1])(=[v1,i1])))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])(>[v1](fold[N,s,+,id,i0,i2,v1])(=[v1,i3])))	direct	-1
@@ -1419,5 +1450,11 @@
 (>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])(preorder[N,+,i2,i2]))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])(preorder[N,+,i2,i3]))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])(preorder[N,+,i3,i3]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])(>[V1](EnumerationSet2[i0,i1,V1])!(interval[N,+,i0,i2,V1])))	direct	-1
 (>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])(>[V1](EnumerationSet2[i0,i1,V1])(interval[N,+,i0,i1,V1])))	direct	-1
-(>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])(existence4[i0,i1,N,+]))	reformulated statement	(>[1,2,3,4,5,6,7,8,9](AnchorIncubator3[1,2,3,4,5,6,7,8,9])(>[10](EnumerationSet2[2,6,10])(interval[1,4,2,6,10])))
+(>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])(>[V1](EnumerationSet3[i0,i1,i2,V1])!(interval[N,+,i0,i1,V1])))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])(>[V1](EnumerationSet3[i0,i1,i2,V1])(interval[N,+,i0,i2,V1])))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])(existence4[i0,i1,N,+,i2]))	reformulated statement	(>[1,2,3,4,5,6,7,8,9](AnchorIncubator3[1,2,3,4,5,6,7,8,9])(>[10](EnumerationSet2[2,6,10])!(interval[1,4,2,7,10])))
+(>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])(existence5[i0,i1,i2,N,+]))	reformulated statement	(>[1,2,3,4,5,6,7,8,9](AnchorIncubator3[1,2,3,4,5,6,7,8,9])(>[10](EnumerationSet3[2,6,7,10])!(interval[1,4,2,6,10])))
+(>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])(existence6[i0,i1,N,+]))	reformulated statement	(>[1,2,3,4,5,6,7,8,9](AnchorIncubator3[1,2,3,4,5,6,7,8,9])(>[10](EnumerationSet2[2,6,10])(interval[1,4,2,6,10])))
+(>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])(existence7[i0,i1,i2,N,+]))	reformulated statement	(>[1,2,3,4,5,6,7,8,9](AnchorIncubator3[1,2,3,4,5,6,7,8,9])(>[10](EnumerationSet3[2,6,7,10])(interval[1,4,2,7,10])))

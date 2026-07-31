@@ -312,7 +312,7 @@ def make_readable_from_chain(chain: list[str]):
         elif head.startswith('!(>['):
             readable = make_readable_existence(chain)
         elif head.startswith('!'):
-            readable = safe_rewrite_atom(head)
+            readable = make_readable_generic_chain(chain)
     except Exception:
         readable = ''
 
@@ -336,7 +336,7 @@ def make_readable_from_chain_title(chain: list[str]):
         elif head.startswith('!(>['):
             readable = make_readable_existence(chain)
         elif head.startswith('!'):
-            readable = safe_rewrite_atom(head)
+            readable = make_readable_generic_chain(chain)
     except Exception:
         readable = ''
 

@@ -1230,6 +1230,67 @@ TEST(cold_hash_map, blob_map_assign_run_generated_matches_contiguous) {
     }
 }
 
+// A run whose TOTAL bytes exceed one pool block, written via the per-blob
+// emitter door (assignRunGenerated) from individually staged blobs, must be
+// byte-identical to the contiguous-concat assignRun reference — the eq-class
+// run-splice conversion's contract (each single blob stays <= one block; only
+// the whole-run concat ceiling is removed).
+TEST(cold_hash_map, blob_map_generated_multi_block_run_matches_contiguous) {
+    gl::GlobalMemoryManager manager;
+    manager.init(gl::StaticMemoryConfig{ 4 << 20, 1 << 18 });   // 4 MiB / 256 KiB
+    gl::LbArena arenaA(&manager), arenaB(&manager);
+    gl::DirtyState dirtyA = gl::DirtyState::Clean;
+    gl::DirtyState dirtyB = gl::DirtyState::Clean;
+    PodBlobMap generated(&arenaA, &dirtyA);
+    PodBlobMap contiguous(&arenaB, &dirtyB);
+
+    const auto makeRun = [](int32_t blobCount, int32_t blobLen, char salt) {
+        std::vector<std::string> run;
+        run.reserve(static_cast<std::size_t>(blobCount));
+        for (int32_t i = 0; i < blobCount; ++i) {
+            std::string b(static_cast<std::size_t>(blobLen), ' ');
+            for (int32_t p = 0; p < blobLen; ++p)
+                b[static_cast<std::size_t>(p)] =
+                    static_cast<char>('a' + ((i * 31 + p * 7 + salt) % 23));
+            run.push_back(std::move(b));
+        }
+        return run;
+    };
+    const auto writeBoth = [&](int32_t key, const std::vector<std::string>& run) {
+        std::string concat;
+        std::vector<int32_t> lens;
+        int64_t total = 0;
+        for (const std::string& b : run) {
+            concat += b;
+            lens.push_back(static_cast<int32_t>(b.size()));
+            total += static_cast<int64_t>(b.size());
+        }
+        ASSERT_TRUE(total > (1 << 18));               // the run spans > one block
+        generated.assignRunGenerated(key,
+            static_cast<int32_t>(run.size()),
+            static_cast<int32_t>(total), [&](const auto& sink) {
+                for (const std::string& b : run)
+                    sink(b.data(), static_cast<int32_t>(b.size()));
+            });
+        contiguous.assignRun(key, concat.data(), lens.data(),
+                             static_cast<int32_t>(lens.size()));
+    };
+
+    // Fresh key: 40 x 8000 B = 320 KB run.
+    writeBoth(10, makeRun(40, 8000, 1));
+    // Existing-key replace: a different >block run through replaceRunGenerated.
+    writeBoth(10, makeRun(45, 7000, 2));
+
+    ASSERT_EQ(generated.count(), contiguous.count());
+    ASSERT_EQ(generated.blobCount(), contiguous.blobCount());
+    for (int32_t id = 1; id <= generated.count(); ++id) {
+        ASSERT_EQ(generated.runLen(id), contiguous.runLen(id));
+        for (int32_t j = 0; j < generated.runLen(id); ++j)
+            ASSERT_TRUE(readBlobStr(generated, id, j)
+                == readBlobStr(contiguous, id, j));
+    }
+}
+
 TEST(cold_hash_map, blob_map_known_id_assignment_matches_key_probe) {
     gl::GlobalMemoryManager manager;
     manager.init(kMapTestCfg);

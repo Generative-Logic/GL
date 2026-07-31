@@ -249,7 +249,7 @@ power-of-two page (so an index resolves by one shift and one mask);
 
 <table>
 <tr><th>Level</th><th>Sizing constant (parameters.hpp)</th><th>Owner</th><th>Unit handed down</th></tr>
-<tr><td>Pool</td><td><code>static_pool_bytes</code> (4&nbsp;GiB)</td><td><code>GlobalMemoryManager</code> — one per process</td><td>block</td></tr>
+<tr><td>Pool</td><td><code>static_pool_bytes</code> (12&nbsp;GiB)</td><td><code>GlobalMemoryManager</code> — one per process</td><td>block</td></tr>
 <tr><td>Block</td><td><code>static_block_bytes</code> (256&nbsp;KiB, a power of two)</td><td><code>LbArena</code> — one per LB</td><td>page</td></tr>
 <tr><td>Page</td><td><code>static_page_bytes</code> (8&nbsp;KiB, a power of two)</td><td>the paged containers, via the arena's page tier</td><td>elements (packed contiguously, addressed by page id)</td></tr>
 </table>
@@ -260,7 +260,7 @@ power-of-two page (so an index resolves by one shift and one mask);
 
   <!-- pool -->
   <rect x="20" y="16" width="720" height="124" rx="10" fill="#1C1F2B" stroke="#EF9F27" stroke-width="2"/>
-  <text x="380" y="38" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">GlobalMemoryManager — ONE reservation at program start (static_pool_bytes, 4 GiB)</text>
+  <text x="380" y="38" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">GlobalMemoryManager — ONE reservation at program start (static_pool_bytes, 12 GiB)</text>
   <text x="380" y="55" fill="#8B8FA5" font-size="9.5" text-anchor="middle">never freed, never grown — the software model of the MPU's fixed SRAM · mutex inside acquireBlock</text>
   <g font-size="9">
     <rect x="40"  y="68" width="60" height="34" rx="5" fill="#262938" stroke="#5DCAA5"/><text x="70"  y="88" fill="#5DCAA5" text-anchor="middle">LB A</text>
@@ -559,8 +559,8 @@ blocks and a floor-only drain would find no victim at all while the workers keep
 consuming memory. The consequence the design leans
 on: a run whose memory never dips below the reserve evicts <b>nothing</b>,
 therefore reloads nothing, therefore runs exactly as it did before — full speed,
-zero disk traffic. The current 4&nbsp;GiB cap deliberately puts the heavy incubator
-batches under pager pressure; historical 8&nbsp;GiB comparison runs kept the pager
+zero disk traffic. The current 12&nbsp;GiB cap gives the heavy incubator
+batches ample resident headroom; historical 8&nbsp;GiB comparison runs kept the pager
 mostly idle. If the working set <i>itself</i> cannot fit the
 pool, that is a genuinely too-small pool and the run stops at a loud assert on
 the next block request — never a silent wait (a dedicated stuck-detector also

@@ -448,9 +448,11 @@ same key.</figcaption>
 <!-- ===================== 7.7 ===================== -->
 <h2 id="contraswitch">7.7 &nbsp;Mechanism 4 — the <code>__contradiction__</code> fallback</h2>
 <p>
-When a chapter row's expression is a <i>negation</i> with no acyclic direct
+When a chapter row's expression has no acyclic direct
 origin in the current LB, the walker switches into the dedicated <i>child</i> LB
-whose <code>exprKey</code> is <code>"__contradiction__" + positive form</code>
+whose <code>exprKey</code> is <code>"__contradiction__" + the expression's negation</code>
+(either polarity: a negated row leads to the positive-seed block, a positive row
+to the complement block that assumed its negation)
 — located by walking the ancestor chain with <code>findChild</code> — and resolves
 the chain there. That block is a true child of the LB that proved the contradiction
 (its <code>parentMemory</code> points back at it); what is independent is the

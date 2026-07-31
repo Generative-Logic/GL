@@ -228,7 +228,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,11,13,4])"
+      "!(in3[2,11,12,4])"
     ],
     "signature": "(implication1000[])"
   },
@@ -238,7 +238,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,11,14,4])"
+      "!(in3[2,11,13,4])"
     ],
     "signature": "(implication1001[])"
   },
@@ -248,7 +248,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,11,2,4])"
+      "!(in3[2,11,14,4])"
     ],
     "signature": "(implication1002[])"
   },
@@ -258,7 +258,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,11,6,4])"
+      "!(in3[2,11,2,4])"
     ],
     "signature": "(implication1003[])"
   },
@@ -268,7 +268,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,11,7,4])"
+      "!(in3[2,11,6,4])"
     ],
     "signature": "(implication1004[])"
   },
@@ -278,7 +278,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,11,9,4])"
+      "!(in3[2,11,7,4])"
     ],
     "signature": "(implication1005[])"
   },
@@ -288,8 +288,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[10,7,15,5])",
-      "(=[15,14])"
+      "!(in3[2,11,9,4])"
     ],
     "signature": "(implication1006[])"
   },
@@ -299,8 +298,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[11,6,15,5])",
-      "(=[15,11])"
+      "(in3[10,7,15,5])",
+      "(=[15,14])"
     ],
     "signature": "(implication1007[])"
   },
@@ -310,7 +309,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,11,15,4])",
+      "(in3[11,6,15,5])",
       "(=[15,11])"
     ],
     "signature": "(implication1008[])"
@@ -321,7 +320,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[10,7,14,5])"
+      "(in3[2,11,15,4])",
+      "(=[15,11])"
     ],
     "signature": "(implication1009[])"
   },
@@ -341,7 +341,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[11,6,11,5])"
+      "(in3[10,7,14,5])"
     ],
     "signature": "(implication1010[])"
   },
@@ -351,7 +351,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,11,11,4])"
+      "(in3[11,6,11,5])"
     ],
     "signature": "(implication1011[])"
   },
@@ -361,7 +361,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,6,10,5])"
+      "(in3[2,11,11,4])"
     ],
     "signature": "(implication1012[])"
   },
@@ -371,7 +371,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,6,11,5])"
+      "!(in3[12,6,10,5])"
     ],
     "signature": "(implication1013[])"
   },
@@ -381,7 +381,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,6,13,5])"
+      "!(in3[12,6,11,5])"
     ],
     "signature": "(implication1014[])"
   },
@@ -391,7 +391,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,6,14,5])"
+      "!(in3[12,6,13,5])"
     ],
     "signature": "(implication1015[])"
   },
@@ -401,7 +401,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,6,2,5])"
+      "!(in3[12,6,14,5])"
     ],
     "signature": "(implication1016[])"
   },
@@ -411,7 +411,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,6,6,5])"
+      "!(in3[12,6,2,5])"
     ],
     "signature": "(implication1017[])"
   },
@@ -421,7 +421,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,6,7,5])"
+      "!(in3[12,6,6,5])"
     ],
     "signature": "(implication1018[])"
   },
@@ -431,7 +431,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,6,9,5])"
+      "!(in3[12,6,7,5])"
     ],
     "signature": "(implication1019[])"
   },
@@ -451,7 +451,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,12,10,4])"
+      "!(in3[12,6,9,5])"
     ],
     "signature": "(implication1020[])"
   },
@@ -461,7 +461,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,12,11,4])"
+      "!(in3[2,12,10,4])"
     ],
     "signature": "(implication1021[])"
   },
@@ -471,7 +471,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,12,13,4])"
+      "!(in3[2,12,11,4])"
     ],
     "signature": "(implication1022[])"
   },
@@ -481,7 +481,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,12,14,4])"
+      "!(in3[2,12,13,4])"
     ],
     "signature": "(implication1023[])"
   },
@@ -491,7 +491,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,12,2,4])"
+      "!(in3[2,12,14,4])"
     ],
     "signature": "(implication1024[])"
   },
@@ -501,7 +501,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,12,6,4])"
+      "!(in3[2,12,2,4])"
     ],
     "signature": "(implication1025[])"
   },
@@ -511,7 +511,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,12,7,4])"
+      "!(in3[2,12,6,4])"
     ],
     "signature": "(implication1026[])"
   },
@@ -521,7 +521,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,12,9,4])"
+      "!(in3[2,12,7,4])"
     ],
     "signature": "(implication1027[])"
   },
@@ -531,8 +531,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[12,6,15,5])",
-      "(=[15,12])"
+      "!(in3[2,12,9,4])"
     ],
     "signature": "(implication1028[])"
   },
@@ -542,7 +541,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,12,15,4])",
+      "(in3[12,6,15,5])",
       "(=[15,12])"
     ],
     "signature": "(implication1029[])"
@@ -563,7 +562,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[12,6,12,5])"
+      "(in3[2,12,15,4])",
+      "(=[15,12])"
     ],
     "signature": "(implication1030[])"
   },
@@ -573,7 +573,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,12,12,4])"
+      "(in3[12,6,12,5])"
     ],
     "signature": "(implication1031[])"
   },
@@ -583,7 +583,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[13,6,10,5])"
+      "(in3[2,12,12,4])"
     ],
     "signature": "(implication1032[])"
   },
@@ -593,7 +593,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[13,6,11,5])"
+      "!(in3[13,6,10,5])"
     ],
     "signature": "(implication1033[])"
   },
@@ -603,7 +603,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[13,6,12,5])"
+      "!(in3[13,6,11,5])"
     ],
     "signature": "(implication1034[])"
   },
@@ -613,7 +613,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[13,6,14,5])"
+      "!(in3[13,6,12,5])"
     ],
     "signature": "(implication1035[])"
   },
@@ -623,7 +623,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[13,6,2,5])"
+      "!(in3[13,6,14,5])"
     ],
     "signature": "(implication1036[])"
   },
@@ -633,7 +633,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[13,6,6,5])"
+      "!(in3[13,6,2,5])"
     ],
     "signature": "(implication1037[])"
   },
@@ -643,7 +643,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[13,6,7,5])"
+      "!(in3[13,6,6,5])"
     ],
     "signature": "(implication1038[])"
   },
@@ -653,7 +653,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[13,6,9,5])"
+      "!(in3[13,6,7,5])"
     ],
     "signature": "(implication1039[])"
   },
@@ -673,7 +673,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,13,10,4])"
+      "!(in3[13,6,9,5])"
     ],
     "signature": "(implication1040[])"
   },
@@ -683,7 +683,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,13,11,4])"
+      "!(in3[2,13,10,4])"
     ],
     "signature": "(implication1041[])"
   },
@@ -693,7 +693,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,13,12,4])"
+      "!(in3[2,13,11,4])"
     ],
     "signature": "(implication1042[])"
   },
@@ -703,7 +703,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,13,14,4])"
+      "!(in3[2,13,12,4])"
     ],
     "signature": "(implication1043[])"
   },
@@ -713,7 +713,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,13,2,4])"
+      "!(in3[2,13,14,4])"
     ],
     "signature": "(implication1044[])"
   },
@@ -723,7 +723,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,13,6,4])"
+      "!(in3[2,13,2,4])"
     ],
     "signature": "(implication1045[])"
   },
@@ -733,7 +733,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,13,7,4])"
+      "!(in3[2,13,6,4])"
     ],
     "signature": "(implication1046[])"
   },
@@ -743,7 +743,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,13,9,4])"
+      "!(in3[2,13,7,4])"
     ],
     "signature": "(implication1047[])"
   },
@@ -753,8 +753,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[13,6,15,5])",
-      "(=[15,13])"
+      "!(in3[2,13,9,4])"
     ],
     "signature": "(implication1048[])"
   },
@@ -764,7 +763,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,13,15,4])",
+      "(in3[13,6,15,5])",
       "(=[15,13])"
     ],
     "signature": "(implication1049[])"
@@ -785,7 +784,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[13,6,13,5])"
+      "(in3[2,13,15,4])",
+      "(=[15,13])"
     ],
     "signature": "(implication1050[])"
   },
@@ -795,7 +795,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,13,13,4])"
+      "(in3[13,6,13,5])"
     ],
     "signature": "(implication1051[])"
   },
@@ -805,7 +805,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[14,6,10,5])"
+      "(in3[2,13,13,4])"
     ],
     "signature": "(implication1052[])"
   },
@@ -815,7 +815,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[14,6,11,5])"
+      "!(in3[14,6,10,5])"
     ],
     "signature": "(implication1053[])"
   },
@@ -825,7 +825,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[14,6,12,5])"
+      "!(in3[14,6,11,5])"
     ],
     "signature": "(implication1054[])"
   },
@@ -835,7 +835,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[14,6,13,5])"
+      "!(in3[14,6,12,5])"
     ],
     "signature": "(implication1055[])"
   },
@@ -845,7 +845,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[14,6,2,5])"
+      "!(in3[14,6,13,5])"
     ],
     "signature": "(implication1056[])"
   },
@@ -855,7 +855,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[14,6,6,5])"
+      "!(in3[14,6,2,5])"
     ],
     "signature": "(implication1057[])"
   },
@@ -865,7 +865,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[14,6,7,5])"
+      "!(in3[14,6,6,5])"
     ],
     "signature": "(implication1058[])"
   },
@@ -875,7 +875,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[14,6,9,5])"
+      "!(in3[14,6,7,5])"
     ],
     "signature": "(implication1059[])"
   },
@@ -895,7 +895,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,14,10,4])"
+      "!(in3[14,6,9,5])"
     ],
     "signature": "(implication1060[])"
   },
@@ -905,7 +905,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,14,11,4])"
+      "!(in3[2,14,10,4])"
     ],
     "signature": "(implication1061[])"
   },
@@ -915,7 +915,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,14,12,4])"
+      "!(in3[2,14,11,4])"
     ],
     "signature": "(implication1062[])"
   },
@@ -925,7 +925,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,14,13,4])"
+      "!(in3[2,14,12,4])"
     ],
     "signature": "(implication1063[])"
   },
@@ -935,7 +935,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,14,2,4])"
+      "!(in3[2,14,13,4])"
     ],
     "signature": "(implication1064[])"
   },
@@ -945,7 +945,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,14,6,4])"
+      "!(in3[2,14,2,4])"
     ],
     "signature": "(implication1065[])"
   },
@@ -955,7 +955,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,14,7,4])"
+      "!(in3[2,14,6,4])"
     ],
     "signature": "(implication1066[])"
   },
@@ -965,7 +965,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,14,9,4])"
+      "!(in3[2,14,7,4])"
     ],
     "signature": "(implication1067[])"
   },
@@ -975,8 +975,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[14,6,15,5])",
-      "(=[15,14])"
+      "!(in3[2,14,9,4])"
     ],
     "signature": "(implication1068[])"
   },
@@ -986,7 +985,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,14,15,4])",
+      "(in3[14,6,15,5])",
       "(=[15,14])"
     ],
     "signature": "(implication1069[])"
@@ -1007,7 +1006,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[14,6,14,5])"
+      "(in3[2,14,15,4])",
+      "(=[15,14])"
     ],
     "signature": "(implication1070[])"
   },
@@ -1017,9 +1017,19 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,14,14,4])"
+      "(in3[14,6,14,5])"
     ],
     "signature": "(implication1071[])"
+  },
+  "implication1072": {
+    "arity": 0,
+    "category": "implication",
+    "definedSet": "",
+    "elements": [
+      "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
+      "(in3[2,14,14,4])"
+    ],
+    "signature": "(implication1072[])"
   },
   "implication108": {
     "arity": 0,
@@ -2710,7 +2720,10 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(=[10,11])"
+      "(in2[15,16,3])",
+      "(in2[17,18,3])",
+      "(=[15,17])",
+      "(=[16,18])"
     ],
     "signature": "(implication258[])"
   },
@@ -2720,7 +2733,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(=[9,10])"
+      "!(=[10,11])"
     ],
     "signature": "(implication259[])"
   },
@@ -2740,7 +2753,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(=[9,11])"
+      "!(=[9,10])"
     ],
     "signature": "(implication260[])"
   },
@@ -2750,7 +2763,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(=[9,12])"
+      "!(=[9,11])"
     ],
     "signature": "(implication261[])"
   },
@@ -2760,7 +2773,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(=[9,13])"
+      "!(=[9,12])"
     ],
     "signature": "(implication262[])"
   },
@@ -2770,7 +2783,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(=[9,14])"
+      "!(=[9,13])"
     ],
     "signature": "(implication263[])"
   },
@@ -2780,7 +2793,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[10,10,3])"
+      "!(=[9,14])"
     ],
     "signature": "(implication264[])"
   },
@@ -2790,7 +2803,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[10,9,3])"
+      "!(in2[10,10,3])"
     ],
     "signature": "(implication265[])"
   },
@@ -2800,7 +2813,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[11,9,3])"
+      "!(in2[10,9,3])"
     ],
     "signature": "(implication266[])"
   },
@@ -2810,7 +2823,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[12,9,3])"
+      "!(in2[11,9,3])"
     ],
     "signature": "(implication267[])"
   },
@@ -2820,7 +2833,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[13,9,3])"
+      "!(in2[12,9,3])"
     ],
     "signature": "(implication268[])"
   },
@@ -2830,7 +2843,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[14,9,3])"
+      "!(in2[13,9,3])"
     ],
     "signature": "(implication269[])"
   },
@@ -2850,7 +2863,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[7,10,3])"
+      "!(in2[14,9,3])"
     ],
     "signature": "(implication270[])"
   },
@@ -2860,7 +2873,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[7,11,3])"
+      "!(in2[7,10,3])"
     ],
     "signature": "(implication271[])"
   },
@@ -2870,7 +2883,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[7,12,3])"
+      "!(in2[7,11,3])"
     ],
     "signature": "(implication272[])"
   },
@@ -2880,7 +2893,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[7,13,3])"
+      "!(in2[7,12,3])"
     ],
     "signature": "(implication273[])"
   },
@@ -2890,7 +2903,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[7,14,3])"
+      "!(in2[7,13,3])"
     ],
     "signature": "(implication274[])"
   },
@@ -2900,7 +2913,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[9,11,3])"
+      "!(in2[7,14,3])"
     ],
     "signature": "(implication275[])"
   },
@@ -2910,7 +2923,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[9,9,3])"
+      "!(in2[9,11,3])"
     ],
     "signature": "(implication276[])"
   },
@@ -2920,7 +2933,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,2,7,4])"
+      "!(in2[9,9,3])"
     ],
     "signature": "(implication277[])"
   },
@@ -2930,7 +2943,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,2,9,4])"
+      "!(in3[10,2,7,4])"
     ],
     "signature": "(implication278[])"
   },
@@ -2940,7 +2953,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,2,7,4])"
+      "!(in3[10,2,9,4])"
     ],
     "signature": "(implication279[])"
   },
@@ -2961,7 +2974,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,2,7,4])"
+      "!(in3[11,2,7,4])"
     ],
     "signature": "(implication280[])"
   },
@@ -2971,7 +2984,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[13,2,7,4])"
+      "!(in3[12,2,7,4])"
     ],
     "signature": "(implication281[])"
   },
@@ -2981,7 +2994,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[14,2,7,4])"
+      "!(in3[13,2,7,4])"
     ],
     "signature": "(implication282[])"
   },
@@ -2991,7 +3004,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,2,10,4])"
+      "!(in3[14,2,7,4])"
     ],
     "signature": "(implication283[])"
   },
@@ -3001,7 +3014,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,2,11,4])"
+      "!(in3[7,2,10,4])"
     ],
     "signature": "(implication284[])"
   },
@@ -3011,7 +3024,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,2,12,4])"
+      "!(in3[7,2,11,4])"
     ],
     "signature": "(implication285[])"
   },
@@ -3021,7 +3034,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,2,13,4])"
+      "!(in3[7,2,12,4])"
     ],
     "signature": "(implication286[])"
   },
@@ -3031,7 +3044,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,2,14,4])"
+      "!(in3[7,2,13,4])"
     ],
     "signature": "(implication287[])"
   },
@@ -3041,7 +3054,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,2,9,4])"
+      "!(in3[7,2,14,4])"
     ],
     "signature": "(implication288[])"
   },
@@ -3051,7 +3064,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,2,10,4])"
+      "!(in3[7,2,9,4])"
     ],
     "signature": "(implication289[])"
   },
@@ -3071,7 +3084,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,2,7,4])"
+      "!(in3[9,2,10,4])"
     ],
     "signature": "(implication290[])"
   },
@@ -3081,7 +3094,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(=[10,12])"
+      "!(in3[9,2,7,4])"
     ],
     "signature": "(implication291[])"
   },
@@ -3091,7 +3104,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(=[10,13])"
+      "!(=[10,12])"
     ],
     "signature": "(implication292[])"
   },
@@ -3101,7 +3114,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(=[10,14])"
+      "!(=[10,13])"
     ],
     "signature": "(implication293[])"
   },
@@ -3111,7 +3124,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(=[11,12])"
+      "!(=[10,14])"
     ],
     "signature": "(implication294[])"
   },
@@ -3121,7 +3134,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(=[11,13])"
+      "!(=[11,12])"
     ],
     "signature": "(implication295[])"
   },
@@ -3131,7 +3144,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(=[11,14])"
+      "!(=[11,13])"
     ],
     "signature": "(implication296[])"
   },
@@ -3141,7 +3154,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(=[12,13])"
+      "!(=[11,14])"
     ],
     "signature": "(implication297[])"
   },
@@ -3151,7 +3164,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(=[12,14])"
+      "!(=[12,13])"
     ],
     "signature": "(implication298[])"
   },
@@ -3161,7 +3174,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[10,12,3])"
+      "!(=[12,14])"
     ],
     "signature": "(implication299[])"
   },
@@ -3194,7 +3207,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[10,13,3])"
+      "!(in2[10,12,3])"
     ],
     "signature": "(implication300[])"
   },
@@ -3204,7 +3217,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[10,14,3])"
+      "!(in2[10,13,3])"
     ],
     "signature": "(implication301[])"
   },
@@ -3214,7 +3227,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[11,10,3])"
+      "!(in2[10,14,3])"
     ],
     "signature": "(implication302[])"
   },
@@ -3224,7 +3237,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[11,11,3])"
+      "!(in2[11,10,3])"
     ],
     "signature": "(implication303[])"
   },
@@ -3234,7 +3247,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[11,13,3])"
+      "!(in2[11,11,3])"
     ],
     "signature": "(implication304[])"
   },
@@ -3244,7 +3257,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[11,14,3])"
+      "!(in2[11,13,3])"
     ],
     "signature": "(implication305[])"
   },
@@ -3254,7 +3267,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[12,10,3])"
+      "!(in2[11,14,3])"
     ],
     "signature": "(implication306[])"
   },
@@ -3264,7 +3277,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[12,11,3])"
+      "!(in2[12,10,3])"
     ],
     "signature": "(implication307[])"
   },
@@ -3274,7 +3287,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[12,12,3])"
+      "!(in2[12,11,3])"
     ],
     "signature": "(implication308[])"
   },
@@ -3284,7 +3297,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[13,10,3])"
+      "!(in2[12,12,3])"
     ],
     "signature": "(implication309[])"
   },
@@ -3305,7 +3318,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[13,11,3])"
+      "!(in2[13,10,3])"
     ],
     "signature": "(implication310[])"
   },
@@ -3315,7 +3328,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[13,12,3])"
+      "!(in2[13,11,3])"
     ],
     "signature": "(implication311[])"
   },
@@ -3325,7 +3338,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[14,10,3])"
+      "!(in2[13,12,3])"
     ],
     "signature": "(implication312[])"
   },
@@ -3335,7 +3348,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[14,11,3])"
+      "!(in2[14,10,3])"
     ],
     "signature": "(implication313[])"
   },
@@ -3345,7 +3358,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[14,12,3])"
+      "!(in2[14,11,3])"
     ],
     "signature": "(implication314[])"
   },
@@ -3355,7 +3368,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[9,12,3])"
+      "!(in2[14,12,3])"
     ],
     "signature": "(implication315[])"
   },
@@ -3365,7 +3378,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[9,13,3])"
+      "!(in2[9,12,3])"
     ],
     "signature": "(implication316[])"
   },
@@ -3375,7 +3388,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[9,14,3])"
+      "!(in2[9,13,3])"
     ],
     "signature": "(implication317[])"
   },
@@ -3385,7 +3398,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,2,11,4])"
+      "!(in2[9,14,3])"
     ],
     "signature": "(implication318[])"
   },
@@ -3395,7 +3408,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,2,12,4])"
+      "!(in3[10,2,11,4])"
     ],
     "signature": "(implication319[])"
   },
@@ -3416,7 +3429,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,2,13,4])"
+      "!(in3[10,2,12,4])"
     ],
     "signature": "(implication320[])"
   },
@@ -3426,7 +3439,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,2,14,4])"
+      "!(in3[10,2,13,4])"
     ],
     "signature": "(implication321[])"
   },
@@ -3436,7 +3449,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,6,2,4])"
+      "!(in3[10,2,14,4])"
     ],
     "signature": "(implication322[])"
   },
@@ -3446,7 +3459,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,2,10,4])"
+      "!(in3[10,6,2,4])"
     ],
     "signature": "(implication323[])"
   },
@@ -3456,7 +3469,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,2,12,4])"
+      "!(in3[11,2,10,4])"
     ],
     "signature": "(implication324[])"
   },
@@ -3466,7 +3479,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,2,13,4])"
+      "!(in3[11,2,12,4])"
     ],
     "signature": "(implication325[])"
   },
@@ -3476,7 +3489,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,2,14,4])"
+      "!(in3[11,2,13,4])"
     ],
     "signature": "(implication326[])"
   },
@@ -3486,7 +3499,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,2,9,4])"
+      "!(in3[11,2,14,4])"
     ],
     "signature": "(implication327[])"
   },
@@ -3496,7 +3509,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,6,2,4])"
+      "!(in3[11,2,9,4])"
     ],
     "signature": "(implication328[])"
   },
@@ -3506,7 +3519,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,2,10,4])"
+      "!(in3[11,6,2,4])"
     ],
     "signature": "(implication329[])"
   },
@@ -3527,7 +3540,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,2,11,4])"
+      "!(in3[12,2,10,4])"
     ],
     "signature": "(implication330[])"
   },
@@ -3537,7 +3550,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,2,9,4])"
+      "!(in3[12,2,11,4])"
     ],
     "signature": "(implication331[])"
   },
@@ -3547,7 +3560,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,6,2,4])"
+      "!(in3[12,2,9,4])"
     ],
     "signature": "(implication332[])"
   },
@@ -3557,7 +3570,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[13,2,10,4])"
+      "!(in3[12,6,2,4])"
     ],
     "signature": "(implication333[])"
   },
@@ -3567,7 +3580,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[13,2,11,4])"
+      "!(in3[13,2,10,4])"
     ],
     "signature": "(implication334[])"
   },
@@ -3577,7 +3590,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[13,2,9,4])"
+      "!(in3[13,2,11,4])"
     ],
     "signature": "(implication335[])"
   },
@@ -3587,7 +3600,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[13,6,2,4])"
+      "!(in3[13,2,9,4])"
     ],
     "signature": "(implication336[])"
   },
@@ -3597,7 +3610,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[14,2,10,4])"
+      "!(in3[13,6,2,4])"
     ],
     "signature": "(implication337[])"
   },
@@ -3607,7 +3620,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[14,2,11,4])"
+      "!(in3[14,2,10,4])"
     ],
     "signature": "(implication338[])"
   },
@@ -3617,7 +3630,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[14,2,9,4])"
+      "!(in3[14,2,11,4])"
     ],
     "signature": "(implication339[])"
   },
@@ -3637,7 +3650,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[14,6,2,4])"
+      "!(in3[14,2,9,4])"
     ],
     "signature": "(implication340[])"
   },
@@ -3647,7 +3660,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,6,2,4])"
+      "!(in3[14,6,2,4])"
     ],
     "signature": "(implication341[])"
   },
@@ -3657,7 +3670,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,6,6,5])"
+      "!(in3[2,6,2,4])"
     ],
     "signature": "(implication342[])"
   },
@@ -3667,7 +3680,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,6,7,4])"
+      "!(in3[2,6,6,5])"
     ],
     "signature": "(implication343[])"
   },
@@ -3677,7 +3690,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,6,2,4])"
+      "!(in3[2,6,7,4])"
     ],
     "signature": "(implication344[])"
   },
@@ -3687,7 +3700,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,6,6,4])"
+      "!(in3[6,6,2,4])"
     ],
     "signature": "(implication345[])"
   },
@@ -3697,7 +3710,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,6,2,4])"
+      "!(in3[6,6,6,4])"
     ],
     "signature": "(implication346[])"
   },
@@ -3707,7 +3720,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,2,11,4])"
+      "!(in3[7,6,2,4])"
     ],
     "signature": "(implication347[])"
   },
@@ -3717,7 +3730,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,2,12,4])"
+      "!(in3[9,2,11,4])"
     ],
     "signature": "(implication348[])"
   },
@@ -3727,7 +3740,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,2,13,4])"
+      "!(in3[9,2,12,4])"
     ],
     "signature": "(implication349[])"
   },
@@ -3747,7 +3760,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,2,14,4])"
+      "!(in3[9,2,13,4])"
     ],
     "signature": "(implication350[])"
   },
@@ -3757,7 +3770,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,6,2,4])"
+      "!(in3[9,2,14,4])"
     ],
     "signature": "(implication351[])"
   },
@@ -3767,7 +3780,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(=[13,14])"
+      "!(in3[9,6,2,4])"
     ],
     "signature": "(implication352[])"
   },
@@ -3777,7 +3790,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[12,14,3])"
+      "!(=[13,14])"
     ],
     "signature": "(implication353[])"
   },
@@ -3787,7 +3800,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[13,13,3])"
+      "!(in2[12,14,3])"
     ],
     "signature": "(implication354[])"
   },
@@ -3797,7 +3810,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[14,13,3])"
+      "!(in2[13,13,3])"
     ],
     "signature": "(implication355[])"
   },
@@ -3807,7 +3820,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in2[14,14,3])"
+      "!(in2[14,13,3])"
     ],
     "signature": "(implication356[])"
   },
@@ -3817,7 +3830,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,6,10,4])"
+      "!(in2[14,14,3])"
     ],
     "signature": "(implication357[])"
   },
@@ -3827,7 +3840,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,6,12,4])"
+      "!(in3[10,6,10,4])"
     ],
     "signature": "(implication358[])"
   },
@@ -3837,7 +3850,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,6,6,4])"
+      "!(in3[10,6,12,4])"
     ],
     "signature": "(implication359[])"
   },
@@ -3857,7 +3870,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,6,7,4])"
+      "!(in3[10,6,6,4])"
     ],
     "signature": "(implication360[])"
   },
@@ -3867,7 +3880,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,6,9,4])"
+      "!(in3[10,6,7,4])"
     ],
     "signature": "(implication361[])"
   },
@@ -3877,7 +3890,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,7,2,4])"
+      "!(in3[10,6,9,4])"
     ],
     "signature": "(implication362[])"
   },
@@ -3887,7 +3900,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,7,6,4])"
+      "!(in3[10,7,2,4])"
     ],
     "signature": "(implication363[])"
   },
@@ -3897,7 +3910,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,7,7,4])"
+      "!(in3[10,7,6,4])"
     ],
     "signature": "(implication364[])"
   },
@@ -3907,7 +3920,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,6,10,4])"
+      "!(in3[10,7,7,4])"
     ],
     "signature": "(implication365[])"
   },
@@ -3917,7 +3930,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,6,11,4])"
+      "!(in3[11,6,10,4])"
     ],
     "signature": "(implication366[])"
   },
@@ -3927,7 +3940,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,6,6,4])"
+      "!(in3[11,6,11,4])"
     ],
     "signature": "(implication367[])"
   },
@@ -3937,7 +3950,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,6,7,4])"
+      "!(in3[11,6,6,4])"
     ],
     "signature": "(implication368[])"
   },
@@ -3947,7 +3960,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,6,9,4])"
+      "!(in3[11,6,7,4])"
     ],
     "signature": "(implication369[])"
   },
@@ -3967,7 +3980,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,7,2,4])"
+      "!(in3[11,6,9,4])"
     ],
     "signature": "(implication370[])"
   },
@@ -3977,7 +3990,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,7,6,4])"
+      "!(in3[11,7,2,4])"
     ],
     "signature": "(implication371[])"
   },
@@ -3987,7 +4000,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,7,7,4])"
+      "!(in3[11,7,6,4])"
     ],
     "signature": "(implication372[])"
   },
@@ -3997,7 +4010,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,2,13,4])"
+      "!(in3[11,7,7,4])"
     ],
     "signature": "(implication373[])"
   },
@@ -4007,7 +4020,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,2,14,4])"
+      "!(in3[12,2,13,4])"
     ],
     "signature": "(implication374[])"
   },
@@ -4017,7 +4030,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,6,10,4])"
+      "!(in3[12,2,14,4])"
     ],
     "signature": "(implication375[])"
   },
@@ -4027,7 +4040,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,6,6,4])"
+      "!(in3[12,6,10,4])"
     ],
     "signature": "(implication376[])"
   },
@@ -4037,7 +4050,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,6,7,4])"
+      "!(in3[12,6,6,4])"
     ],
     "signature": "(implication377[])"
   },
@@ -4047,7 +4060,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,6,9,4])"
+      "!(in3[12,6,7,4])"
     ],
     "signature": "(implication378[])"
   },
@@ -4057,7 +4070,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,7,2,4])"
+      "!(in3[12,6,9,4])"
     ],
     "signature": "(implication379[])"
   },
@@ -4077,7 +4090,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,7,6,4])"
+      "!(in3[12,7,2,4])"
     ],
     "signature": "(implication380[])"
   },
@@ -4087,7 +4100,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,7,7,4])"
+      "!(in3[12,7,6,4])"
     ],
     "signature": "(implication381[])"
   },
@@ -4097,7 +4110,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[13,2,12,4])"
+      "!(in3[12,7,7,4])"
     ],
     "signature": "(implication382[])"
   },
@@ -4107,7 +4120,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[13,2,14,4])"
+      "!(in3[13,2,12,4])"
     ],
     "signature": "(implication383[])"
   },
@@ -4117,7 +4130,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[13,6,10,4])"
+      "!(in3[13,2,14,4])"
     ],
     "signature": "(implication384[])"
   },
@@ -4127,7 +4140,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[13,6,6,4])"
+      "!(in3[13,6,10,4])"
     ],
     "signature": "(implication385[])"
   },
@@ -4137,7 +4150,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[13,6,7,4])"
+      "!(in3[13,6,6,4])"
     ],
     "signature": "(implication386[])"
   },
@@ -4147,7 +4160,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[13,6,9,4])"
+      "!(in3[13,6,7,4])"
     ],
     "signature": "(implication387[])"
   },
@@ -4157,7 +4170,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[13,7,2,4])"
+      "!(in3[13,6,9,4])"
     ],
     "signature": "(implication388[])"
   },
@@ -4167,7 +4180,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[13,7,6,4])"
+      "!(in3[13,7,2,4])"
     ],
     "signature": "(implication389[])"
   },
@@ -4187,7 +4200,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[13,7,7,4])"
+      "!(in3[13,7,6,4])"
     ],
     "signature": "(implication390[])"
   },
@@ -4197,7 +4210,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[14,2,12,4])"
+      "!(in3[13,7,7,4])"
     ],
     "signature": "(implication391[])"
   },
@@ -4207,7 +4220,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[14,2,13,4])"
+      "!(in3[14,2,12,4])"
     ],
     "signature": "(implication392[])"
   },
@@ -4217,7 +4230,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[14,6,10,4])"
+      "!(in3[14,2,13,4])"
     ],
     "signature": "(implication393[])"
   },
@@ -4227,7 +4240,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[14,6,6,4])"
+      "!(in3[14,6,10,4])"
     ],
     "signature": "(implication394[])"
   },
@@ -4237,7 +4250,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[14,6,7,4])"
+      "!(in3[14,6,6,4])"
     ],
     "signature": "(implication395[])"
   },
@@ -4247,7 +4260,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[14,6,9,4])"
+      "!(in3[14,6,7,4])"
     ],
     "signature": "(implication396[])"
   },
@@ -4257,7 +4270,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,6,10,4])"
+      "!(in3[14,6,9,4])"
     ],
     "signature": "(implication397[])"
   },
@@ -4267,7 +4280,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,6,10,5])"
+      "!(in3[2,6,10,4])"
     ],
     "signature": "(implication398[])"
   },
@@ -4277,7 +4290,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,6,11,4])"
+      "!(in3[2,6,10,5])"
     ],
     "signature": "(implication399[])"
   },
@@ -4307,7 +4320,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,6,11,5])"
+      "!(in3[2,6,11,4])"
     ],
     "signature": "(implication400[])"
   },
@@ -4317,7 +4330,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,6,12,4])"
+      "!(in3[2,6,11,5])"
     ],
     "signature": "(implication401[])"
   },
@@ -4327,7 +4340,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,6,12,5])"
+      "!(in3[2,6,12,4])"
     ],
     "signature": "(implication402[])"
   },
@@ -4337,7 +4350,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,6,13,4])"
+      "!(in3[2,6,12,5])"
     ],
     "signature": "(implication403[])"
   },
@@ -4347,7 +4360,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,6,13,5])"
+      "!(in3[2,6,13,4])"
     ],
     "signature": "(implication404[])"
   },
@@ -4357,7 +4370,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,6,14,4])"
+      "!(in3[2,6,13,5])"
     ],
     "signature": "(implication405[])"
   },
@@ -4367,7 +4380,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,6,14,5])"
+      "!(in3[2,6,14,4])"
     ],
     "signature": "(implication406[])"
   },
@@ -4377,7 +4390,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,6,7,5])"
+      "!(in3[2,6,14,5])"
     ],
     "signature": "(implication407[])"
   },
@@ -4387,7 +4400,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,6,9,4])"
+      "!(in3[2,6,7,5])"
     ],
     "signature": "(implication408[])"
   },
@@ -4397,7 +4410,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,6,9,5])"
+      "!(in3[2,6,9,4])"
     ],
     "signature": "(implication409[])"
   },
@@ -4417,7 +4430,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,7,10,5])"
+      "!(in3[2,6,9,5])"
     ],
     "signature": "(implication410[])"
   },
@@ -4427,7 +4440,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,7,11,5])"
+      "!(in3[2,7,10,5])"
     ],
     "signature": "(implication411[])"
   },
@@ -4437,7 +4450,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,7,12,5])"
+      "!(in3[2,7,11,5])"
     ],
     "signature": "(implication412[])"
   },
@@ -4447,7 +4460,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,7,13,5])"
+      "!(in3[2,7,12,5])"
     ],
     "signature": "(implication413[])"
   },
@@ -4457,7 +4470,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,7,14,5])"
+      "!(in3[2,7,13,5])"
     ],
     "signature": "(implication414[])"
   },
@@ -4467,7 +4480,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,7,6,5])"
+      "!(in3[2,7,14,5])"
     ],
     "signature": "(implication415[])"
   },
@@ -4477,7 +4490,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,7,7,5])"
+      "!(in3[2,7,6,5])"
     ],
     "signature": "(implication416[])"
   },
@@ -4487,7 +4500,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,7,9,5])"
+      "!(in3[2,7,7,5])"
     ],
     "signature": "(implication417[])"
   },
@@ -4497,7 +4510,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,6,10,4])"
+      "!(in3[2,7,9,5])"
     ],
     "signature": "(implication418[])"
   },
@@ -4507,7 +4520,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,6,10,5])"
+      "!(in3[6,6,10,4])"
     ],
     "signature": "(implication419[])"
   },
@@ -4527,7 +4540,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,6,11,4])"
+      "!(in3[6,6,10,5])"
     ],
     "signature": "(implication420[])"
   },
@@ -4537,7 +4550,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,6,11,5])"
+      "!(in3[6,6,11,4])"
     ],
     "signature": "(implication421[])"
   },
@@ -4547,7 +4560,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,6,12,4])"
+      "!(in3[6,6,11,5])"
     ],
     "signature": "(implication422[])"
   },
@@ -4557,7 +4570,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,6,12,5])"
+      "!(in3[6,6,12,4])"
     ],
     "signature": "(implication423[])"
   },
@@ -4567,7 +4580,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,6,13,4])"
+      "!(in3[6,6,12,5])"
     ],
     "signature": "(implication424[])"
   },
@@ -4577,7 +4590,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,6,13,5])"
+      "!(in3[6,6,13,4])"
     ],
     "signature": "(implication425[])"
   },
@@ -4587,7 +4600,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,6,14,4])"
+      "!(in3[6,6,13,5])"
     ],
     "signature": "(implication426[])"
   },
@@ -4597,7 +4610,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,6,14,5])"
+      "!(in3[6,6,14,4])"
     ],
     "signature": "(implication427[])"
   },
@@ -4607,7 +4620,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,6,2,5])"
+      "!(in3[6,6,14,5])"
     ],
     "signature": "(implication428[])"
   },
@@ -4617,7 +4630,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,6,7,5])"
+      "!(in3[6,6,2,5])"
     ],
     "signature": "(implication429[])"
   },
@@ -4637,7 +4650,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,6,9,4])"
+      "!(in3[6,6,7,5])"
     ],
     "signature": "(implication430[])"
   },
@@ -4647,7 +4660,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,6,9,5])"
+      "!(in3[6,6,9,4])"
     ],
     "signature": "(implication431[])"
   },
@@ -4657,7 +4670,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,7,2,4])"
+      "!(in3[6,6,9,5])"
     ],
     "signature": "(implication432[])"
   },
@@ -4667,7 +4680,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,7,6,4])"
+      "!(in3[6,7,2,4])"
     ],
     "signature": "(implication433[])"
   },
@@ -4677,7 +4690,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,7,7,4])"
+      "!(in3[6,7,6,4])"
     ],
     "signature": "(implication434[])"
   },
@@ -4687,7 +4700,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,6,10,4])"
+      "!(in3[6,7,7,4])"
     ],
     "signature": "(implication435[])"
   },
@@ -4697,7 +4710,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,6,11,4])"
+      "!(in3[7,6,10,4])"
     ],
     "signature": "(implication436[])"
   },
@@ -4707,7 +4720,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,6,12,4])"
+      "!(in3[7,6,11,4])"
     ],
     "signature": "(implication437[])"
   },
@@ -4717,7 +4730,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,6,13,4])"
+      "!(in3[7,6,12,4])"
     ],
     "signature": "(implication438[])"
   },
@@ -4727,7 +4740,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,6,14,4])"
+      "!(in3[7,6,13,4])"
     ],
     "signature": "(implication439[])"
   },
@@ -4747,7 +4760,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,6,6,4])"
+      "!(in3[7,6,14,4])"
     ],
     "signature": "(implication440[])"
   },
@@ -4757,7 +4770,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,6,7,4])"
+      "!(in3[7,6,6,4])"
     ],
     "signature": "(implication441[])"
   },
@@ -4767,7 +4780,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,7,2,4])"
+      "!(in3[7,6,7,4])"
     ],
     "signature": "(implication442[])"
   },
@@ -4777,7 +4790,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,7,6,4])"
+      "!(in3[7,7,2,4])"
     ],
     "signature": "(implication443[])"
   },
@@ -4787,7 +4800,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,7,7,4])"
+      "!(in3[7,7,6,4])"
     ],
     "signature": "(implication444[])"
   },
@@ -4797,7 +4810,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,6,11,4])"
+      "!(in3[7,7,7,4])"
     ],
     "signature": "(implication445[])"
   },
@@ -4807,7 +4820,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,6,12,4])"
+      "!(in3[9,6,11,4])"
     ],
     "signature": "(implication446[])"
   },
@@ -4817,7 +4830,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,6,13,4])"
+      "!(in3[9,6,12,4])"
     ],
     "signature": "(implication447[])"
   },
@@ -4827,7 +4840,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,6,14,4])"
+      "!(in3[9,6,13,4])"
     ],
     "signature": "(implication448[])"
   },
@@ -4837,7 +4850,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,6,6,4])"
+      "!(in3[9,6,14,4])"
     ],
     "signature": "(implication449[])"
   },
@@ -4857,7 +4870,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,6,7,4])"
+      "!(in3[9,6,6,4])"
     ],
     "signature": "(implication450[])"
   },
@@ -4867,7 +4880,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,6,9,4])"
+      "!(in3[9,6,7,4])"
     ],
     "signature": "(implication451[])"
   },
@@ -4877,7 +4890,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,7,2,4])"
+      "!(in3[9,6,9,4])"
     ],
     "signature": "(implication452[])"
   },
@@ -4887,7 +4900,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,7,6,4])"
+      "!(in3[9,7,2,4])"
     ],
     "signature": "(implication453[])"
   },
@@ -4897,7 +4910,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,7,7,4])"
+      "!(in3[9,7,6,4])"
     ],
     "signature": "(implication454[])"
   },
@@ -4907,8 +4920,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[10,6,15,4])",
-      "(=[15,11])"
+      "!(in3[9,7,7,4])"
     ],
     "signature": "(implication455[])"
   },
@@ -4918,8 +4930,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[11,6,15,4])",
-      "(=[15,12])"
+      "(in3[10,6,15,4])",
+      "(=[15,11])"
     ],
     "signature": "(implication456[])"
   },
@@ -4929,8 +4941,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[12,6,15,4])",
-      "(=[15,13])"
+      "(in3[11,6,15,4])",
+      "(=[15,12])"
     ],
     "signature": "(implication457[])"
   },
@@ -4940,8 +4952,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[13,6,15,4])",
-      "(=[15,14])"
+      "(in3[12,6,15,4])",
+      "(=[15,13])"
     ],
     "signature": "(implication458[])"
   },
@@ -4951,8 +4963,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,6,15,4])",
-      "(=[15,6])"
+      "(in3[13,6,15,4])",
+      "(=[15,14])"
     ],
     "signature": "(implication459[])"
   },
@@ -4972,8 +4984,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,6,15,5])",
-      "(=[15,2])"
+      "(in3[2,6,15,4])",
+      "(=[15,6])"
     ],
     "signature": "(implication460[])"
   },
@@ -4983,8 +4995,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[6,6,15,4])",
-      "(=[15,7])"
+      "(in3[2,6,15,5])",
+      "(=[15,2])"
     ],
     "signature": "(implication461[])"
   },
@@ -4994,8 +5006,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[7,6,15,4])",
-      "(=[15,9])"
+      "(in3[6,6,15,4])",
+      "(=[15,7])"
     ],
     "signature": "(implication462[])"
   },
@@ -5005,8 +5017,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[9,6,15,4])",
-      "(=[15,10])"
+      "(in3[7,6,15,4])",
+      "(=[15,9])"
     ],
     "signature": "(implication463[])"
   },
@@ -5016,7 +5028,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[10,6,11,4])"
+      "(in3[9,6,15,4])",
+      "(=[15,10])"
     ],
     "signature": "(implication464[])"
   },
@@ -5026,7 +5039,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[11,6,12,4])"
+      "(in3[10,6,11,4])"
     ],
     "signature": "(implication465[])"
   },
@@ -5036,7 +5049,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[12,6,13,4])"
+      "(in3[11,6,12,4])"
     ],
     "signature": "(implication466[])"
   },
@@ -5046,7 +5059,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[13,6,14,4])"
+      "(in3[12,6,13,4])"
     ],
     "signature": "(implication467[])"
   },
@@ -5056,7 +5069,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,6,2,5])"
+      "(in3[13,6,14,4])"
     ],
     "signature": "(implication468[])"
   },
@@ -5066,7 +5079,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,6,6,4])"
+      "(in3[2,6,2,5])"
     ],
     "signature": "(implication469[])"
   },
@@ -5086,7 +5099,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[6,6,7,4])"
+      "(in3[2,6,6,4])"
     ],
     "signature": "(implication470[])"
   },
@@ -5096,7 +5109,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[7,6,9,4])"
+      "(in3[6,6,7,4])"
     ],
     "signature": "(implication471[])"
   },
@@ -5106,7 +5119,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[9,6,10,4])"
+      "(in3[7,6,9,4])"
     ],
     "signature": "(implication472[])"
   },
@@ -5116,7 +5129,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,6,13,4])"
+      "(in3[9,6,10,4])"
     ],
     "signature": "(implication473[])"
   },
@@ -5126,7 +5139,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,6,14,4])"
+      "!(in3[10,6,13,4])"
     ],
     "signature": "(implication474[])"
   },
@@ -5136,7 +5149,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,7,10,4])"
+      "!(in3[10,6,14,4])"
     ],
     "signature": "(implication475[])"
   },
@@ -5146,7 +5159,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,7,11,4])"
+      "!(in3[10,7,10,4])"
     ],
     "signature": "(implication476[])"
   },
@@ -5156,7 +5169,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,7,13,4])"
+      "!(in3[10,7,11,4])"
     ],
     "signature": "(implication477[])"
   },
@@ -5166,7 +5179,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,7,14,4])"
+      "!(in3[10,7,13,4])"
     ],
     "signature": "(implication478[])"
   },
@@ -5176,7 +5189,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,7,9,4])"
+      "!(in3[10,7,14,4])"
     ],
     "signature": "(implication479[])"
   },
@@ -5196,7 +5209,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,9,2,4])"
+      "!(in3[10,7,9,4])"
     ],
     "signature": "(implication480[])"
   },
@@ -5206,7 +5219,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,9,6,4])"
+      "!(in3[10,9,2,4])"
     ],
     "signature": "(implication481[])"
   },
@@ -5216,7 +5229,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,9,7,4])"
+      "!(in3[10,9,6,4])"
     ],
     "signature": "(implication482[])"
   },
@@ -5226,7 +5239,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,9,9,4])"
+      "!(in3[10,9,7,4])"
     ],
     "signature": "(implication483[])"
   },
@@ -5236,7 +5249,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,6,13,4])"
+      "!(in3[10,9,9,4])"
     ],
     "signature": "(implication484[])"
   },
@@ -5246,7 +5259,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,6,14,4])"
+      "!(in3[11,6,13,4])"
     ],
     "signature": "(implication485[])"
   },
@@ -5256,7 +5269,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,7,10,4])"
+      "!(in3[11,6,14,4])"
     ],
     "signature": "(implication486[])"
   },
@@ -5266,7 +5279,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,7,11,4])"
+      "!(in3[11,7,10,4])"
     ],
     "signature": "(implication487[])"
   },
@@ -5276,7 +5289,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,7,12,4])"
+      "!(in3[11,7,11,4])"
     ],
     "signature": "(implication488[])"
   },
@@ -5286,7 +5299,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,7,14,4])"
+      "!(in3[11,7,12,4])"
     ],
     "signature": "(implication489[])"
   },
@@ -5306,7 +5319,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,7,9,4])"
+      "!(in3[11,7,14,4])"
     ],
     "signature": "(implication490[])"
   },
@@ -5316,7 +5329,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,9,2,4])"
+      "!(in3[11,7,9,4])"
     ],
     "signature": "(implication491[])"
   },
@@ -5326,7 +5339,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,9,6,4])"
+      "!(in3[11,9,2,4])"
     ],
     "signature": "(implication492[])"
   },
@@ -5336,7 +5349,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,9,7,4])"
+      "!(in3[11,9,6,4])"
     ],
     "signature": "(implication493[])"
   },
@@ -5346,7 +5359,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,9,9,4])"
+      "!(in3[11,9,7,4])"
     ],
     "signature": "(implication494[])"
   },
@@ -5356,7 +5369,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,6,11,4])"
+      "!(in3[11,9,9,4])"
     ],
     "signature": "(implication495[])"
   },
@@ -5366,7 +5379,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,6,12,4])"
+      "!(in3[12,6,11,4])"
     ],
     "signature": "(implication496[])"
   },
@@ -5376,7 +5389,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,6,14,4])"
+      "!(in3[12,6,12,4])"
     ],
     "signature": "(implication497[])"
   },
@@ -5386,7 +5399,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,7,10,4])"
+      "!(in3[12,6,14,4])"
     ],
     "signature": "(implication498[])"
   },
@@ -5396,7 +5409,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,7,11,4])"
+      "!(in3[12,7,10,4])"
     ],
     "signature": "(implication499[])"
   },
@@ -5428,7 +5441,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,7,12,4])"
+      "!(in3[12,7,11,4])"
     ],
     "signature": "(implication500[])"
   },
@@ -5438,7 +5451,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,7,13,4])"
+      "!(in3[12,7,12,4])"
     ],
     "signature": "(implication501[])"
   },
@@ -5448,7 +5461,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,7,9,4])"
+      "!(in3[12,7,13,4])"
     ],
     "signature": "(implication502[])"
   },
@@ -5458,7 +5471,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,9,2,4])"
+      "!(in3[12,7,9,4])"
     ],
     "signature": "(implication503[])"
   },
@@ -5468,7 +5481,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,9,6,4])"
+      "!(in3[12,9,2,4])"
     ],
     "signature": "(implication504[])"
   },
@@ -5478,7 +5491,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,9,7,4])"
+      "!(in3[12,9,6,4])"
     ],
     "signature": "(implication505[])"
   },
@@ -5488,7 +5501,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,9,9,4])"
+      "!(in3[12,9,7,4])"
     ],
     "signature": "(implication506[])"
   },
@@ -5498,7 +5511,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[13,6,11,4])"
+      "!(in3[12,9,9,4])"
     ],
     "signature": "(implication507[])"
   },
@@ -5508,7 +5521,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[13,6,12,4])"
+      "!(in3[13,6,11,4])"
     ],
     "signature": "(implication508[])"
   },
@@ -5518,7 +5531,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[13,6,13,4])"
+      "!(in3[13,6,12,4])"
     ],
     "signature": "(implication509[])"
   },
@@ -5538,7 +5551,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[13,7,10,4])"
+      "!(in3[13,6,13,4])"
     ],
     "signature": "(implication510[])"
   },
@@ -5548,7 +5561,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[13,7,11,4])"
+      "!(in3[13,7,10,4])"
     ],
     "signature": "(implication511[])"
   },
@@ -5558,7 +5571,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[13,7,12,4])"
+      "!(in3[13,7,11,4])"
     ],
     "signature": "(implication512[])"
   },
@@ -5568,7 +5581,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[13,7,13,4])"
+      "!(in3[13,7,12,4])"
     ],
     "signature": "(implication513[])"
   },
@@ -5578,7 +5591,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[13,7,9,4])"
+      "!(in3[13,7,13,4])"
     ],
     "signature": "(implication514[])"
   },
@@ -5588,7 +5601,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[14,6,11,4])"
+      "!(in3[13,7,9,4])"
     ],
     "signature": "(implication515[])"
   },
@@ -5598,7 +5611,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[14,6,12,4])"
+      "!(in3[14,6,11,4])"
     ],
     "signature": "(implication516[])"
   },
@@ -5608,7 +5621,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[14,6,13,4])"
+      "!(in3[14,6,12,4])"
     ],
     "signature": "(implication517[])"
   },
@@ -5618,7 +5631,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[14,6,14,4])"
+      "!(in3[14,6,13,4])"
     ],
     "signature": "(implication518[])"
   },
@@ -5628,7 +5641,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,9,10,5])"
+      "!(in3[14,6,14,4])"
     ],
     "signature": "(implication519[])"
   },
@@ -5648,7 +5661,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,9,11,5])"
+      "!(in3[2,9,10,5])"
     ],
     "signature": "(implication520[])"
   },
@@ -5658,7 +5671,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,9,12,5])"
+      "!(in3[2,9,11,5])"
     ],
     "signature": "(implication521[])"
   },
@@ -5668,7 +5681,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,9,13,5])"
+      "!(in3[2,9,12,5])"
     ],
     "signature": "(implication522[])"
   },
@@ -5678,7 +5691,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,9,14,5])"
+      "!(in3[2,9,13,5])"
     ],
     "signature": "(implication523[])"
   },
@@ -5688,7 +5701,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,9,6,5])"
+      "!(in3[2,9,14,5])"
     ],
     "signature": "(implication524[])"
   },
@@ -5698,7 +5711,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,9,7,5])"
+      "!(in3[2,9,6,5])"
     ],
     "signature": "(implication525[])"
   },
@@ -5708,7 +5721,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,9,9,5])"
+      "!(in3[2,9,7,5])"
     ],
     "signature": "(implication526[])"
   },
@@ -5718,7 +5731,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,7,10,4])"
+      "!(in3[2,9,9,5])"
     ],
     "signature": "(implication527[])"
   },
@@ -5728,7 +5741,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,7,11,4])"
+      "!(in3[6,7,10,4])"
     ],
     "signature": "(implication528[])"
   },
@@ -5738,7 +5751,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,7,12,4])"
+      "!(in3[6,7,11,4])"
     ],
     "signature": "(implication529[])"
   },
@@ -5758,7 +5771,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,7,13,4])"
+      "!(in3[6,7,12,4])"
     ],
     "signature": "(implication530[])"
   },
@@ -5768,7 +5781,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,7,14,4])"
+      "!(in3[6,7,13,4])"
     ],
     "signature": "(implication531[])"
   },
@@ -5778,7 +5791,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,9,11,4])"
+      "!(in3[6,7,14,4])"
     ],
     "signature": "(implication532[])"
   },
@@ -5788,7 +5801,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,9,2,4])"
+      "!(in3[6,9,11,4])"
     ],
     "signature": "(implication533[])"
   },
@@ -5798,7 +5811,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,9,6,4])"
+      "!(in3[6,9,2,4])"
     ],
     "signature": "(implication534[])"
   },
@@ -5808,7 +5821,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,9,7,4])"
+      "!(in3[6,9,6,4])"
     ],
     "signature": "(implication535[])"
   },
@@ -5818,7 +5831,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,9,9,4])"
+      "!(in3[6,9,7,4])"
     ],
     "signature": "(implication536[])"
   },
@@ -5828,7 +5841,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,7,11,4])"
+      "!(in3[6,9,9,4])"
     ],
     "signature": "(implication537[])"
   },
@@ -5838,7 +5851,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,7,12,4])"
+      "!(in3[7,7,11,4])"
     ],
     "signature": "(implication538[])"
   },
@@ -5848,7 +5861,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,7,13,4])"
+      "!(in3[7,7,12,4])"
     ],
     "signature": "(implication539[])"
   },
@@ -5868,7 +5881,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,7,14,4])"
+      "!(in3[7,7,13,4])"
     ],
     "signature": "(implication540[])"
   },
@@ -5878,7 +5891,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,7,9,4])"
+      "!(in3[7,7,14,4])"
     ],
     "signature": "(implication541[])"
   },
@@ -5888,7 +5901,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,9,10,4])"
+      "!(in3[7,7,9,4])"
     ],
     "signature": "(implication542[])"
   },
@@ -5898,7 +5911,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,9,2,4])"
+      "!(in3[7,9,10,4])"
     ],
     "signature": "(implication543[])"
   },
@@ -5908,7 +5921,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,9,6,4])"
+      "!(in3[7,9,2,4])"
     ],
     "signature": "(implication544[])"
   },
@@ -5918,7 +5931,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,9,7,4])"
+      "!(in3[7,9,6,4])"
     ],
     "signature": "(implication545[])"
   },
@@ -5928,7 +5941,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,9,9,4])"
+      "!(in3[7,9,7,4])"
     ],
     "signature": "(implication546[])"
   },
@@ -5938,7 +5951,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,7,10,4])"
+      "!(in3[7,9,9,4])"
     ],
     "signature": "(implication547[])"
   },
@@ -5948,7 +5961,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,7,12,4])"
+      "!(in3[9,7,10,4])"
     ],
     "signature": "(implication548[])"
   },
@@ -5958,7 +5971,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,7,13,4])"
+      "!(in3[9,7,12,4])"
     ],
     "signature": "(implication549[])"
   },
@@ -5978,7 +5991,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,7,14,4])"
+      "!(in3[9,7,13,4])"
     ],
     "signature": "(implication550[])"
   },
@@ -5988,7 +6001,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,7,9,4])"
+      "!(in3[9,7,14,4])"
     ],
     "signature": "(implication551[])"
   },
@@ -5998,7 +6011,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,9,2,4])"
+      "!(in3[9,7,9,4])"
     ],
     "signature": "(implication552[])"
   },
@@ -6008,7 +6021,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,9,6,4])"
+      "!(in3[9,9,2,4])"
     ],
     "signature": "(implication553[])"
   },
@@ -6018,7 +6031,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,9,7,4])"
+      "!(in3[9,9,6,4])"
     ],
     "signature": "(implication554[])"
   },
@@ -6028,7 +6041,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,9,9,4])"
+      "!(in3[9,9,7,4])"
     ],
     "signature": "(implication555[])"
   },
@@ -6038,8 +6051,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[10,7,15,4])",
-      "(=[15,12])"
+      "!(in3[9,9,9,4])"
     ],
     "signature": "(implication556[])"
   },
@@ -6049,8 +6061,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[11,7,15,4])",
-      "(=[15,13])"
+      "(in3[10,7,15,4])",
+      "(=[15,12])"
     ],
     "signature": "(implication557[])"
   },
@@ -6060,8 +6072,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[12,7,15,4])",
-      "(=[15,14])"
+      "(in3[11,7,15,4])",
+      "(=[15,13])"
     ],
     "signature": "(implication558[])"
   },
@@ -6071,8 +6083,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,7,15,5])",
-      "(=[15,2])"
+      "(in3[12,7,15,4])",
+      "(=[15,14])"
     ],
     "signature": "(implication559[])"
   },
@@ -6092,8 +6104,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[6,6,15,5])",
-      "(=[15,6])"
+      "(in3[2,7,15,5])",
+      "(=[15,2])"
     ],
     "signature": "(implication560[])"
   },
@@ -6103,8 +6115,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[6,7,15,4])",
-      "(=[15,9])"
+      "(in3[6,6,15,5])",
+      "(=[15,6])"
     ],
     "signature": "(implication561[])"
   },
@@ -6114,8 +6126,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[7,7,15,4])",
-      "(=[15,10])"
+      "(in3[6,7,15,4])",
+      "(=[15,9])"
     ],
     "signature": "(implication562[])"
   },
@@ -6125,8 +6137,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[9,7,15,4])",
-      "(=[15,11])"
+      "(in3[7,7,15,4])",
+      "(=[15,10])"
     ],
     "signature": "(implication563[])"
   },
@@ -6136,7 +6148,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[10,7,12,4])"
+      "(in3[9,7,15,4])",
+      "(=[15,11])"
     ],
     "signature": "(implication564[])"
   },
@@ -6146,7 +6159,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[11,7,13,4])"
+      "(in3[10,7,12,4])"
     ],
     "signature": "(implication565[])"
   },
@@ -6156,7 +6169,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[12,7,14,4])"
+      "(in3[11,7,13,4])"
     ],
     "signature": "(implication566[])"
   },
@@ -6166,7 +6179,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,7,2,5])"
+      "(in3[12,7,14,4])"
     ],
     "signature": "(implication567[])"
   },
@@ -6176,7 +6189,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[6,6,6,5])"
+      "(in3[2,7,2,5])"
     ],
     "signature": "(implication568[])"
   },
@@ -6186,7 +6199,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[6,7,9,4])"
+      "(in3[6,6,6,5])"
     ],
     "signature": "(implication569[])"
   },
@@ -6206,7 +6219,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[7,7,10,4])"
+      "(in3[6,7,9,4])"
     ],
     "signature": "(implication570[])"
   },
@@ -6216,7 +6229,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[9,7,11,4])"
+      "(in3[7,7,10,4])"
     ],
     "signature": "(implication571[])"
   },
@@ -6226,7 +6239,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,10,10,4])"
+      "(in3[9,7,11,4])"
     ],
     "signature": "(implication572[])"
   },
@@ -6236,7 +6249,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,10,11,4])"
+      "!(in3[10,10,10,4])"
     ],
     "signature": "(implication573[])"
   },
@@ -6246,7 +6259,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,10,12,4])"
+      "!(in3[10,10,11,4])"
     ],
     "signature": "(implication574[])"
   },
@@ -6256,7 +6269,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,10,2,4])"
+      "!(in3[10,10,12,4])"
     ],
     "signature": "(implication575[])"
   },
@@ -6266,7 +6279,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,10,6,4])"
+      "!(in3[10,10,2,4])"
     ],
     "signature": "(implication576[])"
   },
@@ -6276,7 +6289,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,10,7,4])"
+      "!(in3[10,10,6,4])"
     ],
     "signature": "(implication577[])"
   },
@@ -6286,7 +6299,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,10,9,4])"
+      "!(in3[10,10,7,4])"
     ],
     "signature": "(implication578[])"
   },
@@ -6296,7 +6309,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,9,10,4])"
+      "!(in3[10,10,9,4])"
     ],
     "signature": "(implication579[])"
   },
@@ -6316,7 +6329,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,9,11,4])"
+      "!(in3[10,9,10,4])"
     ],
     "signature": "(implication580[])"
   },
@@ -6326,7 +6339,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,9,12,4])"
+      "!(in3[10,9,11,4])"
     ],
     "signature": "(implication581[])"
   },
@@ -6336,7 +6349,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,9,14,4])"
+      "!(in3[10,9,12,4])"
     ],
     "signature": "(implication582[])"
   },
@@ -6346,7 +6359,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,10,10,4])"
+      "!(in3[10,9,14,4])"
     ],
     "signature": "(implication583[])"
   },
@@ -6356,7 +6369,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,10,11,4])"
+      "!(in3[11,10,10,4])"
     ],
     "signature": "(implication584[])"
   },
@@ -6366,7 +6379,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,10,12,4])"
+      "!(in3[11,10,11,4])"
     ],
     "signature": "(implication585[])"
   },
@@ -6376,7 +6389,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,10,2,4])"
+      "!(in3[11,10,12,4])"
     ],
     "signature": "(implication586[])"
   },
@@ -6386,7 +6399,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,10,6,4])"
+      "!(in3[11,10,2,4])"
     ],
     "signature": "(implication587[])"
   },
@@ -6396,7 +6409,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,10,7,4])"
+      "!(in3[11,10,6,4])"
     ],
     "signature": "(implication588[])"
   },
@@ -6406,7 +6419,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,10,9,4])"
+      "!(in3[11,10,7,4])"
     ],
     "signature": "(implication589[])"
   },
@@ -6426,7 +6439,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,9,10,4])"
+      "!(in3[11,10,9,4])"
     ],
     "signature": "(implication590[])"
   },
@@ -6436,7 +6449,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,9,11,4])"
+      "!(in3[11,9,10,4])"
     ],
     "signature": "(implication591[])"
   },
@@ -6446,7 +6459,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,9,12,4])"
+      "!(in3[11,9,11,4])"
     ],
     "signature": "(implication592[])"
   },
@@ -6456,7 +6469,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,9,13,4])"
+      "!(in3[11,9,12,4])"
     ],
     "signature": "(implication593[])"
   },
@@ -6466,7 +6479,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,9,10,4])"
+      "!(in3[11,9,13,4])"
     ],
     "signature": "(implication594[])"
   },
@@ -6476,7 +6489,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,9,11,4])"
+      "!(in3[12,9,10,4])"
     ],
     "signature": "(implication595[])"
   },
@@ -6486,7 +6499,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,9,12,4])"
+      "!(in3[12,9,11,4])"
     ],
     "signature": "(implication596[])"
   },
@@ -6496,7 +6509,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,9,13,4])"
+      "!(in3[12,9,12,4])"
     ],
     "signature": "(implication597[])"
   },
@@ -6506,7 +6519,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[12,9,14,4])"
+      "!(in3[12,9,13,4])"
     ],
     "signature": "(implication598[])"
   },
@@ -6516,7 +6529,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[13,7,14,4])"
+      "!(in3[12,9,14,4])"
     ],
     "signature": "(implication599[])"
   },
@@ -6546,7 +6559,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,10,10,5])"
+      "!(in3[13,7,14,4])"
     ],
     "signature": "(implication600[])"
   },
@@ -6556,7 +6569,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,10,11,5])"
+      "!(in3[2,10,10,5])"
     ],
     "signature": "(implication601[])"
   },
@@ -6566,7 +6579,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,10,12,5])"
+      "!(in3[2,10,11,5])"
     ],
     "signature": "(implication602[])"
   },
@@ -6576,7 +6589,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,10,13,5])"
+      "!(in3[2,10,12,5])"
     ],
     "signature": "(implication603[])"
   },
@@ -6586,7 +6599,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,10,14,5])"
+      "!(in3[2,10,13,5])"
     ],
     "signature": "(implication604[])"
   },
@@ -6596,7 +6609,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,10,6,5])"
+      "!(in3[2,10,14,5])"
     ],
     "signature": "(implication605[])"
   },
@@ -6606,7 +6619,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,10,7,5])"
+      "!(in3[2,10,6,5])"
     ],
     "signature": "(implication606[])"
   },
@@ -6616,7 +6629,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,10,9,5])"
+      "!(in3[2,10,7,5])"
     ],
     "signature": "(implication607[])"
   },
@@ -6626,7 +6639,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,10,10,4])"
+      "!(in3[2,10,9,5])"
     ],
     "signature": "(implication608[])"
   },
@@ -6636,7 +6649,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,10,12,4])"
+      "!(in3[6,10,10,4])"
     ],
     "signature": "(implication609[])"
   },
@@ -6656,7 +6669,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,10,13,4])"
+      "!(in3[6,10,12,4])"
     ],
     "signature": "(implication610[])"
   },
@@ -6666,7 +6679,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,10,14,4])"
+      "!(in3[6,10,13,4])"
     ],
     "signature": "(implication611[])"
   },
@@ -6676,7 +6689,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,10,2,4])"
+      "!(in3[6,10,14,4])"
     ],
     "signature": "(implication612[])"
   },
@@ -6686,7 +6699,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,10,6,4])"
+      "!(in3[6,10,2,4])"
     ],
     "signature": "(implication613[])"
   },
@@ -6696,7 +6709,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,10,7,4])"
+      "!(in3[6,10,6,4])"
     ],
     "signature": "(implication614[])"
   },
@@ -6706,7 +6719,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,10,9,4])"
+      "!(in3[6,10,7,4])"
     ],
     "signature": "(implication615[])"
   },
@@ -6716,7 +6729,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,9,12,4])"
+      "!(in3[6,10,9,4])"
     ],
     "signature": "(implication616[])"
   },
@@ -6726,7 +6739,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,9,13,4])"
+      "!(in3[6,9,12,4])"
     ],
     "signature": "(implication617[])"
   },
@@ -6736,7 +6749,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,9,14,4])"
+      "!(in3[6,9,13,4])"
     ],
     "signature": "(implication618[])"
   },
@@ -6746,7 +6759,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,10,10,4])"
+      "!(in3[6,9,14,4])"
     ],
     "signature": "(implication619[])"
   },
@@ -6767,7 +6780,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,10,11,4])"
+      "!(in3[7,10,10,4])"
     ],
     "signature": "(implication620[])"
   },
@@ -6777,7 +6790,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,10,13,4])"
+      "!(in3[7,10,11,4])"
     ],
     "signature": "(implication621[])"
   },
@@ -6787,7 +6800,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,10,14,4])"
+      "!(in3[7,10,13,4])"
     ],
     "signature": "(implication622[])"
   },
@@ -6797,7 +6810,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,10,2,4])"
+      "!(in3[7,10,14,4])"
     ],
     "signature": "(implication623[])"
   },
@@ -6807,7 +6820,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,10,6,4])"
+      "!(in3[7,10,2,4])"
     ],
     "signature": "(implication624[])"
   },
@@ -6817,7 +6830,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,10,7,4])"
+      "!(in3[7,10,6,4])"
     ],
     "signature": "(implication625[])"
   },
@@ -6827,7 +6840,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,10,9,4])"
+      "!(in3[7,10,7,4])"
     ],
     "signature": "(implication626[])"
   },
@@ -6837,7 +6850,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,9,12,4])"
+      "!(in3[7,10,9,4])"
     ],
     "signature": "(implication627[])"
   },
@@ -6847,7 +6860,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,9,13,4])"
+      "!(in3[7,9,12,4])"
     ],
     "signature": "(implication628[])"
   },
@@ -6857,7 +6870,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,9,14,4])"
+      "!(in3[7,9,13,4])"
     ],
     "signature": "(implication629[])"
   },
@@ -6878,7 +6891,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,10,10,4])"
+      "!(in3[7,9,14,4])"
     ],
     "signature": "(implication630[])"
   },
@@ -6888,7 +6901,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,10,11,4])"
+      "!(in3[9,10,10,4])"
     ],
     "signature": "(implication631[])"
   },
@@ -6898,7 +6911,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,10,12,4])"
+      "!(in3[9,10,11,4])"
     ],
     "signature": "(implication632[])"
   },
@@ -6908,7 +6921,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,10,2,4])"
+      "!(in3[9,10,12,4])"
     ],
     "signature": "(implication633[])"
   },
@@ -6918,7 +6931,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,10,6,4])"
+      "!(in3[9,10,2,4])"
     ],
     "signature": "(implication634[])"
   },
@@ -6928,7 +6941,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,10,7,4])"
+      "!(in3[9,10,6,4])"
     ],
     "signature": "(implication635[])"
   },
@@ -6938,7 +6951,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,10,9,4])"
+      "!(in3[9,10,7,4])"
     ],
     "signature": "(implication636[])"
   },
@@ -6948,7 +6961,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,9,10,4])"
+      "!(in3[9,10,9,4])"
     ],
     "signature": "(implication637[])"
   },
@@ -6958,7 +6971,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,9,11,4])"
+      "!(in3[9,9,10,4])"
     ],
     "signature": "(implication638[])"
   },
@@ -6968,7 +6981,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,9,13,4])"
+      "!(in3[9,9,11,4])"
     ],
     "signature": "(implication639[])"
   },
@@ -6989,7 +7002,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,9,14,4])"
+      "!(in3[9,9,13,4])"
     ],
     "signature": "(implication640[])"
   },
@@ -6999,8 +7012,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[10,9,15,4])",
-      "(=[15,13])"
+      "!(in3[9,9,14,4])"
     ],
     "signature": "(implication641[])"
   },
@@ -7010,8 +7022,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[11,9,15,4])",
-      "(=[15,14])"
+      "(in3[10,9,15,4])",
+      "(=[15,13])"
     ],
     "signature": "(implication642[])"
   },
@@ -7021,8 +7033,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,9,15,5])",
-      "(=[15,2])"
+      "(in3[11,9,15,4])",
+      "(=[15,14])"
     ],
     "signature": "(implication643[])"
   },
@@ -7032,8 +7044,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[6,9,15,4])",
-      "(=[15,10])"
+      "(in3[2,9,15,5])",
+      "(=[15,2])"
     ],
     "signature": "(implication644[])"
   },
@@ -7043,8 +7055,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[7,9,15,4])",
-      "(=[15,11])"
+      "(in3[6,9,15,4])",
+      "(=[15,10])"
     ],
     "signature": "(implication645[])"
   },
@@ -7054,8 +7066,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[9,9,15,4])",
-      "(=[15,12])"
+      "(in3[7,9,15,4])",
+      "(=[15,11])"
     ],
     "signature": "(implication646[])"
   },
@@ -7065,7 +7077,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[10,9,13,4])"
+      "(in3[9,9,15,4])",
+      "(=[15,12])"
     ],
     "signature": "(implication647[])"
   },
@@ -7075,7 +7088,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[11,9,14,4])"
+      "(in3[10,9,13,4])"
     ],
     "signature": "(implication648[])"
   },
@@ -7085,7 +7098,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,9,2,5])"
+      "(in3[11,9,14,4])"
     ],
     "signature": "(implication649[])"
   },
@@ -7106,7 +7119,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[6,9,10,4])"
+      "(in3[2,9,2,5])"
     ],
     "signature": "(implication650[])"
   },
@@ -7116,7 +7129,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[7,9,11,4])"
+      "(in3[6,9,10,4])"
     ],
     "signature": "(implication651[])"
   },
@@ -7126,7 +7139,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[9,9,12,4])"
+      "(in3[7,9,11,4])"
     ],
     "signature": "(implication652[])"
   },
@@ -7136,7 +7149,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,10,13,4])"
+      "(in3[9,9,12,4])"
     ],
     "signature": "(implication653[])"
   },
@@ -7146,7 +7159,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,11,10,4])"
+      "!(in3[10,10,13,4])"
     ],
     "signature": "(implication654[])"
   },
@@ -7156,7 +7169,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,11,11,4])"
+      "!(in3[10,11,10,4])"
     ],
     "signature": "(implication655[])"
   },
@@ -7166,7 +7179,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,11,12,4])"
+      "!(in3[10,11,11,4])"
     ],
     "signature": "(implication656[])"
   },
@@ -7176,7 +7189,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,11,13,4])"
+      "!(in3[10,11,12,4])"
     ],
     "signature": "(implication657[])"
   },
@@ -7186,7 +7199,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,11,14,4])"
+      "!(in3[10,11,13,4])"
     ],
     "signature": "(implication658[])"
   },
@@ -7196,7 +7209,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,11,2,4])"
+      "!(in3[10,11,14,4])"
     ],
     "signature": "(implication659[])"
   },
@@ -7217,7 +7230,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,11,6,4])"
+      "!(in3[10,11,2,4])"
     ],
     "signature": "(implication660[])"
   },
@@ -7227,7 +7240,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,11,7,4])"
+      "!(in3[10,11,6,4])"
     ],
     "signature": "(implication661[])"
   },
@@ -7237,7 +7250,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,11,9,4])"
+      "!(in3[10,11,7,4])"
     ],
     "signature": "(implication662[])"
   },
@@ -7247,7 +7260,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,10,13,4])"
+      "!(in3[10,11,9,4])"
     ],
     "signature": "(implication663[])"
   },
@@ -7257,7 +7270,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,10,14,4])"
+      "!(in3[11,10,13,4])"
     ],
     "signature": "(implication664[])"
   },
@@ -7267,7 +7280,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,11,10,5])"
+      "!(in3[11,10,14,4])"
     ],
     "signature": "(implication665[])"
   },
@@ -7277,7 +7290,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,11,11,5])"
+      "!(in3[2,11,10,5])"
     ],
     "signature": "(implication666[])"
   },
@@ -7287,7 +7300,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,11,12,5])"
+      "!(in3[2,11,11,5])"
     ],
     "signature": "(implication667[])"
   },
@@ -7297,7 +7310,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,11,13,5])"
+      "!(in3[2,11,12,5])"
     ],
     "signature": "(implication668[])"
   },
@@ -7307,7 +7320,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,11,14,5])"
+      "!(in3[2,11,13,5])"
     ],
     "signature": "(implication669[])"
   },
@@ -7328,7 +7341,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,11,6,5])"
+      "!(in3[2,11,14,5])"
     ],
     "signature": "(implication670[])"
   },
@@ -7338,7 +7351,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,11,7,5])"
+      "!(in3[2,11,6,5])"
     ],
     "signature": "(implication671[])"
   },
@@ -7348,7 +7361,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,11,9,5])"
+      "!(in3[2,11,7,5])"
     ],
     "signature": "(implication672[])"
   },
@@ -7358,7 +7371,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,7,10,4])"
+      "!(in3[2,11,9,5])"
     ],
     "signature": "(implication673[])"
   },
@@ -7368,7 +7381,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,7,11,4])"
+      "!(in3[2,7,10,4])"
     ],
     "signature": "(implication674[])"
   },
@@ -7378,7 +7391,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,7,12,4])"
+      "!(in3[2,7,11,4])"
     ],
     "signature": "(implication675[])"
   },
@@ -7388,7 +7401,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,7,13,4])"
+      "!(in3[2,7,12,4])"
     ],
     "signature": "(implication676[])"
   },
@@ -7398,7 +7411,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,7,14,4])"
+      "!(in3[2,7,13,4])"
     ],
     "signature": "(implication677[])"
   },
@@ -7408,7 +7421,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,7,2,4])"
+      "!(in3[2,7,14,4])"
     ],
     "signature": "(implication678[])"
   },
@@ -7418,7 +7431,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,7,6,4])"
+      "!(in3[2,7,2,4])"
     ],
     "signature": "(implication679[])"
   },
@@ -7439,7 +7452,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,7,9,4])"
+      "!(in3[2,7,6,4])"
     ],
     "signature": "(implication680[])"
   },
@@ -7449,7 +7462,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,11,10,4])"
+      "!(in3[2,7,9,4])"
     ],
     "signature": "(implication681[])"
   },
@@ -7459,7 +7472,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,11,11,4])"
+      "!(in3[6,11,10,4])"
     ],
     "signature": "(implication682[])"
   },
@@ -7469,7 +7482,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,11,13,4])"
+      "!(in3[6,11,11,4])"
     ],
     "signature": "(implication683[])"
   },
@@ -7479,7 +7492,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,11,14,4])"
+      "!(in3[6,11,13,4])"
     ],
     "signature": "(implication684[])"
   },
@@ -7489,7 +7502,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,11,2,4])"
+      "!(in3[6,11,14,4])"
     ],
     "signature": "(implication685[])"
   },
@@ -7499,7 +7512,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,11,6,4])"
+      "!(in3[6,11,2,4])"
     ],
     "signature": "(implication686[])"
   },
@@ -7509,7 +7522,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,11,7,4])"
+      "!(in3[6,11,6,4])"
     ],
     "signature": "(implication687[])"
   },
@@ -7519,7 +7532,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,11,9,4])"
+      "!(in3[6,11,7,4])"
     ],
     "signature": "(implication688[])"
   },
@@ -7529,7 +7542,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,11,10,4])"
+      "!(in3[6,11,9,4])"
     ],
     "signature": "(implication689[])"
   },
@@ -7550,7 +7563,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,11,11,4])"
+      "!(in3[7,11,10,4])"
     ],
     "signature": "(implication690[])"
   },
@@ -7560,7 +7573,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,11,12,4])"
+      "!(in3[7,11,11,4])"
     ],
     "signature": "(implication691[])"
   },
@@ -7570,7 +7583,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,11,14,4])"
+      "!(in3[7,11,12,4])"
     ],
     "signature": "(implication692[])"
   },
@@ -7580,7 +7593,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,11,2,4])"
+      "!(in3[7,11,14,4])"
     ],
     "signature": "(implication693[])"
   },
@@ -7590,7 +7603,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,11,6,4])"
+      "!(in3[7,11,2,4])"
     ],
     "signature": "(implication694[])"
   },
@@ -7600,7 +7613,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,11,7,4])"
+      "!(in3[7,11,6,4])"
     ],
     "signature": "(implication695[])"
   },
@@ -7610,7 +7623,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,11,9,4])"
+      "!(in3[7,11,7,4])"
     ],
     "signature": "(implication696[])"
   },
@@ -7620,7 +7633,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,6,10,5])"
+      "!(in3[7,11,9,4])"
     ],
     "signature": "(implication697[])"
   },
@@ -7630,7 +7643,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,6,11,5])"
+      "!(in3[7,6,10,5])"
     ],
     "signature": "(implication698[])"
   },
@@ -7640,7 +7653,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,6,12,5])"
+      "!(in3[7,6,11,5])"
     ],
     "signature": "(implication699[])"
   },
@@ -7671,7 +7684,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,6,13,5])"
+      "!(in3[7,6,12,5])"
     ],
     "signature": "(implication700[])"
   },
@@ -7681,7 +7694,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,6,14,5])"
+      "!(in3[7,6,13,5])"
     ],
     "signature": "(implication701[])"
   },
@@ -7691,7 +7704,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,6,2,5])"
+      "!(in3[7,6,14,5])"
     ],
     "signature": "(implication702[])"
   },
@@ -7701,7 +7714,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,6,6,5])"
+      "!(in3[7,6,2,5])"
     ],
     "signature": "(implication703[])"
   },
@@ -7711,7 +7724,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,6,9,5])"
+      "!(in3[7,6,6,5])"
     ],
     "signature": "(implication704[])"
   },
@@ -7721,7 +7734,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,10,14,4])"
+      "!(in3[7,6,9,5])"
     ],
     "signature": "(implication705[])"
   },
@@ -7731,7 +7744,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,11,10,4])"
+      "!(in3[9,10,14,4])"
     ],
     "signature": "(implication706[])"
   },
@@ -7741,7 +7754,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,11,11,4])"
+      "!(in3[9,11,10,4])"
     ],
     "signature": "(implication707[])"
   },
@@ -7751,7 +7764,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,11,12,4])"
+      "!(in3[9,11,11,4])"
     ],
     "signature": "(implication708[])"
   },
@@ -7761,7 +7774,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,11,13,4])"
+      "!(in3[9,11,12,4])"
     ],
     "signature": "(implication709[])"
   },
@@ -7782,7 +7795,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,11,2,4])"
+      "!(in3[9,11,13,4])"
     ],
     "signature": "(implication710[])"
   },
@@ -7792,7 +7805,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,11,6,4])"
+      "!(in3[9,11,2,4])"
     ],
     "signature": "(implication711[])"
   },
@@ -7802,7 +7815,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,11,7,4])"
+      "!(in3[9,11,6,4])"
     ],
     "signature": "(implication712[])"
   },
@@ -7812,7 +7825,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,11,9,4])"
+      "!(in3[9,11,7,4])"
     ],
     "signature": "(implication713[])"
   },
@@ -7822,8 +7835,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[10,10,15,4])",
-      "(=[15,14])"
+      "!(in3[9,11,9,4])"
     ],
     "signature": "(implication714[])"
   },
@@ -7833,8 +7845,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,10,15,5])",
-      "(=[15,2])"
+      "(in3[10,10,15,4])",
+      "(=[15,14])"
     ],
     "signature": "(implication715[])"
   },
@@ -7844,8 +7856,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[6,10,15,4])",
-      "(=[15,11])"
+      "(in3[2,10,15,5])",
+      "(=[15,2])"
     ],
     "signature": "(implication716[])"
   },
@@ -7855,8 +7867,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[7,10,15,4])",
-      "(=[15,12])"
+      "(in3[6,10,15,4])",
+      "(=[15,11])"
     ],
     "signature": "(implication717[])"
   },
@@ -7866,8 +7878,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[9,10,15,4])",
-      "(=[15,13])"
+      "(in3[7,10,15,4])",
+      "(=[15,12])"
     ],
     "signature": "(implication718[])"
   },
@@ -7877,7 +7889,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[10,10,14,4])"
+      "(in3[9,10,15,4])",
+      "(=[15,13])"
     ],
     "signature": "(implication719[])"
   },
@@ -7898,7 +7911,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,10,2,5])"
+      "(in3[10,10,14,4])"
     ],
     "signature": "(implication720[])"
   },
@@ -7908,7 +7921,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[6,10,11,4])"
+      "(in3[2,10,2,5])"
     ],
     "signature": "(implication721[])"
   },
@@ -7918,7 +7931,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[7,10,12,4])"
+      "(in3[6,10,11,4])"
     ],
     "signature": "(implication722[])"
   },
@@ -7928,7 +7941,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[9,10,13,4])"
+      "(in3[7,10,12,4])"
     ],
     "signature": "(implication723[])"
   },
@@ -7938,7 +7951,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,12,10,5])"
+      "(in3[9,10,13,4])"
     ],
     "signature": "(implication724[])"
   },
@@ -7948,7 +7961,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,12,11,5])"
+      "!(in3[2,12,10,5])"
     ],
     "signature": "(implication725[])"
   },
@@ -7958,7 +7971,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,12,12,5])"
+      "!(in3[2,12,11,5])"
     ],
     "signature": "(implication726[])"
   },
@@ -7968,7 +7981,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,12,13,5])"
+      "!(in3[2,12,12,5])"
     ],
     "signature": "(implication727[])"
   },
@@ -7978,7 +7991,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,12,14,5])"
+      "!(in3[2,12,13,5])"
     ],
     "signature": "(implication728[])"
   },
@@ -7988,7 +8001,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,12,6,5])"
+      "!(in3[2,12,14,5])"
     ],
     "signature": "(implication729[])"
   },
@@ -8009,7 +8022,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,12,7,5])"
+      "!(in3[2,12,6,5])"
     ],
     "signature": "(implication730[])"
   },
@@ -8019,7 +8032,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,12,9,5])"
+      "!(in3[2,12,7,5])"
     ],
     "signature": "(implication731[])"
   },
@@ -8029,7 +8042,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,12,10,4])"
+      "!(in3[2,12,9,5])"
     ],
     "signature": "(implication732[])"
   },
@@ -8039,7 +8052,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,12,11,4])"
+      "!(in3[6,12,10,4])"
     ],
     "signature": "(implication733[])"
   },
@@ -8049,7 +8062,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,12,12,4])"
+      "!(in3[6,12,11,4])"
     ],
     "signature": "(implication734[])"
   },
@@ -8059,7 +8072,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,12,14,4])"
+      "!(in3[6,12,12,4])"
     ],
     "signature": "(implication735[])"
   },
@@ -8069,7 +8082,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,12,2,4])"
+      "!(in3[6,12,14,4])"
     ],
     "signature": "(implication736[])"
   },
@@ -8079,7 +8092,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,12,6,4])"
+      "!(in3[6,12,2,4])"
     ],
     "signature": "(implication737[])"
   },
@@ -8089,7 +8102,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,12,7,4])"
+      "!(in3[6,12,6,4])"
     ],
     "signature": "(implication738[])"
   },
@@ -8099,7 +8112,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,12,9,4])"
+      "!(in3[6,12,7,4])"
     ],
     "signature": "(implication739[])"
   },
@@ -8120,7 +8133,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,7,10,5])"
+      "!(in3[6,12,9,4])"
     ],
     "signature": "(implication740[])"
   },
@@ -8130,7 +8143,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,7,11,5])"
+      "!(in3[6,7,10,5])"
     ],
     "signature": "(implication741[])"
   },
@@ -8140,7 +8153,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,7,12,5])"
+      "!(in3[6,7,11,5])"
     ],
     "signature": "(implication742[])"
   },
@@ -8150,7 +8163,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,7,13,5])"
+      "!(in3[6,7,12,5])"
     ],
     "signature": "(implication743[])"
   },
@@ -8160,7 +8173,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,7,14,5])"
+      "!(in3[6,7,13,5])"
     ],
     "signature": "(implication744[])"
   },
@@ -8170,7 +8183,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,7,2,5])"
+      "!(in3[6,7,14,5])"
     ],
     "signature": "(implication745[])"
   },
@@ -8180,7 +8193,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,7,6,5])"
+      "!(in3[6,7,2,5])"
     ],
     "signature": "(implication746[])"
   },
@@ -8190,7 +8203,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,7,9,5])"
+      "!(in3[6,7,6,5])"
     ],
     "signature": "(implication747[])"
   },
@@ -8200,7 +8213,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,12,10,4])"
+      "!(in3[6,7,9,5])"
     ],
     "signature": "(implication748[])"
   },
@@ -8210,7 +8223,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,12,11,4])"
+      "!(in3[7,12,10,4])"
     ],
     "signature": "(implication749[])"
   },
@@ -8231,7 +8244,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,12,12,4])"
+      "!(in3[7,12,11,4])"
     ],
     "signature": "(implication750[])"
   },
@@ -8241,7 +8254,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,12,13,4])"
+      "!(in3[7,12,12,4])"
     ],
     "signature": "(implication751[])"
   },
@@ -8251,7 +8264,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,12,2,4])"
+      "!(in3[7,12,13,4])"
     ],
     "signature": "(implication752[])"
   },
@@ -8261,7 +8274,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,12,6,4])"
+      "!(in3[7,12,2,4])"
     ],
     "signature": "(implication753[])"
   },
@@ -8271,7 +8284,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,12,7,4])"
+      "!(in3[7,12,6,4])"
     ],
     "signature": "(implication754[])"
   },
@@ -8281,7 +8294,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,12,9,4])"
+      "!(in3[7,12,7,4])"
     ],
     "signature": "(implication755[])"
   },
@@ -8291,7 +8304,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,12,10,4])"
+      "!(in3[7,12,9,4])"
     ],
     "signature": "(implication756[])"
   },
@@ -8301,7 +8314,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,12,11,4])"
+      "!(in3[9,12,10,4])"
     ],
     "signature": "(implication757[])"
   },
@@ -8311,7 +8324,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,12,12,4])"
+      "!(in3[9,12,11,4])"
     ],
     "signature": "(implication758[])"
   },
@@ -8321,7 +8334,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,12,13,4])"
+      "!(in3[9,12,12,4])"
     ],
     "signature": "(implication759[])"
   },
@@ -8342,7 +8355,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,12,14,4])"
+      "!(in3[9,12,13,4])"
     ],
     "signature": "(implication760[])"
   },
@@ -8352,7 +8365,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,12,2,4])"
+      "!(in3[9,12,14,4])"
     ],
     "signature": "(implication761[])"
   },
@@ -8362,7 +8375,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,12,6,4])"
+      "!(in3[9,12,2,4])"
     ],
     "signature": "(implication762[])"
   },
@@ -8372,7 +8385,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,12,7,4])"
+      "!(in3[9,12,6,4])"
     ],
     "signature": "(implication763[])"
   },
@@ -8382,7 +8395,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,12,9,4])"
+      "!(in3[9,12,7,4])"
     ],
     "signature": "(implication764[])"
   },
@@ -8392,8 +8405,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,11,15,5])",
-      "(=[15,2])"
+      "!(in3[9,12,9,4])"
     ],
     "signature": "(implication765[])"
   },
@@ -8403,8 +8415,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,7,15,4])",
-      "(=[15,7])"
+      "(in3[2,11,15,5])",
+      "(=[15,2])"
     ],
     "signature": "(implication766[])"
   },
@@ -8414,8 +8426,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[6,11,15,4])",
-      "(=[15,12])"
+      "(in3[2,7,15,4])",
+      "(=[15,7])"
     ],
     "signature": "(implication767[])"
   },
@@ -8425,8 +8437,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[7,11,15,4])",
-      "(=[15,13])"
+      "(in3[6,11,15,4])",
+      "(=[15,12])"
     ],
     "signature": "(implication768[])"
   },
@@ -8436,8 +8448,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[7,6,15,5])",
-      "(=[15,7])"
+      "(in3[7,11,15,4])",
+      "(=[15,13])"
     ],
     "signature": "(implication769[])"
   },
@@ -8458,8 +8470,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[9,11,15,4])",
-      "(=[15,14])"
+      "(in3[7,6,15,5])",
+      "(=[15,7])"
     ],
     "signature": "(implication770[])"
   },
@@ -8469,7 +8481,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,11,2,5])"
+      "(in3[9,11,15,4])",
+      "(=[15,14])"
     ],
     "signature": "(implication771[])"
   },
@@ -8479,7 +8492,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,7,7,4])"
+      "(in3[2,11,2,5])"
     ],
     "signature": "(implication772[])"
   },
@@ -8489,7 +8502,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[6,11,12,4])"
+      "(in3[2,7,7,4])"
     ],
     "signature": "(implication773[])"
   },
@@ -8499,7 +8512,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[7,11,13,4])"
+      "(in3[6,11,12,4])"
     ],
     "signature": "(implication774[])"
   },
@@ -8509,7 +8522,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[7,6,7,5])"
+      "(in3[7,11,13,4])"
     ],
     "signature": "(implication775[])"
   },
@@ -8519,7 +8532,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[9,11,14,4])"
+      "(in3[7,6,7,5])"
     ],
     "signature": "(implication776[])"
   },
@@ -8529,7 +8542,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,13,10,5])"
+      "(in3[9,11,14,4])"
     ],
     "signature": "(implication777[])"
   },
@@ -8539,7 +8552,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,13,11,5])"
+      "!(in3[2,13,10,5])"
     ],
     "signature": "(implication778[])"
   },
@@ -8549,7 +8562,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,13,12,5])"
+      "!(in3[2,13,11,5])"
     ],
     "signature": "(implication779[])"
   },
@@ -8570,7 +8583,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,13,13,5])"
+      "!(in3[2,13,12,5])"
     ],
     "signature": "(implication780[])"
   },
@@ -8580,7 +8593,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,13,14,5])"
+      "!(in3[2,13,13,5])"
     ],
     "signature": "(implication781[])"
   },
@@ -8590,7 +8603,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,13,6,5])"
+      "!(in3[2,13,14,5])"
     ],
     "signature": "(implication782[])"
   },
@@ -8600,7 +8613,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,13,7,5])"
+      "!(in3[2,13,6,5])"
     ],
     "signature": "(implication783[])"
   },
@@ -8610,7 +8623,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,13,9,5])"
+      "!(in3[2,13,7,5])"
     ],
     "signature": "(implication784[])"
   },
@@ -8620,7 +8633,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,13,10,4])"
+      "!(in3[2,13,9,5])"
     ],
     "signature": "(implication785[])"
   },
@@ -8630,7 +8643,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,13,11,4])"
+      "!(in3[6,13,10,4])"
     ],
     "signature": "(implication786[])"
   },
@@ -8640,7 +8653,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,13,12,4])"
+      "!(in3[6,13,11,4])"
     ],
     "signature": "(implication787[])"
   },
@@ -8650,7 +8663,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,13,13,4])"
+      "!(in3[6,13,12,4])"
     ],
     "signature": "(implication788[])"
   },
@@ -8660,7 +8673,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,13,2,4])"
+      "!(in3[6,13,13,4])"
     ],
     "signature": "(implication789[])"
   },
@@ -8681,7 +8694,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,13,6,4])"
+      "!(in3[6,13,2,4])"
     ],
     "signature": "(implication790[])"
   },
@@ -8691,7 +8704,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,13,7,4])"
+      "!(in3[6,13,6,4])"
     ],
     "signature": "(implication791[])"
   },
@@ -8701,7 +8714,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,13,9,4])"
+      "!(in3[6,13,7,4])"
     ],
     "signature": "(implication792[])"
   },
@@ -8711,7 +8724,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,9,10,5])"
+      "!(in3[6,13,9,4])"
     ],
     "signature": "(implication793[])"
   },
@@ -8721,7 +8734,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,9,11,5])"
+      "!(in3[6,9,10,5])"
     ],
     "signature": "(implication794[])"
   },
@@ -8731,7 +8744,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,9,12,5])"
+      "!(in3[6,9,11,5])"
     ],
     "signature": "(implication795[])"
   },
@@ -8741,7 +8754,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,9,13,5])"
+      "!(in3[6,9,12,5])"
     ],
     "signature": "(implication796[])"
   },
@@ -8751,7 +8764,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,9,14,5])"
+      "!(in3[6,9,13,5])"
     ],
     "signature": "(implication797[])"
   },
@@ -8761,7 +8774,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,9,2,5])"
+      "!(in3[6,9,14,5])"
     ],
     "signature": "(implication798[])"
   },
@@ -8771,7 +8784,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,9,6,5])"
+      "!(in3[6,9,2,5])"
     ],
     "signature": "(implication799[])"
   },
@@ -8802,7 +8815,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,9,7,5])"
+      "!(in3[6,9,6,5])"
     ],
     "signature": "(implication800[])"
   },
@@ -8812,7 +8825,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,13,10,4])"
+      "!(in3[6,9,7,5])"
     ],
     "signature": "(implication801[])"
   },
@@ -8822,7 +8835,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,13,11,4])"
+      "!(in3[7,13,10,4])"
     ],
     "signature": "(implication802[])"
   },
@@ -8832,7 +8845,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,13,12,4])"
+      "!(in3[7,13,11,4])"
     ],
     "signature": "(implication803[])"
   },
@@ -8842,7 +8855,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,13,13,4])"
+      "!(in3[7,13,12,4])"
     ],
     "signature": "(implication804[])"
   },
@@ -8852,7 +8865,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,13,14,4])"
+      "!(in3[7,13,13,4])"
     ],
     "signature": "(implication805[])"
   },
@@ -8862,7 +8875,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,13,2,4])"
+      "!(in3[7,13,14,4])"
     ],
     "signature": "(implication806[])"
   },
@@ -8872,7 +8885,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,13,6,4])"
+      "!(in3[7,13,2,4])"
     ],
     "signature": "(implication807[])"
   },
@@ -8882,7 +8895,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,13,7,4])"
+      "!(in3[7,13,6,4])"
     ],
     "signature": "(implication808[])"
   },
@@ -8892,7 +8905,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,13,9,4])"
+      "!(in3[7,13,7,4])"
     ],
     "signature": "(implication809[])"
   },
@@ -8913,8 +8926,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,12,15,5])",
-      "(=[15,2])"
+      "!(in3[7,13,9,4])"
     ],
     "signature": "(implication810[])"
   },
@@ -8924,8 +8936,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[6,12,15,4])",
-      "(=[15,13])"
+      "(in3[2,12,15,5])",
+      "(=[15,2])"
     ],
     "signature": "(implication811[])"
   },
@@ -8935,8 +8947,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[6,7,15,5])",
-      "(=[15,7])"
+      "(in3[6,12,15,4])",
+      "(=[15,13])"
     ],
     "signature": "(implication812[])"
   },
@@ -8946,8 +8958,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[7,12,15,4])",
-      "(=[15,14])"
+      "(in3[6,7,15,5])",
+      "(=[15,7])"
     ],
     "signature": "(implication813[])"
   },
@@ -8957,7 +8969,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,12,2,5])"
+      "(in3[7,12,15,4])",
+      "(=[15,14])"
     ],
     "signature": "(implication814[])"
   },
@@ -8967,7 +8980,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[6,12,13,4])"
+      "(in3[2,12,2,5])"
     ],
     "signature": "(implication815[])"
   },
@@ -8977,7 +8990,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[6,7,7,5])"
+      "(in3[6,12,13,4])"
     ],
     "signature": "(implication816[])"
   },
@@ -8987,7 +9000,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[7,12,14,4])"
+      "(in3[6,7,7,5])"
     ],
     "signature": "(implication817[])"
   },
@@ -8997,7 +9010,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,14,10,5])"
+      "(in3[7,12,14,4])"
     ],
     "signature": "(implication818[])"
   },
@@ -9007,7 +9020,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,14,11,5])"
+      "!(in3[2,14,10,5])"
     ],
     "signature": "(implication819[])"
   },
@@ -9028,7 +9041,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,14,12,5])"
+      "!(in3[2,14,11,5])"
     ],
     "signature": "(implication820[])"
   },
@@ -9038,7 +9051,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,14,13,5])"
+      "!(in3[2,14,12,5])"
     ],
     "signature": "(implication821[])"
   },
@@ -9048,7 +9061,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,14,14,5])"
+      "!(in3[2,14,13,5])"
     ],
     "signature": "(implication822[])"
   },
@@ -9058,7 +9071,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,14,6,5])"
+      "!(in3[2,14,14,5])"
     ],
     "signature": "(implication823[])"
   },
@@ -9068,7 +9081,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,14,7,5])"
+      "!(in3[2,14,6,5])"
     ],
     "signature": "(implication824[])"
   },
@@ -9078,7 +9091,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,14,9,5])"
+      "!(in3[2,14,7,5])"
     ],
     "signature": "(implication825[])"
   },
@@ -9088,7 +9101,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,10,11,5])"
+      "!(in3[2,14,9,5])"
     ],
     "signature": "(implication826[])"
   },
@@ -9098,7 +9111,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,10,12,5])"
+      "!(in3[6,10,11,5])"
     ],
     "signature": "(implication827[])"
   },
@@ -9108,7 +9121,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,10,13,5])"
+      "!(in3[6,10,12,5])"
     ],
     "signature": "(implication828[])"
   },
@@ -9118,7 +9131,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,10,14,5])"
+      "!(in3[6,10,13,5])"
     ],
     "signature": "(implication829[])"
   },
@@ -9139,7 +9152,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,10,2,5])"
+      "!(in3[6,10,14,5])"
     ],
     "signature": "(implication830[])"
   },
@@ -9149,7 +9162,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,10,6,5])"
+      "!(in3[6,10,2,5])"
     ],
     "signature": "(implication831[])"
   },
@@ -9159,7 +9172,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,10,7,5])"
+      "!(in3[6,10,6,5])"
     ],
     "signature": "(implication832[])"
   },
@@ -9169,7 +9182,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,10,9,5])"
+      "!(in3[6,10,7,5])"
     ],
     "signature": "(implication833[])"
   },
@@ -9179,7 +9192,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,14,10,4])"
+      "!(in3[6,10,9,5])"
     ],
     "signature": "(implication834[])"
   },
@@ -9189,7 +9202,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,14,11,4])"
+      "!(in3[6,14,10,4])"
     ],
     "signature": "(implication835[])"
   },
@@ -9199,7 +9212,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,14,12,4])"
+      "!(in3[6,14,11,4])"
     ],
     "signature": "(implication836[])"
   },
@@ -9209,7 +9222,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,14,13,4])"
+      "!(in3[6,14,12,4])"
     ],
     "signature": "(implication837[])"
   },
@@ -9219,7 +9232,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,14,14,4])"
+      "!(in3[6,14,13,4])"
     ],
     "signature": "(implication838[])"
   },
@@ -9229,7 +9242,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,14,2,4])"
+      "!(in3[6,14,14,4])"
     ],
     "signature": "(implication839[])"
   },
@@ -9250,7 +9263,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,14,6,4])"
+      "!(in3[6,14,2,4])"
     ],
     "signature": "(implication840[])"
   },
@@ -9260,7 +9273,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,14,7,4])"
+      "!(in3[6,14,6,4])"
     ],
     "signature": "(implication841[])"
   },
@@ -9270,7 +9283,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,14,9,4])"
+      "!(in3[6,14,7,4])"
     ],
     "signature": "(implication842[])"
   },
@@ -9280,8 +9293,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,13,15,5])",
-      "(=[15,2])"
+      "!(in3[6,14,9,4])"
     ],
     "signature": "(implication843[])"
   },
@@ -9291,8 +9303,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[6,13,15,4])",
-      "(=[15,14])"
+      "(in3[2,13,15,5])",
+      "(=[15,2])"
     ],
     "signature": "(implication844[])"
   },
@@ -9302,8 +9314,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[6,9,15,5])",
-      "(=[15,9])"
+      "(in3[6,13,15,4])",
+      "(=[15,14])"
     ],
     "signature": "(implication845[])"
   },
@@ -9313,7 +9325,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,13,2,5])"
+      "(in3[6,9,15,5])",
+      "(=[15,9])"
     ],
     "signature": "(implication846[])"
   },
@@ -9323,7 +9336,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[6,13,14,4])"
+      "(in3[2,13,2,5])"
     ],
     "signature": "(implication847[])"
   },
@@ -9333,7 +9346,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[6,9,9,5])"
+      "(in3[6,13,14,4])"
     ],
     "signature": "(implication848[])"
   },
@@ -9343,7 +9356,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,9,10,4])"
+      "(in3[6,9,9,5])"
     ],
     "signature": "(implication849[])"
   },
@@ -9364,7 +9377,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,9,11,4])"
+      "!(in3[2,9,10,4])"
     ],
     "signature": "(implication850[])"
   },
@@ -9374,7 +9387,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,9,12,4])"
+      "!(in3[2,9,11,4])"
     ],
     "signature": "(implication851[])"
   },
@@ -9384,7 +9397,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,9,13,4])"
+      "!(in3[2,9,12,4])"
     ],
     "signature": "(implication852[])"
   },
@@ -9394,7 +9407,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,9,14,4])"
+      "!(in3[2,9,13,4])"
     ],
     "signature": "(implication853[])"
   },
@@ -9404,7 +9417,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,9,2,4])"
+      "!(in3[2,9,14,4])"
     ],
     "signature": "(implication854[])"
   },
@@ -9414,7 +9427,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,9,6,4])"
+      "!(in3[2,9,2,4])"
     ],
     "signature": "(implication855[])"
   },
@@ -9424,7 +9437,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,9,7,4])"
+      "!(in3[2,9,6,4])"
     ],
     "signature": "(implication856[])"
   },
@@ -9434,7 +9447,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,11,10,5])"
+      "!(in3[2,9,7,4])"
     ],
     "signature": "(implication857[])"
   },
@@ -9444,7 +9457,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,11,12,5])"
+      "!(in3[6,11,10,5])"
     ],
     "signature": "(implication858[])"
   },
@@ -9454,7 +9467,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,11,13,5])"
+      "!(in3[6,11,12,5])"
     ],
     "signature": "(implication859[])"
   },
@@ -9475,7 +9488,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,11,14,5])"
+      "!(in3[6,11,13,5])"
     ],
     "signature": "(implication860[])"
   },
@@ -9485,7 +9498,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,11,2,5])"
+      "!(in3[6,11,14,5])"
     ],
     "signature": "(implication861[])"
   },
@@ -9495,7 +9508,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,11,6,5])"
+      "!(in3[6,11,2,5])"
     ],
     "signature": "(implication862[])"
   },
@@ -9505,7 +9518,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,11,7,5])"
+      "!(in3[6,11,6,5])"
     ],
     "signature": "(implication863[])"
   },
@@ -9515,7 +9528,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,11,9,5])"
+      "!(in3[6,11,7,5])"
     ],
     "signature": "(implication864[])"
   },
@@ -9525,7 +9538,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,7,11,5])"
+      "!(in3[6,11,9,5])"
     ],
     "signature": "(implication865[])"
   },
@@ -9535,7 +9548,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,7,12,5])"
+      "!(in3[7,7,11,5])"
     ],
     "signature": "(implication866[])"
   },
@@ -9545,7 +9558,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,7,13,5])"
+      "!(in3[7,7,12,5])"
     ],
     "signature": "(implication867[])"
   },
@@ -9555,7 +9568,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,7,14,5])"
+      "!(in3[7,7,13,5])"
     ],
     "signature": "(implication868[])"
   },
@@ -9565,7 +9578,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,7,2,5])"
+      "!(in3[7,7,14,5])"
     ],
     "signature": "(implication869[])"
   },
@@ -9586,7 +9599,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,7,6,5])"
+      "!(in3[7,7,2,5])"
     ],
     "signature": "(implication870[])"
   },
@@ -9596,7 +9609,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,7,7,5])"
+      "!(in3[7,7,6,5])"
     ],
     "signature": "(implication871[])"
   },
@@ -9606,7 +9619,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,7,9,5])"
+      "!(in3[7,7,7,5])"
     ],
     "signature": "(implication872[])"
   },
@@ -9616,7 +9629,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,6,10,5])"
+      "!(in3[7,7,9,5])"
     ],
     "signature": "(implication873[])"
   },
@@ -9626,7 +9639,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,6,11,5])"
+      "!(in3[9,6,10,5])"
     ],
     "signature": "(implication874[])"
   },
@@ -9636,7 +9649,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,6,12,5])"
+      "!(in3[9,6,11,5])"
     ],
     "signature": "(implication875[])"
   },
@@ -9646,7 +9659,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,6,13,5])"
+      "!(in3[9,6,12,5])"
     ],
     "signature": "(implication876[])"
   },
@@ -9656,7 +9669,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,6,14,5])"
+      "!(in3[9,6,13,5])"
     ],
     "signature": "(implication877[])"
   },
@@ -9666,7 +9679,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,6,2,5])"
+      "!(in3[9,6,14,5])"
     ],
     "signature": "(implication878[])"
   },
@@ -9676,7 +9689,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,6,6,5])"
+      "!(in3[9,6,2,5])"
     ],
     "signature": "(implication879[])"
   },
@@ -9696,7 +9709,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,6,7,5])"
+      "!(in3[9,6,6,5])"
     ],
     "signature": "(implication880[])"
   },
@@ -9706,8 +9719,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,14,15,5])",
-      "(=[15,2])"
+      "!(in3[9,6,7,5])"
     ],
     "signature": "(implication881[])"
   },
@@ -9717,8 +9729,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[6,10,15,5])",
-      "(=[15,10])"
+      "(in3[2,14,15,5])",
+      "(=[15,2])"
     ],
     "signature": "(implication882[])"
   },
@@ -9728,7 +9740,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,14,2,5])"
+      "(in3[6,10,15,5])",
+      "(=[15,10])"
     ],
     "signature": "(implication883[])"
   },
@@ -9738,7 +9751,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[6,10,10,5])"
+      "(in3[2,14,2,5])"
     ],
     "signature": "(implication884[])"
   },
@@ -9748,7 +9761,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,12,10,5])"
+      "(in3[6,10,10,5])"
     ],
     "signature": "(implication885[])"
   },
@@ -9758,7 +9771,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,12,11,5])"
+      "!(in3[6,12,10,5])"
     ],
     "signature": "(implication886[])"
   },
@@ -9768,7 +9781,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,12,13,5])"
+      "!(in3[6,12,11,5])"
     ],
     "signature": "(implication887[])"
   },
@@ -9778,7 +9791,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,12,14,5])"
+      "!(in3[6,12,13,5])"
     ],
     "signature": "(implication888[])"
   },
@@ -9788,7 +9801,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,12,2,5])"
+      "!(in3[6,12,14,5])"
     ],
     "signature": "(implication889[])"
   },
@@ -9808,7 +9821,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,12,6,5])"
+      "!(in3[6,12,2,5])"
     ],
     "signature": "(implication890[])"
   },
@@ -9818,7 +9831,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,12,7,5])"
+      "!(in3[6,12,6,5])"
     ],
     "signature": "(implication891[])"
   },
@@ -9828,7 +9841,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,12,9,5])"
+      "!(in3[6,12,7,5])"
     ],
     "signature": "(implication892[])"
   },
@@ -9838,7 +9851,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,9,10,5])"
+      "!(in3[6,12,9,5])"
     ],
     "signature": "(implication893[])"
   },
@@ -9848,7 +9861,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,9,11,5])"
+      "!(in3[7,9,10,5])"
     ],
     "signature": "(implication894[])"
   },
@@ -9858,7 +9871,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,9,13,5])"
+      "!(in3[7,9,11,5])"
     ],
     "signature": "(implication895[])"
   },
@@ -9868,7 +9881,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,9,14,5])"
+      "!(in3[7,9,13,5])"
     ],
     "signature": "(implication896[])"
   },
@@ -9878,7 +9891,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,9,2,5])"
+      "!(in3[7,9,14,5])"
     ],
     "signature": "(implication897[])"
   },
@@ -9888,7 +9901,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,9,6,5])"
+      "!(in3[7,9,2,5])"
     ],
     "signature": "(implication898[])"
   },
@@ -9898,7 +9911,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,9,7,5])"
+      "!(in3[7,9,6,5])"
     ],
     "signature": "(implication899[])"
   },
@@ -9929,7 +9942,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,9,9,5])"
+      "!(in3[7,9,7,5])"
     ],
     "signature": "(implication900[])"
   },
@@ -9939,8 +9952,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,9,15,4])",
-      "(=[15,9])"
+      "!(in3[7,9,9,5])"
     ],
     "signature": "(implication901[])"
   },
@@ -9950,8 +9962,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[6,11,15,5])",
-      "(=[15,11])"
+      "(in3[2,9,15,4])",
+      "(=[15,9])"
     ],
     "signature": "(implication902[])"
   },
@@ -9961,8 +9973,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[7,7,15,5])",
-      "(=[15,10])"
+      "(in3[6,11,15,5])",
+      "(=[15,11])"
     ],
     "signature": "(implication903[])"
   },
@@ -9972,8 +9984,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[9,6,15,5])",
-      "(=[15,9])"
+      "(in3[7,7,15,5])",
+      "(=[15,10])"
     ],
     "signature": "(implication904[])"
   },
@@ -9983,7 +9995,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,9,9,4])"
+      "(in3[9,6,15,5])",
+      "(=[15,9])"
     ],
     "signature": "(implication905[])"
   },
@@ -9993,7 +10006,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[6,11,11,5])"
+      "(in3[2,9,9,4])"
     ],
     "signature": "(implication906[])"
   },
@@ -10003,7 +10016,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[7,7,10,5])"
+      "(in3[6,11,11,5])"
     ],
     "signature": "(implication907[])"
   },
@@ -10013,7 +10026,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[9,6,9,5])"
+      "(in3[7,7,10,5])"
     ],
     "signature": "(implication908[])"
   },
@@ -10023,7 +10036,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,13,10,5])"
+      "(in3[9,6,9,5])"
     ],
     "signature": "(implication909[])"
   },
@@ -10043,7 +10056,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,13,11,5])"
+      "!(in3[6,13,10,5])"
     ],
     "signature": "(implication910[])"
   },
@@ -10053,7 +10066,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,13,12,5])"
+      "!(in3[6,13,11,5])"
     ],
     "signature": "(implication911[])"
   },
@@ -10063,7 +10076,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,13,14,5])"
+      "!(in3[6,13,12,5])"
     ],
     "signature": "(implication912[])"
   },
@@ -10073,7 +10086,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,13,2,5])"
+      "!(in3[6,13,14,5])"
     ],
     "signature": "(implication913[])"
   },
@@ -10083,7 +10096,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,13,6,5])"
+      "!(in3[6,13,2,5])"
     ],
     "signature": "(implication914[])"
   },
@@ -10093,7 +10106,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,13,7,5])"
+      "!(in3[6,13,6,5])"
     ],
     "signature": "(implication915[])"
   },
@@ -10103,7 +10116,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,13,9,5])"
+      "!(in3[6,13,7,5])"
     ],
     "signature": "(implication916[])"
   },
@@ -10113,7 +10126,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,10,10,5])"
+      "!(in3[6,13,9,5])"
     ],
     "signature": "(implication917[])"
   },
@@ -10123,7 +10136,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,10,11,5])"
+      "!(in3[7,10,10,5])"
     ],
     "signature": "(implication918[])"
   },
@@ -10133,7 +10146,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,10,12,5])"
+      "!(in3[7,10,11,5])"
     ],
     "signature": "(implication919[])"
   },
@@ -10153,7 +10166,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,10,13,5])"
+      "!(in3[7,10,12,5])"
     ],
     "signature": "(implication920[])"
   },
@@ -10163,7 +10176,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,10,2,5])"
+      "!(in3[7,10,13,5])"
     ],
     "signature": "(implication921[])"
   },
@@ -10173,7 +10186,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,10,6,5])"
+      "!(in3[7,10,2,5])"
     ],
     "signature": "(implication922[])"
   },
@@ -10183,7 +10196,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,10,7,5])"
+      "!(in3[7,10,6,5])"
     ],
     "signature": "(implication923[])"
   },
@@ -10193,7 +10206,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[7,10,9,5])"
+      "!(in3[7,10,7,5])"
     ],
     "signature": "(implication924[])"
   },
@@ -10203,8 +10216,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[6,12,15,5])",
-      "(=[15,12])"
+      "!(in3[7,10,9,5])"
     ],
     "signature": "(implication925[])"
   },
@@ -10214,7 +10226,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[7,9,15,5])",
+      "(in3[6,12,15,5])",
       "(=[15,12])"
     ],
     "signature": "(implication926[])"
@@ -10225,7 +10237,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[6,12,12,5])"
+      "(in3[7,9,15,5])",
+      "(=[15,12])"
     ],
     "signature": "(implication927[])"
   },
@@ -10235,7 +10248,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[7,9,12,5])"
+      "(in3[6,12,12,5])"
     ],
     "signature": "(implication928[])"
   },
@@ -10245,7 +10258,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,14,10,5])"
+      "(in3[7,9,12,5])"
     ],
     "signature": "(implication929[])"
   },
@@ -10265,7 +10278,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,14,11,5])"
+      "!(in3[6,14,10,5])"
     ],
     "signature": "(implication930[])"
   },
@@ -10275,7 +10288,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,14,12,5])"
+      "!(in3[6,14,11,5])"
     ],
     "signature": "(implication931[])"
   },
@@ -10285,7 +10298,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,14,13,5])"
+      "!(in3[6,14,12,5])"
     ],
     "signature": "(implication932[])"
   },
@@ -10295,7 +10308,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,14,2,5])"
+      "!(in3[6,14,13,5])"
     ],
     "signature": "(implication933[])"
   },
@@ -10305,7 +10318,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,14,6,5])"
+      "!(in3[6,14,2,5])"
     ],
     "signature": "(implication934[])"
   },
@@ -10315,7 +10328,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,14,7,5])"
+      "!(in3[6,14,6,5])"
     ],
     "signature": "(implication935[])"
   },
@@ -10325,7 +10338,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[6,14,9,5])"
+      "!(in3[6,14,7,5])"
     ],
     "signature": "(implication936[])"
   },
@@ -10335,8 +10348,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[6,13,15,5])",
-      "(=[15,13])"
+      "!(in3[6,14,9,5])"
     ],
     "signature": "(implication937[])"
   },
@@ -10346,8 +10358,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[7,10,15,5])",
-      "(=[15,14])"
+      "(in3[6,13,15,5])",
+      "(=[15,13])"
     ],
     "signature": "(implication938[])"
   },
@@ -10357,7 +10369,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[6,13,13,5])"
+      "(in3[7,10,15,5])",
+      "(=[15,14])"
     ],
     "signature": "(implication939[])"
   },
@@ -10377,7 +10390,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[7,10,14,5])"
+      "(in3[6,13,13,5])"
     ],
     "signature": "(implication940[])"
   },
@@ -10387,7 +10400,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,6,11,5])"
+      "(in3[7,10,14,5])"
     ],
     "signature": "(implication941[])"
   },
@@ -10397,7 +10410,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,6,12,5])"
+      "!(in3[10,6,11,5])"
     ],
     "signature": "(implication942[])"
   },
@@ -10407,7 +10420,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,6,13,5])"
+      "!(in3[10,6,12,5])"
     ],
     "signature": "(implication943[])"
   },
@@ -10417,7 +10430,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,6,14,5])"
+      "!(in3[10,6,13,5])"
     ],
     "signature": "(implication944[])"
   },
@@ -10427,7 +10440,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,6,2,5])"
+      "!(in3[10,6,14,5])"
     ],
     "signature": "(implication945[])"
   },
@@ -10437,7 +10450,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,6,6,5])"
+      "!(in3[10,6,2,5])"
     ],
     "signature": "(implication946[])"
   },
@@ -10447,7 +10460,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,6,7,5])"
+      "!(in3[10,6,6,5])"
     ],
     "signature": "(implication947[])"
   },
@@ -10457,7 +10470,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,6,9,5])"
+      "!(in3[10,6,7,5])"
     ],
     "signature": "(implication948[])"
   },
@@ -10467,7 +10480,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,10,11,4])"
+      "!(in3[10,6,9,5])"
     ],
     "signature": "(implication949[])"
   },
@@ -10487,7 +10500,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,10,12,4])"
+      "!(in3[2,10,11,4])"
     ],
     "signature": "(implication950[])"
   },
@@ -10497,7 +10510,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,10,13,4])"
+      "!(in3[2,10,12,4])"
     ],
     "signature": "(implication951[])"
   },
@@ -10507,7 +10520,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,10,14,4])"
+      "!(in3[2,10,13,4])"
     ],
     "signature": "(implication952[])"
   },
@@ -10517,7 +10530,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,10,2,4])"
+      "!(in3[2,10,14,4])"
     ],
     "signature": "(implication953[])"
   },
@@ -10527,7 +10540,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,10,6,4])"
+      "!(in3[2,10,2,4])"
     ],
     "signature": "(implication954[])"
   },
@@ -10537,7 +10550,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,10,7,4])"
+      "!(in3[2,10,6,4])"
     ],
     "signature": "(implication955[])"
   },
@@ -10547,7 +10560,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,10,9,4])"
+      "!(in3[2,10,7,4])"
     ],
     "signature": "(implication956[])"
   },
@@ -10557,7 +10570,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,7,10,5])"
+      "!(in3[2,10,9,4])"
     ],
     "signature": "(implication957[])"
   },
@@ -10567,7 +10580,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,7,11,5])"
+      "!(in3[9,7,10,5])"
     ],
     "signature": "(implication958[])"
   },
@@ -10577,7 +10590,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,7,13,5])"
+      "!(in3[9,7,11,5])"
     ],
     "signature": "(implication959[])"
   },
@@ -10597,7 +10610,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,7,14,5])"
+      "!(in3[9,7,13,5])"
     ],
     "signature": "(implication960[])"
   },
@@ -10607,7 +10620,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,7,2,5])"
+      "!(in3[9,7,14,5])"
     ],
     "signature": "(implication961[])"
   },
@@ -10617,7 +10630,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,7,6,5])"
+      "!(in3[9,7,2,5])"
     ],
     "signature": "(implication962[])"
   },
@@ -10627,7 +10640,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,7,7,5])"
+      "!(in3[9,7,6,5])"
     ],
     "signature": "(implication963[])"
   },
@@ -10637,7 +10650,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,7,9,5])"
+      "!(in3[9,7,7,5])"
     ],
     "signature": "(implication964[])"
   },
@@ -10647,8 +10660,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[6,14,15,5])",
-      "(=[15,14])"
+      "!(in3[9,7,9,5])"
     ],
     "signature": "(implication965[])"
   },
@@ -10658,7 +10670,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[6,14,14,5])"
+      "(in3[6,14,15,5])",
+      "(=[15,14])"
     ],
     "signature": "(implication966[])"
   },
@@ -10668,7 +10681,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,9,10,5])"
+      "(in3[6,14,14,5])"
     ],
     "signature": "(implication967[])"
   },
@@ -10678,7 +10691,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,9,11,5])"
+      "!(in3[9,9,10,5])"
     ],
     "signature": "(implication968[])"
   },
@@ -10688,7 +10701,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,9,12,5])"
+      "!(in3[9,9,11,5])"
     ],
     "signature": "(implication969[])"
   },
@@ -10708,7 +10721,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,9,13,5])"
+      "!(in3[9,9,12,5])"
     ],
     "signature": "(implication970[])"
   },
@@ -10718,7 +10731,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,9,14,5])"
+      "!(in3[9,9,13,5])"
     ],
     "signature": "(implication971[])"
   },
@@ -10728,7 +10741,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,9,2,5])"
+      "!(in3[9,9,14,5])"
     ],
     "signature": "(implication972[])"
   },
@@ -10738,7 +10751,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,9,6,5])"
+      "!(in3[9,9,2,5])"
     ],
     "signature": "(implication973[])"
   },
@@ -10748,7 +10761,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,9,7,5])"
+      "!(in3[9,9,6,5])"
     ],
     "signature": "(implication974[])"
   },
@@ -10758,7 +10771,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[9,9,9,5])"
+      "!(in3[9,9,7,5])"
     ],
     "signature": "(implication975[])"
   },
@@ -10768,8 +10781,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[10,6,15,5])",
-      "(=[15,10])"
+      "!(in3[9,9,9,5])"
     ],
     "signature": "(implication976[])"
   },
@@ -10779,7 +10791,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,10,15,4])",
+      "(in3[10,6,15,5])",
       "(=[15,10])"
     ],
     "signature": "(implication977[])"
@@ -10790,8 +10802,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[9,7,15,5])",
-      "(=[15,12])"
+      "(in3[2,10,15,4])",
+      "(=[15,10])"
     ],
     "signature": "(implication978[])"
   },
@@ -10801,7 +10813,8 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[10,6,10,5])"
+      "(in3[9,7,15,5])",
+      "(=[15,12])"
     ],
     "signature": "(implication979[])"
   },
@@ -10821,7 +10834,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[2,10,10,4])"
+      "(in3[10,6,10,5])"
     ],
     "signature": "(implication980[])"
   },
@@ -10831,7 +10844,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "(in3[9,7,12,5])"
+      "(in3[2,10,10,4])"
     ],
     "signature": "(implication981[])"
   },
@@ -10841,7 +10854,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,7,10,5])"
+      "(in3[9,7,12,5])"
     ],
     "signature": "(implication982[])"
   },
@@ -10851,7 +10864,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,7,11,5])"
+      "!(in3[10,7,10,5])"
     ],
     "signature": "(implication983[])"
   },
@@ -10861,7 +10874,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,7,12,5])"
+      "!(in3[10,7,11,5])"
     ],
     "signature": "(implication984[])"
   },
@@ -10871,7 +10884,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,7,13,5])"
+      "!(in3[10,7,12,5])"
     ],
     "signature": "(implication985[])"
   },
@@ -10881,7 +10894,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,7,2,5])"
+      "!(in3[10,7,13,5])"
     ],
     "signature": "(implication986[])"
   },
@@ -10891,7 +10904,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,7,6,5])"
+      "!(in3[10,7,2,5])"
     ],
     "signature": "(implication987[])"
   },
@@ -10901,7 +10914,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,7,7,5])"
+      "!(in3[10,7,6,5])"
     ],
     "signature": "(implication988[])"
   },
@@ -10911,7 +10924,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[10,7,9,5])"
+      "!(in3[10,7,7,5])"
     ],
     "signature": "(implication989[])"
   },
@@ -10931,7 +10944,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,6,10,5])"
+      "!(in3[10,7,9,5])"
     ],
     "signature": "(implication990[])"
   },
@@ -10941,7 +10954,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,6,12,5])"
+      "!(in3[11,6,10,5])"
     ],
     "signature": "(implication991[])"
   },
@@ -10951,7 +10964,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,6,13,5])"
+      "!(in3[11,6,12,5])"
     ],
     "signature": "(implication992[])"
   },
@@ -10961,7 +10974,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,6,14,5])"
+      "!(in3[11,6,13,5])"
     ],
     "signature": "(implication993[])"
   },
@@ -10971,7 +10984,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,6,2,5])"
+      "!(in3[11,6,14,5])"
     ],
     "signature": "(implication994[])"
   },
@@ -10981,7 +10994,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,6,6,5])"
+      "!(in3[11,6,2,5])"
     ],
     "signature": "(implication995[])"
   },
@@ -10991,7 +11004,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,6,7,5])"
+      "!(in3[11,6,6,5])"
     ],
     "signature": "(implication996[])"
   },
@@ -11001,7 +11014,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[11,6,9,5])"
+      "!(in3[11,6,7,5])"
     ],
     "signature": "(implication997[])"
   },
@@ -11011,7 +11024,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,11,10,4])"
+      "!(in3[11,6,9,5])"
     ],
     "signature": "(implication998[])"
   },
@@ -11021,7 +11034,7 @@
     "definedSet": "",
     "elements": [
       "(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])",
-      "!(in3[2,11,12,4])"
+      "!(in3[2,11,10,4])"
     ],
     "signature": "(implication999[])"
   },

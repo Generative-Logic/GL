@@ -108,12 +108,13 @@ Tracked as the "buildstack + history tracking" follow-up task to `verifier_rung1
 Validation (strict per Codex rounds 2 + 3):
 
 1. `len(rest) == 2` exactly. The tag is in `_ORIGIN_EXEMPT_TAGS`; extra rest pairs would otherwise be silently accepted by the generic origin check.
-2. `line.expression` is a known compiled OR (`(or<N>[…])`) with ≥2 disjuncts after `u_i` substitution AND matching arity per the binary's `signature`.
-3. `rest[0]` is one of those disjuncts (modulo equality symmetry: `(=[a,b]) ↔ (=[b,a])`).
-4. `rest[1]` is **EXACTLY** `parent + "_boundary_orint_" + or_expr + "_(" + <disjunct> + ")"` for `<disjunct>` matching `rest[0]` (modulo equality symmetry). No substring search; the row's claim is "this immediate-child branch", not "some descendant containing the substring".
-5. **Round-3:** A chapter row exists with `expression == or_expr`, `namespace == parent_ns`, `tag!= "or branch proven"` — i.e. the OR was actually derived (via implication, expansion, theorem, …) at the parent scope before being case-split.
+2. `line.expression` is a known compiled OR (`(or<N>[…])`) with ≥2 ordered atomic leaves after recursive substitution through nested OR binaries.
+3. `rest[0]` is one of those leaves (modulo equality symmetry: `(=[a,b]) ↔ (=[b,a])`).
+4. `rest[1]` is **EXACTLY** `parent + "_boundary_orint_" + or_expr + "_(" + <leaf> + ")"` for `<leaf>` matching `rest[0]` (modulo equality symmetry). No substring search; the row claims this exact atomic subproof.
 
-**Test evidence.** Incubator `<unknown:or branch proven>` removed by round-1; passes `success 1, failure 0` after round-2 (strict contract); after **round-3 the row fails 0/1** because the chapter export does not render `(or2[i1,v5,i0])` as a chapter LHS at the parent scope (the OR is consumed as a premise by line 19's implication but never appears as an explicit derivation row). Per the project conventions `Failures are first-class` ("Failures are first-class") this is accepted as a deliberate forcing function for the chapter export to render the consumed OR's derivation.
+The former round-3 OR-origin requirement is retired by D-36: `or branch proven` is itself the parent OR's derivation, so requiring a separate parent-scope origin row rejects legitimate integration proofs.
+
+**Test evidence.** The current checker accepts atomic leaves of a recursively flattened nested OR and rejects an intermediate compiled-OR branch, while retaining the exact namespace and equality-symmetry checks.
 
 ---
 

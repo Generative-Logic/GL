@@ -106,12 +106,14 @@ namespace gl {
         TypedColdBlobMap<int64_t, IntMailOrigin>::RunStartsView originsRunStarts;
         TypedColdBlobMap<int64_t, IntMailOrigin>::BlobStartsView originsBlobStarts;
         TypedColdBlobMap<int64_t, IntMailOrigin>::BlobPoolView originsBlobPool;
-        /// @brief `map<EWV, DisintegrationFlags>` as an id-keyed packed byte
+        /// @brief `map<EWV, DisintegrationFlags>` as an id-keyed packed int32
         ///        (key = packed NameMap pair; bit 0 = `doNotDisintegrate`,
-        ///        bit 1 = `allowOrDisintegration`).
-        TypedColdMap<int64_t, uint8_t> disintegrationSignals_;
-        TypedColdMap<int64_t, uint8_t>::KeysView disintegrationSignalsKeys;
-        TypedColdMap<int64_t, uint8_t>::ValuesView disintegrationSignalsValues;
+        ///        bit 1 = `allowOrDisintegration`, bits 2+ = the firing's
+        ///        witness-generation `iteration + 1` — 0 means "nothing
+        ///        carried", decoding to iteration -1).
+        TypedColdMap<int64_t, int32_t> disintegrationSignals_;
+        TypedColdMap<int64_t, int32_t>::KeysView disintegrationSignalsKeys;
+        TypedColdMap<int64_t, int32_t>::ValuesView disintegrationSignalsValues;
 
         /// @brief Bind the three columns + their deload facets to the LB's
         ///        deloadable arena and real deload-dirty flag.
@@ -139,12 +141,32 @@ namespace gl {
         ColdMail(const ColdMail&) = delete;
         ColdMail& operator=(const ColdMail&) = delete;
 
-        /// @brief Pack the two firing-time bools into the stored value byte.
-        /// @param dnd `doNotDisintegrate`.
-        /// @param aod `allowOrDisintegration`.
-        /// @return The packed byte: bit 0 = `dnd`, bit 1 = `aod`.
-        static uint8_t packSignals(bool dnd, bool aod) {
-            return static_cast<uint8_t>((dnd ? 1u : 0u) | (aod ? 2u : 0u));
+        /// @brief Pack the two firing-time bools plus the witness-generation
+        ///        iteration into the stored value.
+        ///
+        /// @details Bits 0-1 carry the two bools; bits 2+ carry
+        /// `iteration + 1`, so the all-zero value keeps meaning "nothing
+        /// carried" (decoding to iteration -1, the non-firing default the
+        /// absorb maps to generation 0). `iteration` is the firing's
+        /// `max premise iteration + 1` stamp
+        /// (D-233); -1 means the writer carried
+        /// no generation.
+        ///
+        /// @param dnd       `doNotDisintegrate`.
+        /// @param aod       `allowOrDisintegration`.
+        /// @param iteration The witness-generation stamp; `>= -1`.
+        /// @return The packed int32.
+        static int32_t packSignals(bool dnd, bool aod, int32_t iteration) {
+            assert(iteration >= -1 && "packSignals: iteration below -1");
+            return static_cast<int32_t>((dnd ? 1 : 0) | (aod ? 2 : 0))
+                | ((iteration + 1) << 2);
+        }
+
+        /// @brief Unpack the iteration half of a packed signal value.
+        /// @param packed The stored int32.
+        /// @return The iteration (`-1` when the writer carried none).
+        static int32_t unpackIteration(int32_t packed) {
+            return (packed >> 2) - 1;
         }
 
         /// @brief Insert one statement (id-form pair + levels) — set semantics.
@@ -209,19 +231,42 @@ namespace gl {
         }
 
         /// @brief Set one statement's firing-time disintegration signals — the
-        ///        `disintegrationSignals[key] = {dnd, aod}` write door (id key).
+        ///        `disintegrationSignals[key] = {dnd, aod, iteration}` write
+        ///        door (id key).
         ///
-        /// @details In-place overwrite on a hit, set-once insert on a miss
-        /// (`upsert`). The caller packs the statement's `(originalId, validityId)`
-        /// `NameMap` pair into `key` via `packOriginKey` (the
-        /// `setInternalDisintegrationSignal` wrapper in `memory.hpp`). Absent ⇒
-        /// both false at the receiver (the absorb default).
+        /// @details On a hit the two BOOLS overwrite in place (last-write —
+        /// the canonically sorted record apply makes the order
+        /// partition-independent) while the ITERATION half min-merges: a fact
+        /// derivable at a lower generation is that generation, and the
+        /// minimum is order-free so the merged value is deterministic
+        /// regardless of write order. A carried-nothing new write
+        /// (`iteration == -1`, packed 0) never overrides a real generation,
+        /// and vice versa a real generation replaces carried-nothing. On a
+        /// miss: set-once insert. The caller packs the statement's
+        /// `(originalId, validityId)` `NameMap` pair into `key` via
+        /// `packOriginKey` (the `setInternalDisintegrationSignal` wrapper in
+        /// `memory.hpp`). Absent ⇒ `{false, false, -1}` at the receiver.
         ///
-        /// @param key The packed `(originalId, validityId)` statement key.
-        /// @param dnd `doNotDisintegrate`.
-        /// @param aod `allowOrDisintegration`.
-        void setDisintegrationSignal(int64_t key, bool dnd, bool aod) {
-            disintegrationSignals_.upsert(key, packSignals(dnd, aod));
+        /// @param key       The packed `(originalId, validityId)` statement key.
+        /// @param dnd       `doNotDisintegrate`.
+        /// @param aod       `allowOrDisintegration`.
+        /// @param iteration The firing's witness-generation stamp; -1 = none.
+        void setDisintegrationSignal(int64_t key, bool dnd, bool aod,
+                                     int32_t iteration) {
+            const int32_t id = disintegrationSignals_.lookup(key);
+            if (id != 0) {
+                const int32_t oldIt =
+                    unpackIteration(disintegrationSignals_.valueAt(id));
+                // min over real generations; -1 (none) loses to any real one.
+                const int32_t mergedIt =
+                    (oldIt == -1) ? iteration
+                    : (iteration == -1) ? oldIt
+                    : (oldIt < iteration ? oldIt : iteration);
+                disintegrationSignals_.upsert(key,
+                    packSignals(dnd, aod, mergedIt));
+                return;
+            }
+            disintegrationSignals_.upsert(key, packSignals(dnd, aod, iteration));
         }
 
         /// @brief Read one statement's firing-time disintegration signals — the
@@ -239,8 +284,8 @@ namespace gl {
         std::pair<bool, bool> getDisintegrationSignal(int64_t key) const {
             const int32_t id = disintegrationSignals_.lookup(key);
             if (id == 0) return std::make_pair(false, false);
-            const uint8_t packed = disintegrationSignals_.valueAt(id);
-            return std::make_pair((packed & 1u) != 0u, (packed & 2u) != 0u);
+            const int32_t packed = disintegrationSignals_.valueAt(id);
+            return std::make_pair((packed & 1) != 0, (packed & 2) != 0);
         }
 
         /// @brief Read one statement's firing-time disintegration signals into two
@@ -262,17 +307,24 @@ namespace gl {
         /// @param dnd Out: set to `doNotDisintegrate` (`false` when `key` absent).
         /// @param aod Out: set to `allowOrDisintegration` (`false` when `key`
         ///            absent).
+        /// @param iteration Out: the firing's witness-generation stamp (`-1`
+        ///            when `key` absent or the writer carried none — the
+        ///            absorb's `-1 → 0` mapping keeps such deposits at
+        ///            generation 0).
         /// @see getDisintegrationSignal(int64_t) const — the pair-returning oracle.
-        void getDisintegrationSignal(int64_t key, bool& dnd, bool& aod) const {
+        void getDisintegrationSignal(int64_t key, bool& dnd, bool& aod,
+                                     int32_t& iteration) const {
             const int32_t id = disintegrationSignals_.lookup(key);
             if (id == 0) {
                 dnd = false;
                 aod = false;
+                iteration = -1;
                 return;
             }
-            const uint8_t packed = disintegrationSignals_.valueAt(id);
-            dnd = (packed & 1u) != 0u;
-            aod = (packed & 2u) != 0u;
+            const int32_t packed = disintegrationSignals_.valueAt(id);
+            dnd = (packed & 1) != 0;
+            aod = (packed & 2) != 0;
+            iteration = unpackIteration(packed);
         }
 
         /// @brief Whether the statements column is empty.
@@ -336,6 +388,33 @@ namespace gl {
         int32_t filterStatements(Pred pred) {
             return statements_.eraseIf(
                 [&pred](const IntMailStatementKey& k) { return pred(k); });
+        }
+
+        /// @brief Erase the `origins` runs whose packed key the predicate
+        ///        accepts — the disproof-cleanup sweep's origins twin of
+        ///        @ref filterStatements.
+        ///
+        /// @details
+        /// `wipeSubtree` deliberately leaves internal-mail origins in place
+        /// (matching the retired heap filter), which is invisible for a
+        /// success-path wipe but leaves permanent orphaned history rows when a
+        /// DISPROVED goal's scopes are wiped — the paired statements are
+        /// filtered, so the origins would never be absorbed and would sit in
+        /// the (discharge-surviving) container forever. The disproof cleanup
+        /// calls this with the same closed-scope predicate it hands
+        /// @ref filterStatements. The cold `eraseBlobIf` run-compacts and
+        /// rebuilds the index.
+        ///
+        /// @tparam Pred A callable `bool(int64_t)` over the packed
+        ///              `(exprId, validityId)` origin key (validity in the low
+        ///              32 bits).
+        /// @param pred Accepts the origin keys to erase.
+        /// @return Number of origin keys removed.
+        /// @see filterStatements — the statements sweep this pairs with.
+        template <typename Pred>
+        int32_t filterOrigins(Pred pred) {
+            return origins_.eraseBlobIf(
+                [&pred](int64_t k) { return pred(k); });
         }
 
         /// @brief Approximate live byte footprint across the three columns.

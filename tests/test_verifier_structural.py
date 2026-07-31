@@ -284,6 +284,39 @@ def test_expansion_core_not_in_binary_with_right_side_present():
 
 
 @register
+def test_expansion_or_intro_wrong_disjunct_rejected():
+    """D-237 negative: an intro-shaped row whose premise
+    is NOT one of the or premise's flattened disjuncts (here the equality
+    uses the implication's set argument M instead of a disjunct value)
+    must still reject — the intro acceptance admits exactly the compiled
+    leaves, nothing wider."""
+    state = make_state_with_binaries(("Peano",))
+    state.gl_binaries = dict(state.gl_binaries)
+    state.gl_binaries["Peano"] = dict(state.gl_binaries["Peano"])
+    state.gl_binaries["Peano"]["or93"] = {
+        "category": "or",
+        "signature": "(or93[u_1,u_2,u_3])",
+        "arity": 3,
+        "elements": ["(=[u_1,u_2])", "(=[u_3,u_2])"],
+    }
+    state.gl_binaries["Peano"]["impltest_or2"] = {
+        "category": "implication",
+        "signature": "(impltest_or2[u_1,u_2,u_3])",
+        "elements": ["(or93[u_1,1,u_2])", "(in[1,u_3])"],
+    }
+    state.current_gl_binary = state.gl_binaries["Peano"]
+    compact_origin = make_proof_line(
+        "(impltest_or2[a,b,M])", "main", "task formulation",
+    )
+    bad_intro = make_proof_line(
+        "(>[w1](=[M,w1])(or93[a,w1,b]))", "main", "expansion",
+        "(impltest_or2[a,b,M])", "main",
+    )
+    chapter = [compact_origin, bad_intro]
+    assert_failure(check_expansion, bad_intro, chapter, state)
+
+
+@register
 def test_expansion_negated_existence_wrong_category():
     """right_expr is `!(name[args])` but the inner core's binary entry is
     NOT category 'existence' -> reject in the negated branch."""

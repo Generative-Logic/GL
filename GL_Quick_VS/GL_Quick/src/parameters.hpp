@@ -51,6 +51,28 @@
 // Values mirror GL/parameters.py (quick defaults).
 namespace gl {
 
+    /// @brief The prover's per-LB `NameMap` id type — a signed 32-bit integer.
+    ///
+    /// @details
+    /// Every NameMap id (statement originals, validity-scope names, argument
+    /// names, the packed-key halves, the validity-forest parent/own-sub ids, the
+    /// `IntEncodedExpr` / `IntNormalizedKey` / `NormKey` / `EqClassKey` id fields,
+    /// the owner-set partition/signature ids) is a `NameId`. It was `int16_t`
+    /// until the id space outgrew the ~32k int16 ceiling (FTA rung-2 mints
+    /// >32679 ids); widening to a signed 32-bit alias raises the wall to ~2.1e9
+    /// while keeping the ids signed (a `-1` never reaches a NameMap id — the
+    /// sentinel-bearing `IntEncodedExpr` fields such as `maxIteration` /
+    /// `argIteration` stay a plain `int32_t`, deliberately NOT `NameId`, so the
+    /// two roles never blur). The alias is the single knob: retyping it flips
+    /// every id field, packer, codec, and stack buffer in lockstep, and the
+    /// compiler rejects any narrowing seam a partial migration would leave.
+    ///
+    /// @invariant `NameId` is a signed, at-least-32-bit integer; the id ceiling
+    ///            `ExecutionParameters::MAX_NAME_IDS` is a `NameId` and every mint
+    ///            site asserts `id < MAX_NAME_IDS`.
+    /// @see `ExecutionParameters::MAX_NAME_IDS`, `NameMap`, `IntEncodedExpr`.
+    using NameId = std::int32_t;
+
     struct ProverParameters {
         // Defaults from parameters.py / old parameters.hpp
         int sizeAllBinariesAna = 10;
@@ -59,6 +81,13 @@ namespace gl {
         int maxSizeDefSetMapping = 5;
         int maxSizeTargetSetMapping = 12;
         int maxNumberSecondaryVariables = 2;
+        // Scoped widening of the distinct-secondary cap: applies ONLY to a
+        // request whose premises ALL sit at ONE shared validity scope that is
+        // an _orint_ branch. Default equal to the standard cap = no widening;
+        // a batch config may raise it (rung-2 needs 3 for the second
+        // predecessor level's successor-addition firing inside the _orint_
+        // branch). Consumed by requestGatesPass.
+        int maxNumberSecondaryVariablesOrint = 2;
         int sizeAllPermutationsAna = 7;
         int minNumOperatorsKey = 2;
         int minNumOperatorsKeyCE = 4;
@@ -101,6 +130,19 @@ namespace gl {
         // D-111.
         bool disable_lb_split = false;
 
+        // --- LB-split master switch (config-tunable) ---
+        // When false, proveKernel excludes every LB of this batch from the
+        // statistics-driven split: the end-of-iteration straggler pass never
+        // raises numberOfParts and no producer task is dispatched, so each LB
+        // runs one phase-2 part. The flag replaces the former hard incubator
+        // exclusion (the gate no longer consults incubator_mode): a batch opts
+        // out per config instead. The incubator configs whose grids are
+        // thousands of small LBs set false (the per-part request-generation
+        // setup is redundant there); IncubatorGauss3 sets true so its heavy
+        // rung LBs split. Distinct from disable_lb_split, which stays the
+        // diagnostic / RT-profiling switch. Config key: lb_split.
+        bool lb_split = true;
+
         // --- LB-split growth factor (UNUSED) ---
         // Multiplier of the retired graduated split policy (the `>= 50% fill ->
         // x growthFactor` band of the removed computeNextNumberOfParts). The
@@ -125,10 +167,10 @@ namespace gl {
         // and re-runs the LB from scratch at this many parts in the SAME
         // iteration, and the LB stays here on later iterations until it falls
         // back (split_fallback_ratio). Every main-path / compressor LB starts
-        // unsplit (numberOfParts default 1) and escalates only on demand. The
-        // INCUBATOR runs UNSPLIT (gated on incubator_mode in proveKernel):
-        // thousands of small LBs whose per-part request-gen setup is redundant,
-        // so splitting them only adds overhead. The CE filter is unaffected (its
+        // unsplit (numberOfParts default 1) and escalates only on demand. A
+        // batch whose config sets lb_split false runs UNSPLIT (the incubator
+        // configs with thousands of small LBs, whose per-part request-gen setup
+        // is redundant). The CE filter is unaffected (its
         // own un-split loop, splitCount=1, never reaches proveKernel).
         // Raise/lower to trade split overhead against per-part submatch load. See
         // D-111.
@@ -202,7 +244,6 @@ namespace gl {
         bool enable_extent_deload = true;
 
         bool trackHistory = true;
-        int standardMaxAdmissionDepth = 0;
         int inductionMaxAdmissionDepth = 1;
         int inductionMaxSecondaryNumber = 2;
         int counterExampleBoundary = 6;
@@ -219,9 +260,29 @@ namespace gl {
 
         // --- Incubator Parameters ---
         bool try_contradiction = false;
+        // Complement of try_contradiction: every registered conjecture also
+        // gets an LB that ASSUMES the negation of its head and, on
+        // contradiction, emits the conjecture itself as proved (reductio).
+        bool try_contradiction_negated_head = false;
         bool skip_ce_filter = false;
+        // Mirror-refutation heuristic (D-229):
+        // a CE-refuted operator-only conjecture also refutes its pool mirror
+        // via mirror_pairs.txt. Gates ONLY the CE-filter flip pass — never a
+        // proof step (I-81 / D-112 untouched).
+        bool mirror_refutation = true;
         bool skip_eq_classes = false;
         bool incubator_mode = false;
+
+        // --- Axed-anchor deposit exception ---
+        // When true, a POSITIVE anchor-category statement carrying an axed
+        // x-copy name passes the axed-variable deposit filter in
+        // addExprToMemoryBlock (D-234), so an
+        // anchor-bridge rule firing on the x-copied batch anchor lands the
+        // external anchor's x-form as a live statement. Default false: the
+        // x-form deposit stays filtered — a live x-anchor opens the whole
+        // external anchor's rule universe at x-arguments, which explodes
+        // the batch runtime. Config key: axed_anchor_exception.
+        bool axed_anchor_exception = false;
 
         // --- multiplyImplication gate (decoupled from incubator_mode) ---
         // allow_multiplication gates multiplyImplication at prover.cpp:827.
@@ -252,7 +313,7 @@ namespace gl {
         // power of two for the arena's offset shift/mask) and
         // isValidStaticPageConfig (block a whole multiple of page, page a
         // power of two); the ExpressionAnalyzer constructor asserts both.
-        int64_t static_pool_bytes = 4294967296LL; // 4 GiB
+        int64_t static_pool_bytes = 12884901888LL; // 12 GiB
         int32_t static_block_bytes = 262144;      // 256 KiB
         int32_t static_page_bytes = 8192;         // 8 KiB
 
@@ -378,27 +439,30 @@ namespace gl {
 
     // Static hot path sizing constants — config-independent, compile-time.
     struct ExecutionParameters {
-        static constexpr int16_t MAX_KEY_SLOTS   = 256;    // max int16_t values in a normalized key
-        static constexpr int16_t MAX_NAME_IDS    = 32000;  // max NameMap IDs (near int16_t ceiling 32767; encode IDs are int16_t-wide)
-        static constexpr int32_t KEY_ARENA_CHUNK = 16384;  // int16_t per arena chunk (32KB)
+        static constexpr int16_t MAX_KEY_SLOTS   = 256;    // max NameId values in a normalized key
+        static constexpr NameId  MAX_NAME_IDS    = 1000000; // max NameMap IDs (raised from 32000 now that NameId is 32-bit; mint-time tripwire at every mint site)
+        static constexpr int32_t KEY_ARENA_CHUNK = 16384;  // NameId slots per arena chunk (unused knob)
         static constexpr int16_t MAX_EXPRESSIONS = 8;      // max expressions in a single key
         static constexpr int16_t MAX_ARITY       = 16;     // max arguments per expression
         static constexpr int32_t MAX_SCOPE_DEPTH = 64;     // max validity ancestor-chain length incl. self; assert tripwire, see strictAncestorSpans
 
-        // Max bytes of an eqClassSttmntIndexMapMap packed key: a 2-byte LE
+        // Max bytes of an eqClassSttmntIndexMapMap packed key: a NameId LE
         // validity id then up to MAX_ARITY*MAX_KEY_SLOTS member ids (the
-        // reduceEqClassIds class-member ceiling), each 2 bytes. Sizes the stack
-        // key buffers in encodeEqClassKeyFromViewInto / …AccumInto (loud
-        // widen-on-STOP assert = Rule-19 tripwire).
+        // reduceEqClassIds class-member ceiling), each sizeof(NameId) bytes.
+        // Sizes the stack key buffers in encodeEqClassKeyFromViewInto /
+        // …AccumInto (loud widen-on-STOP assert = Rule-19 tripwire).
         static constexpr int32_t kMaxEqClassKeyBytes =
-            2 * (static_cast<int32_t>(MAX_ARITY)
+            static_cast<int32_t>(sizeof(NameId))
+            * (static_cast<int32_t>(MAX_ARITY)
                  * static_cast<int32_t>(MAX_KEY_SLOTS) + 1);
 
-        // Max bytes of a Codec<NormKey> key/record: int16 numberExpressions +
-        // int16 length + up to MAX_KEY_SLOTS int16 data. Sizes the stack key
-        // buffer in encodeNormKeyInto (loud widen-on-STOP assert = Rule-19).
+        // Max bytes of a Codec<NormKey> key/record: NameId-width numberExpressions
+        // + NameId-width length + up to MAX_KEY_SLOTS NameId data (the record is
+        // uniform 4-byte). Sizes the stack key buffer in encodeNormKeyInto (loud
+        // widen-on-STOP assert = Rule-19).
         static constexpr int32_t kMaxNormKeyBytes =
-            2 * (static_cast<int32_t>(MAX_KEY_SLOTS) + 2);
+            static_cast<int32_t>(sizeof(NameId))
+            * (static_cast<int32_t>(MAX_KEY_SLOTS) + 2);
 
 
         /// @brief Chunk size of `applyFiringRecords`' pointer-index sort — the
@@ -423,7 +487,9 @@ namespace gl {
         /// than being raised. Anyone retuning `static_block_bytes` must retune
         /// this in step.
         ///
-        /// @see `applyFiringRecords` — the sole user.
+        /// @see `applyFiringRecords` — the original user;
+        ///      `ChunkSortedOrdinals` — the reusable generalization (the
+        ///      default chunk size of the mail-absorb row indexes).
         static constexpr int32_t kFiringRecordSortChunk = 262144 / 4;
 
         /// @brief Ceiling on the number of sort chunks one LB burst may need.

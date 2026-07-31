@@ -243,13 +243,14 @@ any candidate whose negation gets derived. Survivors enter the main prover.
 
   <path d="M202 82 L240 82" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ce-ar)"/>
 
-  <rect x="240" y="22" width="280" height="124" rx="10" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <rect x="240" y="22" width="280" height="140" rx="10" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
   <text x="380" y="44" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">CE filter — peek and prune</text>
   <text x="380" y="64" fill="#F0E8DC" font-size="10" text-anchor="middle">▸ load simple_facts_&lt;tag&gt;_&lt;n&gt;.txt</text>
   <text x="380" y="80" fill="#F0E8DC" font-size="10" text-anchor="middle">▸ install candidate as rule</text>
   <text x="380" y="96" fill="#F0E8DC" font-size="10" text-anchor="middle">▸ run hash bursts on the model</text>
   <text x="380" y="112" fill="#F0E8DC" font-size="10" text-anchor="middle">▸ if (X ∧ !X) anywhere → discard</text>
-  <text x="380" y="132" fill="#8B8FA5" font-size="9" text-anchor="middle">budget: numberIterationsConjectureFiltering</text>
+  <text x="380" y="128" fill="#F0E8DC" font-size="10" text-anchor="middle">▸ discarded → its mirror partner too</text>
+  <text x="380" y="148" fill="#8B8FA5" font-size="9" text-anchor="middle">budget: numberIterationsConjectureFiltering</text>
 
   <path d="M520 82 L558 82" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ce-ar)"/>
 
@@ -302,6 +303,25 @@ and the instant one is refuted its burst stops early and the worker grabs the
 next. There is no batch barrier, so no core idles waiting on a slow candidate.
 The historical 80%-of-wall-clock cost (roughly halved by the pool) comes from the
 sheer candidate count, not any individual candidate's runtime.
+</p>
+
+<h3>11.2.3 &nbsp;Mirror refutation — one counterexample dooms both directions</h3>
+<p>
+Every candidate's reverse direction (head switched with the premise that
+shares its output variable) rides the pool as a candidate of its own. A
+counterexample that refutes the forward direction never witnesses against
+the reverse — it satisfies the reverse's premise side only vacuously — so a
+false reverse routinely survives the small-model test and would burn main
+prover time. The filter therefore applies a deliberate heuristic after each
+pass: when a refuted candidate consists purely of operator applications
+(anchor aside), its mirror partner is discarded as well. The pairing comes
+from <code>mirror_pairs.txt</code>, written by the conjecturer at the moment
+both strings enter the pool, so the match is byte-exact; the flip runs
+single-threaded after the worker pool joins and only counterexample-confirmed
+refutations seed it. The trade-off is accepted openly: in a theoretical
+corner case a true reverse of a false forward direction is dropped — this
+never fabricates a proof (a discarded candidate simply produces nothing),
+and the <code>mirror_refutation</code> config flag turns the pass off.
 </p>
 
 <!-- ===================== 11.3 ===================== -->

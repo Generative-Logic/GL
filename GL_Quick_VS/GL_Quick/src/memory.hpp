@@ -244,7 +244,7 @@ namespace gl {
     /// - `justification`    — the closed `RuleJustification` vocabulary
     ///   (`none` on marker LMVs, `implication` on installed rules).
     /// - `keyIds`           — the marker sub-key chain, positional. Empty on
-    ///   head-implication LMVs (only marker LMVs carry it). The int16_t premise
+    ///   head-implication LMVs (only marker LMVs carry it). The NameId premise
     ///   mirror lives in `IntNormalizedKey` and is what the unordered_map
     ///   actually keys on.
     /// - `remainingArgIds`  — argument names not consumed by the key match,
@@ -260,6 +260,15 @@ namespace gl {
     ///   itself is a product of an earlier disintegration step). Set in
     ///   `addToHashMemory`; consumed by `checkLocalEncodedMemoryStatic` to gate
     ///   OR-disintegration on the head-firing path.
+    /// - `disintegrationAllowed` — may heads FIRED BY this rule be disintegrated
+    ///   (the rule itself is never disintegrated). Derived once at install in
+    ///   `addToHashMemory` (D-241): false for
+    ///   integration-justified installs and for or-INTRO-shaped rules (single
+    ///   premise that is a flattened leaf of an or-category head — their heads are
+    ///   integration instructions consumed flat, never case-split); true otherwise.
+    ///   Consumed by `checkLocalEncodedMemoryStatic` as the rule-intrinsic half of
+    ///   `FiringRecord::doNotDisintegrate`; the D-29 firing-context clauses can
+    ///   only further restrict.
     ///
     /// @see [`HashMemory`](#hashmemory) — owns the `encodedMap` keyed on
     ///      `IntNormalizedKey`, valued as `std::vector<LocalMemoryValue>`.
@@ -277,7 +286,7 @@ namespace gl {
         // The NameMap scope id, minted at install. 1 == NameMap::MAIN_ID
         // ("main" pre-registers as id 1 — NameMap is declared later in
         // this header, hence the literal).
-        int16_t validityId;
+        NameId validityId;
         // Install-time classification: head template contains "marker".
         bool isMarker;
         // D-32: marks LMVs whose implication is itself a "product of
@@ -287,6 +296,13 @@ namespace gl {
         // the head-firing path. Default false (admission/marker LMVs
         // and non-disintegration-product implications).
         bool productOfDisintegration;
+        // May heads fired by this rule be disintegrated. Derived at
+        // install in addToHashMemory (false for integration-justified
+        // and or-intro-shaped rules); read by
+        // checkLocalEncodedMemoryStatic as the rule-intrinsic half of
+        // FiringRecord::doNotDisintegrate. Default true (marker LMVs
+        // never fire heads, so the value is never read on their path).
+        bool disintegrationAllowed;
 
         LocalMemoryValue()
             : valueId(0),
@@ -297,7 +313,8 @@ namespace gl {
             remainingArgIds(),
             validityId(1),
             isMarker(false),
-            productOfDisintegration(false) {
+            productOfDisintegration(false),
+            disintegrationAllowed(true) {
         }
     };
 
@@ -416,7 +433,7 @@ namespace gl {
     /// `(numberExpressions, data)` so the struct can be used as a `std::map` key
     /// or a `std::set` element.
     ///
-    /// @see [`IntNormalizedKey`](#intnormalizedkey) — int16_t replacement on the
+    /// @see [`IntNormalizedKey`](#intnormalizedkey) — NameId replacement on the
     ///      hot path.
     struct NormalizedKey {
         // Fields (camelCase)
@@ -616,7 +633,7 @@ namespace gl {
     ///   radical subtree wipe erases an owner by decoding the LOW half
     ///   (its scope validity id) for the closed-scope prefix test.
     /// - **D-105 comparability prune** — `ownerSetHasComparable` reads the
-    ///   low half of each id; pure `int16_t` comparisons in the hot loop.
+    ///   low half of each id; pure `NameId` comparisons in the hot loop.
     /// - **D-119 LB-split partition cover** — a split executor `n` of `N`
     ///   accepts this (sub)key iff some id satisfies `id % N == n`; at
     ///   `N == 1` the test is a no-op (inert on the unsplit path).
@@ -647,9 +664,9 @@ namespace gl {
     /// weaker (keep more), never unsound (I-79), so leaving
     /// them is a sound, zero-cost simplification (chosen for runtime).
     struct OwnerSet {
-        std::set<int32_t> partitionIds;
+        std::set<int64_t> partitionIds;
         bool hasLooseOwner = false;
-        std::set<std::vector<std::pair<int16_t, int16_t>>> uSignatures;
+        std::set<std::vector<std::pair<int32_t, NameId>>> uSignatures;
     };
 
     /// @brief Zero-copy read view over an `OwnerSet`'s canonical blob bytes — the
@@ -659,9 +676,9 @@ namespace gl {
     /// @details
     /// Mirrors the `Codec<OwnerSet>` byte layout one-for-one (keep the two in
     /// sync — a layout change there changes the offsets here):
-    /// `hasLooseOwner` (uint8) - `partitionIds` (int32 count, then int32 each,
+    /// `hasLooseOwner` (uint8) - `partitionIds` (int32 count, then int64 each,
     /// ascending) - `uSignatures` (int32 count, then per signature an int32
-    /// pair-count + each `(int16, int16)` pair). The four `normalizedEncoded*`
+    /// pair-count + each `(int32, int32)` pair). The four `normalizedEncoded*`
     /// maps store ONE blob per key (run-length-1, whole-value replace), so the
     /// view wraps that single blob's `(p, len)` obtained from
     /// `TypedCold::peekRecordBytes`.
@@ -686,11 +703,11 @@ namespace gl {
         static int32_t rdI32(const char* q) {
             int32_t v; std::memcpy(&v, q, sizeof(int32_t)); return v;
         }
-        /// @brief Read a little-endian `int16_t` at byte pointer `q`.
-        /// @param q Source pointer (>= 2 readable bytes).
+        /// @brief Read a little-endian `int64_t` at byte pointer `q`.
+        /// @param q Source pointer (>= 8 readable bytes).
         /// @return The decoded value.
-        static int16_t rdI16(const char* q) {
-            int16_t v; std::memcpy(&v, q, sizeof(int16_t)); return v;
+        static int64_t rdI64(const char* q) {
+            int64_t v; std::memcpy(&v, q, sizeof(int64_t)); return v;
         }
 
         /// @brief Whether some owner is u_-loose (the prune keep fast path).
@@ -704,12 +721,12 @@ namespace gl {
         /// @brief Composite owner id at index `i`.
         /// @param i Index in `[0, partitionCount())`.
         /// @return The packed `(expandedOriginalId, scopeVid)` composite id.
-        int32_t partitionId(int32_t i) const { return rdI32(p + 5 + 4 * i); }
+        int64_t partitionId(int32_t i) const { return rdI64(p + 5 + 8 * i); }
 
         /// @brief Byte offset of the `uSignatures` section (just past the
         ///        partitionIds run).
         /// @return The offset into the blob.
-        int32_t uSigOffset() const { return 5 + 4 * partitionCount(); }
+        int32_t uSigOffset() const { return 5 + 8 * partitionCount(); }
 
         /// @brief Number of u_ signatures.
         /// @return The `uSignatures` count (int32 at `uSigOffset()`).
@@ -721,44 +738,46 @@ namespace gl {
 
         /// @brief Pair count of the signature whose record starts at byte @p off.
         /// @param off Byte offset of a signature record (its leading int32).
-        /// @return The signature's `(int16,int16)` pair count.
+        /// @return The signature's `(int32,int32)` pair count.
         int32_t sigPairCount(int32_t off) const { return rdI32(p + off); }
 
         /// @brief Total byte length of the signature record at @p off
-        ///        (the int32 pair-count header plus each 4-byte pair).
+        ///        (the int32 pair-count header plus each 8-byte pair).
         /// @param off Byte offset of a signature record.
-        /// @return `4 + 4 * sigPairCount(off)` — the offset delta to the next sig.
-        int32_t sigBytes(int32_t off) const { return 4 + 4 * sigPairCount(off); }
+        /// @return `4 + 8 * sigPairCount(off)` — the offset delta to the next sig.
+        int32_t sigBytes(int32_t off) const { return 4 + 8 * sigPairCount(off); }
 
         /// @brief First component of pair @p i of the signature at @p off.
         /// @param off Byte offset of a signature record.
         /// @param i   Pair index in `[0, sigPairCount(off))`.
         /// @return The pair's `first` (the argument slot).
-        int16_t sigPairFirstAt(int32_t off, int32_t i) const {
-            return rdI16(p + off + 4 + 4 * i);
+        int32_t sigPairFirstAt(int32_t off, int32_t i) const {
+            return rdI32(p + off + 4 + 8 * i);
         }
 
         /// @brief Second component of pair @p i of the signature at @p off.
         /// @param off Byte offset of a signature record.
         /// @param i   Pair index in `[0, sigPairCount(off))`.
         /// @return The pair's `second` (the raw name id).
-        int16_t sigPairSecondAt(int32_t off, int32_t i) const {
-            return rdI16(p + off + 4 + 4 * i + 2);
+        NameId sigPairSecondAt(int32_t off, int32_t i) const {
+            return rdI32(p + off + 4 + 8 * i + 4);
         }
     };
 
     /// @brief Pack an owner's (expanded-original id, scope validity id) into the
-    ///        single composite `int32` used as its LB-split partition key.
+    ///        single composite `int64` used as its LB-split partition key.
     ///
     /// @details The LB-split hashburst (D-119) divides
     /// a logic block's rules across `N` parallel executors. Each rule is
     /// identified by its owner pair `(expandedOriginal, validity)`; both halves
-    /// are already interned to `int16` ids by the per-LB `NameMap`
+    /// are already interned to `NameId` ids by the per-LB `NameMap`
     /// (`origId = NameMap::encode(expandedOriginal)`,
     /// `scopeVid = NameMap::encode(validity)`). This function packs them —
-    /// `origId` in the high 16 bits, `scopeVid` in the low 16 — into one
-    /// `int32`. The packing is injective over the non-negative `int16` ids
-    /// `NameMap` mints, so distinct owner pairs get distinct composite ids; a
+    /// `origId` in the high 32 bits, `scopeVid` in the low 32 — into one
+    /// `int64` via `packInt32Pair`. The packing is injective over the
+    /// non-negative `NameId` ids `NameMap` mints (bit 63 stays clear, so the
+    /// composite is non-negative and `id % N` lands in `[0, N)`), so distinct
+    /// owner pairs get distinct composite ids; a
     /// split executor `n` of `N` then accepts a (sub)key iff some composite id
     /// in its owner set satisfies `id % N == n`. The id is a pure function of
     /// the owner — no counter — computed identically at install and at the
@@ -767,11 +786,12 @@ namespace gl {
     ///
     /// @param origId   `NameMap::encode(expandedOriginal)` — the rule's id.
     /// @param scopeVid `NameMap::encode(validity)` — the scope's id.
-    /// @return The composite `(origId << 16) | (uint16_t)scopeVid`.
-    /// @see `OwnerSet::partitionIds` — where the result is stored.
-    inline int32_t makePartitionId(int16_t origId, int16_t scopeVid) {
-        return (static_cast<int32_t>(origId) << 16)
-            | static_cast<int32_t>(static_cast<uint16_t>(scopeVid));
+    /// @return The composite `packInt32Pair(origId, scopeVid)` — `origId` in the
+    ///         high 32 bits, `scopeVid` in the low 32.
+    /// @see `OwnerSet::partitionIds` — where the result is stored;
+    ///      `packInt32Pair`.
+    inline int64_t makePartitionId(NameId origId, NameId scopeVid) {
+        return packInt32Pair(origId, scopeVid);
     }
 
     /// @brief Executor index (`n`) and executor count (`N`) of the currently
@@ -828,11 +848,17 @@ namespace gl {
     ///                     (`OwnerSet::partitionIds`).
     /// @return `true` if this executor handles the key, `false` to skip it.
     /// @see `makePartitionId`, `OwnerSet::partitionIds`.
-    inline bool partitionAccepts(const std::set<int32_t>& partitionIds) {
+    inline bool partitionAccepts(const std::set<int64_t>& partitionIds) {
         const int splitCount = g_splitCount;
         if (splitCount <= 1) return true;
         const int processID = g_splitProcessID;
-        for (int32_t id : partitionIds) {
+        for (int64_t id : partitionIds) {
+            // A real composite is a pack of two non-negative NameId halves, so
+            // bit 63 is clear and `id % splitCount` lands in [0, splitCount) —
+            // the executor-index range. A negative composite would break that
+            // (Rule 19: a broken pack, not a case to tolerate).
+            assert(id >= 0
+                && "partitionAccepts: composite partition id must be non-negative");
             if (id % splitCount == processID) return true;
         }
         return false;
@@ -852,15 +878,20 @@ namespace gl {
     ///
     /// @param entry The matched (sub)key's owner-set blob view.
     /// @return `true` if this LB-split executor handles the key, `false` to skip.
-    /// @see `partitionAccepts(const std::set<int32_t>&)`, `OwnerSetBlob`.
+    /// @see `partitionAccepts(const std::set<int64_t>&)`, `OwnerSetBlob`.
     inline bool partitionAccepts(const OwnerSetBlob& entry) {
         const int splitCount = g_splitCount;
         if (splitCount <= 1) return true;
         const int processID = g_splitProcessID;
         const int32_t pc = entry.partitionCount();
-        const char* q = entry.p + 5;
-        for (int32_t i = 0; i < pc; ++i, q += 4) {
-            if (OwnerSetBlob::rdI32(q) % splitCount == processID) return true;
+        for (int32_t i = 0; i < pc; ++i) {
+            const int64_t id = entry.partitionId(i);
+            // A real composite is a pack of two non-negative NameId halves, so
+            // bit 63 is clear and `id % splitCount` lands in [0, splitCount)
+            // (Rule 19: a broken pack, not a case to tolerate).
+            assert(id >= 0
+                && "partitionAccepts: composite partition id must be non-negative");
+            if (id % splitCount == processID) return true;
         }
         return false;
     }
@@ -985,6 +1016,14 @@ namespace gl {
         bool allowOrDisintegration = false;
         bool allGood = false;
         bool alreadyKnown = false;
+        // Witness-generation stamp: max iteration across the firing's
+        // premises, plus one (D-233). The mint
+        // in disintegrateExprCore2 names the head's witnesses
+        // it_<iteration>_lev_...; -1 = no stamp (marker records). NOT part
+        // of the canonical sort key: it is a pure function of the premises
+        // the comparator already orders through originDeps, so no two
+        // distinct records can differ in it alone.
+        int32_t iteration = -1;
 
         // --- marker firing (isMarker == true) ---
         // Sorted lex (decoded byte order), deduplicated — the former
@@ -1045,10 +1084,10 @@ namespace gl {
     };
 
     // ========================================================================
-    // Static hot path: int16_t-based hash memory structures
+    // Static hot path: NameId-based hash memory structures
     // ========================================================================
 
-    /// Bidirectional string <-> int16_t dictionary. Simple counter, no intelligence.
+    /// Bidirectional string <-> NameId dictionary. Simple counter, no intelligence.
     ///
     /// A validityName is a LIFO stack of sub-names. Canonical grammar:
     ///
@@ -1093,7 +1132,7 @@ namespace gl {
         /// Canonical "main" (general validity scope) is always id 1.
         /// Guaranteed structurally: "main" is the special-cased tableless
         /// id, lazily seeded into the metadata on the first encode.
-        static constexpr int16_t MAIN_ID = 1;
+        static constexpr NameId MAIN_ID = 1;
 
         NameMap() = default;  // unbound; Memory's constructor binds
 
@@ -1203,7 +1242,7 @@ namespace gl {
         /// an empty stack (canonical root = "main"). A string containing
         /// "_boundary_" is split at the last delimiter: everything before it is
         /// recursively encoded as the parent, and the tail is pushed as payload.
-        int16_t encode(const std::string& s) {
+        NameId encode(const std::string& s) {
             // Forward to the span overload — the span-native implementation
             // (flat-mint / scoped parent-then-payload recursion), no heap
             // std::string. Byte-identical: same bytes, same registration path.
@@ -1230,9 +1269,9 @@ namespace gl {
         /// @return The interned id (existing on a hit, freshly minted on a miss).
         /// @see `encode(const std::string&)` — the forwarding twin.
         /// @see `lookup(const StrSpan&)` — the non-minting probe it reuses.
-        int16_t encode(const StrSpan& s) {
+        NameId encode(const StrSpan& s) {
             seedIfEmpty();
-            const int16_t found = lookup(s);
+            const NameId found = lookup(s);
             if (found != 0) return found;
 
             const std::string_view sv(s.ptr, static_cast<std::size_t>(s.len));
@@ -1257,7 +1296,7 @@ namespace gl {
                 assert(id == nodes->size()
                     && "NameMap id/node misalignment (span mint outside encode)");
                 nodes->push_back(ValidityNode{0, 0});
-                return static_cast<int16_t>(id);
+                return static_cast<NameId>(id);
             }
             // Scoped name — slice the parent prefix and the tail payload as
             // spans and recurse span-native (no heap std::string): register the
@@ -1267,7 +1306,7 @@ namespace gl {
             const StrSpan payload(
                 s.ptr + lastPos + BOUNDARY_LEN,
                 s.len - static_cast<int32_t>(lastPos + BOUNDARY_LEN));
-            const int16_t parentId = encode(parent);
+            const NameId parentId = encode(parent);
             return encodePush(parentId, payload);
         }
 
@@ -1278,28 +1317,28 @@ namespace gl {
         ///
         /// @param s The canonical name; not yet interned, never "main".
         /// @return The fresh id; asserts the int16 ceiling.
-        int16_t mintName(const std::string& s) {
+        NameId mintName(const std::string& s) {
             assert(names != nullptr && "NameMap used unbound");
             const int32_t id = names->intern(StrSpan(s));
             assert(id < ExecutionParameters::MAX_NAME_IDS);
             assert(id == nodes->size()
                 && "NameMap id/node misalignment — a name was minted "
                    "outside encode/encodePush");
-            return static_cast<int16_t>(id);
+            return static_cast<NameId>(id);
         }
 
         /// @brief Span overload of @ref mintName — mint a canonical name from
         ///        raw bytes (a scratch / cold slice) with no heap `std::string`.
         /// @param s The canonical name bytes; not yet interned, never "main".
         /// @return The fresh id; asserts the int16 ceiling and node alignment.
-        int16_t mintName(const StrSpan& s) {
+        NameId mintName(const StrSpan& s) {
             assert(names != nullptr && "NameMap used unbound");
             const int32_t id = names->intern(s);
             assert(id < ExecutionParameters::MAX_NAME_IDS);
             assert(id == nodes->size()
                 && "NameMap id/node misalignment — a name was minted "
                    "outside encode/encodePush");
-            return static_cast<int16_t>(id);
+            return static_cast<NameId>(id);
         }
 
         /// @brief Non-minting variant of `encode` — return the id of an
@@ -1321,7 +1360,7 @@ namespace gl {
         /// @param s The name to look up.
         /// @return The interned id of `s`, or `0` if `s` was never interned.
         /// @see `encode` — the minting counterpart.
-        int16_t lookup(const std::string& s) const {
+        NameId lookup(const std::string& s) const {
             return lookup(StrSpan(s));
         }
 
@@ -1330,10 +1369,10 @@ namespace gl {
         ///
         /// @param s The name bytes to look up.
         /// @return The interned id, or `0` if absent.
-        int16_t lookup(const StrSpan& s) const {
+        NameId lookup(const StrSpan& s) const {
             assert(names != nullptr && "NameMap used unbound");
             const int32_t tid = names->lookup(s);
-            if (tid != 0) return static_cast<int16_t>(tid);   // direct, no offset
+            if (tid != 0) return static_cast<NameId>(tid);   // direct, no offset
             // "main" is the eternal root — id 1 even before it is lazily
             // interned into the names table (an idle Memory has none).
             if (equalSpans(s, mainName())) return MAIN_ID;
@@ -1341,22 +1380,22 @@ namespace gl {
         }
 
         /// Intern a payload string, returning a stable sub-id.
-        int16_t encodeSub(const std::string& payload) {
+        NameId encodeSub(const std::string& payload) {
             assert(subs != nullptr && "NameMap used unbound");
             const int32_t id = subs->intern(StrSpan(payload));
             assert(id < ExecutionParameters::MAX_NAME_IDS);
-            return static_cast<int16_t>(id);
+            return static_cast<NameId>(id);
         }
 
         /// @brief Span overload of @ref encodeSub — intern a payload from raw
         ///        bytes (a scratch / cold slice) with no heap `std::string`.
         /// @param payload The payload bytes; a slice of a caller-stable buffer.
         /// @return The stable sub-id; asserts the int16 ceiling.
-        int16_t encodeSub(const StrSpan& payload) {
+        NameId encodeSub(const StrSpan& payload) {
             assert(subs != nullptr && "NameMap used unbound");
             const int32_t id = subs->intern(payload);
             assert(id < ExecutionParameters::MAX_NAME_IDS);
-            return static_cast<int16_t>(id);
+            return static_cast<NameId>(id);
         }
 
         /// Push `payload` onto `parentId`'s stack, returning id of the new scope.
@@ -1367,7 +1406,7 @@ namespace gl {
         /// would create a spurious delimiter occurrence at a concatenation
         /// junction and break the delimiter-decomposition uniqueness the
         /// forest predicate rests on (I-139).
-        int16_t encodePush(int16_t parentId, const std::string& payload) {
+        NameId encodePush(NameId parentId, const std::string& payload) {
             return encodePush(parentId, StrSpan(payload));
         }
 
@@ -1393,10 +1432,10 @@ namespace gl {
         ///                 asserted; a slice of a caller-stable buffer.
         /// @return The interned scope id (existing on a canonical hit, freshly
         ///         minted on a miss).
-        /// @see encodePush(int16_t, const std::string&) — the delegating twin.
+        /// @see encodePush(NameId, const std::string&) — the delegating twin.
         /// @see mintName(const StrSpan&), encodeSub(const StrSpan&) — the span
         ///      mint primitives it uses.
-        int16_t encodePush(int16_t parentId, const StrSpan& payload);
+        NameId encodePush(NameId parentId, const StrSpan& payload);
 
         /// @brief Recover the canonical name of an id (owned copy — the
         ///        cold bytes live on pages). Hot readers that only
@@ -1405,7 +1444,7 @@ namespace gl {
         /// @param id A real id (`>= 1`); "main" decodes without a table
         ///           touch.
         /// @return The canonical name (owned copy).
-        std::string decode(int16_t id) const {
+        std::string decode(NameId id) const {
             assert(names != nullptr && "NameMap used unbound");
             assert(id >= MAIN_ID);
             // "main" is the eternal root: MAIN_ID resolves whether or not it has
@@ -1424,7 +1463,7 @@ namespace gl {
         ///
         /// @param id A real id (`>= 1`).
         /// @return Span over the name's bytes.
-        StrSpan decodeView(int16_t id) const {
+        StrSpan decodeView(NameId id) const {
             assert(names != nullptr && "NameMap used unbound");
             assert(id >= MAIN_ID);
             if (id == MAIN_ID && names->count() == 0) return mainName();
@@ -1453,7 +1492,7 @@ namespace gl {
         ///
         /// @param id A real sub-id (`>= 1`).
         /// @return The payload (owned copy).
-        std::string decodeSub(int16_t id) const {
+        std::string decodeSub(NameId id) const {
             assert(subs != nullptr && "NameMap used unbound");
             return subs->decodeString(id);
         }
@@ -1475,7 +1514,7 @@ namespace gl {
         /// @return Span over the payload's bytes.
         /// @see decodeSub — the owning-copy sibling; decodeView — the
         ///      name-table span twin.
-        StrSpan decodeSubView(int16_t id) const {
+        StrSpan decodeSubView(NameId id) const {
             assert(subs != nullptr && "NameMap used unbound");
             return subs->view(id);
         }
@@ -1486,7 +1525,7 @@ namespace gl {
         ///
         /// @param id A validity id.
         /// @return The parent id, or `0` if `id` is a root.
-        int16_t parentOf(int16_t id) const {
+        NameId parentOf(NameId id) const {
             if (nodes->empty()) {
                 assert((id == 0 || id == MAIN_ID)
                     && "parentOf on an unseeded NameMap for a non-root id");
@@ -1500,7 +1539,7 @@ namespace gl {
         ///
         /// @param id A validity id.
         /// @return The scope's own payload sub-id, or `0` for a root.
-        int16_t ownSubOf(int16_t id) const {
+        NameId ownSubOf(NameId id) const {
             if (nodes->empty()) {
                 assert((id == 0 || id == MAIN_ID)
                     && "ownSubOf on an unseeded NameMap for a non-root id");
@@ -1525,7 +1564,7 @@ namespace gl {
         ///
         /// @param id A validity id.
         /// @return `true` when the stack has no payload sub-ids.
-        bool stackEmpty(int16_t id) const {
+        bool stackEmpty(NameId id) const {
             return parentOf(id) == 0;   // a root (main / flat root) has no payloads
         }
 
@@ -1533,7 +1572,7 @@ namespace gl {
         ///
         /// @param id A seeded validity id with a non-empty stack.
         /// @return The deepest payload sub-id.
-        int16_t stackBack(int16_t id) const {
+        NameId stackBack(NameId id) const {
             assert(!stackEmpty(id) && "stackBack on an empty (root) stack");
             return ownSubOf(id);   // the innermost payload IS this scope's own sub-id
         }
@@ -1546,7 +1585,7 @@ namespace gl {
         ///
         /// @param id A validity id.
         /// @return The number of payload sub-ids.
-        int32_t stackLen(int16_t id) const {
+        int32_t stackLen(NameId id) const {
             const int32_t a = ancLen(id);   // payloads = ancestors minus the root self
             return a > 0 ? a - 1 : 0;
         }
@@ -1556,7 +1595,7 @@ namespace gl {
         /// @param id A seeded validity id.
         /// @param k  Depth in `[0, stackLen(id))`.
         /// @return The payload sub-id.
-        int16_t stackAt(int16_t id, int32_t k) const {
+        NameId stackAt(NameId id, int32_t k) const {
             // the k-th payload (root-to-leaf) is the own sub-id of the (k+1)-th
             // ancestor (index 0 is the payload-less root).
             return ownSubOf(ancAt(id, k + 1));
@@ -1576,14 +1615,14 @@ namespace gl {
         ///
         /// @param id A validity id.
         /// @return The ancestor count.
-        int32_t ancLen(int16_t id) const {
+        int32_t ancLen(NameId id) const {
             if (nodes->empty()) {
                 assert((id == 0 || id == MAIN_ID)
                     && "ancLen on an unseeded NameMap for a non-root id");
                 return id == MAIN_ID ? 1 : 0;
             }
             int32_t n = 0;
-            for (int16_t cur = id; cur != 0; cur = (*nodes)[cur].parentId)
+            for (NameId cur = id; cur != 0; cur = (*nodes)[cur].parentId)
                 ++n;
             return n;
         }
@@ -1597,7 +1636,7 @@ namespace gl {
         /// @param id A validity id.
         /// @param k  Position in `[0, ancLen(id))`.
         /// @return The ancestor validity id (self at the back).
-        int16_t ancAt(int16_t id, int32_t k) const {
+        NameId ancAt(NameId id, int32_t k) const {
             if (nodes->empty()) {
                 assert(id == MAIN_ID && k == 0
                     && "ancAt on an unseeded NameMap outside main's self-link");
@@ -1606,7 +1645,7 @@ namespace gl {
             const int32_t len = ancLen(id);
             assert(k >= 0 && k < len && "ancAt position out of range");
             // root-to-leaf index k is (len-1-k) parent-steps up from id (leaf).
-            int16_t cur = id;
+            NameId cur = id;
             for (int32_t steps = len - 1 - k; steps > 0; --steps)
                 cur = (*nodes)[cur].parentId;
             return cur;
@@ -1646,13 +1685,13 @@ namespace gl {
         /// @param id A minted validity id; `0 <= id < stackSize()`.
         /// @param q  The id to search for.
         /// @return `true` when some scope on `id`'s parent chain equals `q`.
-        bool ancContains(int16_t id, int16_t q) const {
+        bool ancContains(NameId id, NameId q) const {
             if (nodes->empty()) {
                 assert((id == 0 || id == MAIN_ID)
                     && "ancContains on an unseeded NameMap for a non-root id");
                 return id == MAIN_ID && q == MAIN_ID;   // main: {main}; slot 0: {}
             }
-            for (int16_t cur = id; cur != 0; cur = (*nodes)[cur].parentId)
+            for (NameId cur = id; cur != 0; cur = (*nodes)[cur].parentId)
                 if (cur == q) return true;
             return false;
         }
@@ -1702,8 +1741,9 @@ namespace gl {
         ///                     every matching id.
         /// @param words        Bitmap capacity in 64-bit words. Asserts
         ///                     `nameCount() < words * 64` — the Rule-19
-        ///                     tripwire against an id-ceiling raise outrunning
-        ///                     the caller's stack buffer.
+        ///                     tripwire against a name-id high water outrunning
+        ///                     the caller's buffer (the production caller sizes
+        ///                     it from `nameCount()` at the call seam).
         /// @param ascendingOut Receives the matching ids in ascending order
         ///                     (the wipe's step-11 mint order).
         /// @return The number of matching ids.
@@ -1712,9 +1752,9 @@ namespace gl {
         ///            text-prefix predicate; [I-2](../../docs/agentic_swdd/30_invariants.md#i-2)
         ///            — every non-`"main"` scope is minted via `encodePush`.
         /// @see `ancContains`, `Memory::wipeSubtree`.
-        int32_t collectClosedSubtreeIds(int16_t closedVid,
+        int32_t collectClosedSubtreeIds(NameId closedVid,
                                         uint64_t* bits, int32_t words,
-                                        PagedVector<int16_t>& ascendingOut) const {
+                                        PagedVector<NameId>& ascendingOut) const {
             assert(closedVid >= 1 && closedVid <= nameCount()
                 && "collectClosedSubtreeIds: closedVid is not a minted id");
             assert(closedVid != MAIN_ID
@@ -1724,10 +1764,9 @@ namespace gl {
             for (int32_t w = 0; w < words; ++w) bits[w] = 0;
             int32_t matches = 0;
             const int32_t hi = nameCount();
-            for (int16_t id = 1; id <= hi; ++id) {
+            for (NameId id = 1; id <= hi; ++id) {
                 if (ancContains(id, closedVid)) {
-                    bits[static_cast<uint16_t>(id) >> 6] |=
-                        (1ull << (static_cast<uint16_t>(id) & 63));
+                    bits[id >> 6] |= (1ull << (id & 63));
                     ascendingOut.push_back(id);
                     ++matches;
                 }
@@ -1749,7 +1788,7 @@ namespace gl {
         /// @param b   Second validity id.
         /// @param out [out] The verdict value when the result is `true`.
         /// @return `true` when `a` and `b` are comparable (including equal).
-        bool verdict(int16_t a, int16_t b, int16_t& out) const {
+        bool verdict(NameId a, NameId b, NameId& out) const {
             if (a == b) { out = 0; return true; }
             if (ancContains(b, a)) { out = -1; return true; }
             if (ancContains(a, b)) { out = 1; return true; }
@@ -1763,7 +1802,7 @@ namespace gl {
         /// @param a First validity id.
         /// @param b Second validity id.
         /// @return `true` when the pair is comparable.
-        bool comparable(int16_t a, int16_t b) const {
+        bool comparable(NameId a, NameId b) const {
             if (a == b) return true;
             return ancContains(b, a) || ancContains(a, b);
         }
@@ -1785,7 +1824,7 @@ namespace gl {
             std::size_t total = 0;
             const int32_t rows = nodes->size();
             for (int32_t id = 0; id < rows; ++id) {
-                const int32_t len = ancLen(static_cast<int16_t>(id));
+                const int32_t len = ancLen(static_cast<NameId>(id));
                 if (len > 1)
                     total += 2 * static_cast<std::size_t>(len - 1);
             }
@@ -1801,11 +1840,11 @@ namespace gl {
         /// is `false` — verdict 0 ≠ -1).
         inline bool isStrictAncestor(const std::string& maybeAncestor,
                                      const std::string& descendant) const {
-            const int16_t anc = lookup(maybeAncestor);
+            const NameId anc = lookup(maybeAncestor);
             if (anc == 0) return false;
-            const int16_t desc = lookup(descendant);
+            const NameId desc = lookup(descendant);
             if (desc == 0) return false;
-            int16_t v;
+            NameId v;
             return verdict(anc, desc, v) && v == -1;
         }
 
@@ -1830,12 +1869,12 @@ namespace gl {
         /// @return `true` iff @p maybeAncestor strictly precedes
         ///         @p descendant on the root-to-leaf scope path.
         /// @see isStrictAncestor(const std::string&, const std::string&) — the
-        ///      string overload; deeperOf(int16_t, int16_t) — the id-form
+        ///      string overload; deeperOf(NameId, NameId) — the id-form
         ///      comparability sibling.
-        inline bool isStrictAncestor(int16_t maybeAncestor,
-                                     int16_t descendant) const {
+        inline bool isStrictAncestor(NameId maybeAncestor,
+                                     NameId descendant) const {
             if (maybeAncestor == 0 || descendant == 0) return false;
-            int16_t v;
+            NameId v;
             return verdict(maybeAncestor, descendant, v) && v == -1;
         }
 
@@ -1849,7 +1888,7 @@ namespace gl {
         std::vector<std::string> strictAncestorNames(
             const std::string& v) const {
             std::vector<std::string> out;
-            const int16_t id = lookup(v);
+            const NameId id = lookup(v);
             if (id == 0) return out;
             const int32_t n = ancLen(id);
             out.reserve(static_cast<std::size_t>(n));
@@ -1884,7 +1923,7 @@ namespace gl {
         std::vector<std::string> strictAncestorNames(
             const StrSpan& v) const {
             std::vector<std::string> out;
-            const int16_t id = lookup(v);
+            const NameId id = lookup(v);
             if (id == 0) return out;
             const int32_t n = ancLen(id);
             out.reserve(static_cast<std::size_t>(n));
@@ -1945,7 +1984,7 @@ namespace gl {
         ///      non-minting probe; compareSpans.
         int32_t strictAncestorSpans(const StrSpan& v, StrSpan* out,
                                     int32_t cap) const {
-            const int16_t id = lookup(v);
+            const NameId id = lookup(v);
             if (id == 0) return 0;                 // unknown name -> none
             const int32_t n = ancLen(id);          // chain length incl. self
             const int32_t m = n - 1;               // strict ancestors
@@ -1962,9 +2001,9 @@ namespace gl {
         }
 
         /// Caller guarantees comparable(a, b).
-        int16_t deeperOf(int16_t a, int16_t b) const {
+        NameId deeperOf(NameId a, NameId b) const {
             if (a == b) return a;
-            int16_t v;
+            NameId v;
             bool ok = verdict(a, b, v);
             (void)ok;
             assert(ok && "deeperOf called on divergent pair");
@@ -2006,11 +2045,11 @@ namespace gl {
         /// @param b The other comparable validity name span.
         /// @return The deeper of the two input spans (or @p a when equal).
         /// @see deeperOf(const std::string&, const std::string&) — the
-        ///      canonical overload; isStrictAncestor(int16_t, int16_t).
+        ///      canonical overload; isStrictAncestor(NameId, NameId).
         inline StrSpan deeperOf(const StrSpan& a, const StrSpan& b) const {
             if (equalSpans(a, b)) return a;
-            const int16_t ida = lookup(a);
-            const int16_t idb = lookup(b);
+            const NameId ida = lookup(a);
+            const NameId idb = lookup(b);
             if (isStrictAncestor(ida, idb)) return b;   // a shallower
             if (isStrictAncestor(idb, ida)) return a;   // b shallower
             assert(false && "deeperOf called on divergent span pair");
@@ -2018,7 +2057,7 @@ namespace gl {
         }
     };
 
-    /// IntNormalizedKey — int16_t array encoding of a normalized key.
+    /// IntNormalizedKey — NameId array encoding of a normalized key.
     ///
     /// Data layout (repeats for each expression, up to numberExpressions):
     ///
@@ -2035,25 +2074,25 @@ namespace gl {
     ///
     /// Next expression follows immediately after the last variable pair.
     struct IntNormalizedKey {
-        int16_t numberExpressions;
-        int16_t length;
-        const int16_t* data;  // non-owning pointer — references gen scratch arena byte-bump storage
+        int32_t numberExpressions;
+        int32_t length;
+        const NameId* data;  // non-owning pointer — references gen scratch arena byte-bump storage
 
         IntNormalizedKey() : numberExpressions(0), length(0), data(nullptr) {}
 
-        IntNormalizedKey(int16_t numExpr, const int16_t* arr, int16_t len)
+        IntNormalizedKey(int32_t numExpr, const NameId* arr, int32_t len)
             : numberExpressions(numExpr), length(len), data(arr) {}
 
         bool operator==(const IntNormalizedKey& rhs) const {
             if (numberExpressions != rhs.numberExpressions) return false;
             if (length != rhs.length) return false;
-            return std::memcmp(data, rhs.data, length * sizeof(int16_t)) == 0;
+            return std::memcmp(data, rhs.data, length * sizeof(NameId)) == 0;
         }
 
         bool operator<(const IntNormalizedKey& rhs) const {
             if (numberExpressions != rhs.numberExpressions) return numberExpressions < rhs.numberExpressions;
             if (length != rhs.length) return length < rhs.length;
-            for (int16_t i = 0; i < length; ++i) {
+            for (int32_t i = 0; i < length; ++i) {
                 if (data[i] != rhs.data[i]) return data[i] < rhs.data[i];
             }
             return false;
@@ -2065,7 +2104,7 @@ namespace gl {
     ///
     /// @details
     /// FNV offset basis 14695981039346656037 / FNV prime 1099511628211, applied
-    /// per-byte over `numberExpressions` first, then over each `int16_t` of `data`.
+    /// per-byte over `numberExpressions` first, then over each `NameId` of `data`.
     /// Determinism is essential: the same key produced on two different LBs (or
     /// across two threads in the parallel hash burst) must hash identically so the
     /// dedupe in `addToHashMemory` and the lookup in `checkLocalEncodedMemoryStatic`
@@ -2077,8 +2116,8 @@ namespace gl {
             std::size_t h = 14695981039346656037ULL;
             h ^= static_cast<std::size_t>(k.numberExpressions);
             h *= 1099511628211ULL;
-            for (int16_t i = 0; i < k.length; ++i) {
-                h ^= static_cast<std::size_t>(static_cast<uint16_t>(k.data[i]));
+            for (int32_t i = 0; i < k.length; ++i) {
+                h ^= static_cast<std::size_t>(static_cast<uint32_t>(k.data[i]));
                 h *= 1099511628211ULL;
             }
             return h;
@@ -2189,22 +2228,22 @@ namespace gl {
     /// @see `ownerSetHasComparable` — the sibling scope-comparability prune.
     inline bool ownerSetUSatisfied(const OwnerSet& entry,
                                    const IntEncodedExpr* const* exprs,
-                                   int16_t count) {
+                                   NameId count) {
         if (entry.hasLooseOwner || entry.uSignatures.empty()) return true;
 
-        int16_t reqArgs[ExecutionParameters::MAX_KEY_SLOTS];
-        int16_t n = 0;
-        for (int16_t i = 0; i < count; ++i) {
+        NameId reqArgs[ExecutionParameters::MAX_KEY_SLOTS];
+        int32_t n = 0;
+        for (NameId i = 0; i < count; ++i) {
             const IntEncodedExpr& e = *exprs[i];
-            for (int16_t j = 0; j < e.arity; ++j) {
+            for (int32_t j = 0; j < e.arity; ++j) {
                 assert(n < ExecutionParameters::MAX_KEY_SLOTS);
                 reqArgs[n++] = e.argFullId[j];
             }
         }
 
-        for (const std::vector<std::pair<int16_t, int16_t>>& sig : entry.uSignatures) {
+        for (const std::vector<std::pair<int32_t, NameId>>& sig : entry.uSignatures) {
             bool ok = true;
-            for (const std::pair<int16_t, int16_t>& sl : sig) {
+            for (const std::pair<int32_t, NameId>& sl : sig) {
                 if (sl.first >= n || reqArgs[sl.first] != sl.second) { ok = false; break; }
             }
             if (ok) return true;
@@ -2232,17 +2271,17 @@ namespace gl {
     /// @see `ownerSetUSatisfied(const OwnerSet&, ...)`, `OwnerSetBlob`.
     inline bool ownerSetUSatisfied(const OwnerSetBlob& entry,
                                    const IntEncodedExpr* const* exprs,
-                                   int16_t count) {
+                                   NameId count) {
         if (entry.hasLooseOwner()) return true;
         const char* cur = entry.p + entry.uSigOffset();
         const int32_t sc = OwnerSetBlob::rdI32(cur); cur += sizeof(int32_t);
         if (sc == 0) return true;
 
-        int16_t reqArgs[ExecutionParameters::MAX_KEY_SLOTS];
-        int16_t n = 0;
-        for (int16_t i = 0; i < count; ++i) {
+        NameId reqArgs[ExecutionParameters::MAX_KEY_SLOTS];
+        int32_t n = 0;
+        for (NameId i = 0; i < count; ++i) {
             const IntEncodedExpr& e = *exprs[i];
-            for (int16_t j = 0; j < e.arity; ++j) {
+            for (int32_t j = 0; j < e.arity; ++j) {
                 assert(n < ExecutionParameters::MAX_KEY_SLOTS);
                 reqArgs[n++] = e.argFullId[j];
             }
@@ -2253,10 +2292,10 @@ namespace gl {
             cur += sizeof(int32_t);
             bool ok = true;
             for (int32_t k = 0; k < pairCount; ++k) {
-                const int16_t slot = OwnerSetBlob::rdI16(cur);
-                cur += sizeof(int16_t);
-                const int16_t id = OwnerSetBlob::rdI16(cur);
-                cur += sizeof(int16_t);
+                const int32_t slot = OwnerSetBlob::rdI32(cur);
+                cur += sizeof(int32_t);
+                const NameId id = OwnerSetBlob::rdI32(cur);
+                cur += sizeof(int32_t);
                 if (ok && (slot >= n || reqArgs[slot] != id)) ok = false;
             }
             if (ok) return true;
@@ -2272,7 +2311,7 @@ namespace gl {
     ///
     /// @details
     /// Used to back the static-request pipeline's per-thread storage of
-    /// `IntEncodedExpr`, `StaticRequest`, `Stump`, and `int16_t` index
+    /// `IntEncodedExpr`, `StaticRequest`, `Stump`, and `NameId` index
     /// arrays. The contract is:
     ///
     /// - Construction with `cap` slots allocates `cap * sizeof(T)` bytes via
@@ -2345,8 +2384,8 @@ namespace gl {
     /// @see `memory.cpp::makeMandatoryEncodedStatementLists2Static` — emits two-element stumps.
     /// @see `memory.cpp::generateEncodedRequestsStatic` — the consumer.
     struct Stump {
-        int16_t idx0;
-        int16_t idx1;
+        NameId idx0;
+        NameId idx1;
     };
 
     /// @brief Fully-static request — no string data, no heap allocations.
@@ -2368,30 +2407,30 @@ namespace gl {
     /// @see [`StaticRequestEmitter`](#staticrequestemitter) — produces these.
     struct StaticRequest {
         const IntEncodedExpr* intExprs[ExecutionParameters::MAX_EXPRESSIONS]; // ptrs into arena
-        int16_t count;
-        int16_t maxIteration;
+        int32_t count;
+        int32_t maxIteration;
         IntNormalizedKey normalizedKey;
     };
 
-    /// @brief Pack `(originalId, validityId)` into a single `int32_t` for fast
+    /// @brief Pack `(originalId, validityId)` into a single `int64_t` for fast
     /// `std::unordered_set` / `std::map` lookup.
     ///
     /// @details
-    /// Concatenates the two `int16_t` halves into a 32-bit value with
-    /// `originalId` in the high 16 bits and `validityId` in the low 16. Cheaper
-    /// than hashing a `std::pair<int16_t, int16_t>` and equivalent to
-    /// `std::tuple<int16_t, int16_t>` ordering for keys with the same
-    /// `originalId`. Used by `Memory::intKnownStatements` for the O(1)
-    /// "is this statement already known here" check.
+    /// Concatenates the two `NameId` halves into a 64-bit value with
+    /// `originalId` in the high 32 bits and `validityId` in the low 32, via the
+    /// `packInt32Pair` primitive. Cheaper than hashing a `std::pair<NameId,
+    /// NameId>` and equivalent to `std::tuple<NameId, NameId>` ordering for keys
+    /// with the same `originalId`. Used by `Memory::intKnownStatements` for the
+    /// O(1) "is this statement already known here" check.
     ///
     /// @param originalId NameMap id of the original (un-normalized) expression
     ///                   string.
     /// @param validityId NameMap id of the scope's canonical validity name.
     /// @return Combined key value. Uniqueness is guaranteed because both inputs
     ///         are distinct ids minted by the same `NameMap`.
-    inline int32_t packStatementKey(int16_t originalId, int16_t validityId) {
-        return (static_cast<int32_t>(static_cast<uint16_t>(originalId)) << 16)
-             | static_cast<int32_t>(static_cast<uint16_t>(validityId));
+    /// @see `packInt32Pair`, `Codec<StatementKey>`.
+    inline int64_t packStatementKey(NameId originalId, NameId validityId) {
+        return packInt32Pair(originalId, validityId);
     }
 
     /// @brief Dedicated id space for admission/rejected TEMPLATE strings —
@@ -2457,11 +2496,11 @@ namespace gl {
         ///
         /// @param s The template string to intern.
         /// @return The stable id of @p s; mints on first sight.
-        int16_t encode(const std::string& s) {
+        NameId encode(const std::string& s) {
             assert(table != nullptr && "TemplateInterner used unbound");
             const int32_t id = table->intern(StrSpan(s));
             assert(id < ExecutionParameters::MAX_NAME_IDS);
-            return static_cast<int16_t>(id);
+            return static_cast<NameId>(id);
         }
 
         /// @brief Span overload of the find-or-mint write half — interns
@@ -2483,11 +2522,11 @@ namespace gl {
         /// @return The stable id of @p s; mints on first sight.
         /// @see encode(const std::string&) — the canonical overload;
         ///      lookup(const StrSpan&) — the non-minting probe.
-        int16_t encode(const StrSpan& s) {
+        NameId encode(const StrSpan& s) {
             assert(table != nullptr && "TemplateInterner used unbound");
             const int32_t id = table->intern(s);
             assert(id < ExecutionParameters::MAX_NAME_IDS);
-            return static_cast<int16_t>(id);
+            return static_cast<NameId>(id);
         }
 
         /// @brief Non-minting probe (read half).
@@ -2498,9 +2537,9 @@ namespace gl {
         ///
         /// @param s The template string to look up.
         /// @return The interned id, or `0` if absent.
-        int16_t lookup(const std::string& s) const {
+        NameId lookup(const std::string& s) const {
             assert(table != nullptr && "TemplateInterner used unbound");
-            return static_cast<int16_t>(table->lookup(StrSpan(s)));
+            return static_cast<NameId>(table->lookup(StrSpan(s)));
         }
 
         /// @brief Span overload of the non-minting probe — probes template
@@ -2519,9 +2558,9 @@ namespace gl {
         /// @return The interned id, or `0` if absent.
         /// @see lookup(const std::string&) — the canonical overload;
         ///      encode(const StrSpan&) — the minting counterpart.
-        int16_t lookup(const StrSpan& s) const {
+        NameId lookup(const StrSpan& s) const {
             assert(table != nullptr && "TemplateInterner used unbound");
-            return static_cast<int16_t>(table->lookup(s));
+            return static_cast<NameId>(table->lookup(s));
         }
 
         /// @brief Recover the template string of an interned id.
@@ -2533,7 +2572,7 @@ namespace gl {
         ///
         /// @param id A real id minted by this interner (`> 0`).
         /// @return The template string (owned copy).
-        std::string decode(int16_t id) const {
+        std::string decode(NameId id) const {
             assert(table != nullptr && "TemplateInterner used unbound");
             return table->decodeString(id);
         }
@@ -2544,7 +2583,7 @@ namespace gl {
         ///
         /// @param id A real id minted by this interner (`> 0`).
         /// @return Span over the template's bytes.
-        StrSpan decodeView(int16_t id) const {
+        StrSpan decodeView(NameId id) const {
             assert(table != nullptr && "TemplateInterner used unbound");
             return table->view(id);
         }
@@ -3705,7 +3744,7 @@ namespace gl {
     /// space of the column they order, and recover each id's bytes through this
     /// overload set so one comparator body serves every id space. The internal
     /// channel's statement ids are per-LB `NameMap` ids stored in an `int32_t`
-    /// field; this overload narrows to the `int16_t` the `NameMap` decodes and
+    /// field; this overload narrows to the `NameId` the `NameMap` decodes and
     /// returns the zero-copy span, identical to every other decoded-lex
     /// `NameMap` walk (`unionMemberIdsByName`, `sortStatementRows`).
     ///
@@ -3718,7 +3757,7 @@ namespace gl {
     /// @see mailIdView(const ValueInterner&, int32_t),
     ///      mailIdView(const ColdStringTable&, int32_t).
     inline StrSpan mailIdView(const NameMap& nm, int32_t id) {
-        return nm.decodeView(static_cast<int16_t>(id));
+        return nm.decodeView(id);   // NameId == int32_t; no narrowing (would alias ids >= 32768)
     }
 
     /// @brief Decode a mail id-space id to a byte span — the `ValueInterner`
@@ -4221,6 +4260,72 @@ namespace gl {
         return packInt32Pair(highId, lowId);
     }
 
+    /// @brief Mint the canonical OR-disintegration cohort id for one parent
+    ///        validity and one original OR signature.
+    ///
+    /// @details
+    /// The parent-validity id and OR-signature id already live in the same
+    /// append-only `lbStateInterner`. Their packed pair is encoded as eight
+    /// canonical big-endian bytes and interned back into that space. The
+    /// resulting scalar id lets the existing two-field bookkeeping key retain
+    /// its cold-container layout while making the parent scope part of cohort
+    /// identity.
+    ///
+    /// @param interner The owning LB-state interner.
+    /// @param parentValidityId The minted id of the cohort's parent validity.
+    /// @param orSignatureId The minted id of the cohort's original OR signature.
+    /// @return The minted id of the packed `(parentValidityId, orSignatureId)`
+    ///         cohort key.
+    /// @invariant Both component ids and the returned cohort id belong to
+    ///            `interner`; zero is never a cohort component.
+    /// @see decodeOrCohortIds, Memory::orBookkeeping, Memory::orDisjunctCount.
+    inline int32_t mintOrCohortId(ValueInterner& interner,
+                                  int32_t parentValidityId,
+                                  int32_t orSignatureId) {
+        assert(parentValidityId > 0);
+        assert(orSignatureId > 0);
+        const uint64_t packed = static_cast<uint64_t>(
+            packInt32Pair(parentValidityId, orSignatureId));
+        char bytes[sizeof(uint64_t)];
+        for (int i = 0; i < static_cast<int>(sizeof(uint64_t)); ++i) {
+            const int shift = 8 * (static_cast<int>(sizeof(uint64_t)) - 1 - i);
+            bytes[i] = static_cast<char>((packed >> shift) & 0xFFu);
+        }
+        return interner.encode(StrSpan(bytes, static_cast<int32_t>(sizeof(bytes))));
+    }
+
+    /// @brief Decode an OR-disintegration cohort id into its parent-validity
+    ///        and original-OR-signature ids.
+    ///
+    /// @details
+    /// This is the exact inverse of `mintOrCohortId`: it reads the canonical
+    /// eight-byte big-endian payload from the append-only LB-state interner and
+    /// returns the two packed components as an `LbStatePairKey` (`high` is the
+    /// parent validity; `low` is the OR signature).
+    ///
+    /// @param interner The LB-state interner that owns @p cohortId.
+    /// @param cohortId A minted cohort id returned by `mintOrCohortId`.
+    /// @return `{parentValidityId, orSignatureId}`.
+    /// @invariant The cohort payload is exactly eight bytes and both decoded
+    ///            component ids are minted positive ids.
+    /// @see mintOrCohortId.
+    inline LbStatePairKey decodeOrCohortIds(const ValueInterner& interner,
+                                            int32_t cohortId) {
+        assert(cohortId > 0);
+        const StrSpan bytes = interner.decodeView(cohortId);
+        assert(bytes.len == static_cast<int32_t>(sizeof(uint64_t)));
+        uint64_t packed = 0;
+        for (int32_t i = 0; i < bytes.len; ++i) {
+            packed = (packed << 8)
+                | static_cast<uint64_t>(static_cast<unsigned char>(bytes.ptr[i]));
+        }
+        const LbStatePairKey ids =
+            Codec<LbStatePairKey>::decode(static_cast<int64_t>(packed));
+        assert(ids.high > 0);
+        assert(ids.low > 0);
+        return ids;
+    }
+
 
     /// @brief Id-form twin of the GLOBAL [`LogicalEntity`](#logicalentity),
     /// used ONLY inside the stored integration-admission instructions.
@@ -4686,7 +4791,7 @@ namespace gl {
     /// decoded-order comparators (`DecodedInstructionLess` / `DecodedIdLess`) order
     /// the run at the read-modify-write boundary, never inside the codec. The
     /// struct lives here (before `HashMemory`) so the cold member's
-    /// `TypedColdBlobMap<int32_t, IntegrationEntry>` sees a complete record type;
+    /// `TypedColdBlobMap<int64_t, IntegrationEntry>` sees a complete record type;
     /// the record `Codec<IntegrationEntry>` is defined further down with the other
     /// codecs.
     ///
@@ -4737,11 +4842,11 @@ namespace gl {
     /// @param validityName The scope.
     /// @return `packStatementKey(templateId, validityId)`.
     /// @see TemplateInterner, lookupTemplateKey, decodeTemplateKey.
-    inline int32_t mintTemplateKey(TemplateInterner& ti, NameMap& nm,
+    inline int64_t mintTemplateKey(TemplateInterner& ti, NameMap& nm,
         const std::string& templ, const std::string& validityName)
     {
-        const int16_t tid = ti.encode(templ);
-        const int16_t vid = nm.encode(validityName);
+        const NameId tid = ti.encode(templ);
+        const NameId vid = nm.encode(validityName);
         return packStatementKey(tid, vid);
     }
 
@@ -4766,11 +4871,11 @@ namespace gl {
     /// @return `packStatementKey(templateId, validityId)`.
     /// @see mintTemplateKey(..., const std::string&, const std::string&) — the
     ///      canonical overload; lookupTemplateKey; decodeTemplateKeyView.
-    inline int32_t mintTemplateKey(TemplateInterner& ti, NameMap& nm,
+    inline int64_t mintTemplateKey(TemplateInterner& ti, NameMap& nm,
         const StrSpan& templ, const StrSpan& validityName)
     {
-        const int16_t tid = ti.encode(templ);
-        const int16_t vid = nm.encode(validityName);
+        const NameId tid = ti.encode(templ);
+        const NameId vid = nm.encode(validityName);
         return packStatementKey(tid, vid);
     }
 
@@ -4791,11 +4896,11 @@ namespace gl {
     /// @return `true` when both halves are interned (the key MAY be in a
     ///         container); `false` = definitive miss everywhere.
     inline bool lookupTemplateKey(const TemplateInterner& ti, const NameMap& nm,
-        const std::string& templ, const std::string& validityName, int32_t& outKey)
+        const std::string& templ, const std::string& validityName, int64_t& outKey)
     {
-        const int16_t tid = ti.lookup(templ);
+        const NameId tid = ti.lookup(templ);
         if (tid == 0) return false;
-        const int16_t vid = nm.lookup(validityName);
+        const NameId vid = nm.lookup(validityName);
         if (vid == 0) return false;
         outKey = packStatementKey(tid, vid);
         return true;
@@ -4822,11 +4927,11 @@ namespace gl {
     /// @see lookupTemplateKey(..., const std::string&, const std::string&) —
     ///      the canonical overload; mintTemplateKey.
     inline bool lookupTemplateKey(const TemplateInterner& ti, const NameMap& nm,
-        const StrSpan& templ, const StrSpan& validityName, int32_t& outKey)
+        const StrSpan& templ, const StrSpan& validityName, int64_t& outKey)
     {
-        const int16_t tid = ti.lookup(templ);
+        const NameId tid = ti.lookup(templ);
         if (tid == 0) return false;
-        const int16_t vid = nm.lookup(validityName);
+        const NameId vid = nm.lookup(validityName);
         if (vid == 0) return false;
         outKey = packStatementKey(tid, vid);
         return true;
@@ -4842,12 +4947,12 @@ namespace gl {
     /// @param ti        The owning LB's template interner.
     /// @param nm        The owning LB's NameMap.
     /// @return `(template, validityName)` as owned strings.
-    inline std::pair<std::string, std::string> decodeTemplateKey(int32_t packedKey,
+    inline std::pair<std::string, std::string> decodeTemplateKey(int64_t packedKey,
         const TemplateInterner& ti, const NameMap& nm)
     {
-        const int16_t tid = static_cast<int16_t>((static_cast<uint32_t>(packedKey) >> 16) & 0xFFFF);
-        const int16_t vid = static_cast<int16_t>(static_cast<uint32_t>(packedKey) & 0xFFFF);
-        return std::make_pair(std::string(ti.decode(tid)), std::string(nm.decode(vid)));
+        const StatementKey sk = Codec<StatementKey>::decode(packedKey);
+        return std::make_pair(std::string(ti.decode(sk.orig)),
+                              std::string(nm.decode(sk.validity)));
     }
 
     /// @brief Zero-copy twin of `decodeTemplateKey` — split a packed key into
@@ -4872,14 +4977,13 @@ namespace gl {
     /// @param templateOut Receives the template span over @p ti's cold bytes.
     /// @param validityOut Receives the validity-name span over @p nm's cold bytes.
     /// @see decodeTemplateKey — the owning-copy sibling; mintTemplateKey.
-    inline void decodeTemplateKeyView(int32_t packedKey,
+    inline void decodeTemplateKeyView(int64_t packedKey,
         const TemplateInterner& ti, const NameMap& nm,
         StrSpan& templateOut, StrSpan& validityOut)
     {
-        const int16_t tid = static_cast<int16_t>((static_cast<uint32_t>(packedKey) >> 16) & 0xFFFF);
-        const int16_t vid = static_cast<int16_t>(static_cast<uint32_t>(packedKey) & 0xFFFF);
-        templateOut = ti.decodeView(tid);
-        validityOut = nm.decodeView(vid);
+        const StatementKey sk = Codec<StatementKey>::decode(packedKey);
+        templateOut = ti.decodeView(sk.orig);
+        validityOut = nm.decodeView(sk.validity);
     }
 
     /// @brief Dedupe + emit for all `generateEncodedRequests*` variants.
@@ -4909,11 +5013,11 @@ namespace gl {
     template <typename Consumer>
     struct StaticRequestEmitter {
         struct RequestKey {
-            int32_t packed[ExecutionParameters::MAX_EXPRESSIONS];
-            int16_t count;
+            int64_t packed[ExecutionParameters::MAX_EXPRESSIONS];
+            NameId count;
             bool operator<(const RequestKey& rhs) const {
                 if (count != rhs.count) return count < rhs.count;
-                return std::memcmp(packed, rhs.packed, count * sizeof(int32_t)) < 0;
+                return std::memcmp(packed, rhs.packed, count * sizeof(int64_t)) < 0;
             }
         };
         // Per-batch dedup: the emitted-request key set on this slot's gen
@@ -4942,12 +5046,12 @@ namespace gl {
         // keep going. `consumer.canAccept()` is checked first (the pre-stream
         // `outCount >= maxOut` cap guard), then dedup, then build, then
         // `consumer.consume(req)`.
-        bool emit(const IntEncodedExpr* const* exprs, int16_t count,
+        bool emit(const IntEncodedExpr* const* exprs, NameId count,
                   const IntNormalizedKey& nk) {
             if (!consumer.canAccept()) return false;
             RequestKey dk;
             dk.count = count;
-            for (int16_t i = 0; i < count; ++i)
+            for (NameId i = 0; i < count; ++i)
                 dk.packed[i] = packStatementKey(exprs[i]->originalId, exprs[i]->validityId);
             // Dedup on the packed bytes: count int32s uniquely encode
             // (count, packed) -- distinct counts give distinct byte lengths.
@@ -4955,7 +5059,7 @@ namespace gl {
             // count() means the key was already present, so skip (the std::set
             // insert().second == false twin). No heap.
             const StrSpan dkSpan(reinterpret_cast<const char*>(dk.packed),
-                                 static_cast<int32_t>(count * sizeof(int32_t)));
+                                 static_cast<int32_t>(count * sizeof(int64_t)));
             const int32_t beforeCount = seen.count();
             seen.intern(dkSpan);
             if (seen.count() == beforeCount) return true;
@@ -4963,7 +5067,7 @@ namespace gl {
             StaticRequest req{};
             req.count = count;
             req.maxIteration = -1;
-            for (int16_t i = 0; i < count; ++i) {
+            for (NameId i = 0; i < count; ++i) {
                 IntEncodedExpr* copy = reinterpret_cast<IntEncodedExpr*>(
                     genArena.resolve(genArena.alloc(
                         static_cast<int32_t>(sizeof(IntEncodedExpr)),
@@ -4991,9 +5095,9 @@ namespace gl {
     ///
     /// @see `memory.cpp::makeMandatoryEncodedStatementLists2Static` — grow phase.
     struct BaseCandidate {
-        int16_t allIdx[ExecutionParameters::MAX_EXPRESSIONS];
-        int16_t count;
-        int16_t validityId;
+        NameId allIdx[ExecutionParameters::MAX_EXPRESSIONS];
+        NameId count;
+        NameId validityId;
     };
 
     /// @brief One stump of the LB split's second (expression) dimension.
@@ -5024,8 +5128,8 @@ namespace gl {
     /// @see `ExpressionAnalyzer::produceExpressionStumps` — the producer.
     /// @see `ExpressionAnalyzer::generateEncodedRequestsStatic` — the consumer.
     struct ExpressionStump {
-        int16_t allIdx[ExecutionParameters::MAX_EXPRESSIONS];
-        int16_t count;
+        NameId allIdx[ExecutionParameters::MAX_EXPRESSIONS];
+        NameId count;
         uint8_t terminalOnly;
     };
 
@@ -5062,9 +5166,9 @@ namespace gl {
     ///      `ExpressionAnalyzer::generateEncodedRequestsStatic`.
     struct SplitStumpRef {
         const ExpressionStump* stumps = nullptr;
-        int16_t count = 0;
-        int16_t ordinal = 0;
-        int16_t total = 0;
+        NameId count = 0;
+        NameId ordinal = 0;
+        NameId total = 0;
     };
 
     /// @brief Per-thread bundle of typed arenas backing one thread's slice of
@@ -5077,7 +5181,7 @@ namespace gl {
     /// - `requests`     (capacity 4096) — `StaticRequest` storage.
     /// - `encodedExprs` (capacity 2048) — `IntEncodedExpr` copies.
     /// - `pairs`        (capacity 8192) — `Stump`s.
-    /// - `indices`      (capacity 4096) — `int16_t` index arrays.
+    /// - `indices`      (capacity 4096) — `NameId` index arrays.
     ///
     /// `reset()` rewinds all four arenas to zero use; called once per LB-
     /// iteration boundary so storage is reused without going through the
@@ -5091,7 +5195,7 @@ namespace gl {
         TypedArena<StaticRequest>   requests;
         TypedArena<IntEncodedExpr>  encodedExprs;
         TypedArena<Stump>           pairs;
-        TypedArena<int16_t>         indices;
+        TypedArena<NameId>         indices;
 
         ThreadArenas()
             : requests(4096),
@@ -5108,7 +5212,7 @@ namespace gl {
         }
     };
 
-    /// @brief FNV-1a 64-bit hasher for `std::set<int16_t>`, used as the key type
+    /// @brief FNV-1a 64-bit hasher for `std::set<NameId>`, used as the key type
     /// in `HashMemory::remainingArgsNormalizedEncodedMap`.
     ///
     /// @details
@@ -5121,10 +5225,10 @@ namespace gl {
     /// @see [`HashMemory::remainingArgsNormalizedEncodedMap`](#hashmemory) — the
     ///      consumer.
     struct SetInt16Hash {
-        std::size_t operator()(const std::set<int16_t>& s) const {
+        std::size_t operator()(const std::set<NameId>& s) const {
             std::size_t h = 14695981039346656037ULL;
-            for (int16_t v : s) {
-                h ^= static_cast<std::size_t>(static_cast<uint16_t>(v));
+            for (NameId v : s) {
+                h ^= static_cast<std::size_t>(static_cast<uint32_t>(v));
                 h *= 1099511628211ULL;
             }
             return h;
@@ -5145,7 +5249,7 @@ namespace gl {
     /// rule the prover can fire from this LB. The members fall into three
     /// groups:
     ///
-    /// **Hot-path indices (int16_t-keyed)**
+    /// **Hot-path indices (NameId-keyed)**
     /// - `encodedMap` — primary index. Maps a normalized premise key to the
     ///   stack of `LocalMemoryValue`s that can fire from it.
     /// - `remainingArgsNormalizedEncodedMap` — secondary index by the set of
@@ -5174,7 +5278,7 @@ namespace gl {
     ///   when a class has no key overlap (was the hot spot on Gauss
     ///   batches with ~10⁵ rmi entries × ~10⁶ class calls).
     /// - `admissionStatusMap` — per-key admission verdict cache.
-    /// - `productsOfRecursionIds` — int16_t ids of expressions known to be
+    /// - `productsOfRecursionIds` — NameId ids of expressions known to be
     ///   products of a recursion block; consulted for OR-disintegration
     ///   gating.
     /// - `consumedAdmissionKeys`, `revisitInProgress` — re-entrant guards.
@@ -5227,7 +5331,7 @@ namespace gl {
     ///          rely on indices 0..4 having the documented meaning. Adding a
     ///          new positional field requires a coordinated change wherever
     ///          this struct is read.
-    /// @see [`IntEncodedExpr`](#intencodedexpr) — int16_t replacement on the
+    /// @see [`IntEncodedExpr`](#intencodedexpr) — NameId replacement on the
     ///      hot path.
     /// @see `encodeExpression` — converts this into an `IntEncodedExpr`.
     struct EncodedExpression {
@@ -5407,7 +5511,7 @@ namespace gl {
     /// @see `packStatementKey`, `StatementFlags`.
     inline void upsertStatementKey(
         TypedColdMap<StatementKey, StatementFlags>& registry,
-        int32_t key, bool local, bool registered, bool known,
+        int64_t key, bool local, bool registered, bool known,
         bool fullyDisintegrated = false) {
         // The packed (originalId, validityId) scalar IS the inner engine's key
         // view; this low-level OR-merge write door reaches it through inner().
@@ -5453,9 +5557,9 @@ namespace gl {
         const TypedColdMap<StatementKey, StatementFlags>& registry,
         const NameMap& nm,
         const std::string& original, const std::string& validityName) {
-        const int16_t origId = nm.lookup(original);
+        const NameId origId = nm.lookup(original);
         if (origId == 0) return nullptr;
-        const int16_t valId = nm.lookup(validityName);
+        const NameId valId = nm.lookup(validityName);
         if (valId == 0) return nullptr;
         // Cold find returns the value pointer directly (nullptr on miss).
         return registry.find(StatementKey{ origId, valId });
@@ -5484,9 +5588,9 @@ namespace gl {
         const TypedColdMap<StatementKey, StatementFlags>& registry,
         const NameMap& nm,
         const StrSpan& original, const StrSpan& validityName) {
-        const int16_t origId = nm.lookup(original);
+        const NameId origId = nm.lookup(original);
         if (origId == 0) return nullptr;
-        const int16_t valId = nm.lookup(validityName);
+        const NameId valId = nm.lookup(validityName);
         if (valId == 0) return nullptr;
         return registry.find(StatementKey{ origId, valId });
     }
@@ -5524,9 +5628,9 @@ namespace gl {
         const TypedColdSetMap<StatementKey, int>& index,
         const NameMap& nm,
         const std::string& original, const std::string& validityName) {
-        const int16_t origId = nm.lookup(original);
+        const NameId origId = nm.lookup(original);
         if (origId == 0) return 0;
-        const int16_t valId = nm.lookup(validityName);
+        const NameId valId = nm.lookup(validityName);
         if (valId == 0) return 0;
         return index.lookup(packStatementKey(origId, valId));
     }
@@ -5555,9 +5659,9 @@ namespace gl {
         const TypedColdSetMap<StatementKey, int>& index,
         const NameMap& nm,
         const StrSpan& original, const StrSpan& validityName) {
-        const int16_t origId = nm.lookup(original);
+        const NameId origId = nm.lookup(original);
         if (origId == 0) return 0;
-        const int16_t valId = nm.lookup(validityName);
+        const NameId valId = nm.lookup(validityName);
         if (valId == 0) return 0;
         return index.lookup(packStatementKey(origId, valId));
     }
@@ -5588,12 +5692,12 @@ namespace gl {
     /// @see `lookupStatementLevels`, `lookupStatementFlags` — sibling
     ///      non-minting probes; `packStatementKey`.
     inline bool isLocalEncodedStatement(
-        const ColdHashSet<PodKeyStore<int32_t>>& index,
+        const ColdHashSet<PodKeyStore<int64_t>>& index,
         const NameMap& nm,
         const std::string& original, const std::string& validityName) {
-        const int16_t origId = nm.lookup(original);
+        const NameId origId = nm.lookup(original);
         if (origId == 0) return false;
-        const int16_t valId = nm.lookup(validityName);
+        const NameId valId = nm.lookup(validityName);
         if (valId == 0) return false;
         return index.contains(packStatementKey(origId, valId));
     }
@@ -5619,12 +5723,12 @@ namespace gl {
     /// @see isLocalEncodedStatement(..., const std::string&, const
     ///      std::string&) — the canonical overload; packStatementKey.
     inline bool isLocalEncodedStatement(
-        const ColdHashSet<PodKeyStore<int32_t>>& index,
+        const ColdHashSet<PodKeyStore<int64_t>>& index,
         const NameMap& nm,
         const StrSpan& original, const StrSpan& validityName) {
-        const int16_t origId = nm.lookup(original);
+        const NameId origId = nm.lookup(original);
         if (origId == 0) return false;
-        const int16_t valId = nm.lookup(validityName);
+        const NameId valId = nm.lookup(validityName);
         if (valId == 0) return false;
         return index.contains(packStatementKey(origId, valId));
     }
@@ -5663,9 +5767,9 @@ namespace gl {
         const TypedColdSetMap<StatementKey, int>& goals,
         const NameMap& nm,
         const std::string& original, const std::string& validityName) {
-        const int16_t origId = nm.lookup(original);
+        const NameId origId = nm.lookup(original);
         if (origId == 0) return 0;
-        const int16_t valId = nm.lookup(validityName);
+        const NameId valId = nm.lookup(validityName);
         if (valId == 0) return 0;
         return goals.lookup(packStatementKey(origId, valId));
     }
@@ -5772,7 +5876,7 @@ namespace gl {
     ///
     /// @details
     /// `eqClassSttmntIndexMapMap` was a nested
-    /// `std::map<int16_t, std::map<std::vector<int16_t>, int>>`; the cold form
+    /// `std::map<NameId, std::map<std::vector<NameId>, int>>`; the cold form
     /// (Batch 2) flattens it to a `ColdHashMap<BytesKeyStore, int>` keyed by the
     /// validity id (2 bytes) followed by the class member ids (2 bytes each, in
     /// their stored sorted order). Distinct (validity, members) pairs yield
@@ -5784,8 +5888,8 @@ namespace gl {
     /// @param memberIds  The class's sorted member ids.
     /// @return The packed byte key.
     /// @see `lookupEqClassIndex`, `upsertEqClassIndex`, `eraseEqClassIndex`.
-    inline std::string encodeEqClassKey(int16_t validityId,
-                                        const std::vector<int16_t>& memberIds) {
+    inline std::string encodeEqClassKey(NameId validityId,
+                                        const std::vector<NameId>& memberIds) {
         return Codec<EqClassKey>::encode(EqClassKey{ validityId, memberIds });
     }
 
@@ -5804,8 +5908,8 @@ namespace gl {
     /// @return The stored waterline, or 0 when the class has no entry.
     /// @see `encodeEqClassKey`, `upsertEqClassIndex`.
     inline int lookupEqClassIndex(
-        const TypedColdMap<EqClassKey, int>& m, int16_t validityId,
-        const std::vector<int16_t>& memberIds) {
+        const TypedColdMap<EqClassKey, int>& m, NameId validityId,
+        const std::vector<NameId>& memberIds) {
         return m.findOr(EqClassKey{ validityId, memberIds }, 0);
     }
 
@@ -5822,8 +5926,8 @@ namespace gl {
     /// @param value      The waterline to store.
     /// @see `lookupEqClassIndex`, `encodeEqClassKey`.
     inline void upsertEqClassIndex(
-        TypedColdMap<EqClassKey, int>& m, int16_t validityId,
-        const std::vector<int16_t>& memberIds, int value) {
+        TypedColdMap<EqClassKey, int>& m, NameId validityId,
+        const std::vector<NameId>& memberIds, int value) {
         m.upsert(EqClassKey{ validityId, memberIds }, value);
     }
 
@@ -5836,8 +5940,8 @@ namespace gl {
     /// @param memberIds  The (merged-away) class's sorted member ids.
     /// @see `upsertEqClassIndex`.
     inline void eraseEqClassIndex(
-        TypedColdMap<EqClassKey, int>& m, int16_t validityId,
-        const std::vector<int16_t>& memberIds) {
+        TypedColdMap<EqClassKey, int>& m, NameId validityId,
+        const std::vector<NameId>& memberIds) {
         m.erase(EqClassKey{ validityId, memberIds });
     }
 
@@ -5854,7 +5958,7 @@ namespace gl {
     struct DecodedToBeProvedRow {
         std::string original;
         std::string validityName;
-        int32_t key;
+        int64_t key;
     };
 
     /// @brief Decoded, lexicographically sorted snapshot of the packed-key
@@ -5892,11 +5996,10 @@ namespace gl {
         const int32_t n = goals.count();
         rows.reserve(static_cast<size_t>(n));
         for (int32_t id = 1; id <= n; ++id) {
-            const int32_t key = goals.keyAt(id);
-            const int16_t origId = static_cast<int16_t>(
-                (static_cast<uint32_t>(key) >> 16) & 0xFFFF);
-            const int16_t valId = static_cast<int16_t>(
-                static_cast<uint32_t>(key) & 0xFFFF);
+            const int64_t key = goals.keyAt(id);
+            const StatementKey sk = Codec<StatementKey>::decode(key);
+            const NameId origId = sk.orig;
+            const NameId valId = sk.validity;
             DecodedToBeProvedRow row;
             row.original = std::string(nm.decodeView(origId).ptr,
                 static_cast<std::size_t>(nm.decodeView(origId).len));
@@ -5921,7 +6024,7 @@ namespace gl {
     /// The owning `decodeToBeProvedSorted` materializes one `DecodedToBeProvedRow`
     /// (two owned `std::string`s) per goal so a mutate-during-walk consumer can
     /// hold them across mints. This twin returns instead the PACKED KEYS
-    /// themselves — stable `int32_t` (`packStatementKey(originalId, validityId)`)
+    /// themselves — stable `int64_t` (`packStatementKey(originalId, validityId)`)
     /// on the caller's arena byte-bump tier — sorted by the SAME decoded
     /// `(original, validityName)` comparator (`compareSpans` == `std::string::compare`,
     /// then a validity tie-break), so the key order is byte-identical to the
@@ -5936,7 +6039,7 @@ namespace gl {
     /// form snapshots too). No mint occurs during the sort — the comparator only
     /// reads cold-table spans — so every `decodeView` span stays valid across the
     /// whole `std::sort` ([I-3](../../docs/agentic_swdd/30_invariants.md#i-3)).
-    /// The `int32_t[]` rides @p arena's byte-bump tier; the caller MUST hold a
+    /// The `int64_t[]` rides @p arena's byte-bump tier; the caller MUST hold a
     /// live `ScratchScope` across the call and every use, and the array dies at
     /// that scope's rewind. Because the array is allocated BEFORE any callee
     /// `ScratchScope` mark, every inner rewind pops back to above it.
@@ -5945,32 +6048,28 @@ namespace gl {
     /// @param nm       The owning LB's NameMap; read-only — nothing is minted.
     /// @param arena    The per-slot scratch (bump) arena the key snapshot rides.
     /// @param outCount Receives the number of keys written (== `goals.count()`).
-    /// @return A pointer to `outCount` `int32_t` packed keys in ascending
+    /// @return A pointer to `outCount` `int64_t` packed keys in ascending
     ///         `(original, validityName)` order; `nullptr` when the registry is
     ///         empty.
     /// @see decodeToBeProvedSorted — the owning-copy sort twin kept for the
     ///      hashburst dump + the oracle; sortStatementRows; packStatementKey.
-    inline int32_t* sortToBeProvedKeys(
+    inline int64_t* sortToBeProvedKeys(
         const TypedColdSetMap<StatementKey, int>& goals,
         const NameMap& nm, LbArena& arena, int32_t& outCount) {
         const int32_t n = goals.count();
         outCount = n;
         if (n == 0) return nullptr;
-        int32_t* keys = reinterpret_cast<int32_t*>(arena.resolve(arena.alloc(
-            n * static_cast<int32_t>(sizeof(int32_t)),
-            static_cast<int32_t>(alignof(int32_t)))));
+        int64_t* keys = reinterpret_cast<int64_t*>(arena.resolve(arena.alloc(
+            n * static_cast<int32_t>(sizeof(int64_t)),
+            static_cast<int32_t>(alignof(int64_t)))));
         for (int32_t i = 0; i < n; ++i) keys[i] = goals.keyAt(i + 1);
-        std::sort(keys, keys + n, [&](int32_t ka, int32_t kb) {
-            const int16_t origA = static_cast<int16_t>(
-                (static_cast<uint32_t>(ka) >> 16) & 0xFFFF);
-            const int16_t origB = static_cast<int16_t>(
-                (static_cast<uint32_t>(kb) >> 16) & 0xFFFF);
+        std::sort(keys, keys + n, [&](int64_t ka, int64_t kb) {
+            const NameId origA = Codec<StatementKey>::decode(ka).orig;
+            const NameId origB = Codec<StatementKey>::decode(kb).orig;
             const int c = compareSpans(nm.decodeView(origA), nm.decodeView(origB));
             if (c != 0) return c < 0;
-            const int16_t valA = static_cast<int16_t>(
-                static_cast<uint32_t>(ka) & 0xFFFF);
-            const int16_t valB = static_cast<int16_t>(
-                static_cast<uint32_t>(kb) & 0xFFFF);
+            const NameId valA = Codec<StatementKey>::decode(ka).validity;
+            const NameId valB = Codec<StatementKey>::decode(kb).validity;
             return compareSpans(nm.decodeView(valA), nm.decodeView(valB)) < 0;
         });
         return keys;
@@ -6041,7 +6140,7 @@ namespace gl {
     }
 
     /// @brief Convert a parsed `EncodedExpression` (string fields) into an
-    /// `IntEncodedExpr` (int16_t fields) using a `NameMap` to mint stable ids.
+    /// `IntEncodedExpr` (NameId fields) using a `NameMap` to mint stable ids.
     ///
     /// @details
     /// The string-side `EncodedExpression` is the language-level record; the
@@ -6062,7 +6161,7 @@ namespace gl {
     /// 3. `isHypo` is derived by substring-search for `_hypo_` in the
     ///    validity name; `isAnchor` by prefix-match `Anchor` on the
     ///    expression name. Both are precomputed here so the hot path can
-    ///    branch on a single `int16_t` flag instead of a string scan.
+    ///    branch on a single `NameId` flag instead of a string scan.
     ///
     /// @pre `ee` was constructed via the canonical pipeline (parser →
     ///      `EncodedExpression(...)` ctor); fields are not partially-populated.
@@ -6118,8 +6217,8 @@ namespace gl {
         ie.negation = ee.negation ? 1 : 0;
         assert(ee.arguments.size()
             <= static_cast<std::size_t>(ExecutionParameters::MAX_ARITY));
-        ie.arity = static_cast<int16_t>(ee.arguments.size());
-        ie.maxIteration = static_cast<int16_t>(ee.maxIterationNumber);
+        ie.arity = static_cast<int32_t>(ee.arguments.size());
+        ie.maxIteration = static_cast<int32_t>(ee.maxIterationNumber);
         ie.originalId = nm.encode(ee.original);
         ie.validityId = nm.encode(ee.validityName);
         ie.isHypo = (ee.validityName.find("_hypo_") != std::string::npos) ? 1 : 0;
@@ -6131,7 +6230,7 @@ namespace gl {
         std::memset(ie.argLevPlus1, 0, sizeof(ie.argLevPlus1));
         std::memset(ie.argFullId, 0, sizeof(ie.argFullId));
 
-        for (int16_t i = 0; i < ie.arity; ++i) {
+        for (NameId i = 0; i < ie.arity; ++i) {
             const std::vector<std::string>& arg = ee.arguments[static_cast<std::size_t>(i)];
             if (arg.size() >= 2) {
                 ie.argUnchangeable[i] = (arg[0] == "True") ? 1 : 0;
@@ -6143,12 +6242,12 @@ namespace gl {
                     : nm.encode(arg[1]);
             }
             if (arg.size() >= 3) {
-                ie.argIteration[i] = static_cast<int16_t>(std::atoi(arg[2].c_str()));
+                ie.argIteration[i] = static_cast<int32_t>(std::atoi(arg[2].c_str()));
             } else {
                 ie.argIteration[i] = -1;
             }
             if (arg.size() >= 4) {
-                ie.argLevPlus1[i] = static_cast<int16_t>(std::atoi(arg[3].c_str()));
+                ie.argLevPlus1[i] = static_cast<int32_t>(std::atoi(arg[3].c_str()));
             }
         }
         return ie;
@@ -6223,7 +6322,7 @@ namespace gl {
         const int32_t argN = getArgsSpans(original, argSpans,
                                           ExecutionParameters::MAX_ARITY);
         assert(argN <= ExecutionParameters::MAX_ARITY);
-        ie.arity = static_cast<int16_t>(argN);
+        ie.arity = static_cast<int32_t>(argN);
 
         // atoi over a non-owning view (the substrings are short integer runs),
         // byte-identical to std::atoi on the struct path's std::string fields.
@@ -6258,11 +6357,11 @@ namespace gl {
                     }
                 }
             }
-            ie.argIteration[i] = static_cast<int16_t>(iterVal);
-            ie.argLevPlus1[i] = static_cast<int16_t>(levPlus1);
+            ie.argIteration[i] = static_cast<int32_t>(iterVal);
+            ie.argLevPlus1[i] = static_cast<int32_t>(levPlus1);
             if (iterVal > maxIt) maxIt = iterVal;
         }
-        ie.maxIteration = static_cast<int16_t>(maxIt);
+        ie.maxIteration = static_cast<int32_t>(maxIt);
         return ie;
     }
 
@@ -6319,9 +6418,9 @@ namespace gl {
         const std::string original = nm.decode(ie.originalId);      // copy (I-3)
         const std::string validityName = nm.decode(ie.validityId);  // copy (I-3)
         EncodedExpression ee(original, validityName);
-        assert(static_cast<int16_t>(ee.arguments.size()) == ie.arity);
-        assert(static_cast<int16_t>(ee.negation ? 1 : 0) == ie.negation);
-        assert(static_cast<int16_t>(ee.maxIterationNumber) == ie.maxIteration);
+        assert(static_cast<int32_t>(ee.arguments.size()) == ie.arity);
+        assert(static_cast<int32_t>(ee.negation ? 1 : 0) == ie.negation);
+        assert(static_cast<int32_t>(ee.maxIterationNumber) == ie.maxIteration);
         return ee;
     }
 
@@ -6367,19 +6466,19 @@ namespace gl {
     inline void recordUSignature(OwnerSet& os,
                                  const std::vector<EncodedExpression>& encList,
                                  const NameMap& nm) {
-        std::vector<std::pair<int16_t, int16_t>> sig;
-        int16_t slot = 0;
+        std::vector<std::pair<int32_t, NameId>> sig;
+        int32_t slot = 0;
         bool hasUArg = false;
         bool unknownLiteral = false;
         for (const EncodedExpression& expr : encList) {
             const std::vector<std::vector<std::string>>& args = expr.arguments;
-            const int16_t arity = static_cast<int16_t>(std::min(args.size(),
+            const int32_t arity = static_cast<int32_t>(std::min(args.size(),
                 static_cast<std::size_t>(ExecutionParameters::MAX_ARITY)));
-            for (int16_t j = 0; j < arity; ++j) {
+            for (int32_t j = 0; j < arity; ++j) {
                 const std::vector<std::string>& arg = args[static_cast<std::size_t>(j)];
                 if (arg.size() >= 2 && arg[0] == "True") {
                     hasUArg = true;
-                    const int16_t id = nm.lookup(arg[1]);   // non-minting
+                    const NameId id = nm.lookup(arg[1]);   // non-minting
                     if (id == 0) unknownLiteral = true;     // literal not yet interned
                     else sig.emplace_back(slot, id);
                 }
@@ -6423,7 +6522,7 @@ namespace gl {
     /// @see recordUSignature(OwnerSet&, const std::vector<EncodedExpression>&,
     ///      const NameMap&) — the string twin (retained oracle).
     void recordUSignature(OwnerSet& os,
-                          const IntEncodedExpr* encList, int16_t count);
+                          const IntEncodedExpr* encList, NameId count);
 
     /// @brief Produce the u_ signature run of a set of pre-encoded premises into
     ///        a caller buffer — the sig-producer twin of the `IntEncodedExpr`
@@ -6447,20 +6546,20 @@ namespace gl {
     ///                 derivation); a loud Rule-19 assert fires on overflow.
     /// @param hasUArg  [out] `true` iff at least one pair was emitted.
     /// @return The number of pairs written (`n <= cap`).
-    /// @see recordUSignature(OwnerSet&, const IntEncodedExpr*, int16_t) — the
+    /// @see recordUSignature(OwnerSet&, const IntEncodedExpr*, NameId) — the
     ///      retained oracle; mergeOwnerRecord (the raw-key overload) — the consumer.
     inline int32_t buildUSignatureRunInto(const IntEncodedExpr* encList,
-                                          int16_t count,
-                                          std::pair<int16_t, int16_t>* out,
+                                          NameId count,
+                                          std::pair<int32_t, NameId>* out,
                                           int32_t cap, bool& hasUArg) {
         int32_t n = 0;
-        int16_t slot = 0;
+        int32_t slot = 0;
         hasUArg = false;
-        for (int16_t e = 0; e < count; ++e) {
+        for (NameId e = 0; e < count; ++e) {
             const IntEncodedExpr& expr = encList[e];
-            const int16_t arity = std::min(expr.arity,
-                static_cast<int16_t>(ExecutionParameters::MAX_ARITY));
-            for (int16_t j = 0; j < arity; ++j) {
+            const int32_t arity = std::min<int32_t>(expr.arity,
+                static_cast<int32_t>(ExecutionParameters::MAX_ARITY));
+            for (int32_t j = 0; j < arity; ++j) {
                 if (expr.argUnchangeable[j] != 0) {
                     hasUArg = true;
                     assert(n < cap
@@ -6531,15 +6630,19 @@ namespace gl {
         // The hashburst rule-firing computes whether a produced head should be
         // (OR-)disintegrated, but the head travels via
         // sameIterationInternalMail.statements, which carries only levels. This
-        // parallel map carries the two firing-time decisions so the post-burst
-        // absorb feeds them into addExprToMemoryBlock instead of defaulting them
-        // false (the default-false dropped allowOrDisintegration, leaving or0
+        // parallel map carries the firing-time decisions so the post-burst
+        // absorb feeds them into addExprToMemoryBlock instead of defaulting
+        // them (the default-false dropped allowOrDisintegration, leaving or0
         // facts un-disintegrated — no _ordis_ branches, no or convergence).
+        // `iteration` is the firing's witness-generation stamp — max premise
+        // iteration + 1 (D-233); -1 = carried
+        // nothing, which the absorb maps to generation 0 at the mint.
         // Keyed by the same ExpressionWithValidity as the statements entry;
-        // absent => both false (restores prior behaviour for non-firing writers).
+        // absent => {false, false, -1} (the non-firing-writer default).
         struct DisintegrationFlags {
             bool doNotDisintegrate = false;
             bool allowOrDisintegration = false;
+            int32_t iteration = -1;
         };
         std::map<ExpressionWithValidity, DisintegrationFlags> disintegrationSignals;
 
@@ -6569,8 +6672,8 @@ namespace gl {
             const IntMailStatementKey k = cm.statements_.decodeKey(id);
             out.emplace_back(
                 ExpressionWithValidity(
-                    std::string(nm.decode(static_cast<int16_t>(k.originalId))),
-                    std::string(nm.decode(static_cast<int16_t>(k.validityId)))),
+                    std::string(nm.decode(k.originalId)),
+                    std::string(nm.decode(k.validityId))),
                 std::set<int>(k.levels.begin(), k.levels.end()));
         }
         std::sort(out.begin(), out.end());
@@ -6624,18 +6727,18 @@ namespace gl {
     ///
     /// @details
     /// The signals column keys on a packed `NameMap` pair; this unpacks each key,
-    /// decodes the two ids via the LB's `NameMap`, and unpacks the stored byte
-    /// into the two firing-time bools.
+    /// decodes the two ids via the LB's `NameMap`, and unpacks the stored value
+    /// into the two firing-time bools plus the witness-generation iteration
+    /// (`ColdMail::unpackIteration`).
     ///
     /// @param cm The internal-mail mailbox.
     /// @param nm The owning LB's `NameMap` (the signals id-space).
-    /// @return The rows `(expression+scope, {doNotDisintegrate,
-    ///         allowOrDisintegration})`, key-sorted.
-    inline std::vector<std::pair<ExpressionWithValidity, std::pair<bool, bool>>>
+    /// @return The rows `(expression+scope, DisintegrationFlags)`, key-sorted.
+    inline std::vector<std::pair<ExpressionWithValidity, Mail::DisintegrationFlags>>
     decodeInternalMailDisintegrationSignals(const ColdMail& cm,
         const NameMap& nm) {
         std::vector<std::pair<ExpressionWithValidity,
-            std::pair<bool, bool>>> out;
+            Mail::DisintegrationFlags>> out;
         const int32_t n = cm.disintegrationSignals_.count();
         out.reserve(static_cast<size_t>(n));
         for (int32_t id = 1; id <= n; ++id) {
@@ -6644,12 +6747,16 @@ namespace gl {
                 static_cast<int32_t>(static_cast<uint64_t>(key) >> 32);
             const int32_t validId =
                 static_cast<int32_t>(key & 0xFFFFFFFFLL);
-            const uint8_t packed = cm.disintegrationSignals_.valueAt(id);
+            const int32_t packed = cm.disintegrationSignals_.valueAt(id);
+            Mail::DisintegrationFlags flags;
+            flags.doNotDisintegrate = (packed & 1) != 0;
+            flags.allowOrDisintegration = (packed & 2) != 0;
+            flags.iteration = ColdMail::unpackIteration(packed);
             out.emplace_back(
                 ExpressionWithValidity(
-                    std::string(nm.decode(static_cast<int16_t>(origId))),
-                    std::string(nm.decode(static_cast<int16_t>(validId)))),
-                std::make_pair((packed & 1u) != 0u, (packed & 2u) != 0u));
+                    std::string(nm.decode(origId)),
+                    std::string(nm.decode(validId))),
+                flags);
         }
         std::sort(out.begin(), out.end(),
             [](const auto& a, const auto& b) { return a.first < b.first; });
@@ -6685,12 +6792,9 @@ namespace gl {
         for (std::pair<ExpressionWithValidity, std::vector<OriginLine>>& og
              : decodeInternalMailOrigins(cm, oi))
             m.exprOriginMap.emplace(og.first, std::move(og.second));
-        for (const std::pair<ExpressionWithValidity, std::pair<bool, bool>>& ds
+        for (const std::pair<ExpressionWithValidity, Mail::DisintegrationFlags>& ds
              : decodeInternalMailDisintegrationSignals(cm, nm)) {
-            Mail::DisintegrationFlags flags;
-            flags.doNotDisintegrate = ds.second.first;
-            flags.allowOrDisintegration = ds.second.second;
-            m.disintegrationSignals.emplace(ds.first, flags);
+            m.disintegrationSignals.emplace(ds.first, ds.second);
         }
         return m;
     }
@@ -7259,11 +7363,13 @@ namespace gl {
     /// @param ev  The statement's expression + scope.
     /// @param dnd `doNotDisintegrate`.
     /// @param aod `allowOrDisintegration`.
+    /// @param iteration The firing's witness-generation stamp; -1 = none.
     inline void setInternalDisintegrationSignal(ColdMail& cm, NameMap& nm,
-        const ExpressionWithValidity& ev, bool dnd, bool aod) {
+        const ExpressionWithValidity& ev, bool dnd, bool aod,
+        int32_t iteration) {
         cm.setDisintegrationSignal(
             packOriginKey(nm.encode(ev.original), nm.encode(ev.validityName)),
-            dnd, aod);
+            dnd, aod, iteration);
     }
 
     /// @brief Span door of @ref setInternalDisintegrationSignal — set a
@@ -7283,19 +7389,20 @@ namespace gl {
     /// @param validityName Span over the scope bytes (key).
     /// @param dnd          `doNotDisintegrate`.
     /// @param aod          `allowOrDisintegration`.
+    /// @param iteration    The firing's witness-generation stamp; -1 = none.
     /// @invariant Same span-lifetime rule as the sibling span doors
     ///            (`insertInternalStatement`): the two encodes mint, so the
     ///            spans must alias buffers the mint paths do not relocate
     ///            (caller-owned `std::string` / `ScratchString` / sealed
     ///            pages — I-3).
-    /// @see setInternalDisintegrationSignal(ColdMail&, NameMap&, const ExpressionWithValidity&, bool, bool)
+    /// @see setInternalDisintegrationSignal(ColdMail&, NameMap&, const ExpressionWithValidity&, bool, bool, int32_t)
     ///      — the owning-string overload this reproduces byte-for-byte.
     inline void setInternalDisintegrationSignal(ColdMail& cm, NameMap& nm,
         const StrSpan& original, const StrSpan& validityName,
-        bool dnd, bool aod) {
+        bool dnd, bool aod, int32_t iteration) {
         cm.setDisintegrationSignal(
             packOriginKey(nm.encode(original), nm.encode(validityName)),
-            dnd, aod);
+            dnd, aod, iteration);
     }
 
     /// @brief Syntactic tier of a bare variable name, as the equivalence-class
@@ -7513,7 +7620,7 @@ namespace gl {
         return scan;
     }
 
-    /// @brief Blob codec for `SpecialTokenScan` — the `TypedColdBlobMap<int16_t,
+    /// @brief Blob codec for `SpecialTokenScan` — the `TypedColdBlobMap<NameId,
     ///        SpecialTokenScan>` record serializer (`EqClassNameCaches`).
     ///
     /// @details Forwards to the free `serializeSpecialTokenScan` /
@@ -7634,7 +7741,7 @@ namespace gl {
     /// @param id NameMap id of a bare variable name; must be a real id (`>0`).
     /// @param nm The owning LB's NameMap (read-only; no minting).
     /// @return The name's tier.
-    inline NameKind EqClassNameCaches::kindOf(int16_t id, const NameMap& nm) {
+    inline NameKind EqClassNameCaches::kindOf(NameId id, const NameMap& nm) {
         assert(id > 0);
         while (kindById_.size() <= id) kindById_.push_back(KIND_UNCOMPUTED);
         if (kindById_[id] == KIND_UNCOMPUTED)
@@ -7658,7 +7765,7 @@ namespace gl {
     /// asserted), byte-identical to
     /// `serializeSpecialTokenScan(scanSpecialTokens(text))` by the scanners'
     /// iterator-twin contract + the layout coupling; the blob is installed
-    /// through the raw `inner().assignRun` byte door (identity `int16_t`
+    /// through the raw `inner().assignRun` byte door (identity `NameId`
     /// key) and the INSTALLED record is re-peeked — one uniform
     /// view-construction path whose re-peek validates the install. Same
     /// misses in the same caller order mint the same keys, so the memo's
@@ -7692,7 +7799,7 @@ namespace gl {
     /// @see scanSpecialTokens — the retained regex oracle;
     ///      serializeSpecialTokenScan, SpecialTokenScanView,
     ///      `prover.hpp::filterIterations` — the consumer funnel.
-    inline SpecialTokenScanView EqClassNameCaches::tokensViewOf(int16_t exprId,
+    inline SpecialTokenScanView EqClassNameCaches::tokensViewOf(NameId exprId,
         const NameMap& nm, ScratchArena& peekArena) {
         assert(exprId > 0);
         const int32_t cid = tokensByExprId_.lookup(exprId);
@@ -7746,7 +7853,7 @@ namespace gl {
         assert(at == blobLen
             && "tokensViewOf: exact-length blob fill diverged from the count pass");
 
-        // Raw byte door: Codec<int16_t> is the identity key codec, so the
+        // Raw byte door: Codec<NameId> is the identity key codec, so the
         // KeyView IS the id. Then re-peek the INSTALLED record — one uniform
         // view path, and the re-peek validates the install.
         const int32_t nid =
@@ -7774,12 +7881,10 @@ namespace gl {
     /// @return Combined key; unique per unordered pair because both inputs
     ///         are ids minted by the same `NameMap`.
     /// @see EquivalenceClass::intEqualityLevelsMap — the keyed container.
-    inline uint32_t packEqPairKey(int16_t a, int16_t b) {
-        const uint16_t ua = static_cast<uint16_t>(a);
-        const uint16_t ub = static_cast<uint16_t>(b);
-        const uint16_t lo = ua < ub ? ua : ub;
-        const uint16_t hi = ua < ub ? ub : ua;
-        return (static_cast<uint32_t>(lo) << 16) | static_cast<uint32_t>(hi);
+    inline int64_t packEqPairKey(NameId a, NameId b) {
+        const NameId lo = a < b ? a : b;
+        const NameId hi = a < b ? b : a;
+        return packInt32Pair(lo, hi);
     }
 
     /// @brief One equivalence class — a set of variables known to be equal
@@ -7831,11 +7936,11 @@ namespace gl {
         // Class members as NameMap ids, sorted by DECODED name — never by
         // id (I-84). First member of a tier is that tier's lex-min: the
         // canonical-selection order (D-134).
-        std::vector<int16_t> memberIds;
+        std::vector<NameId> memberIds;
 
         // Per-pair admission levels, keyed by packEqPairKey unordered id
-        // pairs.
-        std::map<uint32_t, std::set<int> > intEqualityLevelsMap;
+        // pairs (int64: two NameId halves).
+        std::map<int64_t, std::set<int> > intEqualityLevelsMap;
 
         // Tracking multiple origins. Id form in the owning LB's
         // originInterner space (D-131) — the same
@@ -7876,7 +7981,7 @@ namespace gl {
         ///        `EquivalenceClassView::memberId` twin.
         /// @param i Index in `[0, memberCount())`.
         /// @return The member's NameMap id.
-        int16_t memberId(int32_t i) const {
+        NameId memberId(int32_t i) const {
             return memberIds[static_cast<std::size_t>(i)];
         }
 
@@ -7887,7 +7992,7 @@ namespace gl {
         /// @param key Packed pair key (`packEqPairKey`).
         /// @param fn  Callable `(int level)`, invoked per level in ascending order.
         template <typename Fn>
-        void forEachLevel(uint32_t key, Fn&& fn) const {
+        void forEachLevel(int64_t key, Fn&& fn) const {
             const auto it = intEqualityLevelsMap.find(key);
             if (it == intEqualityLevelsMap.end()) return;
             for (const int lv : it->second) fn(lv);
@@ -7911,11 +8016,11 @@ namespace gl {
     /// @see EquivalenceClass::setMembersFromNames — the creation-side
     ///      counterpart; `prover.hpp::mergeTwoEquivalenceClasses` —
     ///      consumer.
-    inline std::vector<int16_t> unionMemberIdsByName(const std::vector<int16_t>& a,
-        const std::vector<int16_t>& b,
+    inline std::vector<NameId> unionMemberIdsByName(const std::vector<NameId>& a,
+        const std::vector<NameId>& b,
         const NameMap& nm)
     {
-        std::vector<int16_t> out;
+        std::vector<NameId> out;
         out.reserve(a.size() + b.size());
         std::size_t i = 0, j = 0;
         while (i < a.size() && j < b.size()) {
@@ -7946,9 +8051,9 @@ namespace gl {
     /// (every GL target is x64 LE, the deload-format assumption).
     ///
     /// Layout (in order):
-    /// - `memberIds`: int32 count, then count × int16 — verbatim (already
+    /// - `memberIds`: int32 count, then count × NameId — verbatim (already
     ///   decoded-lex sorted by construction, I-84).
-    /// - `intEqualityLevelsMap`: int32 K, then K × { uint32 packedKey, int32 m,
+    /// - `intEqualityLevelsMap`: int32 K, then K × { int64 packedKey, int32 m,
     ///   m × int32 level } — the `std::map` iterates ascending by key and each
     ///   `std::set<int>` ascending, so the canonical order is free.
     /// - `equalityOriginMap`: int32 G, then G × { int64 originKey, int32 L,
@@ -7972,11 +8077,11 @@ namespace gl {
             out.insert(out.end(), p, p + sizeof(v));
         };
         put(static_cast<int32_t>(cls.memberIds.size()));
-        for (const int16_t id : cls.memberIds) put(id);
+        for (const NameId id : cls.memberIds) put(id);
 
         put(static_cast<int32_t>(cls.intEqualityLevelsMap.size()));
         for (const auto& kv : cls.intEqualityLevelsMap) {
-            put(static_cast<uint32_t>(kv.first));
+            put(static_cast<int64_t>(kv.first));
             put(static_cast<int32_t>(kv.second.size()));
             for (const int level : kv.second) put(static_cast<int32_t>(level));
         }
@@ -8063,10 +8168,11 @@ namespace gl {
         // Size pass: arithmetic mirror of the put() sequence below (no fill).
         int64_t total = 0;
         total += 4;                                         // memberCount
-        total += 2 * static_cast<int64_t>(cls.memberIds.size());
+        total += static_cast<int64_t>(sizeof(NameId))
+                     * static_cast<int64_t>(cls.memberIds.size());
         total += 4;                                         // level-key count K
         for (const auto& kv : cls.intEqualityLevelsMap) {
-            total += 4;                                     // packedKey uint32
+            total += 8;                                     // packedKey int64
             total += 4;                                     // m int32
             total += 4 * static_cast<int64_t>(kv.second.size());
         }
@@ -8092,11 +8198,11 @@ namespace gl {
             at += static_cast<int32_t>(sizeof(v));
         };
         put(static_cast<int32_t>(cls.memberIds.size()));
-        for (const int16_t id : cls.memberIds) put(id);
+        for (const NameId id : cls.memberIds) put(id);
 
         put(static_cast<int32_t>(cls.intEqualityLevelsMap.size()));
         for (const auto& kv : cls.intEqualityLevelsMap) {
-            put(static_cast<uint32_t>(kv.first));
+            put(static_cast<int64_t>(kv.first));
             put(static_cast<int32_t>(kv.second.size()));
             for (const int level : kv.second) put(static_cast<int32_t>(level));
         }
@@ -8150,13 +8256,13 @@ namespace gl {
         get(memberCount);
         cls.memberIds.reserve(static_cast<size_t>(memberCount));
         for (int32_t i = 0; i < memberCount; ++i) {
-            int16_t id = 0; get(id); cls.memberIds.push_back(id);
+            NameId id = 0; get(id); cls.memberIds.push_back(id);
         }
 
         int32_t levelKeyCount = 0;
         get(levelKeyCount);
         for (int32_t i = 0; i < levelKeyCount; ++i) {
-            uint32_t packedKey = 0; get(packedKey);
+            int64_t packedKey = 0; get(packedKey);
             int32_t m = 0; get(m);
             std::set<int>& levels = cls.intEqualityLevelsMap[packedKey];
             for (int32_t j = 0; j < m; ++j) {
@@ -8206,8 +8312,8 @@ namespace gl {
     /// origins are needed only by the merge path.
     ///
     /// Layout (from `serializeEquivalenceClass`):
-    /// - `memberIds`: int32 count, then count × int16 (decoded-lex sorted, I-84).
-    /// - `intEqualityLevelsMap`: int32 K, then K × { uint32 packedKey, int32 m,
+    /// - `memberIds`: int32 count, then count × NameId (decoded-lex sorted, I-84).
+    /// - `intEqualityLevelsMap`: int32 K, then K × { int64 packedKey, int32 m,
     ///   m × int32 level } (ascending by key, each level set ascending).
     /// - `equalityOriginMap`: int32 G, then G × { int64 originKey, int32 L,
     ///   L × { uint8 OriginTag, int32 d, d × int64 depKey } } (keys ascending).
@@ -8232,12 +8338,6 @@ namespace gl {
         static int32_t rdI32(const char* q) {
             int32_t v; std::memcpy(&v, q, sizeof(int32_t)); return v;
         }
-        /// @brief Read a little-endian `int16_t` at byte pointer `q`.
-        /// @param q Source pointer (>= 2 readable bytes).
-        /// @return The decoded value.
-        static int16_t rdI16(const char* q) {
-            int16_t v; std::memcpy(&v, q, sizeof(int16_t)); return v;
-        }
         /// @brief Read a little-endian `uint32_t` at byte pointer `q`.
         /// @param q Source pointer (>= 4 readable bytes).
         /// @return The decoded value.
@@ -8258,17 +8358,21 @@ namespace gl {
         /// @brief Member id at index `i`, in decoded-lex storage order.
         /// @param i Index in `[0, memberCount())`.
         /// @return The NameMap id of that member.
-        int16_t memberId(int32_t i) const { return rdI16(p + 4 + 2 * i); }
+        NameId memberId(int32_t i) const {
+            return rdI32(p + 4 + static_cast<int32_t>(sizeof(NameId)) * i);
+        }
 
         /// @brief Byte offset of the levels section (its int32 key count comes
         ///        first) — just past the member run.
         /// @return The offset into the blob.
-        int32_t levelsOffset() const { return 4 + 2 * memberCount(); }
+        int32_t levelsOffset() const {
+            return 4 + static_cast<int32_t>(sizeof(NameId)) * memberCount();
+        }
 
         /// @brief Visit each per-pair-levels entry in stored (ascending-key)
         ///        order.
         ///
-        /// @param fn Callable `(uint32_t packedKey, const char* levelBytes,
+        /// @param fn Callable `(int64_t packedKey, const char* levelBytes,
         ///           int32_t levelCount)`; `levelBytes` points at `levelCount`
         ///           consecutive little-endian int32 levels (read via `rdI32`).
         template <typename Fn>
@@ -8276,7 +8380,7 @@ namespace gl {
             int32_t off = levelsOffset();
             const int32_t k = rdI32(p + off); off += 4;
             for (int32_t i = 0; i < k; ++i) {
-                const uint32_t key = rdU32(p + off); off += 4;
+                const int64_t key = rdI64(p + off); off += 8;
                 const int32_t m = rdI32(p + off); off += 4;
                 fn(key, p + off, m);
                 off += 4 * m;
@@ -8291,7 +8395,7 @@ namespace gl {
             int32_t off = levelsOffset();
             const int32_t k = rdI32(p + off); off += 4;
             for (int32_t i = 0; i < k; ++i) {
-                off += 4;                          // packedKey
+                off += 8;                          // packedKey
                 const int32_t m = rdI32(p + off); off += 4;
                 off += 4 * m;                      // m × int32 level
             }
@@ -8334,12 +8438,12 @@ namespace gl {
         ///                 int32 levels when found; untouched otherwise.
         /// @param outCount [out] The level count when found; untouched otherwise.
         /// @return `true` iff `key` is present.
-        bool findLevels(uint32_t key, const char*& outBytes,
+        bool findLevels(int64_t key, const char*& outBytes,
                         int32_t& outCount) const {
             int32_t off = levelsOffset();
             const int32_t k = rdI32(p + off); off += 4;
             for (int32_t i = 0; i < k; ++i) {
-                const uint32_t kk = rdU32(p + off); off += 4;
+                const int64_t kk = rdI64(p + off); off += 8;
                 const int32_t m = rdI32(p + off); off += 4;
                 if (kk == key) { outBytes = p + off; outCount = m; return true; }
                 off += 4 * m;
@@ -8375,7 +8479,7 @@ namespace gl {
         /// @param fn  Callable `(int level)`, invoked per level in ascending order
         ///            (the blob stores each level run ascending).
         template <typename Fn>
-        void forEachLevel(uint32_t key, Fn&& fn) const {
+        void forEachLevel(int64_t key, Fn&& fn) const {
             const char* b = nullptr;
             int32_t c = 0;
             if (!findLevels(key, b, c)) return;
@@ -8392,7 +8496,7 @@ namespace gl {
     /// @param id The member id to test.
     /// @return `true` iff some member equals @p id.
     template <typename ClassT>
-    inline bool classHasMember(const ClassT& c, int16_t id) {
+    inline bool classHasMember(const ClassT& c, NameId id) {
         const int32_t n = c.memberCount();
         for (int32_t i = 0; i < n; ++i)
             if (c.memberId(i) == id) return true;
@@ -8546,7 +8650,7 @@ namespace gl {
     /// its origins) so no heap `EquivalenceClass` is decoded or built.
     ///
     /// Storage:
-    /// - members: a `PagedVector<int16_t>` in decoded-lex order (I-84), grown by
+    /// - members: a `PagedVector<NameId>` in decoded-lex order (I-84), grown by
     ///   `unionMembersByName` — the byte-exact twin of `unionMemberIdsByName`.
     /// - levels: parallel `levelKeys` / `levelStart` / `levelLen` into a
     ///   `levelPool` of ascending-unique int runs; `setLevel` find-or-repoints
@@ -8570,8 +8674,8 @@ namespace gl {
     struct MergeClassAccum {
         LbArena* arena;                       ///< per-slot scratch arena (PAGE tier).
         DirtyState dirty = DirtyState::Clean; ///< scratch (never deloaded).
-        PagedVector<int16_t> members;         ///< decoded-lex member ids.
-        PagedVector<uint32_t> levelKeys;      ///< per-key packed pair key.
+        PagedVector<NameId> members;         ///< decoded-lex member ids.
+        PagedVector<int64_t> levelKeys;      ///< per-key packed pair key (int64).
         PagedVector<int32_t>  levelStart;     ///< run start into levelPool.
         PagedVector<int32_t>  levelLen;       ///< run length.
         PagedVector<int32_t>  levelPool;      ///< ascending-unique int runs.
@@ -8594,7 +8698,7 @@ namespace gl {
         /// @brief Append one member id (decoded-lex order is the caller's
         ///        responsibility — used to seed from a decoded-lex id list).
         /// @param id The NameMap member id.
-        void addMember(int16_t id) { members.push_back(id); }
+        void addMember(NameId id) { members.push_back(id); }
 
         /// @brief Union the current members with another decoded-lex id list,
         ///        keeping the result decoded-lex — the in-place twin of
@@ -8607,15 +8711,15 @@ namespace gl {
         /// @param other The other member id list (decoded-lex).
         /// @param n     Its length.
         /// @param nm    NameMap for decoding (read-only).
-        void unionMembersByName(const int16_t* other, int32_t n, const NameMap& nm) {
-            PagedVector<int16_t> cur(arena, &dirty);
+        void unionMembersByName(const NameId* other, int32_t n, const NameMap& nm) {
+            PagedVector<NameId> cur(arena, &dirty);
             for (int32_t i = 0; i < members.size(); ++i) cur.push_back(members[i]);
             members.clear();
             int32_t i = 0, j = 0;
             const int32_t ni = cur.size();
             while (i < ni && j < n) {
-                const int16_t a = cur[i];
-                const int16_t b = other[j];
+                const NameId a = cur[i];
+                const NameId b = other[j];
                 if (a == b) { members.push_back(a); ++i; ++j; continue; }
                 const StrSpan na = nm.decodeView(a);
                 const StrSpan nb = nm.decodeView(b);
@@ -8630,7 +8734,7 @@ namespace gl {
         /// @brief Index of `key` in the levels section, or -1.
         /// @param key Packed pair key.
         /// @return The entry index, or -1 when absent.
-        int32_t levelIndex(uint32_t key) const {
+        int32_t levelIndex(int64_t key) const {
             for (int32_t i = 0; i < levelKeys.size(); ++i)
                 if (levelKeys[i] == key) return i;
             return -1;
@@ -8647,7 +8751,7 @@ namespace gl {
         /// @param key The packed pair key.
         /// @param asc Pointer to `n` ascending-unique int32 levels.
         /// @param n   The level count.
-        void setLevel(uint32_t key, const int32_t* asc, int32_t n) {
+        void setLevel(int64_t key, const int32_t* asc, int32_t n) {
             const int32_t start = levelPool.size();
             for (int32_t k = 0; k < n; ++k) levelPool.push_back(asc[k]);
             const int32_t idx = levelIndex(key);
@@ -8899,7 +9003,7 @@ namespace gl {
         /// @param classB The absorbed class, levels read via `forEachLevelKey`.
         /// @see overwriteLevels — the heap twin.
         void mergeLevelsBBase(const EquivalenceClassView& classB) {
-            classB.forEachLevelKey([&](uint32_t key, const char* lp, int32_t m) {
+            classB.forEachLevelKey([&](int64_t key, const char* lp, int32_t m) {
                 if (levelIndex(key) >= 0) return;   // A wins — keep A's run
                 const int32_t start = levelPool.size();
                 for (int32_t k = 0; k < m; ++k)
@@ -8919,7 +9023,7 @@ namespace gl {
         /// @see mergeLevelsBBase — the view-source sibling.
         void mergeLevelsFromAccum(const MergeClassAccum& other) {
             for (int32_t i = 0; i < other.levelKeys.size(); ++i) {
-                const uint32_t key = other.levelKeys[i];
+                const int64_t key = other.levelKeys[i];
                 if (levelIndex(key) >= 0) continue;   // A wins — keep A's run
                 const int32_t start = levelPool.size();
                 const int32_t src = other.levelStart[i];
@@ -9018,15 +9122,15 @@ namespace gl {
         /// @param nm    NameMap for decoding (read-only).
         void unionMembersFromView(const EquivalenceClassView& other,
                                   const NameMap& nm) {
-            PagedVector<int16_t> cur(arena, &dirty);
+            PagedVector<NameId> cur(arena, &dirty);
             for (int32_t i = 0; i < members.size(); ++i) cur.push_back(members[i]);
             members.clear();
             int32_t i = 0, j = 0;
             const int32_t ni = cur.size();
             const int32_t n = other.memberCount();
             while (i < ni && j < n) {
-                const int16_t a = cur[i];
-                const int16_t b = other.memberId(j);
+                const NameId a = cur[i];
+                const NameId b = other.memberId(j);
                 if (a == b) { members.push_back(a); ++i; ++j; continue; }
                 const StrSpan na = nm.decodeView(a);
                 const StrSpan nb = nm.decodeView(b);
@@ -9149,8 +9253,9 @@ namespace gl {
             int64_t depInts = 0;
             for (int32_t i = 0; i < nLines; ++i) depInts += lineDepLen[i];
             const int64_t total =
-                4 + static_cast<int64_t>(members.size()) * 2                       // members
-              + 4 + static_cast<int64_t>(levelKeys.size()) * 8 + levelInts * 4     // levels
+                4 + static_cast<int64_t>(members.size())
+                    * static_cast<int64_t>(sizeof(NameId))                         // members
+              + 4 + static_cast<int64_t>(levelKeys.size()) * 12 + levelInts * 4    // levels (int64 key + int32 len)
               + 4 + static_cast<int64_t>(nk) * 12
                   + static_cast<int64_t>(nLines) * 5 + depInts * 8;                // origins
             return static_cast<int32_t>(total);
@@ -9192,7 +9297,7 @@ namespace gl {
             put(static_cast<int32_t>(nlev));
             for (int32_t t = 0; t < nlev; ++t) {
                 const int32_t i = lidx[t];
-                put(static_cast<uint32_t>(levelKeys[i]));
+                put(static_cast<int64_t>(levelKeys[i]));
                 put(static_cast<int32_t>(levelLen[i]));
                 const int32_t s = levelStart[i];
                 for (int32_t k = 0; k < levelLen[i]; ++k)
@@ -9257,22 +9362,22 @@ namespace gl {
     /// little-endian `validityId`, then each member id (2 bytes) in the
     /// accumulator's stored (decoded-lex) order — bijective, point-lookup only.
     /// Builds the key straight from the arena member `PagedVector`, so no
-    /// intermediate `std::vector<int16_t>` is materialized (only the byte key
+    /// intermediate `std::vector<NameId>` is materialized (only the byte key
     /// string the cold-map access needs regardless).
     ///
     /// @param validityId The class's validity-scope id.
     /// @param accum      The merged-class accumulator.
     /// @return The packed byte key.
     /// @see encodeEqClassKey, upsertEqClassIndex.
-    inline std::string encodeEqClassKeyFromAccum(int16_t validityId,
+    inline std::string encodeEqClassKeyFromAccum(NameId validityId,
                                                  const MergeClassAccum& accum) {
-        std::string key(sizeof(int16_t)
+        std::string key(sizeof(NameId)
             * (static_cast<std::size_t>(accum.members.size()) + 1), '\0');
-        std::memcpy(&key[0], &validityId, sizeof(int16_t));
+        std::memcpy(&key[0], &validityId, sizeof(NameId));
         for (int32_t i = 0; i < accum.members.size(); ++i) {
-            const int16_t m = accum.members[i];
-            std::memcpy(&key[sizeof(int16_t) * (static_cast<std::size_t>(i) + 1)],
-                        &m, sizeof(int16_t));
+            const NameId m = accum.members[i];
+            std::memcpy(&key[sizeof(NameId) * (static_cast<std::size_t>(i) + 1)],
+                        &m, sizeof(NameId));
         }
         return key;
     }
@@ -9303,16 +9408,16 @@ namespace gl {
     /// @see encodeEqClassKeyFromAccum — the retained heap-string oracle;
     ///      Codec<EqClassKey>::encode; upsertEqClassIndex.
     inline int32_t encodeEqClassKeyFromAccumInto(char* buf, int32_t cap,
-        int16_t validityId, const MergeClassAccum& accum) {
-        const int32_t total = static_cast<int32_t>(sizeof(int16_t))
+        NameId validityId, const MergeClassAccum& accum) {
+        const int32_t total = static_cast<int32_t>(sizeof(NameId))
             * (accum.members.size() + 1);
         assert(total <= cap
             && "encodeEqClassKeyFromAccumInto: key exceeds kMaxEqClassKeyBytes");
-        std::memcpy(buf, &validityId, sizeof(int16_t));
+        std::memcpy(buf, &validityId, sizeof(NameId));
         for (int32_t i = 0; i < accum.members.size(); ++i) {
-            const int16_t m = accum.members[i];
-            std::memcpy(buf + sizeof(int16_t) * (static_cast<std::size_t>(i) + 1),
-                        &m, sizeof(int16_t));
+            const NameId m = accum.members[i];
+            std::memcpy(buf + sizeof(NameId) * (static_cast<std::size_t>(i) + 1),
+                        &m, sizeof(NameId));
         }
         return total;
     }
@@ -9326,7 +9431,7 @@ namespace gl {
     /// map's byte-key door (`inner()`) with a raw `StrSpan(keyBuf, n)` probe,
     /// reproducing `TypedCold::upsert` (in-place `setValueAt` on a hit, set-once
     /// `insert` on a miss) without a heap key `std::string` or an `EqClassKey`
-    /// `std::vector<int16_t>`. Single-threaded write side only (I-83).
+    /// `std::vector<NameId>`. Single-threaded write side only (I-83).
     ///
     /// @param m          The cold eq-class index map.
     /// @param validityId The class's validity-scope id.
@@ -9334,7 +9439,7 @@ namespace gl {
     /// @param value      The waterline to store.
     /// @see upsertEqClassIndex, encodeEqClassKeyFromAccumInto.
     inline void upsertEqClassIndex(TypedColdMap<EqClassKey, int>& m,
-                                   int16_t validityId,
+                                   NameId validityId,
                                    const MergeClassAccum& accum, int value) {
         char keyBuf[ExecutionParameters::kMaxEqClassKeyBytes];
         const int32_t n = encodeEqClassKeyFromAccumInto(keyBuf,
@@ -9353,15 +9458,15 @@ namespace gl {
     /// @param view       The class view (its members are the key).
     /// @return The packed byte key.
     /// @see encodeEqClassKey, encodeEqClassKeyFromAccum.
-    inline std::string encodeEqClassKeyFromView(int16_t validityId,
+    inline std::string encodeEqClassKeyFromView(NameId validityId,
                                                 const EquivalenceClassView& view) {
-        std::string key(sizeof(int16_t)
+        std::string key(sizeof(NameId)
             * (static_cast<std::size_t>(view.memberCount()) + 1), '\0');
-        std::memcpy(&key[0], &validityId, sizeof(int16_t));
+        std::memcpy(&key[0], &validityId, sizeof(NameId));
         for (int32_t i = 0; i < view.memberCount(); ++i) {
-            const int16_t m = view.memberId(i);
-            std::memcpy(&key[sizeof(int16_t) * (static_cast<std::size_t>(i) + 1)],
-                        &m, sizeof(int16_t));
+            const NameId m = view.memberId(i);
+            std::memcpy(&key[sizeof(NameId) * (static_cast<std::size_t>(i) + 1)],
+                        &m, sizeof(NameId));
         }
         return key;
     }
@@ -9391,16 +9496,16 @@ namespace gl {
     /// @see encodeEqClassKeyFromView — the retained heap-string oracle;
     ///      Codec<EqClassKey>::encode; lookupEqClassIndex.
     inline int32_t encodeEqClassKeyFromViewInto(char* buf, int32_t cap,
-        int16_t validityId, const EquivalenceClassView& view) {
-        const int32_t total = static_cast<int32_t>(sizeof(int16_t))
+        NameId validityId, const EquivalenceClassView& view) {
+        const int32_t total = static_cast<int32_t>(sizeof(NameId))
             * (view.memberCount() + 1);
         assert(total <= cap
             && "encodeEqClassKeyFromViewInto: key exceeds kMaxEqClassKeyBytes");
-        std::memcpy(buf, &validityId, sizeof(int16_t));
+        std::memcpy(buf, &validityId, sizeof(NameId));
         for (int32_t i = 0; i < view.memberCount(); ++i) {
-            const int16_t m = view.memberId(i);
-            std::memcpy(buf + sizeof(int16_t) * (static_cast<std::size_t>(i) + 1),
-                        &m, sizeof(int16_t));
+            const NameId m = view.memberId(i);
+            std::memcpy(buf + sizeof(NameId) * (static_cast<std::size_t>(i) + 1),
+                        &m, sizeof(NameId));
         }
         return total;
     }
@@ -9409,34 +9514,34 @@ namespace gl {
     ///        stack buffer — the owning-`NormKey`-free key encoder.
     ///
     /// @details
-    /// Byte-exact to `Codec<NormKey>::encode` (`int16 numberExpressions ++ int16
-    /// length ++ length x int16 data`, fixed-width little-endian), but written
+    /// Byte-exact to `Codec<NormKey>::encode` (`NameId numberExpressions ++ NameId
+    /// length ++ length x NameId data`, fixed-width little-endian), but written
     /// straight into @p out from a `(numberExpressions, data, len)` triple, so no
-    /// owning `NormKey` (`std::vector<int16_t> data`) is materialized. The write
+    /// owning `NormKey` (`std::vector<NameId> data`) is materialized. The write
     /// doors below probe / write the cold map with `StrSpan(out, n)` directly.
-    /// The total (`2*(len+2)` bytes) is asserted against @p cap first — the
-    /// Rule-19 widen-on-STOP tripwire naming `kMaxNormKeyBytes`.
+    /// The total (`sizeof(NameId)*(len+2)` bytes) is asserted against @p cap
+    /// first — the Rule-19 widen-on-STOP tripwire naming `kMaxNormKeyBytes`.
     ///
     /// @param numberExpressions The key's leading expression-count field.
-    /// @param data The key's `int16_t` payload.
+    /// @param data The key's `NameId` payload.
     /// @param len  The payload length (`data` has @p len elements).
     /// @param out  Caller stack buffer receiving the key bytes.
     /// @param cap  Capacity of @p out (== `kMaxNormKeyBytes` at callers).
-    /// @return The key length written (`== 2*(len+2)`).
+    /// @return The key length written (`== sizeof(NameId)*(len+2)`).
     /// @see Codec<NormKey>::encode — the byte-layout owner + the twin oracle;
     ///      mergeOwnerRecord (the raw-key overload), appendLmvIdsRecord.
-    inline int32_t encodeNormKeyInto(int16_t numberExpressions,
-        const int16_t* data, int32_t len, char* out, int32_t cap) {
-        const int32_t total = static_cast<int32_t>(sizeof(int16_t)) * (len + 2);
+    inline int32_t encodeNormKeyInto(int32_t numberExpressions,
+        const NameId* data, int32_t len, char* out, int32_t cap) {
+        const int32_t total = static_cast<int32_t>(sizeof(NameId)) * (len + 2);
         assert(total <= cap
             && "encodeNormKeyInto: key exceeds kMaxNormKeyBytes");
         assert(len == 0 || data != nullptr);
-        const int16_t length = static_cast<int16_t>(len);
-        std::memcpy(out, &numberExpressions, sizeof(int16_t));
-        std::memcpy(out + sizeof(int16_t), &length, sizeof(int16_t));
+        const int32_t length = len;
+        std::memcpy(out, &numberExpressions, sizeof(NameId));
+        std::memcpy(out + sizeof(NameId), &length, sizeof(NameId));
         for (int32_t i = 0; i < len; ++i)
-            std::memcpy(out + sizeof(int16_t) * (static_cast<std::size_t>(i) + 2),
-                        &data[i], sizeof(int16_t));
+            std::memcpy(out + sizeof(NameId) * (static_cast<std::size_t>(i) + 2),
+                        &data[i], sizeof(NameId));
         return total;
     }
 
@@ -9473,6 +9578,127 @@ namespace gl {
         return total;
     }
 
+    /// @brief Block-bounded sorted ordinal index — a run of `int32` ordinals
+    ///        sorted under a caller comparator without ever allocating one
+    ///        contiguous index larger than a pool block.
+    ///
+    /// @details
+    /// A contiguous `int32` sort index over `total` rows needs `4 * total`
+    /// bytes in ONE byte-bump allocation, and a single arena allocation must
+    /// fit one pool block (`ProverParameters::static_block_bytes`) — so any
+    /// row-count-proportional index outgrows the arena door once the row
+    /// count passes a block's worth of slots. This class generalizes the
+    /// `applyFiringRecords` chunk-sort idiom into a reusable tool: the
+    /// ordinal run is cut into chunks of at most @p chunkSlots (one block's
+    /// worth by default), each chunk is allocated on the caller's scratch
+    /// arena and `std::sort`ed on its own, and `next()` merges the chunk
+    /// heads with a linear min-scan. When the comparator is a STRICT TOTAL
+    /// order (no two distinct ordinals tie — every current caller compares
+    /// decoded interner keys, which are distinct per cold-map id), the merged
+    /// sequence is unique and therefore byte-identical to the single
+    /// `std::sort` it generalizes; at or below one chunk, `next()` is a plain
+    /// walk down the one sorted chunk. `reset()` rewinds the merge cursors so
+    /// a caller can replay the same sorted order for a second pass.
+    ///
+    /// All storage (the chunk-pointer/length/cursor arrays and the chunks
+    /// themselves) rides the caller's arena byte-bump tier under the CALLER's
+    /// scope discipline — the class owns no memory and has no destructor
+    /// obligations; it must not outlive the arena window it was built in.
+    ///
+    /// @tparam Less Strict-weak comparator over ordinals,
+    ///         `bool(int32_t, int32_t)`; strict TOTAL for byte-determinism.
+    ///
+    /// @invariant Merged output equals `std::sort` of the same ordinal run
+    ///            under the same strict total order (unique sorted sequence —
+    ///            the `applyFiringRecords` determinism argument, I-84).
+    /// @see `ExecutionParameters::kFiringRecordSortChunk` — the default chunk
+    ///      size (one block of `int32` slots); `applyFiringRecords` — the
+    ///      in-tree precedent this generalizes.
+    template <typename Less>
+    class ChunkSortedOrdinals {
+    public:
+        /// @brief Build the chunked sorted index: fill ordinals
+        ///        `firstOrdinal .. firstOrdinal + total - 1` and sort each
+        ///        chunk under @p less.
+        ///
+        /// @param arena        Caller scratch arena (byte-bump tier); every
+        ///                     allocation lands here, reclaimed by the
+        ///                     caller's scope rewind / release.
+        /// @param total        Number of ordinals (`>= 0`; `0` builds an
+        ///                     empty index on which `next()` must not be
+        ///                     called).
+        /// @param firstOrdinal Value of the first ordinal (cold-map ids are
+        ///                     1-based, plain indices 0-based).
+        /// @param less         The ordinal comparator (captured by value).
+        /// @param chunkSlots   Maximum ordinals per contiguous chunk;
+        ///                     defaults to one pool block's worth. Tests pass
+        ///                     a small value to exercise the merge.
+        ChunkSortedOrdinals(ScratchArena& arena, int32_t total,
+                            int32_t firstOrdinal, Less less,
+                            int32_t chunkSlots =
+                                ExecutionParameters::kFiringRecordSortChunk)
+            : less_(less) {
+            assert(total >= 0 && "ChunkSortedOrdinals: negative total");
+            assert(chunkSlots >= 1 && "ChunkSortedOrdinals: chunkSlots < 1");
+            if (total == 0) return;
+            chunkCount_ = (total + chunkSlots - 1) / chunkSlots;
+            chunk_ = reinterpret_cast<int32_t**>(arena.resolve(arena.alloc(
+                chunkCount_ * static_cast<int32_t>(sizeof(int32_t*)),
+                static_cast<int32_t>(alignof(int32_t*)))));
+            len_ = reinterpret_cast<int32_t*>(arena.resolve(arena.alloc(
+                chunkCount_ * static_cast<int32_t>(sizeof(int32_t)),
+                static_cast<int32_t>(alignof(int32_t)))));
+            at_ = reinterpret_cast<int32_t*>(arena.resolve(arena.alloc(
+                chunkCount_ * static_cast<int32_t>(sizeof(int32_t)),
+                static_cast<int32_t>(alignof(int32_t)))));
+            for (int32_t c = 0; c < chunkCount_; ++c) {
+                const int32_t lo = c * chunkSlots;
+                const int32_t len =
+                    (total - lo < chunkSlots) ? (total - lo) : chunkSlots;
+                chunk_[c] = reinterpret_cast<int32_t*>(arena.resolve(arena.alloc(
+                    len * static_cast<int32_t>(sizeof(int32_t)),
+                    static_cast<int32_t>(alignof(int32_t)))));
+                for (int32_t k = 0; k < len; ++k)
+                    chunk_[c][k] = firstOrdinal + lo + k;
+                std::sort(chunk_[c], chunk_[c] + len, less_);
+                len_[c] = len;
+                at_[c] = 0;
+            }
+        }
+
+        /// @brief Rewind the merge cursors so `next()` replays the same
+        ///        sorted sequence from the start (the second-pass door).
+        void reset() {
+            for (int32_t c = 0; c < chunkCount_; ++c) at_[c] = 0;
+        }
+
+        /// @brief Pop the next ordinal in merged sorted order — the linear
+        ///        min-scan over the chunk heads.
+        ///
+        /// @return The smallest not-yet-consumed ordinal under the build
+        ///         comparator. Asserts if called past the total (a dry merge
+        ///         is a caller bookkeeping bug, Rule 19).
+        int32_t next() {
+            int32_t bestC = -1;
+            for (int32_t c = 0; c < chunkCount_; ++c) {
+                if (at_[c] >= len_[c]) continue;
+                if (bestC < 0) { bestC = c; continue; }
+                if (less_(chunk_[c][at_[c]], chunk_[bestC][at_[bestC]]))
+                    bestC = c;
+            }
+            assert(bestC >= 0
+                && "ChunkSortedOrdinals::next past the total — merge ran dry");
+            return chunk_[bestC][at_[bestC]++];
+        }
+
+    private:
+        Less less_;                 ///< The build comparator (by value).
+        int32_t chunkCount_ = 0;    ///< Number of chunks (0 == empty index).
+        int32_t** chunk_ = nullptr; ///< Per-chunk sorted ordinal arrays.
+        int32_t* len_ = nullptr;    ///< Per-chunk lengths.
+        int32_t* at_ = nullptr;     ///< Per-chunk merge cursors.
+    };
+
     /// @brief Append one `LocalMemoryValue` record to a NormKey-keyed encodedMap
     ///        run, serialized DIRECTLY from raw id fields — no owning
     ///        `LocalMemoryValue` and no owning `NormKey`.
@@ -9484,14 +9710,16 @@ namespace gl {
     /// into @p gArena, then appends at the key's run-end through the raw
     /// `inner().appendBlobToRun` / one-blob `inner().assignRun` doors —
     /// byte-identical to `encodedMap.appendRecord(NormKey{...}, LocalMemoryValue{...})`.
-    /// The four trailing params default to the MARKER install's field set
-    /// (`levels` empty, `justification` none, `productOfDisintegration` false —
-    /// the `LocalMemoryValue` defaults), so the marker call site stays
+    /// The five trailing params default to the MARKER install's field set
+    /// (`levels` empty, `justification` none, `productOfDisintegration` false,
+    /// `disintegrationAllowed` true — the `LocalMemoryValue` defaults), so the
+    /// marker call site stays
     /// byte-identical; the `addToHashMemory` HEAD install passes the real
-    /// involved-level run, justification, and disintegration-product flag. The
+    /// involved-level run, justification, and the two disintegration flags. The
     /// blob layout mirrors `Codec<LocalMemoryValue>::serialize` field-for-field:
     /// `valueId`, `originalImplicationId`, `justification`(int32),
-    /// `validityId`(int16), `isMarker`(uint8), `productOfDisintegration`(uint8),
+    /// `validityId`(NameId, int32), `isMarker`(uint8),
+    /// `productOfDisintegration`(uint8), `disintegrationAllowed`(uint8),
     /// `levelN` levels (int32 count + int32 each, ascending), `keyN` + key ids,
     /// `remN` + rem ids.
     ///
@@ -9513,18 +9741,21 @@ namespace gl {
     /// @param levelN           The `levels` count; default 0.
     /// @param justification    The LMV `justification`; default `none` (marker).
     /// @param productOf        The LMV `productOfDisintegration`; default false.
+    /// @param disintegrationAllowed The LMV `disintegrationAllowed`; default
+    ///                         true (marker install — never read on that path).
     /// @see Codec<LocalMemoryValue>::serialize / Codec<NormKey>::encode — the
     ///      byte-layout owners + the twin oracle; encodeNormKeyInto.
     inline void appendLmvIdsRecord(
         TypedColdBlobMap<NormKey, LocalMemoryValue>& map,
-        int16_t numberExpressions, const int16_t* nkData, int32_t nkLen,
+        int32_t numberExpressions, const NameId* nkData, int32_t nkLen,
         int32_t valueId, bool isMarker,
         const int32_t* keyIds, int32_t keyN,
         const int32_t* remIds, int32_t remN,
-        int32_t originalImplId, int16_t validityId, ScratchArena& gArena,
+        int32_t originalImplId, NameId validityId, ScratchArena& gArena,
         const int* levels = nullptr, int32_t levelN = 0,
         RuleJustification justification = RuleJustification::none,
-        bool productOf = false) {
+        bool productOf = false,
+        bool disintegrationAllowed = true) {
         const ArenaOffset mark = gArena.cursor();
 
         // 1. NormKey key bytes on the stack.
@@ -9540,7 +9771,7 @@ namespace gl {
         assert(keyN >= 0 && remN >= 0 && levelN >= 0);
         assert(levelN == 0 || levels != nullptr);
         const int32_t blobLen =
-            4 + 4 + 4 + 2 + 1 + 1     // valueId,origImpl,just,validity,isMarker,pod
+            4 + 4 + 4 + 4 + 1 + 1 + 1 // valueId,origImpl,just,validity,isMarker,pod,disintAllowed
             + 4 + 4 * levelN          // levels count + levels
             + 4 + 4 * keyN            // keyIds count + ids
             + 4 + 4 * remN;           // remIds count + ids
@@ -9550,16 +9781,14 @@ namespace gl {
         const auto put32 = [&](int32_t v) {
             std::memcpy(b + at, &v, sizeof(int32_t)); at += 4;
         };
-        const auto put16 = [&](int16_t v) {
-            std::memcpy(b + at, &v, sizeof(int16_t)); at += 2;
-        };
         const auto put8 = [&](uint8_t v) { b[at++] = static_cast<char>(v); };
         put32(valueId);
         put32(originalImplId);
         put32(static_cast<int32_t>(justification));
-        put16(validityId);
+        put32(validityId);
         put8(isMarker ? 1 : 0);
         put8(productOf ? 1 : 0);
+        put8(disintegrationAllowed ? 1 : 0);
         put32(levelN);
         for (int32_t i = 0; i < levelN; ++i) put32(levels[i]);
         put32(keyN);
@@ -9585,7 +9814,7 @@ namespace gl {
     ///
     /// @details
     /// Byte-identical to `encodeEqClassKeyFromView` (the validity id followed
-    /// by each member id, all little-endian `int16_t`), but the result rides a
+    /// by each member id, all little-endian `NameId`), but the result rides a
     /// `ScratchString` on @p arena's byte-bump tier instead of the malloc heap.
     /// `applyEquiClasses`' per-delta-class key (`deltaKey =
     /// encodeEqClassKeyFromView(validityAt(d), deltaView)` fed to
@@ -9600,15 +9829,15 @@ namespace gl {
     /// @return The packed byte key as a `ScratchString` on @p arena.
     /// @see encodeEqClassKeyFromView — the heap-string sibling; encodeEqClassKey.
     inline ScratchString encodeEqClassKeyFromViewScratch(ScratchArena& arena,
-        int16_t validityId, const EquivalenceClassView& view) {
-        const int32_t total = static_cast<int32_t>(sizeof(int16_t))
+        NameId validityId, const EquivalenceClassView& view) {
+        const int32_t total = static_cast<int32_t>(sizeof(NameId))
             * (view.memberCount() + 1);
         char* buf = arena.allocBytes(total);
-        std::memcpy(buf, &validityId, sizeof(int16_t));
+        std::memcpy(buf, &validityId, sizeof(NameId));
         for (int32_t i = 0; i < view.memberCount(); ++i) {
-            const int16_t m = view.memberId(i);
-            std::memcpy(buf + sizeof(int16_t) * (static_cast<std::size_t>(i) + 1),
-                        &m, sizeof(int16_t));
+            const NameId m = view.memberId(i);
+            std::memcpy(buf + sizeof(NameId) * (static_cast<std::size_t>(i) + 1),
+                        &m, sizeof(NameId));
         }
         return ScratchString::wrap(arena, buf, total);
     }
@@ -9624,7 +9853,7 @@ namespace gl {
     /// @param view       The (merged-away) class view.
     /// @see eraseEqClassIndex, encodeEqClassKeyFromViewInto.
     inline void eraseEqClassIndex(TypedColdMap<EqClassKey, int>& m,
-                                  int16_t validityId,
+                                  NameId validityId,
                                   const EquivalenceClassView& view) {
         char keyBuf[ExecutionParameters::kMaxEqClassKeyBytes];
         const int32_t n = encodeEqClassKeyFromViewInto(keyBuf,
@@ -9640,7 +9869,7 @@ namespace gl {
     /// `encodeEqClassKeyFromViewInto` and probes the cold map's byte-key door
     /// (`inner()`) with a raw `StrSpan(keyBuf, n)`, returning 0 on a miss exactly
     /// like the base overload's `findOr(..., 0)`. No heap key `std::string` or
-    /// `EqClassKey` `std::vector<int16_t>` is materialized. Non-minting read;
+    /// `EqClassKey` `std::vector<NameId>` is materialized. Non-minting read;
     /// burst-safe.
     ///
     /// @param m          The cold eq-class index map.
@@ -9649,7 +9878,7 @@ namespace gl {
     /// @return The stored waterline, or 0 when the class has no entry.
     /// @see lookupEqClassIndex, encodeEqClassKeyFromViewInto, upsertEqClassIndex.
     inline int lookupEqClassIndex(
-        const TypedColdMap<EqClassKey, int>& m, int16_t validityId,
+        const TypedColdMap<EqClassKey, int>& m, NameId validityId,
         const EquivalenceClassView& view) {
         char keyBuf[ExecutionParameters::kMaxEqClassKeyBytes];
         const int32_t n = encodeEqClassKeyFromViewInto(keyBuf,
@@ -9667,7 +9896,7 @@ namespace gl {
     /// byte-key door (`inner()`) with a raw `StrSpan(keyBuf, n)` probe,
     /// reproducing `TypedCold::upsert` (in-place `setValueAt` on a hit, set-once
     /// `insert` on a miss) without a heap key `std::string` or an `EqClassKey`
-    /// `std::vector<int16_t>`. Single-threaded write side only (I-83).
+    /// `std::vector<NameId>`. Single-threaded write side only (I-83).
     ///
     /// @param m          The cold eq-class index map.
     /// @param validityId The class's validity-scope id.
@@ -9675,7 +9904,7 @@ namespace gl {
     /// @param value      The waterline to store.
     /// @see upsertEqClassIndex, encodeEqClassKeyFromViewInto, lookupEqClassIndex.
     inline void upsertEqClassIndex(TypedColdMap<EqClassKey, int>& m,
-                                   int16_t validityId,
+                                   NameId validityId,
                                    const EquivalenceClassView& view, int value) {
         char keyBuf[ExecutionParameters::kMaxEqClassKeyBytes];
         const int32_t n = encodeEqClassKeyFromViewInto(keyBuf,
@@ -9687,7 +9916,7 @@ namespace gl {
     }
 
     /// @brief Record codec for `EquivalenceClass` — the `ColdBlobMap` value
-    ///        serializer the typed blob map (`TypedColdBlobMap<int16_t,
+    ///        serializer the typed blob map (`TypedColdBlobMap<NameId,
     ///        EquivalenceClass>`) calls; forwards to the canonical
     ///        `serializeEquivalenceClass` / `deserializeEquivalenceClass`.
     ///
@@ -10557,9 +10786,10 @@ namespace gl {
     ///
     /// @details
     /// Layout: `valueId`, `originalImplicationId`, `justification` (int32 each),
-    /// `validityId` (int16), `isMarker`, `productOfDisintegration` (uint8 each),
-    /// then `levels` (int32 count + int32 each, ascending set order), `keyIds` and
-    /// `remainingArgIds` (int32 count + int32 each, positional order).
+    /// `validityId` (NameId, int32), `isMarker`, `productOfDisintegration`,
+    /// `disintegrationAllowed` (uint8 each), then `levels` (int32 count + int32
+    /// each, ascending set order), `keyIds` and `remainingArgIds` (int32 count +
+    /// int32 each, positional order).
     ///
     /// @see `LocalMemoryValue`, `Codec`.
     template <>
@@ -10580,6 +10810,7 @@ namespace gl {
             put(v.validityId);
             put(static_cast<uint8_t>(v.isMarker ? 1 : 0));
             put(static_cast<uint8_t>(v.productOfDisintegration ? 1 : 0));
+            put(static_cast<uint8_t>(v.disintegrationAllowed ? 1 : 0));
             put(static_cast<int32_t>(v.levels.size()));
             for (const int lev : v.levels) put(static_cast<int32_t>(lev));
             put(static_cast<int32_t>(v.keyIds.size()));
@@ -10611,6 +10842,7 @@ namespace gl {
             get(v.validityId);
             uint8_t marker = 0; get(marker); v.isMarker = (marker != 0);
             uint8_t pod = 0; get(pod); v.productOfDisintegration = (pod != 0);
+            uint8_t da = 0; get(da); v.disintegrationAllowed = (da != 0);
             int32_t lc = 0; get(lc);
             for (int32_t i = 0; i < lc; ++i) {
                 int32_t lev = 0; get(lev); v.levels.insert(static_cast<int>(lev));
@@ -10633,12 +10865,13 @@ namespace gl {
     ///        fixed-offset read, no record decode.
     ///
     /// @details
-    /// `Codec<LocalMemoryValue>` writes a fixed 16-byte prefix — `valueId`
+    /// `Codec<LocalMemoryValue>` writes a fixed 19-byte prefix — `valueId`
     /// (int32 @0), `originalImplicationId` (int32 @4), `justification`
-    /// (int32 @8), `validityId` (int16 @12), `isMarker` (uint8 @14),
-    /// `productOfDisintegration` (uint8 @15) — before the variable
+    /// (int32 @8), `validityId` (NameId @12), `isMarker` (uint8 @16),
+    /// `productOfDisintegration` (uint8 @17), `disintegrationAllowed`
+    /// (uint8 @18) — before the variable
     /// `levels` / `keyIds` / `remainingArgIds` sections, so the scope id is
-    /// always the two bytes at offset 12. `Memory::wipeSubtree`'s
+    /// always the four bytes at offset 12. `Memory::wipeSubtree`'s
     /// `encodedMap` sweep reads it through this peek to test closed-scope
     /// membership without decoding (and re-encoding) any record.
     ///
@@ -10648,17 +10881,17 @@ namespace gl {
     /// `Codec<OwnerSet>`.
     ///
     /// @param p   The blob's bytes (a `peekRecordBytes` span).
-    /// @param len The blob's byte length; asserted `>= 16` (the fixed
+    /// @param len The blob's byte length; asserted `>= 19` (the fixed
     ///            prefix — every serialized LMV carries it).
     /// @return The record's `validityId`.
     /// @invariant `I-139` — the wipe consumes this peek
     ///            through its bitmap membership lambda.
     /// @see `Codec<LocalMemoryValue>`, `wipeEncodedMapForClosed`,
     ///      `OwnerSetBlob`.
-    inline int16_t lmvBlobValidityId(const char* p, int32_t len) {
-        assert(len >= 16
+    inline NameId lmvBlobValidityId(const char* p, int32_t len) {
+        assert(len >= 19
             && "lmvBlobValidityId: blob shorter than the fixed LMV prefix");
-        int16_t v;
+        NameId v;
         std::memcpy(&v, p + 12, sizeof(v));
         return v;
     }
@@ -10667,8 +10900,8 @@ namespace gl {
     ///        `int16` at offset 0.
     ///
     /// @details
-    /// `Codec<Int16SetKey>` writes `int16 count ++ count×int16 ids`, the ids
-    /// ascending (the `std::set<int16_t>` iteration order). This zero-decode
+    /// `Codec<Int16SetKey>` writes `NameId count ++ count×NameId ids`, the ids
+    /// ascending (the `std::set<NameId>` iteration order). This zero-decode
     /// peek reads the count straight off `raMap.keyAt(id)`'s raw bytes, the
     /// firing-check candidate scan's lever (no per-candidate heap
     /// `Int16SetKey` decode). Layout-coupled to `Codec<Int16SetKey>`: the two
@@ -10677,46 +10910,48 @@ namespace gl {
     ///
     /// @param k The raw key bytes (a `keyAt(id)` span).
     /// @return The number of ids in the set.
-    /// @invariant Asserts `k.len >= 2 && k.len % 2 == 0` — a malformed key is a
-    ///            bug surfaced at its origin (Rule 19).
+    /// @invariant Asserts `k.len >= sizeof(NameId) && k.len % sizeof(NameId) == 0`
+    ///            — a malformed key is a bug surfaced at its origin (Rule 19).
     /// @see `Codec<Int16SetKey>`, `int16SetKeyIdAt`, `int16SetKeyLexCompare`.
-    inline int16_t int16SetKeyCount(StrSpan k) {
-        assert(k.len >= 2 && (k.len % 2) == 0
+    inline NameId int16SetKeyCount(StrSpan k) {
+        assert(k.len >= static_cast<int32_t>(sizeof(NameId))
+            && (k.len % static_cast<int32_t>(sizeof(NameId))) == 0
             && "int16SetKeyCount: malformed Int16SetKey blob");
-        int16_t v;
+        NameId v;
         std::memcpy(&v, k.ptr, sizeof(v));
         return v;
     }
 
-    /// @brief Read id @p i of a serialized `Int16SetKey` — the `int16` at
-    ///        offset `2 + 2*i`.
+    /// @brief Read id @p i of a serialized `Int16SetKey` — the `NameId` at
+    ///        offset `sizeof(NameId) * (i + 1)`.
     ///
     /// @details
     /// The ids follow the count in ascending positional order (the
-    /// `std::set<int16_t>` iteration order); this reads the i-th one
+    /// `std::set<NameId>` iteration order); this reads the i-th one
     /// zero-decode. Layout-coupled to `Codec<Int16SetKey>`.
     ///
     /// @param k The raw key bytes (a `keyAt(id)` span).
     /// @param i The id index.
-    /// @return The `int16` id at position @p i.
+    /// @return The `NameId` id at position @p i.
     /// @invariant Asserts `0 <= i < int16SetKeyCount(k)` (Rule 19).
     /// @see `int16SetKeyCount`, `int16SetKeyLexCompare`.
-    inline int16_t int16SetKeyIdAt(StrSpan k, int32_t i) {
+    inline NameId int16SetKeyIdAt(StrSpan k, int32_t i) {
         assert(i >= 0 && i < int16SetKeyCount(k)
             && "int16SetKeyIdAt: index out of range");
-        int16_t v;
-        std::memcpy(&v, k.ptr + 2 + 2 * i, sizeof(v));
+        NameId v;
+        std::memcpy(&v, k.ptr
+            + static_cast<int32_t>(sizeof(NameId)) * (i + 1), sizeof(v));
         return v;
     }
 
     /// @brief Lexicographic compare of two serialized `Int16SetKey`s — the
-    ///        byte-for-byte twin of `std::set<int16_t>::operator<`.
+    ///        byte-for-byte twin of `std::set<NameId>::operator<`.
     ///
     /// @details
-    /// Compares element-by-element as SIGNED `int16_t` (matching the
-    /// `std::set<int16_t>` default `std::less<int16_t>`), shorter-is-prefix-is-
+    /// Compares element-by-element as SIGNED `NameId` (matching the
+    /// `std::set<NameId>` default `std::less<NameId>`), shorter-is-prefix-is-
     /// less. This is NOT the count-prefixed `Int16SetKey` byte order — a raw
-    /// byte-lex compare would order on the `int16 count` field FIRST, a
+    /// byte-lex compare would order on the `NameId count` field FIRST, a
     /// DIFFERENT order — so the firing-check candidate enumeration order (R1,
     /// deload-observable through the firing records) is preserved only by this
     /// signed-element lex, never by a byte compare.
@@ -10726,12 +10961,12 @@ namespace gl {
     /// @return `-1` when @p a `<` @p b, `+1` when `>`, `0` when equal.
     /// @see `int16SetKeyCount`, `int16SetKeyIdAt`, `Codec<Int16SetKey>`.
     inline int int16SetKeyLexCompare(StrSpan a, StrSpan b) {
-        const int16_t na = int16SetKeyCount(a);
-        const int16_t nb = int16SetKeyCount(b);
-        const int16_t m = na < nb ? na : nb;
-        for (int16_t k = 0; k < m; ++k) {
-            const int16_t ia = int16SetKeyIdAt(a, k);
-            const int16_t ib = int16SetKeyIdAt(b, k);
+        const NameId na = int16SetKeyCount(a);
+        const NameId nb = int16SetKeyCount(b);
+        const NameId m = na < nb ? na : nb;
+        for (NameId k = 0; k < m; ++k) {
+            const NameId ia = int16SetKeyIdAt(a, k);
+            const NameId ib = int16SetKeyIdAt(b, k);
             if (ia != ib) return ia < ib ? -1 : 1;
         }
         return na < nb ? -1 : (na > nb ? 1 : 0);
@@ -10742,10 +10977,11 @@ namespace gl {
     ///        variable sections, no record materialized.
     ///
     /// @details
-    /// `Codec<LocalMemoryValue>` writes a fixed 16-byte prefix — `valueId`
+    /// `Codec<LocalMemoryValue>` writes a fixed 19-byte prefix — `valueId`
     /// (int32 @0), `originalImplicationId` (int32 @4), `justification`
-    /// (int32 @8), `validityId` (int16 @12), `isMarker` (uint8 @14),
-    /// `productOfDisintegration` (uint8 @15) — then `levelCount` (int32) +
+    /// (int32 @8), `validityId` (NameId @12), `isMarker` (uint8 @16),
+    /// `productOfDisintegration` (uint8 @17), `disintegrationAllowed`
+    /// (uint8 @18) — then `levelCount` (int32) +
     /// levels (int32 each), `keyIdCount` (int32) + keyIds (int32 each,
     /// positional), `remainingCount` (int32) + remainingArgIds (int32 each).
     /// Every read goes through `std::memcpy` (unaligned pool bytes).
@@ -10762,7 +10998,7 @@ namespace gl {
     /// `OwnerSetBlob` mirror their codecs.
     ///
     /// @invariant Construction asserts the exact frame
-    ///            `len == 28 + 4*(levelCount + keyIdCount + remainingCount)`
+    ///            `len == 31 + 4*(levelCount + keyIdCount + remainingCount)`
     ///            — the view twin of the codec's `cur == end` asserts
     ///            (Rule 19).
     /// @see `Codec<LocalMemoryValue>`, `lmvBlobValidityId`,
@@ -10782,17 +11018,17 @@ namespace gl {
         ///             verbatim gen-arena copy).
         /// @param len_ The blob's byte length.
         LmvBlobView(const char* p_, int32_t len_) : p(p_), len(len_) {
-            assert(len >= 20
+            assert(len >= 23
                 && "LmvBlobView: blob shorter than the fixed LMV prefix");
             const int32_t lc = levelCount();
-            assert(lc >= 0 && len >= 24 + 4 * lc
+            assert(lc >= 0 && len >= 27 + 4 * lc
                 && "LmvBlobView: blob shorter than the levels section");
             const int32_t kc = keyIdCount();
-            assert(kc >= 0 && len >= 28 + 4 * (lc + kc)
+            assert(kc >= 0 && len >= 31 + 4 * (lc + kc)
                 && "LmvBlobView: blob shorter than the keyIds section");
             int32_t rc;
-            std::memcpy(&rc, p + 24 + 4 * (lc + kc), sizeof(rc));
-            assert(rc >= 0 && len == 28 + 4 * (lc + kc + rc)
+            std::memcpy(&rc, p + 27 + 4 * (lc + kc), sizeof(rc));
+            assert(rc >= 0 && len == 31 + 4 * (lc + kc + rc)
                 && "LmvBlobView: blob length does not match the layout");
         }
 
@@ -10813,24 +11049,24 @@ namespace gl {
         int32_t originalImplicationId() const { return readI32(4); }
 
         /// @brief The record's `validityId` (== `lmvBlobValidityId`).
-        /// @return The int16 at offset 12.
-        int16_t validityId() const {
-            int16_t v;
+        /// @return The NameId at offset 12.
+        NameId validityId() const {
+            NameId v;
             std::memcpy(&v, p + 12, sizeof(v));
             return v;
         }
 
         /// @brief The level count.
-        /// @return The int32 at offset 16.
-        int32_t levelCount() const { return readI32(16); }
+        /// @return The int32 at offset 19.
+        int32_t levelCount() const { return readI32(19); }
 
         /// @brief The keyIds count.
         /// @return The int32 directly past the levels section.
-        int32_t keyIdCount() const { return readI32(20 + 4 * levelCount()); }
+        int32_t keyIdCount() const { return readI32(23 + 4 * levelCount()); }
 
         /// @brief The keyIds run's raw bytes (a contiguous int32 run).
         /// @return Pointer to `keyIdsByteLen()` bytes.
-        const char* keyIdsBytes() const { return p + 24 + 4 * levelCount(); }
+        const char* keyIdsBytes() const { return p + 27 + 4 * levelCount(); }
 
         /// @brief The keyIds run's byte length.
         /// @return `4 * keyIdCount()`.
@@ -10843,7 +11079,7 @@ namespace gl {
         int32_t keyIdAt(int32_t i) const {
             assert(i >= 0 && i < keyIdCount()
                 && "LmvBlobView::keyIdAt: index out of range");
-            return readI32(24 + 4 * levelCount() + 4 * i);
+            return readI32(27 + 4 * levelCount() + 4 * i);
         }
 
         /// @brief The record's `valueId` (rule-interner id, the rule head).
@@ -10857,45 +11093,55 @@ namespace gl {
         }
 
         /// @brief The record's `isMarker` flag.
-        /// @return The uint8 at offset 14, as a bool.
+        /// @return The uint8 at offset 16, as a bool.
         bool isMarker() const {
             uint8_t v;
-            std::memcpy(&v, p + 14, 1);
+            std::memcpy(&v, p + 16, 1);
             return v != 0;
         }
 
         /// @brief The record's `productOfDisintegration` flag.
-        /// @return The uint8 at offset 15, as a bool.
+        /// @return The uint8 at offset 17, as a bool.
         bool productOfDisintegration() const {
             uint8_t v;
-            std::memcpy(&v, p + 15, 1);
+            std::memcpy(&v, p + 17, 1);
+            return v != 0;
+        }
+
+        /// @brief The record's `disintegrationAllowed` flag — may heads
+        ///        fired by this rule be disintegrated
+        ///        (D-241).
+        /// @return The uint8 at offset 18, as a bool.
+        bool disintegrationAllowed() const {
+            uint8_t v;
+            std::memcpy(&v, p + 18, 1);
             return v != 0;
         }
 
         /// @brief Level `i` (ascending set order — the `std::set<int>`
         ///        iteration order the codec serialized).
         /// @param i The index; asserted `0 <= i < levelCount()`.
-        /// @return The int32 at offset `20 + 4*i`.
+        /// @return The int32 at offset `23 + 4*i`.
         int32_t levelAt(int32_t i) const {
             assert(i >= 0 && i < levelCount()
                 && "LmvBlobView::levelAt: out of range");
-            return readI32(20 + 4 * i);
+            return readI32(23 + 4 * i);
         }
 
         /// @brief The remainingArgIds count.
         /// @return The int32 directly past the keyIds section.
         int32_t remainingCount() const {
-            return readI32(24 + 4 * levelCount() + 4 * keyIdCount());
+            return readI32(27 + 4 * levelCount() + 4 * keyIdCount());
         }
 
         /// @brief RemainingArgId `i` (positional order).
         /// @param i The index; asserted `0 <= i < remainingCount()`.
         /// @return The int32 at offset
-        ///         `28 + 4*levelCount() + 4*keyIdCount() + 4*i`.
+        ///         `31 + 4*levelCount() + 4*keyIdCount() + 4*i`.
         int32_t remainingArgIdAt(int32_t i) const {
             assert(i >= 0 && i < remainingCount()
                 && "LmvBlobView::remainingArgIdAt: out of range");
-            return readI32(28 + 4 * levelCount() + 4 * keyIdCount() + 4 * i);
+            return readI32(31 + 4 * levelCount() + 4 * keyIdCount() + 4 * i);
         }
     };
 
@@ -10962,8 +11208,9 @@ namespace gl {
             assert(v >= 1 && v <= nameHighWater
                 && "wipeEncodedMapForClosed: stored validityId outside the "
                    "minted NameMap range");
-            return ((closedBits[static_cast<uint16_t>(v) >> 6]
-                     >> (static_cast<uint16_t>(v) & 63)) & 1ull) != 0;
+            // v is a guaranteed-in-range positive NameId — no uint16 wrap
+            // (a wrap would alias validity ids >= 65536 into the wrong bit).
+            return ((closedBits[v >> 6] >> (v & 63)) & 1ull) != 0;
         };
 
         const ArenaOffset mark = gArena.cursor();
@@ -11069,7 +11316,7 @@ namespace gl {
     ///      `eradicateImplicationFromLB` — the sole caller.
     inline void eradicateEncodedMapForImpl(
         TypedColdBlobMap<NormKey, LocalMemoryValue>& m,
-        int32_t implRuleId, int16_t implVid,
+        int32_t implRuleId, NameId implVid,
         ScratchArena& gArena,
         ColdHashSet<BytesKeyStore>& erasedChains) {
         struct KeyRec {
@@ -11139,9 +11386,9 @@ namespace gl {
     /// @brief Record codec for `OwnerSet` — the value of the four owner-set maps.
     ///
     /// @details
-    /// Layout: `hasLooseOwner` (uint8), `partitionIds` (int32 count + int32 each,
+    /// Layout: `hasLooseOwner` (uint8), `partitionIds` (int32 count + int64 each,
     /// ascending set order), `uSignatures` (int32 count, then per signature an
-    /// int32 pair-count + each `(int16, int16)` pair — both the outer set and the
+    /// int32 pair-count + each `(int32, int32)` pair — both the outer set and the
     /// inner vectors emit in their canonical order).
     ///
     /// @see `OwnerSet`, `Codec`.
@@ -11159,12 +11406,12 @@ namespace gl {
             };
             put(static_cast<uint8_t>(v.hasLooseOwner ? 1 : 0));
             put(static_cast<int32_t>(v.partitionIds.size()));
-            for (const int32_t id : v.partitionIds) put(id);
+            for (const int64_t id : v.partitionIds) put(id);
             put(static_cast<int32_t>(v.uSignatures.size()));
-            for (const std::vector<std::pair<int16_t, int16_t>>& sig
+            for (const std::vector<std::pair<int32_t, NameId>>& sig
                      : v.uSignatures) {
                 put(static_cast<int32_t>(sig.size()));
-                for (const std::pair<int16_t, int16_t>& pr : sig) {
+                for (const std::pair<int32_t, NameId>& pr : sig) {
                     put(pr.first);
                     put(pr.second);
                 }
@@ -11190,15 +11437,15 @@ namespace gl {
             uint8_t loose = 0; get(loose); v.hasLooseOwner = (loose != 0);
             int32_t pc = 0; get(pc);
             for (int32_t i = 0; i < pc; ++i) {
-                int32_t id = 0; get(id); v.partitionIds.insert(id);
+                int64_t id = 0; get(id); v.partitionIds.insert(id);
             }
             int32_t sc = 0; get(sc);
             for (int32_t i = 0; i < sc; ++i) {
                 int32_t pairCount = 0; get(pairCount);
-                std::vector<std::pair<int16_t, int16_t>> sig;
+                std::vector<std::pair<int32_t, NameId>> sig;
                 sig.reserve(static_cast<std::size_t>(pairCount));
                 for (int32_t j = 0; j < pairCount; ++j) {
-                    int16_t a = 0, b = 0; get(a); get(b);
+                    int32_t a = 0; NameId b = 0; get(a); get(b);
                     sig.emplace_back(a, b);
                 }
                 v.uSignatures.insert(std::move(sig));
@@ -11218,16 +11465,16 @@ namespace gl {
     /// (the owner maps are run-length-1 — `mergeOwnerRecord` installs one
     /// whole-value record per key; asserted). Through `OwnerSetBlob` it
     /// counts the partition ids whose LOW half (the interned scope vid,
-    /// `makePartitionId`'s D-105 low 16 bits, cast exactly as the former
-    /// decode loop cast it) sits in the closed bitmap:
+    /// `makePartitionId`'s D-105 low 32 bits, read via
+    /// `Codec<StatementKey>::decode(pid).validity`) sits in the closed bitmap:
     /// - all survive  → the WHOLE blob is byte-bump-copied verbatim;
     /// - none survive → the key is dropped; when `droppedKeys` is non-null
     ///   the key's bytes are minted into it (mint copies the bytes into the
     ///   set's own pool — taken in pass 1, while the source map is still
     ///   resident);
     /// - some survive → the blob is rewritten into a fresh
-    ///   `bl - 4 * dropped` buffer: byte 0 (`hasLooseOwner`) verbatim, the
-    ///   int32 survivor count, the surviving int32 ids in their original
+    ///   `bl - 8 * dropped` buffer: byte 0 (`hasLooseOwner`) verbatim, the
+    ///   int32 survivor count, the surviving int64 ids in their original
     ///   (ascending `std::set`) order, then the whole `uSignatures` tail
     ///   memcpy'd verbatim from `uSigOffset()` — the wipe filters ONLY
     ///   `partitionIds`; `hasLooseOwner` + `uSignatures` are deliberately
@@ -11278,8 +11525,10 @@ namespace gl {
             assert(v >= 1 && v <= nameHighWater
                 && "wipeOwnerSetMapForClosed: partition scope vid outside "
                    "the minted NameMap range");
-            return ((closedBits[static_cast<uint16_t>(v) >> 6]
-                     >> (static_cast<uint16_t>(v) & 63)) & 1ull) != 0;
+            // v is a guaranteed-in-range positive NameId — no uint16 wrap (a
+            // wrap would alias scope vids >= 65536 into the wrong bit once the
+            // ceiling rises).
+            return ((closedBits[v >> 6] >> (v & 63)) & 1ull) != 0;
         };
 
         const ArenaOffset mark = gArena.cursor();
@@ -11298,8 +11547,8 @@ namespace gl {
                 const int32_t pc = ob.partitionCount();
                 int32_t dropped = 0;
                 for (int32_t i = 0; i < pc; ++i) {
-                    if (closed(static_cast<int16_t>(
-                            ob.partitionId(i) & 0xFFFF)))
+                    if (closed(Codec<StatementKey>::decode(
+                            ob.partitionId(i)).validity))
                         ++dropped;
                 }
                 if (dropped == pc) {
@@ -11320,7 +11569,7 @@ namespace gl {
                 } else {
                     // partial -> rewrite: byte0 + count' + ascending
                     // survivors + verbatim uSig tail.
-                    blobLen = bl - 4 * dropped;
+                    blobLen = bl - 8 * dropped;
                     blobOff = gArena.alloc(blobLen, 1);
                     char* w = gArena.resolve(blobOff);
                     w[0] = bp[0];
@@ -11328,11 +11577,11 @@ namespace gl {
                     std::memcpy(w + 1, &keptCount, sizeof(int32_t));
                     int32_t at = 5;
                     for (int32_t i = 0; i < pc; ++i) {
-                        const int32_t pid = ob.partitionId(i);
-                        if (closed(static_cast<int16_t>(pid & 0xFFFF)))
+                        const int64_t pid = ob.partitionId(i);
+                        if (closed(Codec<StatementKey>::decode(pid).validity))
                             continue;
-                        std::memcpy(w + at, &pid, sizeof(int32_t));
-                        at += 4;
+                        std::memcpy(w + at, &pid, sizeof(int64_t));
+                        at += 8;
                     }
                     const int32_t tailLen = bl - ob.uSigOffset();
                     std::memcpy(w + at, bp + ob.uSigOffset(),
@@ -11770,8 +12019,8 @@ namespace gl {
     /// @see `insertAdmissionValue` — the value-form wrapper;
     ///      `admissionBlobLess`, `Codec<AdmissionMapValue>`, `D-172`, `I-99`.
     inline void insertAdmissionBlobSorted(
-        TypedColdBlobMap<int32_t, AdmissionMapValue>& m,
-        int32_t pk, const char* newBlob, int32_t newLen,
+        TypedColdBlobMap<int64_t, AdmissionMapValue>& m,
+        int64_t pk, const char* newBlob, int32_t newLen,
         const ValueInterner& vi, ScratchArena& gArena)
     {
         const ArenaOffset mark = gArena.cursor();
@@ -11935,8 +12184,8 @@ namespace gl {
     /// @param vi The owning LB's value interner (the comparator's state).
     /// @return The key's value set; empty when `pk` was never minted.
     inline AdmissionValueSet admissionRecordsAt(
-        const TypedColdBlobMap<int32_t, AdmissionMapValue>& m,
-        int32_t pk, const ValueInterner& vi)
+        const TypedColdBlobMap<int64_t, AdmissionMapValue>& m,
+        int64_t pk, const ValueInterner& vi)
     {
         AdmissionValueSet s(DecodedAdmissionValueLess{ &vi });
         const int32_t id = m.lookup(pk);
@@ -12000,8 +12249,8 @@ namespace gl {
     /// @see admissionRecordsAt — the retained heap oracle; AdmissionRunSnapshot,
     ///      AdmissionValueBlobView, TypedColdBlobMap::peekRecordBytes.
     inline AdmissionRunSnapshot snapshotAdmissionRun(
-        const TypedColdBlobMap<int32_t, AdmissionMapValue>& m,
-        int32_t pk, ScratchArena& gArena)
+        const TypedColdBlobMap<int64_t, AdmissionMapValue>& m,
+        int64_t pk, ScratchArena& gArena)
     {
         const int32_t id = m.lookup(pk);
         const int32_t runN = id ? m.runLen(id) : 0;
@@ -12046,8 +12295,8 @@ namespace gl {
     ///               free function cannot reach the worker slot itself);
     ///               reclaimed by this function's own mark/popTo.
     inline void insertAdmissionValue(
-        TypedColdBlobMap<int32_t, AdmissionMapValue>& m,
-        int32_t pk, const AdmissionMapValue& value, const ValueInterner& vi,
+        TypedColdBlobMap<int64_t, AdmissionMapValue>& m,
+        int64_t pk, const AdmissionMapValue& value, const ValueInterner& vi,
         ScratchArena& gArena)
     {
         const ArenaOffset mark = gArena.cursor();
@@ -12381,8 +12630,8 @@ namespace gl {
     /// @see `insertRejectedValue` — the value-form wrapper;
     ///      `rejectedBlobLess`, `Codec<RejectedMapValue>`, `D-172`, `I-99`.
     inline void insertRejectedBlobSorted(
-        TypedColdBlobMap<int32_t, RejectedMapValue>& m,
-        int32_t pk, const char* newBlob, int32_t newLen,
+        TypedColdBlobMap<int64_t, RejectedMapValue>& m,
+        int64_t pk, const char* newBlob, int32_t newLen,
         const ValueInterner& vi, ScratchArena& gArena)
     {
         const ArenaOffset mark = gArena.cursor();
@@ -12491,8 +12740,8 @@ namespace gl {
     /// @param vi The owning LB's value interner (the comparator's state).
     /// @return The key's value set; empty when `pk` was never minted.
     inline RejectedValueSet rejectedRecordsAt(
-        const TypedColdBlobMap<int32_t, RejectedMapValue>& m,
-        int32_t pk, const ValueInterner& vi)
+        const TypedColdBlobMap<int64_t, RejectedMapValue>& m,
+        int64_t pk, const ValueInterner& vi)
     {
         RejectedValueSet s(DecodedRejectedValueLess{ &vi });
         const int32_t id = m.lookup(pk);
@@ -12555,8 +12804,8 @@ namespace gl {
     /// @see rejectedRecordsAt — the retained heap oracle; RejectedRunSnapshot,
     ///      RejectedValueBlobView, snapshotAdmissionRun.
     inline RejectedRunSnapshot snapshotRejectedRun(
-        const TypedColdBlobMap<int32_t, RejectedMapValue>& m,
-        int32_t pk, ScratchArena& gArena)
+        const TypedColdBlobMap<int64_t, RejectedMapValue>& m,
+        int64_t pk, ScratchArena& gArena)
     {
         const int32_t id = m.lookup(pk);
         const int32_t runN = id ? m.runLen(id) : 0;
@@ -12600,8 +12849,8 @@ namespace gl {
     ///               free function cannot reach the worker slot itself);
     ///               reclaimed by this function's own mark/popTo.
     inline void insertRejectedValue(
-        TypedColdBlobMap<int32_t, RejectedMapValue>& m,
-        int32_t pk, const RejectedMapValue& value, const ValueInterner& vi,
+        TypedColdBlobMap<int64_t, RejectedMapValue>& m,
+        int64_t pk, const RejectedMapValue& value, const ValueInterner& vi,
         ScratchArena& gArena)
     {
         const ArenaOffset mark = gArena.cursor();
@@ -12646,7 +12895,7 @@ namespace gl {
     /// @see `insertAdmissionValue` — the value-form sibling + test oracle;
     ///      `serializeAdmissionValueToArena`, `insertAdmissionBlobSorted`.
     inline void insertAdmissionIdsBlob(
-        TypedColdBlobMap<int32_t, AdmissionMapValue>& m, int32_t pk,
+        TypedColdBlobMap<int64_t, AdmissionMapValue>& m, int64_t pk,
         int32_t depth, int32_t sec, bool flag,
         const int32_t* keyIds, int32_t keyCount,
         const int32_t* remIds, int32_t remCount,
@@ -12709,7 +12958,7 @@ namespace gl {
     /// @see `insertRejectedValue` — the value-form sibling + test oracle;
     ///      `serializeRejectedValueToArena`, `insertRejectedBlobSorted`.
     inline void insertRejectedIdsBlob(
-        TypedColdBlobMap<int32_t, RejectedMapValue>& m, int32_t pk,
+        TypedColdBlobMap<int64_t, RejectedMapValue>& m, int64_t pk,
         int32_t renamedId, int32_t exprId, int32_t iteration, int32_t concreteId,
         const int32_t* siblingIds, int32_t siblingCount,
         const int* levels, int32_t levelCount,
@@ -12892,8 +13141,8 @@ namespace gl {
     /// @param vi The owning LB's value interner (the comparator's state).
     /// @return The key's value set; empty when `pk` was never minted.
     inline RejectedIntegrationValueSet rejectedIntegrationRecordsAt(
-        const TypedColdBlobMap<int32_t, RejectedMapIntegrationValue>& m,
-        int32_t pk, const ValueInterner& vi)
+        const TypedColdBlobMap<int64_t, RejectedMapIntegrationValue>& m,
+        int64_t pk, const ValueInterner& vi)
     {
         RejectedIntegrationValueSet s(DecodedRejectedIntegrationValueLess{ &vi });
         const int32_t id = m.lookup(pk);
@@ -12921,8 +13170,8 @@ namespace gl {
     /// @param value The value to insert (sorted + deduped into the run).
     /// @param vi    The owning LB's value interner (the comparator's state).
     inline void insertRejectedIntegrationValue(
-        TypedColdBlobMap<int32_t, RejectedMapIntegrationValue>& m,
-        int32_t pk, const RejectedMapIntegrationValue& value, const ValueInterner& vi)
+        TypedColdBlobMap<int64_t, RejectedMapIntegrationValue>& m,
+        int64_t pk, const RejectedMapIntegrationValue& value, const ValueInterner& vi)
     {
         RejectedIntegrationValueSet s(DecodedRejectedIntegrationValueLess{ &vi });
         const int32_t id = m.lookup(pk);
@@ -13051,8 +13300,8 @@ namespace gl {
     ///      RejectedIntegrationRunSnapshot, RejectedIntegrationValueBlobView,
     ///      snapshotRejectedRun.
     inline RejectedIntegrationRunSnapshot snapshotRejectedIntegrationRun(
-        const TypedColdBlobMap<int32_t, RejectedMapIntegrationValue>& m,
-        int32_t pk, ScratchArena& gArena)
+        const TypedColdBlobMap<int64_t, RejectedMapIntegrationValue>& m,
+        int64_t pk, ScratchArena& gArena)
     {
         const int32_t id = m.lookup(pk);
         const int32_t runN = id ? m.runLen(id) : 0;
@@ -13190,8 +13439,8 @@ namespace gl {
     /// @see `insertRejectedIntegrationValue` — the value-form oracle;
     ///      `rejectedIntegrationBlobLess`, `Codec<RejectedMapIntegrationValue>`.
     inline void insertRejectedIntegrationBlobSorted(
-        TypedColdBlobMap<int32_t, RejectedMapIntegrationValue>& m,
-        int32_t pk, const char* newBlob, int32_t newLen,
+        TypedColdBlobMap<int64_t, RejectedMapIntegrationValue>& m,
+        int64_t pk, const char* newBlob, int32_t newLen,
         const ValueInterner& vi, ScratchArena& gArena)
     {
         const ArenaOffset mark = gArena.cursor();
@@ -13316,7 +13565,7 @@ namespace gl {
     ///      oracle; `serializeRejectedIntegrationValueToArena`,
     ///      `insertRejectedIntegrationBlobSorted`.
     inline void insertRejectedIntegrationIdsBlob(
-        TypedColdBlobMap<int32_t, RejectedMapIntegrationValue>& m, int32_t pk,
+        TypedColdBlobMap<int64_t, RejectedMapIntegrationValue>& m, int64_t pk,
         int32_t concreteId, int32_t compoundId,
         const int32_t* siblingIds, int32_t siblingCount,
         const ValueInterner& vi, ScratchArena& gArena)
@@ -13359,8 +13608,8 @@ namespace gl {
     /// @param vi The owning LB's value interner (both comparators' state).
     /// @return The key's instruction map; empty when `pk` was never minted.
     inline IntegrationEntryMap admissionIntegrationRecordsAt(
-        const TypedColdBlobMap<int32_t, IntegrationEntry>& m,
-        int32_t pk, const ValueInterner& vi)
+        const TypedColdBlobMap<int64_t, IntegrationEntry>& m,
+        int64_t pk, const ValueInterner& vi)
     {
         IntegrationEntryMap em(DecodedInstructionLess{ &vi });
         const int32_t id = m.lookup(pk);
@@ -13568,8 +13817,8 @@ namespace gl {
         ///            writes; the unit test enforces byte-identity to the heap path.
         /// @see writeToCold (the write half), build, Codec<IntegrationEntry>,
         ///      TypedCold::peekRecordBytes.
-        void buildFromCold(const TypedColdBlobMap<int32_t, IntegrationEntry>& m,
-                           int32_t pk) {
+        void buildFromCold(const TypedColdBlobMap<int64_t, IntegrationEntry>& m,
+                           int64_t pk) {
             const int32_t id = m.lookup(pk);
             if (id == 0) return;
             const int32_t rl = m.runLen(id);
@@ -14183,8 +14432,8 @@ namespace gl {
         ///            `assignRun(flatten())`.
         /// @see buildFromCold (the read half), flatten, Codec<IntegrationEntry>,
         ///      ExecutionParameters::kMaxIntegrationRunBytes.
-        void writeToCold(TypedColdBlobMap<int32_t, IntegrationEntry>& m,
-                         int32_t pk) const {
+        void writeToCold(TypedColdBlobMap<int64_t, IntegrationEntry>& m,
+                         int64_t pk) const {
             int32_t idx[ExecutionParameters::MAX_INTEGRATION_ENTRIES];
             const int32_t idxN =
                 sortedIndices(idx, ExecutionParameters::MAX_INTEGRATION_ENTRIES);
@@ -14263,7 +14512,7 @@ namespace gl {
     ///        `EquivalenceClass` + `serializeEquivalenceClass` are complete.
     /// @param vid The class's validity id.
     /// @param cls The merged class to snapshot (serialized to a blob).
-    inline void ChangedClassesBuffer::push(int16_t vid,
+    inline void ChangedClassesBuffer::push(NameId vid,
         const EquivalenceClass& cls) {
         const std::vector<char> blob = serializeEquivalenceClass(cls);
         validityIds_.push_back(vid);
@@ -14923,11 +15172,13 @@ namespace gl {
     ///
     /// **OR-branching state**
     /// - `orBookkeeping`            — convergence tracking: keyed by
-    ///   packed `(exprId, sigId)` lbStateInterner pairs → decoded-lex
-    ///   ordered branch-disjunct id sets (the legacy `orAdmissionSet`
-    ///   gate container was dropped — no insert site existed, D-31).
-    /// - `orDisjunctCount`          — disjunct count per OR-signature id
-    ///   for the convergence check.
+    ///   packed `(exprId, cohortId)` lbStateInterner pairs → decoded-lex
+    ///   ordered branch-disjunct id sets, where the cohort id canonically
+    ///   contains `(parentValidityId, orSignatureId)` (the legacy
+    ///   `orAdmissionSet` gate container was dropped — no insert site existed,
+    ///   D-31).
+    /// - `orDisjunctCount`          — disjunct count per parent-scoped OR
+    ///   cohort id for the convergence check.
     ///
     /// **State flags**
     /// - `isActive`                 — set to `false` by `deactivate*` paths
@@ -15020,7 +15271,7 @@ namespace gl {
         // reach it (the derivation chains inside the LB use this form,
         // not exprKey). Decoded at use; the string content lives on the
         // cold name table, deloadable with the LB.
-        int16_t recursionHypothesisId = 0;
+        NameId recursionHypothesisId = 0;
         Memory* parentMemory;
         int level;
 
@@ -15052,7 +15303,7 @@ namespace gl {
         // Order-sensitive walks (reactToHypo, applyEquiClasses pass 2, the dump
         // section) iterate a decoded-name lex-sorted snapshot — never raw id
         // order (I-84).
-        TypedColdBlobMap<int16_t, EquivalenceClass>& equivalenceClassesMap =
+        TypedColdBlobMap<NameId, EquivalenceClass>& equivalenceClassesMap =
             lbMemory.equivalenceClassesMap;
 
         /// @brief Per-step delta set of equivalence classes whose membership
@@ -15124,7 +15375,7 @@ namespace gl {
         // (D-135; the former string key). No validity
         // dimension — the map never filters at wipeSubtree (counter
         // snapshots, no scope tag).
-        ColdHashMap<PodKeyStore<int16_t>, int>& integrationStartIntMap =
+        ColdHashMap<PodKeyStore<NameId>, int>& integrationStartIntMap =
             lbMemory.integrationStartIntMap;
 
         // Routing mailIn uses a dedicated transient mail-pool arena that is
@@ -15181,7 +15432,7 @@ namespace gl {
         /// @return The scope's class list (empty when the id has no bucket).
         /// @see assignClassesById — the write-back counterpart;
         ///      decodeClassesAt — the by-name overload.
-        std::vector<EquivalenceClass> decodeClassesById(int16_t validityId) const {
+        std::vector<EquivalenceClass> decodeClassesById(NameId validityId) const {
             const int32_t id = equivalenceClassesMap.lookup(validityId);
             if (id == 0) return {};
             return equivalenceClassesMap.recordsAt(id);
@@ -15201,7 +15452,7 @@ namespace gl {
         std::vector<EquivalenceClass> decodeClassesAt(
             const std::string& validityName) const
         {
-            const int16_t vId = nameMap.lookup(validityName);
+            const NameId vId = nameMap.lookup(validityName);
             if (vId == 0) return {};
             return decodeClassesById(vId);
         }
@@ -15221,7 +15472,7 @@ namespace gl {
         /// @param classes    The scope's new class list (may be empty — an
         ///                   empty run).
         /// @see decodeClassesById — the read counterpart.
-        void assignClassesById(int16_t validityId,
+        void assignClassesById(NameId validityId,
                                const std::vector<EquivalenceClass>& classes)
         {
             equivalenceClassesMap.assignRun(validityId, classes);
@@ -15366,9 +15617,9 @@ namespace gl {
         // mintTemplateKey, gates via the non-minting lookupTemplateKey;
         // wipeSubtree filters by the low-16-bits validity predicate; the
         // dump sections derive decode + lex-sort.
-        ColdHashSet<PodKeyStore<int32_t>>& integrationPrepared =
+        ColdHashSet<PodKeyStore<int64_t>>& integrationPrepared =
             lbMemory.integrationPrepared;
-        ColdHashSet<PodKeyStore<int32_t>>& integrationPreparedMarker =
+        ColdHashSet<PodKeyStore<int64_t>>& integrationPreparedMarker =
             lbMemory.integrationPreparedMarker;
         // D-72 (sandbox/implication_cleanup):
         // Pending scopes to wipe at the END of the hashburst (drained
@@ -15386,7 +15637,7 @@ namespace gl {
         // scope was created via encodePush, so the insert is a non-minting
         // lookup + assert. The drain decodes + lex-sorts before the
         // wipeSubtree calls — the former string-set order exactly.
-        ColdHashSet<PodKeyStore<int16_t>>& pendingWipeScopes =
+        ColdHashSet<PodKeyStore<NameId>>& pendingWipeScopes =
             lbMemory.pendingWipeScopes;
         // Mail-eligibility memo sets as NameMap ids (the
         // pendingWipeScopes id-set pattern). `allowedForMail` is the only
@@ -15398,9 +15649,9 @@ namespace gl {
         // (single-threaded sites only — I-83); probes are non-minting
         // lookups. The dump sections derive their byte-identical output
         // by decode + lex-sort.
-        ColdHashSet<PodKeyStore<int16_t>>& canBeSentIds =
+        ColdHashSet<PodKeyStore<NameId>>& canBeSentIds =
             lbMemory.canBeSentIds;
-        ColdHashSet<PodKeyStore<int16_t>>& canBeSentMarkerIds =
+        ColdHashSet<PodKeyStore<NameId>>& canBeSentMarkerIds =
             lbMemory.canBeSentMarkerIds;
         // The weak-variable record (D-134). Key =
         // packStatementKey(variableId, validityId). Written at
@@ -15408,7 +15659,7 @@ namespace gl {
         // low-16-bits validity predicate; swapped at the destroyGrid
         // capacity release. Probed by reduceEqClassIds. The dump section
         // derives its byte-identical output by decode + lex-sort.
-        ColdHashSet<PodKeyStore<int32_t>>& intWeakVariables =
+        ColdHashSet<PodKeyStore<int64_t>>& intWeakVariables =
             lbMemory.intWeakVariables;
 
         // Dedicated id space for admission/rejected template strings
@@ -15467,29 +15718,36 @@ namespace gl {
         // contradiction, as a NameMap id; 0 when unset (a defined state —
         // the discharge publishes nothing then). Decoded at the publish
         // site; content lives on the cold name table.
-        int16_t contradictionTheoremId = 0;
+        NameId contradictionTheoremId = 0;
+        // A NORMAL (non-primed, non-CE, non-recursion) LB reached a full
+        // contradiction at its exact `main` — its premise set is
+        // inconsistent, so every theorem provable at or below this LB is
+        // vacuous. Set by dischargeContradiction's normal-LB branch; read
+        // by the post-join emission gates through the self-or-ancestor
+        // walk (never-deloaded LB-slab state like isActive; not dumped).
+        bool mainContradiction = false;
 
         // --- OR bookkeeping: convergence tracking ---
         // (The legacy orAdmissionSet gate container was dropped with
         // D-135 — it had no insert site (D-31), so
         // the always-empty set made its gate constant-false.)
-        // Key: packLbStateKey(exprId, sigId) in lbStateInterner space —
-        // (derived_expression, or_signature) → a set of branch-disjunct ids
-        // kept in DECODED-LEX order. Statified onto the cold-map set form
-        // (Batch 2) — a reference alias into lbMemory; build the run with
-        // insertSorted + a per-call DecodedIdLess (comparator state is the
-        // lbStateInterner), and read it IN RUN ORDER (valueAt), NEVER via
-        // coldIntSetAt (which would re-sort by raw int). The disjunct order
-        // feeds ordisMerge's origin construction and its per-branch cleanup
-        // loop — decoded order, never id order (I-84).
+        // Key: packLbStateKey(exprId, cohortId) in lbStateInterner space;
+        // cohortId is the interned packed pair (parentValidityId, sigId).
+        // Thus (derived_expression, parent_scope, or_signature) maps to a set
+        // of branch-disjunct ids kept in DECODED-LEX order. Statified onto the
+        // cold-map set form (Batch 2) — a reference alias into lbMemory; build
+        // the run with insertSorted + a per-call DecodedIdLess (comparator state
+        // is the lbStateInterner), and read it IN RUN ORDER (valueAt), NEVER via
+        // coldIntSetAt (which would re-sort by raw int). The disjunct order feeds
+        // ordisMerge's origin construction and its per-branch cleanup loop —
+        // decoded order, never id order (I-84).
         TypedColdSetMap<LbStatePairKey, int32_t>& orBookkeeping =
             lbMemory.orBookkeeping;
-        // Number of disjuncts per OR signature (lbStateInterner id) for
-        // the convergence check.
+        // Number of disjuncts per parent-scoped cohort id for convergence.
         ColdHashMap<PodKeyStore<int32_t>, int>& orDisjunctCount =
             lbMemory.orDisjunctCount;
 
-        // --- Static hot path: int16_t-based hash memory ---
+        // --- Static hot path: NameId-based hash memory ---
         NameMap nameMap;
 
         // --- Statification: the static per-LB aggregate (tier 1) ---
@@ -15644,7 +15902,7 @@ namespace gl {
         // intKnownStatements registered bit, which keeps
         // canonicalization-erased rows and would answer as a superset
         // (D-157).
-        std::unordered_set<int32_t> dischargedRegistryKeys;
+        std::unordered_set<int64_t> dischargedRegistryKeys;
 
         /// @brief The discharge protocol's memory step: capture the
         ///        exact registry record, empty every dischargeable
@@ -15920,7 +16178,7 @@ namespace gl {
         // checkLocalEncodedMemoryStatic and the applyEquivalenceClass
         // absorption tests; string-keyed probes go through the non-minting
         // isLocalEncodedStatement.
-        ColdHashSet<PodKeyStore<int32_t>>& intLocalEncodedStatementsSet =
+        ColdHashSet<PodKeyStore<int64_t>>& intLocalEncodedStatementsSet =
             lbMemory.intLocalEncodedStatementsSet;
 
         // Packed-key per-statement LB-level index:
@@ -15950,11 +16208,56 @@ namespace gl {
         TypedColdSetMap<StatementKey, int> intToBeProved{
             &persistentArena, &persistentDirty };
 
+        // Disproved-goal inbox: contradiction seeds (the `__contradiction__`
+        // exprKey suffix, verbatim) deposited by the post-join theorem drain
+        // when a primed contradiction child of THIS LB emits its theorem
+        // (whose head is negate(seed), I-165). The end-of-burst
+        // `drainDisprovedGoals` probes each seed against this LB's MAIN goals:
+        // a hit means the goal is disproved and its integration machinery is
+        // wiped; a miss is the complement-twin / already-closed case — a
+        // defined no-op, not a failure. Rides the PERSISTENT arena like
+        // `intToBeProved` (never deloaded, so the single-threaded seam writes
+        // it while the LB is cold without a claim); in NO deload stream; the
+        // byte-key set dedups repeat deposits; reclaimed with the persistent
+        // arena at discharge.
+        ColdHashSet<BytesKeyStore> pendingDisprovedGoals{
+            &persistentArena, &persistentDirty };
+
+        // Dead OR-branch inbox: NameMap vids of `_ordis_` branch scopes whose
+        // asserted disjunct is refuted — the refutation (`negate(disjunct)`)
+        // is `known` at the branch scope or one of its ancestors, so every
+        // fact the branch derives is ex falso. Staged by `ordisMerge`'s
+        // dead-branch probe on each branch-scope deposit; the end-of-burst
+        // `drainDeadOrBranches` retires each staged branch: queues its
+        // subtree wipe, blocks future inserts, shrinks the cohort's
+        // `orBookkeeping` runs and `orDisjunctCount`, and re-checks
+        // convergence at the reduced count. Rides the PERSISTENT arena like
+        // `pendingDisprovedGoals` (never deloaded, in NO deload stream); the
+        // pod-key set dedups repeat detections; reclaimed at discharge.
+        ColdHashSet<PodKeyStore<NameId>> pendingDeadOrBranches{
+            &persistentArena, &persistentDirty };
+
+        // Retired-disjunct record per `_ordis_` cohort: cohortId (the
+        // lbStateInterner-packed (parent, orSignature) id) -> sorted run of
+        // packed (disjunctId, refutationScopeVid) pairs — the branches
+        // `drainDeadOrBranches` retired, each with the shallowest scope where
+        // its asserted disjunct's negation is `known`. Read by `ordisMerge`'s
+        // convergence history: a reduced-cohort `or convergence` row cites,
+        // per retired branch, the reductio ingredient (the disjunct's
+        // negation at that scope), so the exported row still accounts for
+        // every flattened disjunct and `check_or_convergence` can validate
+        // it. The pair packs an lbStateInterner id (high) with a NameMap vid
+        // (low) — a mixed-space composite, decoded only by these two sites.
+        // Rides the PERSISTENT arena (never deloaded, in NO deload stream);
+        // reclaimed at discharge.
+        TypedColdSetMap<int32_t, int64_t> orRetiredDisjuncts{
+            &persistentArena, &persistentDirty };
+
         // Int mirrors for static addExprToMemoryBlock early checks. Statified
         // onto the cold-map family (Batch 1); reference aliases into lbMemory.
-        ColdHashSet<PodKeyStore<int16_t>>& intValidityNamesToFilter =
+        ColdHashSet<PodKeyStore<NameId>>& intValidityNamesToFilter =
             lbMemory.intValidityNamesToFilter;
-        ColdHashSet<PodKeyStore<int16_t>>& intAxedVariables =
+        ColdHashSet<PodKeyStore<NameId>>& intAxedVariables =
             lbMemory.intAxedVariables;
 
         /// @brief Insert an outgoing statement from owned expression strings.
@@ -16145,10 +16448,9 @@ namespace gl {
         /// - `exprOriginMap` (per Rule 16 / I-44 — chapter export reads it).
         /// - `nameMap`'s `stackOfValidity` / `ancestorsOf` (validity
         ///   registries grow monotonically; never pruned).
-        /// - `orDisjunctCount` (keyed by OR signature, no scope dimension).
+        /// - `orDisjunctCount` (keyed by the parent-scoped OR cohort).
         /// - `orBookkeeping` (the value-set holds branch-disjunct payload
-        ///   strings; the key has no parent scope per the known cross-stack
-        ///   same-orSignature gotcha — partial filtering deferred).
+        ///   strings; the key includes the same parent-scoped cohort).
         /// - `originals` in HashMemory (no scope tag).
         /// - `integrationStartIntMap` (counter snapshots, no scope tag).
         ///
@@ -16178,7 +16480,7 @@ namespace gl {
         ///       int ids.
         /// @invariant [I-44](../../docs/agentic_swdd/30_invariants.md#i-44) — `exprOriginMap`
         ///            is not touched.
-        void wipeSubtree(int16_t closedVid);
+        void wipeSubtree(NameId closedVid);
 
         /// @brief Build a fresh, single-use CE logic block from a facts-only
         ///        template LB.
@@ -16194,7 +16496,7 @@ namespace gl {
         ///
         /// Because the template carries no hash rules, the clone is a plain deep
         /// value-copy of the fact containers and the `nameMap` — all pure value
-        /// types (`EncodedExpression`, the all-`int16_t` `IntEncodedExpr`, the
+        /// types (`EncodedExpression`, the all-`NameId` `IntEncodedExpr`, the
         /// packed-`int32_t` statement keys, and the pointer-free `NameMap`) — with
         /// every hash / mail / equivalence / origin / derived container left at its
         /// `Memory()` default. The owner-set maps and the `remainingArgs` index now
@@ -16283,14 +16585,14 @@ namespace gl {
     ///            copies at staging). See `I-141`.
     /// @see EquivalenceClassView, classHasMember, EqClassNameCaches::kindOf,
     ///      sanitizeToBeProved, sanitizeHashMemory.
-    inline void bestSanitizePeer(Memory& mb, int16_t argId,
+    inline void bestSanitizePeer(Memory& mb, NameId argId,
                                  const StrSpan* scopes, int32_t scopeCount,
                                  ScratchArena& peekArena,
                                  StrSpan& bestPeerOut, bool& bestPeerIsIntOut) {
         bestPeerOut = StrSpan();          // len 0 == the bestPeer.empty() sentinel
         bestPeerIsIntOut = false;
         for (int32_t s = 0; s < scopeCount; ++s) {
-            const int16_t vId = mb.nameMap.lookup(scopes[s]);
+            const NameId vId = mb.nameMap.lookup(scopes[s]);
             if (vId == 0) continue;                       // decodeClassesAt's lookup-miss -> {}
             const int32_t bucketId = mb.equivalenceClassesMap.lookup(vId);
             if (bucketId == 0) continue;                  // absent bucket -> {}
@@ -16302,7 +16604,7 @@ namespace gl {
                 const EquivalenceClassView cls{ bp, blen };
                 if (argId == 0 || !classHasMember(cls, argId)) continue;
                 for (int32_t k = 0; k < cls.memberCount(); ++k) {
-                    const int16_t peerId = cls.memberId(k);
+                    const NameId peerId = cls.memberId(k);
                     if (peerId == argId) continue;
                     const NameKind peerKind =
                         mb.eqClassNameCaches.kindOf(peerId, mb.nameMap);
@@ -16555,7 +16857,7 @@ namespace gl {
     /// re-encoded its payload at every seam
     /// ([I-91](../../docs/agentic_swdd/30_invariants.md#i-91)). The 4-byte width is
     /// deliberate: one table spanning every LB far exceeds the per-LB `NameMap`'s
-    /// `int16_t` ceiling (`MAX_NAME_IDS` = 32000).
+    /// `NameId` ceiling (`MAX_NAME_IDS` = 32000).
     ///
     /// Concurrency: minting is SINGLE-THREADED and confined to the cycle-end commit
     /// barrier (plus the load-time broadcast and the post-`pool.join()`

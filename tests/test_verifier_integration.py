@@ -37,7 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests.test_harness import (  # noqa: E402
     register, make_state_with_binaries, make_proof_line,
-    assert_failure, run_all_tests, set_chapter_context,
+    assert_failure, assert_pass, run_all_tests, set_chapter_context,
 )
 from verifier import (  # noqa: E402
     check_expansion_for_integration, check_premise_element,
@@ -51,6 +51,49 @@ from verifier import (  # noqa: E402
 # ===========================================================================
 #  tag: expansion for integration
 # ===========================================================================
+
+def _state_with_nested_or() -> object:
+    """Install an outer compiled OR whose first child is another OR."""
+    state = make_state_with_binaries(("Peano",))
+    state.gl_binaries = dict(state.gl_binaries)
+    state.gl_binaries["Peano"] = dict(state.gl_binaries["Peano"])
+    state.gl_binaries["Peano"]["or90"] = {
+        "category": "or",
+        "signature": "(or90[u_1,u_2])",
+        "arity": 2,
+        "elements": ["(=[u_1,X])", "(=[u_2,X])"],
+    }
+    state.gl_binaries["Peano"]["or91"] = {
+        "category": "or",
+        "signature": "(or91[u_1,u_2,u_3])",
+        "arity": 3,
+        "elements": ["(or90[u_1,u_2])", "(=[u_3,X])"],
+    }
+    state.current_gl_binary = state.gl_binaries["Peano"]
+    return state
+
+
+@register
+def test_nested_or_expansion_for_integration_accepts_atomic_branch():
+    state = _state_with_nested_or()
+    line = make_proof_line(
+        "(>[](&!(=[b,X])!(=[c,X]))(=[a,X]))",
+        "main", "expansion for integration",
+        "(or91[a,b,c])_integration_goal", "main",
+    )
+    assert_pass(check_expansion_for_integration, line, [line], state)
+
+
+@register
+def test_nested_or_expansion_for_integration_rejects_opaque_inner_branch():
+    state = _state_with_nested_or()
+    line = make_proof_line(
+        "(>[]!(=[c,X])(or90[a,b]))",
+        "main", "expansion for integration",
+        "(or91[a,b,c])_integration_goal", "main",
+    )
+    assert_failure(check_expansion_for_integration, line, [line], state)
+
 
 @register
 def test_expansion_for_integration_rest_empty():

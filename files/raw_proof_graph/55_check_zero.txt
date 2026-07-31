@@ -22,11 +22,11 @@
 (>[1,2,3](in3[1,2,3,u_4])(in[2,u_1]))	main	expansion	(implication7[4,1])	main
 (implication7[4,1])	main	disintegration	(&(&(&(&(implication6[4,1])(implication7[4,1]))(implication8[4,1]))(implication9[1,1,1,4]))(implication10[1,1,4]))	main
 (=[it_0_lev_1_54,9])	main	equality2	(=[it_0_lev_1_54,7])	main	(=[7,9])	main
-(=[it_0_lev_1_54,7])	main	symmetry of equality	(=[7,it_0_lev_1_54])	main
-(=[7,it_0_lev_1_54])	main	implication	(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7](in[7,1])(>[8](in3[2,7,8,4])(=[7,8]))))	main	(AnchorPeano[1,2,3,4,5,6])	main	(in3[2,7,it_0_lev_1_54,4])	main	(in[7,1])	main
-(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7](in[7,1])(>[8](in3[2,7,8,4])(=[7,8]))))	main	theorem
+(=[it_0_lev_1_54,7])	main	implication	(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7](in[7,1])(>[8](in3[2,8,7,4])(=[7,8]))))	main	(AnchorPeano[1,2,3,4,5,6])	main	(in3[2,7,it_0_lev_1_54,4])	main	(in[it_0_lev_1_54,1])	main
+(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7](in[7,1])(>[8](in3[2,8,7,4])(=[7,8]))))	main	theorem
 (in3[2,7,it_0_lev_1_54,4])	main	equality1	(in3[8,7,it_0_lev_1_54,4])	main	(=[8,2])	main
 (=[8,2])	main	recursion
+(in[it_0_lev_1_54,1])	main	disintegration	!(>[it_0_lev_1_54](in[it_0_lev_1_54,1])!(in3[8,7,it_0_lev_1_54,4]))	main
 (=[7,9])	main	implication	(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[7,2,8,4])(>[](in[7,1])(=[7,8]))))	main	(AnchorPeano[1,2,3,4,5,6])	main	(in3[7,2,9,4])	main	(in[7,1])	main
 (>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[7,2,8,4])(>[](in[7,1])(=[7,8]))))	main	theorem
 (in3[7,2,9,4])	main	equality1	(in3[7,8,9,4])	main	(=[8,2])	main

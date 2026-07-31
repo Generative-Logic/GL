@@ -27,6 +27,102 @@ When you (future agent) add an invariant, append a new `## I-N` section, update 
 
 ---
 
+<a id="i-164"></a>
+## I-164 A non-main goal closes from the shallowest known fact on its exact ancestor chain
+
+
+**Scope.** Scoped goal closure in [`prover.hpp`](../../GL_Quick_VS/GL_Quick/src/prover.hpp) `ExpressionAnalyzer::dischargeToBeProved`, including `_orint_` and ordinary implication scopes.
+
+**Rule.** After exact delta reactions, snapshot unresolved goals in decoded `(expression, validity)` lexical order. Ignore main goals and goals below a validity already queued in `intValidityNamesToFilter`. For every remaining goal, scan its `NameMap` ancestor ids root-to-self; the first known matching statement is the proof source. Require that source's statement-level row, use its levels and exact validity in provenance, but classify, emit, and clean up from the exact goal validity. Never insert the source statement at the goal validity.
+
+**Why.** Ancestor facts are already semantically visible inside descendant scopes. Requiring exact scope equality for goal closure made `toBeProved` weaker than premise matching and stranded reverse OR-integration goals below facts that already proved them.
+
+**Spot.** A descendant goal remains open while the same expression is known at `main` or another strict ancestor; provenance names the goal scope instead of the ancestor source; cleanup selects siblings of the source rather than the goal; a closure adds the ancestor expression to `intKnownStatements` at the child; or a sibling-scope fact closes the goal.
+
+**Fix.** Keep one closure body with separate source-validity and goal-validity inputs. Run it from both the exact delta path and the ordered inherited scan. Copy decoded expression/source/goal names onto the string scratch tier before any `NameMap` mint, and assert the selected source-level row.
+
+**Code.** [`prover.hpp`](../../GL_Quick_VS/GL_Quick/src/prover.hpp) `ExpressionAnalyzer::dischargeToBeProved`; [`memory.hpp`](../../GL_Quick_VS/GL_Quick/src/memory.hpp) `NameMap::ancLen` / `NameMap::ancAt` / `sortToBeProvedKeys`. See [D-221](40_decisions.md#d-221), [I-27](#i-27).
+
+<a id="i-166"></a>
+## I-166 A contiguous nested OR is disintegrated once as one outer-signature cohort of ordered non-OR leaves
+
+
+**Scope.** OR expansion and case-split production in [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp) `ExpressionAnalyzer::flattenOrLeaves` / `ExpressionAnalyzer::disintegrateExprCore2`; count and convergence registration; and the matching `expansion`, OR `disintegration`, `or disintegration`, and `or convergence` checkers in [`verifier.py`](../../verifier.py).
+
+**Rule.** In one call, recursively replace every child whose exact prepared entity category is `or` by its elements, preserving left-to-right order, until every returned item is non-OR. Stop at every non-OR category. Use that single ordered leaf list for the De Morgan expansion, K mutual-exclusion implications, branch seeds, and disjunct count. Keep the original outer compiled OR signature as the branch-namespace, provenance, and parent-scoped cohort identity; never mint an intermediate nested-OR branch. The verifier must reconstruct the same leaf list for every `_ordis_`-side checker. The matching `_orint_` contract is [I-168](#i-168).
+
+**Why.** A nested binary encoding is syntax for one logical disjunction, not permission to delay some peer alternatives until a later hashburst. Treating an OR-valued seed as opaque made FTA rung 2 stall despite every mathematical dependency being present.
+
+**Spot.** An `_ordis_` branch whose asserted seed is itself a known compiled OR; a nested OR consuming another `max_or_depth` level; a count based on the outer entity's immediate element count; an expansion or verifier checker that sees only immediate children; or a branch namespace using the inner OR signature.
+
+**Fix.** Flatten through `flattenOrLeaves` before any OR-side production and use the returned leaves consistently. Mirror that recursion through `_or_disjuncts_from_compiled(..., flatten_nested=True)` in the `_ordis_` checker family. Assert malformed graphs and capacity excess; do not fall back to partial flattening.
+
+**Code.** [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp) `ExpressionAnalyzer::flattenOrLeaves` / `ExpressionAnalyzer::disintegrateExprCore2`; [`prover.hpp`](../../GL_Quick_VS/GL_Quick/src/prover.hpp) `ExpressionAnalyzer::ordisMerge`; [`verifier.py`](../../verifier.py) `_or_disjuncts_from_compiled` / `_try_expand` / `_check_or_disintegration_implication` / `check_or_disintegration` / `check_or_convergence`. See [D-218](40_decisions.md#d-218), [I-167](#i-167).
+
+<a id="i-168"></a>
+## I-168 A contiguous nested OR integration goal is prepared once as ordered atomic leaves
+
+
+**Scope.** Reverse OR preparation in [`prover.hpp`](../../GL_Quick_VS/GL_Quick/src/prover.hpp) `ExpressionAnalyzer::prepareIntegrationCore2`, the shared [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp) `ExpressionAnalyzer::flattenOrLeaves`, and the integration expansion / branch-proven / branch-assumption checkers in [`verifier.py`](../../verifier.py).
+
+**Rule.** Prepare only maximal contiguous OR roots. Recursively flatten each root to its ordered non-OR leaves before renaming; then create exactly K `_orint_` branches, one leaf goal per branch, with every other leaf negated in that branch. The original outer OR signature remains the namespace and provenance identity. A nested OR entity consumed by such a root never prepares a second opaque cohort. The verifier reconstructs the same leaves for `expansion for integration`, `or branch proven`, and `or branch assumption`.
+
+**Why.** An outer reverse branch headed by an intermediate compiled OR hides the atomic alternatives that the proof needs. The FTA rung-2 `p=2` branch therefore carried only the negation of `p=0 ∨ p=1`, while the logically peer atomic exclusions never occupied the same cohort.
+
+**Spot.** An `_orint_` branch body that is itself a compiled OR; an assumption that negates an intermediate OR instead of an atomic leaf; or both an outer and its nested OR entity preparing independent branch families.
+
+**Fix.** Mark OR entities referenced by an integration-eligible OR, skip those nested entities in the main preparation loop, and feed `flattenOrLeaves` into one `renamingChain2Scratch` call at each maximal root. Assert cycles and fixed-capacity overflow; never fall back to immediate elements.
+
+**Code.** [`prover.hpp`](../../GL_Quick_VS/GL_Quick/src/prover.hpp) `ExpressionAnalyzer::prepareIntegrationCore2`; [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp) `ExpressionAnalyzer::flattenOrLeaves`; [`verifier.py`](../../verifier.py) `check_expansion_for_integration` / `check_or_branch_proven` / `check_or_branch_assumption`. See [D-220](40_decisions.md#d-220), [I-166](#i-166).
+
+<a id="i-167"></a>
+## I-167 Every OR cohort action is isolated by parent validity and original OR signature
+
+
+**Scope.** OR-disintegration cohort registration in [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp) `ExpressionAnalyzer::disintegrateExprCore2`, branch-deposit convergence in [`prover.hpp`](../../GL_Quick_VS/GL_Quick/src/prover.hpp) `ExpressionAnalyzer::ordisMerge`, reverse-branch sibling cleanup in [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp) `ExpressionAnalyzer::cleanUpOrIntegrationBranches`, the persistent `Memory::orBookkeeping` / `Memory::orDisjunctCount` state, and the OR-state hashburst rows.
+
+**Rule.** A cohort is the exact pair `(parentValidity, originalOrSignature)`. `mintOrCohortId` interns the canonical packed `(parentValidityId, orSignatureId)` pair in the LB's append-only `lbStateInterner`; `orDisjunctCount` is keyed by that cohort id, and `orBookkeeping` is keyed by `(conclusionId, cohortId)`. Two deposits may contribute to the same convergence only when conclusion, parent validity, and original OR signature all match. When one `_orint_` branch proves, sibling cleanup selects only integration scopes with that same outer signature whose direct `NameMap::parentOf` is the proving goal's exact parent. Branch payloads remain decoded-lex ordered inside the isolated convergence run. The hashburst dump must decode and print both `parent` and `orSig` for each disintegration cohort row.
+
+**Why.** The same compiled OR signature can occur at more than one validity-stack position. The former `(conclusion, orSignature)` convergence key merged branch payloads across those positions, while reverse cleanup scanned by bare signature and could schedule every matching `_orint_` family in the logic block. Ancestor-scope dedup hid the observed rung-1 convergence instance, but neither convergence nor cleanup may treat distinct parents as one proof cohort.
+
+**Spot.** An `orDisjunctCount` lookup by bare signature id; an `orBookkeeping` key whose second component is the bare signature id; an integration-cleanup scan that matches only the OR signature; a trace row without a parent field; or a test in which acting on one parent changes the other parent's cohort.
+
+**Fix.** Mint the parent-scoped cohort at registration and at `ordisMerge`, use that id in both containers, and keep the existing decoded-order branch run. Pass the exact goal parent id into `cleanUpOrIntegrationBranches` and require it as well as the signature. Do not filter mixed state after selection: the parent belongs in identity.
+
+**Code.** [`memory.hpp`](../../GL_Quick_VS/GL_Quick/src/memory.hpp) `mintOrCohortId` / `decodeOrCohortIds` / `Memory::orBookkeeping`; [`prover.cpp`](../../GL_Quick_VS/GL_Quick/src/prover.cpp) `ExpressionAnalyzer::disintegrateExprCore2` / `ExpressionAnalyzer::cleanUpOrIntegrationBranches`; [`prover.hpp`](../../GL_Quick_VS/GL_Quick/src/prover.hpp) `ExpressionAnalyzer::ordisMerge`; [`infra/hashburst_dump.cpp`](../../GL_Quick_VS/GL_Quick/src/infra/hashburst_dump.cpp) `writeOrState`. See [D-219](40_decisions.md#d-219), [I-93](#i-93).
+
+<a id="i-169"></a>
+## I-169 NameMap ids are 32-bit (`NameId`); the single alias lives in `parameters.hpp`, `MAX_NAME_IDS` is the mint-time tripwire, and two-id composites pack via `packInt32Pair` into int64
+
+
+**Scope.** The NameMap id width and everything that stores, packs, or bounds a name id: `using NameId = std::int32_t` and `ExecutionParameters::MAX_NAME_IDS` in [`parameters.hpp`](../GL_Quick_VS/GL_Quick/src/parameters.hpp); `NameMap::encode` / `mintName` / `encodePush`; `IntEncodedExpr` id fields; `ValidityNode`; the packed statement / partition / normalized-hash / equivalence-class keys; and every stack scratch buffer sized in id slots.
+
+**Rule.** There is exactly ONE id-type alias, `NameId = std::int32_t`, declared in `parameters.hpp`; no other file re-defines or narrows the id width. Every mint site asserts `id < MAX_NAME_IDS` — the single mint-time ceiling tripwire (`MAX_NAME_IDS` is itself a `NameId`, currently 1,000,000). No id path may re-narrow to `int16_t` (`NameMap::encode` no longer `static_cast<int16_t>`s the cold-table id; `mailIdView`'s narrow is deleted). A two-id composite (statement `(orig, validity)`, partition `(origId, scopeVid)`, …) is packed into an `int64_t` via the existing UB-safe masked `packInt32Pair` and unpacked by the shared codec (`>>32` / `&0xFFFFFFFF`), never a hand-rolled `<<32` or `>>16 & 0xFFFF`. Flag / sentinel fields (`maxIteration`, `argIteration`, arity, negation…) stay a plain `int32_t`, NEVER a `NameId` — they carry `-1` sentinels.
+
+**Why.** FTA rung-2 (`IncubatorGauss3`) mints more than 32679 name ids and crashed on the `MAX_NAME_IDS` assert under the former `int16_t` width. `NameMap::encode` was the only narrowing interner. A single alias plus a single ceiling constant keeps the widen honest: raising the ceiling is one edit, and a stray `int16_t` cast on any id path silently aliases ids ≥ 32768, producing wrong statement identity with no assert (see [D-212](40_decisions.md#d-212)).
+
+**Spot.** A `static_cast<int16_t>` or `sizeof(int16_t)` / `int16_t*` on an id or key path; a hand-rolled `>>16 & 0xFFFF` unpack; a `MAX_NAME_IDS` literal duplicated outside `parameters.hpp`; the mint assert firing on the rung-2 batch (ceiling set too low).
+
+**Fix.** Route the id through `NameId`; pack composites with `packInt32Pair` and unpack via the shared `Codec`; keep the ceiling in `parameters.hpp` only; raise `MAX_NAME_IDS` (not the type) if a larger batch outgrows it.
+
+**Code.** [`parameters.hpp`](../GL_Quick_VS/GL_Quick/src/parameters.hpp) `NameId` / `MAX_NAME_IDS`; [`memory.hpp`](../GL_Quick_VS/GL_Quick/src/memory.hpp) `NameMap::encode` / `collectClosedSubtreeIds`; [`typed_cold_map.hpp`](../GL_Quick_VS/GL_Quick/src/typed_cold_map.hpp) `packInt32Pair` / `Codec<StatementKey>`. See [I-84](#i-84), [I-105](#i-105), [D-212](40_decisions.md#d-212).
+
+<a id="i-165"></a>
+## I-165 Every primed `__contradiction__` LB satisfies exprKey suffix == seed and theorem head == negate(seed)
+
+
+**Scope.** The three contradiction-LB creation branches in [`prover.cpp`](../GL_Quick_VS/GL_Quick/src/prover.cpp) `ExpressionAnalyzer::addTheoremToMemory` (reformulated-operator, verbatim `try_contradiction`, complement `try_contradiction_negated_head`); the discharge record in [`prover.hpp`](../GL_Quick_VS/GL_Quick/src/prover.hpp) `ExpressionAnalyzer::dischargeContradiction`; the chapter walker's contradiction fallback in [`visualizer.cpp`](../GL_Quick_VS/GL_Quick/src/visualizer.cpp) `buildStack`; the `contradiction` / `task formulation` checkers in [`verifier.py`](../verifier.py).
+
+**Rule.** For every LB with `primedForContradiction`: the exprKey is `__contradiction__` + S where S is exactly the seed deposited at creation (status-0 main-scope task formulation), and the decoded `contradictionTheoremId`'s head is exactly `negate(S)`. All three creation branches maintain the triple; every downstream consumer may rely on it: the discharge record cites the seed via the exprKey suffix, the walker recovers the LB from the proved head via `__contradiction__` + `negate(head)`, and the verifier checks the seed/record negation pair.
+
+**Why.** The relation is what makes the discharge record, the chapter bridge, and the verifier checks polarity-agnostic. A creation branch that breaks it (key ≠ seed, or theorem head ≠ negate(seed)) silently produces chapters whose contradiction rows cite a statement the LB never assumed.
+
+**Spot.** A creation site seeding one string but keying another; a `contradictionTheoremId` whose head equals the seed instead of its negation; a walker probe or discharge record built by bare `'!'` prefixing instead of proper negation.
+
+**Fix.** Restore the triple at the creation site; never compensate downstream.
+
+**Code.** [`prover.cpp`](../GL_Quick_VS/GL_Quick/src/prover.cpp) `ExpressionAnalyzer::addTheoremToMemory`; [`prover.hpp`](../GL_Quick_VS/GL_Quick/src/prover.hpp) `ExpressionAnalyzer::dischargeContradiction`; [`visualizer.cpp`](../GL_Quick_VS/GL_Quick/src/visualizer.cpp) `buildStack`. See [D-214](40_decisions.md#d-214), [I-78](#i-78).
+
 <a id="i-153"></a>
 ## I-153 Every cross-LB deposit into an LB sets the recipient's `hasWork` (or is reachable by `mailPeek`); the quiescent-skip predicate reads only never-deloaded logical state
 
@@ -75,17 +171,17 @@ When you (future agent) add an invariant, append a new `## I-N` section, update 
 
 **Rule.** No code path on the per-step / per-burst pipeline erases rows from `intKnownStatements`. Once a write site upserts a packed `(originalId, validityId)` key, that row stays for the LB's lifetime. Legitimate row-erase sites are exactly the wholesale teardowns: `Memory::wipeSubtree` (closed-scope teardown — removes rows whose `validityId` falls inside the closed subtree), `prover.hpp::eradicateImplicationFromLB` (specific-implication teardown), and `prover.hpp::resetResentExpressionRegistries` (single resent-compound teardown, [D-106](40_decisions.md#d-106) delete → send → reabsorb) — each retires a whole item and removes every membership at once. The CE teardown `filter.cpp::releaseCEBatchMemory` additionally clears the `registered` membership (erasing registered-only rows, keeping `known` rows) — a membership reset, not a per-class drop. Per-class cleanup is *not* legitimate: `cleanUpExpressions` once erased rows during class canonicalization and desynced the Site F gate from the registration gates.
 
-**Concretely banned erase sites:** `cleanUpExpressions` (local-encoded sweep + encoded sweep — both used to erase the packed key paired with the `intStatementLevelsMap.erase(pk)` index erase; that registry erase is removed).
+**Concretely banned erase sites:** `cleanUpExpressions` (local-encoded sweep + encoded sweep) — for BOTH records: neither the `intKnownStatements` row nor the statement's `intStatementLevelsMap` row may be erased by the per-class cleanup ([D-247](40_decisions.md#d-247)).
 
 **Why.** The `known` bits are the ground truth for `addExprToMemoryBlock`'s **Site F** ancestor-scan duplicate-suppression gate (`for (anc: ancestorsOf[valId])`, `known`-bit test per packed key). When mail re-delivers a statement that the LB has already processed, Site F must fire and short-circuit the entire addExpr pipeline — otherwise `addEquality` runs, hits its own `registered`-bit skip, falls through to `addStatement`, which then pushes the equality onto `newStatements`, which trips the post-loop `intStatementLevelsMap` assert at `prover.cpp::addExprToMemoryBlock` in the `for (ev: stmts) { sortedNew = added;... }` block.
 
-The pre-fix `cleanUpExpressions` erased non-canonical class members from BOTH `intStatementLevelsMap` (correct — those entries no longer represent a live statement at this validity) AND the packed registry (wrong — that desynced the Site F gate from the registration gates, opening the re-arrival window described above). The fix: erase only from `intStatementLevelsMap`. The registry rows record "we've already added this statement, do not re-enter the kernel for it"; the runtime containers (`intEncodedStatements`, `intLocalEncoded*`, `intStatementLevelsMap`) carry the canonical-only live state.
+The `intStatementLevelsMap` row is immortal against per-class cleanup for the same reason the registration is ([D-247](40_decisions.md#d-247)): every registration path (`addEquality` / `addNegatedEquality`) skips row re-creation while the `registered` bit is set, and the negated-equality expansion's emit gate (`emitNew`'s `lookupStatementLevels` probe) reads the row as its permanent already-emitted memory. Erasing a row while the bit survives leaves a statement that is re-emittable but never re-registrable — the class expansion then regenerates dropped sibling variants without bound (`addStatement` ⇄ `applyEquivalenceClassToNegatedEquality` until stack overflow), and a dropped equality's re-arrival trips the post-loop assert described above. The registry rows record "we've already added this statement, do not re-enter the kernel for it"; the runtime registries (`intEncodedStatements`, `intLocalEncoded*`) alone carry the canonical-only live state.
 
 **How to spot.** Search `grep -nE 'intKnownStatements\.erase' GL_Quick_VS/GL_Quick/src/`. Expected hits: `prover.hpp::eradicateImplicationFromLB`, `prover.hpp::resetResentExpressionRegistries`, `memory.cpp::Memory::wipeSubtree`, and the membership reset in `filter.cpp::releaseCEBatchMemory`. Any hit inside `cleanUpExpressions` (or any other per-step / per-class pass) is a violation. Symptom of violation: `addStatement post-loop intStatementLevelsMap invariant violated` assert in `addExprToMemoryBlock` during a Peano main / IncubatorPeano run with non-trivial equivalence-class formation.
 
-**How to fix on violation.** Delete the offending erase. If the surrounding code also erases from `intStatementLevelsMap`, that erase stays — only the registry erase is the bug. Verify with the SwDD invariant's reproduction recipe (Peano main, an equality whose args belong to a class containing other non-canonical members; the assert fires within 3–5 hash bursts).
+**How to fix on violation.** Delete the offending erase — an `intKnownStatements` erase AND an `intStatementLevelsMap` erase are both the bug on any per-step / per-class path. Verify with the SwDD invariant's reproduction recipe (Peano main, an equality whose args belong to a class containing other non-canonical members; the assert fires within 3–5 hash bursts) and the levels-retention unit test.
 
-**Code.** `prover.hpp::cleanUpExpressions` (local-encoded sweep + encoded sweep, both sites preserve the `intStatementLevelsMap.erase(pk)` index erase with no registry erase). `prover.cpp::addExprToMemoryBlock` Site F (the `known`-bit reader). `prover.cpp::addEquality` (the `registered`-bit short-circuit). The four legitimate erasers above.
+**Code.** `prover.hpp::cleanUpExpressions` (local-encoded sweep + encoded sweep — registry filtering only, no `intKnownStatements` and no `intStatementLevelsMap` erase). `prover.cpp::addExprToMemoryBlock` Site F (the `known`-bit reader). `prover.cpp::addEquality` (the `registered`-bit short-circuit). `prover.hpp::applyEquivalenceClassToNegatedEquality` (`emitNew`'s levels-row emit gate). The four legitimate erasers above. Regression: `test_cleanup_levels_retention.cpp`.
 
 **See also.** [I-85](#i-85), [D-93](40_decisions.md#d-93), [I-60](#i-60), [I-27](#i-27) (Site F / Site H ancestor-scan dedupe at `addExprToMemoryBlock` entry).
 
@@ -209,7 +305,7 @@ No other site in the prover drains mail, runs `applyEquiClasses`, calls `dischar
 
 - **Two** inside `fillMailOut` — one for `mailOut.statements.insert`, one for the `addOrigin(mailOut.exprOriginMap,...)` history copy. The canonical sole-writer.
 - **One** inside `memory.cpp::addToHashMemory`'s multiplied-implication `for (std::size_t c = 0; c < copies.size; ++c)` loop (Documented exception 1).
-- **Six** inside `prover.cpp::addTheoremToMemory`'s three LB-creation sites (chain-walk, reformulated-contradiction, standard-contradiction — each contributes one `mailOut.statements.insert` + one `addOrigin(mailOut.exprOriginMap,...)`; Documented exception 2).
+- **Eight** inside `prover.cpp::addTheoremToMemory`'s four LB-creation sites (chain-walk, reformulated-contradiction, standard-contradiction, complement-contradiction — each contributes one `mailOut.statements.insert` + one `addOrigin(mailOut.exprOriginMap,...)`; Documented exception 2).
 - **Two** inside `prover.cpp::disintegrateExprCore2` — paired `addOrigin(memoryBlock.mailOut.exprOriginMap,...)` writes at the expansion-origin and disintegration-origin sites (Documented exception 3).
 - **Seven** inside `prover.hpp::prepareIntegrationCore2` — paired `addOrigin(mb.mailOut.exprOriginMap,...)` writes at all seven local `mb.exprOriginMap` write sites (Case A implication-expansion + premise-element; Case OR or-branch-goal + or-branch-assumption; Case B expansion-integration + iiv + iivHash). Documented exception 4 — restored 2026-05-25 to fix the `buildStack` crash on Peano main where the pi-bound integration-instruction (`(>[pi_lev_0_1](in[pi_lev_0_1,u_1])(>[](in2[pi_lev_0_1,u_6,u_3])(existence2[u_1,u_6,u_3])))`) was cited as an origin dep at a descendant LB but had no key entry in the descendant's `exprOriginMap`.
 
@@ -256,9 +352,9 @@ All other cross-iter rule deposits that need cross-LB history routing should als
 ```cpp
 bool alreadyKnown = false;
 if (!parameters.compressor_mode) {
-    const int16_t origId = memoryBlock.nameMap.encode(rplExpr2);
-    const int16_t valId  = memoryBlock.nameMap.encode(expressionListValidityName);
-    for (int16_t anc : memoryBlock.nameMap.ancestorsOf[valId]) {
+    const NameId origId = memoryBlock.nameMap.encode(rplExpr2);
+    const NameId valId  = memoryBlock.nameMap.encode(expressionListValidityName);
+    for (NameId anc : memoryBlock.nameMap.ancestorsOf[valId]) {
         if (memoryBlock.intKnownStatements.count(packStatementKey(origId, anc))) {
             alreadyKnown = true;
             break;
@@ -592,7 +688,9 @@ The symmetric cross-product (both args substituted simultaneously) is **delibera
 
 **Fix.** Before changing this, profile the alternatives. The two-sided form has never been implemented, and the one-sided form is the load-bearing simplification.
 
-**Code.** `applyEquivalenceClassToNegatedEquality` at [`prover.hpp`](../GL_Quick_VS/GL_Quick/src/prover.hpp). Caller: `addStatement` at [`prover.hpp`](../GL_Quick_VS/GL_Quick/src/prover.hpp).
+**Two expansion moments (D-226).** The one-sided expansion runs (a) inline from `addStatement` when the negation ARRIVES, against classes existing at that instant, and (b) from `applyEquiClasses` Pass 1 when a DELTA CLASS touching either arg forms or grows after the negation's arrival. Without (b), a negation inserted before its variable's class forms was never expanded — the general application pass filtered negated equalities entirely, and the rung-2 witness-binding equalities (element = interval witness) arrive after the `_orint_` peer negations. The one-sided rule itself is unchanged in both moments.
+
+**Code.** `applyEquivalenceClassToNegatedEquality` at [`prover.hpp`](../GL_Quick_VS/GL_Quick/src/prover.hpp). Callers: `addStatement` (arrival) and `applyEquiClasses` Pass 1 (class formation/growth), both at [`prover.hpp`](../GL_Quick_VS/GL_Quick/src/prover.hpp). Test: `test_equi_reshuffle.cpp` `apply_equi_classes_expands_preexisting_negated_equality`.
 
 ---
 
@@ -762,7 +860,7 @@ HTML or other non-source files do **not** require auto-commit.
 
 **Rule.** `Memory::sameIterationInternalMail` (integration-revival channel) is cleared **immediately after its absorb loop**, within the same block. Inserts during the hashburst body (from `applyEquivalenceClassToRejectedMapIntegration` and `revisitRejectedIntegration2`) must survive to the NEXT burst's absorb. The clear-right-after-absorb adjacency is the load-bearing part; the absolute position within the function is not (the invariant is position-agnostic).
 
-**Branch history.** On, the absorb (and its clear) was relocated post-fixpoint by commit (ASIC 0.1 reshuffle 3/8), and then reverted back to pre-fixpoint on 2026-05-20 ([D-79](40_decisions.md#d-79)) after the post-fixpoint placement was shown to push `__contradiction__(=[a,b])` LBs past `MAX_NAME_IDS` during the Peano-incube combinatorial substitution phase. Legacy `mailIn` is cleared in the *same* pre-fixpoint block (right after its `status=3` drain), so both inboxes are consumed-and-cleared in the same pre-fixpoint pass; the only distinction is absorb status (`sameIterationInternalMail` = `status=1`, full disintegration; `mailIn` = `status=3`, existence-banned).
+**Branch history.** On, the absorb (and its clear) was relocated post-fixpoint by commit (ASIC 0.1 reshuffle 3/8), and then reverted back to pre-fixpoint on 2026-05-20 ([D-79](40_decisions.md#d-79)) after the post-fixpoint placement was shown to push `__contradiction__(=[a,b])` LBs past `MAX_NAME_IDS` during the Peano-incube combinatorial substitution phase. Legacy `mailIn` is cleared in the *same* pre-fixpoint block (right after its `status=3` drain), so both inboxes are consumed-and-cleared in the same pre-fixpoint pass; the only distinction is absorb status (`sameIterationInternalMail` = `status=1`, full disintegration; `mailIn` = `status=3`, shape-gated to the two rule carriers — compact implications and negated compact existences, [D-225](40_decisions.md#d-225)).
 
 **Why.** The cleanup must be adjacent to the absorb because the *producer* runs during the burst body (eq-class rewrites and admission-key revisits inside `addStatement`). If `sameIterationInternalMail` were cleared at a later point a mid-burst producer could precede, entries produced mid-burst would be lost. Clearing immediately after the absorb loop guarantees every insert during a burst body lands intact in the next burst's inbox, regardless of where in the burst cycle the absorb sits.
 
@@ -1436,9 +1534,9 @@ Entries at deeper scopes (hypothetical, OR-branch, integration boundaries) do no
 
 **Spot.** A burst-time profile showing LBs with `!anyActiveChild` and only deeper-scope TBP entries staying active across many bursts. Or a rung-1-style runtime ballooning on a proof that completes correctly but takes far longer than expected — root cause often "deeper-scope residue keeping otherwise-finished LBs in the scheduler."
 
-**Fix.** The bubble-up block must check `(key & 0xFFFF) == NameMap::MAIN_ID` when surveying `block->intToBeProved` (the low 16 packed-key bits carry the validity id), not just `intToBeProved.size`. A single main-namescope hit is sufficient to keep the LB alive; deeper-scope hits alone are not.
+**Fix.** The bubble-up block must check `(key & 0xFFFFFFFF) == NameMap::MAIN_ID` when surveying `block->intToBeProved` (the low 32 packed-key bits carry the validity id), not just `intToBeProved.size`. A single main-namescope hit is sufficient to keep the LB alive; deeper-scope hits alone are not.
 
-**Interaction with the quiescent-burst skip ([D-194](40_decisions.md#d-194)).** The bubble-up survey (`deactivateRecursively`, invoked from `deactivateUnnecessary`) is a tree-wide POST-JOIN walk from the root, run whenever a theorem is proven. It surveys every ACTIVE node — including an LB that was SKIPPED (unswept) this iteration — reading only never-deloaded state (`intToBeProved` persistent I-108; child `isActive` + `simpleMap` edges on the never-deloaded LB slab, I-109 / I-110), so it forces no reload of a cold skipped LB. Skipping therefore preserves the exact I-48 deactivation schedule with no extra machinery: deactivation is driven by proofs (which skip cannot change), not by whether the parent was itself swept.
+**Interaction with the quiescent-burst skip ([D-194](40_decisions.md#d-194)).** The bubble-up survey (`deactivateRecursively`) is a tree-wide POST-JOIN walk from the root, run once per iteration from `prove`'s loop after the drains AND from `deactivateUnnecessary`'s tail whenever a theorem is proven ([D-230](40_decisions.md#d-230) — the former emission-only schedule left goal-free, child-free chain LBs active to batch end when their last goal closed after the batch's final emission). It surveys every ACTIVE node — including an LB that was SKIPPED (unswept) this iteration — reading only never-deloaded state (`intToBeProved` persistent I-108; child `isActive` + `simpleMap` edges on the never-deloaded LB slab, I-109 / I-110), so it forces no reload of a cold skipped LB. Skipping therefore preserves the exact I-48 deactivation schedule with no extra machinery: the survey runs on the main thread every iteration regardless of which LBs were swept.
 
 **Code.** [`prover.cpp::deactivateUnnecessary`](../GL_Quick_VS/GL_Quick/src/prover.cpp), bubble-up block. See also [D-70](40_decisions.md#d-70), [D-67](40_decisions.md#d-67), [I-45](#i-45).
 
@@ -1461,7 +1559,7 @@ The deferred drain pattern moves the wipe past the loop's exit, so every assert-
 
 **Drain block shape.** Snapshot the cold set's ids onto the per-slot gen-scratch byte-bump tier, reset the set (so `wipeSubtree`'s own inserts into other fields run against a fresh container), sort the ids by their decoded names (`compareSpans` byte-lex — the former string-set order, tie-free because vids are deduped and the interner injective), then wipe per vid:
 ```cpp
-int16_t* ids = /* gen-scratch byte-bump run of pendingWipeScopes.decode(1..n) */;
+NameId* ids = /* gen-scratch byte-bump run of pendingWipeScopes.decode(1..n) */;
 body.pendingWipeScopes.resetToFresh();
 std::sort(ids, ids + n, /* compareSpans over nameMap.decodeView */);
 for (int32_t k = 0; k < n; ++k) body.wipeSubtree(ids[k]);
@@ -1798,19 +1896,21 @@ See also [D-101](40_decisions.md#d-101), [D-51](40_decisions.md#d-51) (path-stac
 ---
 
 <a id="i-78"></a>
-## I-78 contradiction discharge fires at most once per LB per step, gated on `isActive`
+## I-78 contradiction discharge is main-scope-only and fires at most once per LB per step
 
-**Scope.** Prover. `ExpressionAnalyzer::dischargeContradiction` ([`prover.hpp`](../GL_Quick_VS/GL_Quick/src/prover.hpp)) and its single call site in `standardProcessing`.
+**Scope.** Prover. `ExpressionAnalyzer::dischargeContradiction` and its phase-2 early-exit mirror `burstDeactivates` ([`prover.hpp`](../GL_Quick_VS/GL_Quick/src/prover.hpp)); the authoritative discharge's single call site is in `standardProcessing`.
 
-**Rule.** `dischargeContradiction` returns immediately when `!memoryBlock.isActive`, and after firing any one of its three reactions (incubator / CE / vacuous) it sets `isActive = false` and returns — at most one reaction per call. `standardProcessing` runs in BOTH phase 1 (pre-burst) and phase 3 (post-burst), and `proveKernel` does not re-filter the phase-3 sweep by `isActive` (an LB closed in phase 1 is still swept in phase 3 over the same `active` set). The leading `!isActive` early return is what makes that second pass a no-op; without it the vacuous-truth branch would deposit the head twice and record a duplicate origin row, and the incubator branch would re-enter with a cleared `contradictionTheoremId`. The early return is contracted control flow (an inactive LB has no contradiction to discharge), NOT banned defensive programming ([I-19](#i-19)).
+**Rule.** A full LB contradiction exists only when one expression and its negation are both present at the LB's exact `main` scope. `dischargeContradiction` skips every non-main statement row and probes the opposite expression only at `NameMap::MAIN_ID`; it never searches ancestors from a deeper scope. A deeper duplicate does not block discharge when a separate main row exists — the sweep reaches that main row independently. `burstDeactivates` requires the fired head at `main` and the opposite already known at `main`, exactly mirroring the authoritative phase-3 condition.
 
-**Why.** The sweep replaced the per-insertion Site-G reactions; a whole-`intEncodedStatements` re-scan each step would otherwise re-detect the same contradiction every phase, and every later step the LB remained in the active set.
+`dischargeContradiction` returns immediately when `!memoryBlock.isActive`, and after firing any one of its three reactions (incubator / CE / vacuous) it sets `isActive = false` and returns — at most one reaction per call. `standardProcessing` runs in BOTH phase 1 (pre-burst) and phase 3 (post-burst), and `proveKernel` does not re-filter the phase-3 sweep by `isActive` (an LB closed in phase 1 is still swept in phase 3 over the same `active` set). The leading `!isActive` early return is what makes that second pass a no-op; without it the vacuous-truth branch would deposit the head twice and record a duplicate origin row, and the incubator branch would re-enter with a cleared `contradictionTheoremId`. The early return is contracted control flow (an inactive LB has no contradiction to discharge), NOT banned defensive programming ([I-19](#i-19)).
 
-**How to spot.** Duplicate `contradiction` / `vacuous truth` rows for one LB in the processed proof graph; a verifier failure on doubled vacuous-truth heads; or a theorem broadcast twice from one `__contradiction__` LB.
+**Why.** `main` is the shallowest validity scope in an LB and contains only conclusions valid without a branch-local assumption. Accepting a positive in `_ordis_` against a negation inherited from `main` incorrectly discharged the whole primed contradiction LB and emitted false IncubatorGauss3 `EnumerationSet2` / `EnumerationSet3` negated-interval theorems. The main/main rule preserves valid discharge even when either expression also has deeper copies. The sweep replaced the per-insertion Site-G reactions; a whole-`intEncodedStatements` re-scan each step would otherwise re-detect the same contradiction every phase, and every later step the LB remained in the active set.
 
-**How to fix on violation.** Restore the leading `if (!memoryBlock.isActive) return;` and the per-reaction `return`; never let the sweep continue after a reaction (the `return` also guards against iterating an `intEncodedStatements` vector the vacuous branch's `addStatement` may have reallocated).
+**How to spot.** A `contradiction` origin whose two expression dependencies are not both at `main`; `burstDeactivates` returning true for a non-main firing record; a false theorem emitted immediately after an `_ordis_` equality conflicts with a main inequality; duplicate `contradiction` / `vacuous truth` rows for one LB; or a theorem broadcast twice from one `__contradiction__` LB.
 
-**See also.** [D-122](40_decisions.md#d-122), [I-60](#i-60) (`addExprToMemoryBlock` is a flat insertion routine — why the reactions left it), [I-66](#i-66) (deactivation deferred to post-burst absorb).
+**How to fix on violation.** Restore the exact `NameMap::MAIN_ID` gates in both `dischargeContradiction` and `burstDeactivates`, plus the leading `if (!memoryBlock.isActive) return;` and the per-reaction `return`; never let the sweep continue after a reaction (the `return` also guards against iterating an `intEncodedStatements` vector the vacuous branch's `addStatement` may have reallocated).
+
+**See also.** [D-222](40_decisions.md#d-222), [D-122](40_decisions.md#d-122), [I-60](#i-60) (`addExprToMemoryBlock` is a flat insertion routine — why the reactions left it), [I-66](#i-66) (deactivation deferred to post-burst absorb).
 
 ---
 
@@ -1964,13 +2064,14 @@ No burst is ever discarded (no cap, no truncation); every part is kept and merge
 ---
 
 <a id="i-84"></a>
-## I-84 the int16 vectors are the ONLY stored statement form; string structs are transient, decoded at boundaries
+## I-84 the id-form vectors are the ONLY stored statement form; string structs are transient, decoded at boundaries
+
 
 **Scope.** Prover / Memory. `Memory::intEncodedStatements`, `intLocalEncodedStatements`, `intLocalEncodedStatementsDelta`, `intExternalStatements`; the converter pair `encodeExpression` / `decodeExpression` (`memory.hpp`).
 
 **Rule.** A statement is stored exactly once per registry, as an `IntEncodedExpr` row. No `Memory` member may hold a persistent `vector<EncodedExpression>` mirror of a statement registry. String-form `EncodedExpression` values are transient: constructed at insert sites (then discarded after `encodeExpression`), or reconstructed on demand via `decodeExpression` at the boundaries that genuinely need text — the hashburst diagnostic dump, `fillMailOut` (mail crosses LBs and `NameMap` ids are LB-local), the visualizer, and equivalence-class rewriting. The statement indexes (`intLocalEncodedStatementsSet`, `intStatementLevelsMap`) are packed-key (`I-86`), so no index operation needs a string key. Three discipline clauses: (1) read paths use the non-minting `NameMap::lookup`, never `encode` — a lookup miss means "no stored row can match"; (2) decoded references are copied into locals before any call that may mint ([I-3](#i-3)); (3) rows are matched by the `(originalId, validityId)` pair — full identity, because every stored row is a canonical-pipeline encoding whose other fields derive from those two strings — and never sorted or compared by raw id value (mint order is not lexicographic).
 
-**Why.** One stored form kills the lockstep dual-write hazard (every push/erase previously had to touch two containers; test-side bypasses forced defensive size guards), removes the fattest per-statement storage in `Memory` (several heap strings + a vector-of-vector-of-strings per row vs one flat 176-byte struct) on the ASIC 0.1 static-memory path, and makes the hot path's int-only consumption (static request generation, firing, `intKnownStatements`) the same data the rest of the prover uses. Losslessness is what makes it sound: `originalId` interns the whole original text, `validityId` the scope name, and `EncodedExpression(original, validityName)` re-derives every other field; `encodeExpression` asserts arity fits `MAX_ARITY`.
+**Why.** One stored form kills the lockstep dual-write hazard (every push/erase previously had to touch two containers; test-side bypasses forced defensive size guards), removes the fattest per-statement storage in `Memory` (several heap strings + a vector-of-vector-of-strings per row vs one flat 352-byte struct — 88 uniform 32-bit fields since the `NameId` widening, was 176 bytes as int16) on the ASIC 0.1 static-memory path, and makes the hot path's int-only consumption (static request generation, firing, `intKnownStatements`) the same data the rest of the prover uses. Losslessness is what makes it sound: `originalId` interns the whole original text, `validityId` the scope name, and `EncodedExpression(original, validityName)` re-derives every other field; `encodeExpression` asserts arity fits `MAX_ARITY`.
 
 **How to spot.** A new `vector<EncodedExpression>` member appearing on `Memory`; a reader calling `nameMap.encode` on a probe string; a decode reference held across a minting call; output order changing because something sorted by int id.
 
@@ -2011,7 +2112,7 @@ No burst is ever discarded (no cap, no truncation); every part is kept and merge
 
 1. **Probes with ids in hand pack directly.** A site holding an `IntEncodedExpr` row (request rows in `checkLocalEncodedMemoryStatic`, registry rows in `applyEquiClasses`, delta rows in `fillMailOut` / `dischargeToBeProved`, `ieStmt` in `addStatement`) probes with `packStatementKey(row.originalId, row.validityId)` — no decode, no string-key construction.
 2. **Probes with only strings in hand go through the non-minting helpers** (`isLocalEncodedStatement`, `lookupStatementLevels`) — `NameMap::lookup` with the id-0 miss sentinel, exact because every index entry interned both strings at its insert site. Never `encode` on a probe-only path: minting there shifts the LB's id-assignment order and breaks dump byte-identity. The two deliberately-minting erase helpers (`resetResentExpressionRegistries`, `eradicateImplicationFromLB`) keep `encode` — they minted before the re-key too, documented inline.
-3. **No reader iterates either index.** The only iterations are `wipeSubtree`'s erase-if sweep (order-independent; closed-bitmap membership on the key's low 16 bits is exactly the forest predicate, the [D-128](40_decisions.md#d-128) argument carried over by [I-139](#i-139)) and the dump writer.
+3. **No reader iterates either index.** The only iterations are `wipeSubtree`'s erase-if sweep (order-independent; closed-bitmap membership on the key's low 32 bits is exactly the forest predicate, the [D-128](40_decisions.md#d-128) argument carried over by [I-139](#i-139)) and the dump writer.
 4. **The dump section is derived, byte-identical.** `writeStatementLevelsMap` unpacks each key, decodes via `idToName`, lex-sorts rows by the decoded `(original, validityName)` pair, and prints under the unchanged section label `-- statementLevelsMap (N):` — reproducing the former `std::map<EncodedExpression, std::set<int>>` iteration order exactly (keys are unique pairs; no ties). The level payload is reconstructed as an ordered `std::set<int>` (`coldIntSetAt` over the sorted cold run) and prints ascending. Rule 14 applies to the section format; only the data source was retargeted (user-authorized, the [D-127](40_decisions.md#d-127)/[D-128](40_decisions.md#d-128) consent shape).
 
 **Why.** The D-29 locality gate and the per-request combined-levels union sat in the burst hot path, paying a decode plus (for the gate) the parsing `EncodedExpression` constructor per premise per firing; the packed probe is O(1) integer hashing with zero string work. Every write site already computes the packed key for its adjacent `upsertStatementKey` call, so maintaining the indexes costs no extra encodes.
@@ -2036,7 +2137,7 @@ No burst is ever discarded (no cap, no truncation); every part is kept and merge
 
 1. **Probes with ids in hand pack directly.** `dischargeToBeProved`'s three find sites probe with the delta row's `packStatementKey(ie.originalId, ie.validityId)`; the `addExprToMemoryBlock` status-2 insert reuses the ids encoded at function entry. The `effectiveValidity == "main"` gates compare `ie.validityId == NameMap::MAIN_ID` — the same predicate, id-side.
 2. **Probes with only strings in hand go through the non-minting `lookupToBeProved`** (`NameMap::lookup`, id-0 miss sentinel — exact because every goal interned both names at its insert site). This includes `burstDeactivates`' sole-goal probe, which runs in the phase-2 read-only parallel context where minting would also be a data race, and `updateGlobal`'s induction-promotion probe. Never `encode` on a probe-only path.
-3. **Order-sensitive walks iterate `decodeToBeProvedSorted`** — owned decoded copies (the consumers mint downstream) lex-sorted on `(original, validityName)`, reproducing the former `std::map` iteration order exactly. The walks: `sanitizeToBeProved`'s staging pass ([I-45](#i-45) — rewrite collapse depends on processing order), the post-absorb `checkNecessityForEquality` sweep, the vacuous-truth first-main-goal pick, and the dump writer. Order-free reads (the [I-48](#i-48) main-scope surveys in `deactivateRecursively` / `deactivateUnnecessary`, `wipeSubtree`'s closed-bitmap erase-if) iterate the live map directly; the main-scope test is `(key & 0xFFFF) == NameMap::MAIN_ID`.
+3. **Order-sensitive walks iterate `decodeToBeProvedSorted`** — owned decoded copies (the consumers mint downstream) lex-sorted on `(original, validityName)`, reproducing the former `std::map` iteration order exactly. The walks: `sanitizeToBeProved`'s staging pass ([I-45](#i-45) — rewrite collapse depends on processing order), the post-absorb `checkNecessityForEquality` sweep, the vacuous-truth first-main-goal pick, and the dump writer. Order-free reads (the [I-48](#i-48) main-scope surveys in `deactivateRecursively` / `deactivateUnnecessary`, `wipeSubtree`'s closed-bitmap erase-if) iterate the live map directly; the main-scope test is `(key & 0xFFFFFFFF) == NameMap::MAIN_ID`.
 4. **The dump section is derived, byte-identical.** `writeToBeProved` prints the snapshot rows under the unchanged section label `-- toBeProved (N):` with the unchanged per-row format; the header's `toBeProved=` count reads the packed registry's size. Rule 14 applies to the format; only the data source was retargeted (the [D-127](40_decisions.md#d-127)/[D-129](40_decisions.md#d-129) consent shape).
 
 The `sanitizeToBeProved` re-key reuses the old key's validity id verbatim and encodes only the rewritten original — [I-45](#i-45)'s namespace-preservation clause enforced structurally (a rewrite cannot mint a different scope).
@@ -2109,7 +2210,7 @@ The `sanitizeToBeProved` re-key reuses the old key's validity id verbatim and en
 
 **The invariant.**
 
-1. **Value strings live in `Memory::valueInterner` (int32).** Never in the `NameMap` (id-shift/trace-stability) and never in the int16 `TemplateInterner` (values sit in id vectors, not packed pair keys; Gauss-scale value populations exceed int16 comfort). Encode at single-threaded write sites; non-minting `lookup` probes; the interner resets only with `destroyGrid`'s `nameMap` reset.
+1. **Value strings live in `Memory::valueInterner` (int32).** Never in the `NameMap` (id-shift/trace-stability) and never in the `TemplateInterner` (values sit in id VECTORS, not the packed `int64` (templateId, validityId) pair keys — a value id would have to widen the vector element, and the two id spaces must never mix). Encode at single-threaded write sites; non-minting `lookup` probes; the interner resets only with `destroyGrid`'s `nameMap` reset. (Since the `NameId` widening, `TemplateInterner` mints `NameId` (int32) ids too; the separation reason is now pair-key-vs-vector, not int16-vs-int32.)
 2. **Every observable ordering is decoded order.** The value sets (`AdmissionValueSet`, `RejectedValueSet`, `RejectedIntegrationValueSet`), the stored-instruction map (`IntegrationEntryMap`), and the payload sets (`ValueIdSet`) order through stateful comparators that hold a `const ValueInterner*` and replicate the historical string `operator<` field orders exactly — never raw id order ([I-84](#i-84)). Containers are created ONLY through their value helpers so the comparator state is always supplied — a default-constructed comparator (null interner) is a bug: the heap rejected / integration maps via the find-or-emplace `rejectedValuesAt` / `rejectedIntegrationValuesAt` / `integrationEntryAt` / `payloadAt`; the now-cold `admissionMap` ([I-99](#i-99)) via the read-snapshot `admissionRecordsAt` + the RMW `insertAdmissionValue`, which decode the run into the same comparator-bearing `AdmissionValueSet` before mutating and re-emit it sorted.
 3. **Working forms stay string at the boundaries; staging rides sealed views.** The parallel staging path carries `StagedAdmissionValue` as SEALED PAGE VIEWS (sealed key elements + sorted-unique sealed remaining args — [D-164](40_decisions.md#d-164); strings until the strings campaign), and the drain (`stagedToIdValue`) materializes exactly at the intern point ([I-68](#i-68)/[I-83](#i-83)); the string `Instruction` remains the processing form (`cleanInstruction`, `prepareIntegration` flow) with `encodeInstruction`/`decodeInstruction` at the map touchpoints; rewrite/analysis sites decode to OWNED copies before any mint-capable call ([I-3](#i-3) discipline) — `isAdmitted`'s tuple loop, the recursion walk, the hooks' per-value rewrites, the revival emissions.
 4. **The global `LogicalEntity` is untouched.** Only the STORED instructions inside `admissionMapIntegration` use the id-form twins; `compiledExpressions` and the disintegration machinery keep the string type.
@@ -2184,8 +2285,8 @@ The `sanitizeToBeProved` re-key reuses the old key's validity id verbatim and en
 
 **The invariant.**
 
-1. **OR-state and expanded-implication strings live in `Memory::lbStateInterner` (int32, int64 `packLbStateKey` pairs).** Never the NameMap — mail-absorbed implications may be locally un-interned, and a mint there would shift the dumped id table. All writers are single-threaded. The interner does NOT reset at `destroyGrid`: `expandedImplications` deliberately survives grid teardown (existing behavior), and the space is NameMap-decoupled — ids never re-bind, decode stays valid across grids.
-2. **The integration-prep gates key in the TEMPLATE space** (packed (templateId, validityId); `integrationStartIntMap` by the bare template id — its key never had a validity dimension). Gates are non-minting `lookupTemplateKey` probes; writes mint; `wipeSubtree` filters by the low-16-bits validity predicate.
+1. **OR-state and expanded-implication strings live in `Memory::lbStateInterner` (int32, int64 `packLbStateKey` pairs).** Never the NameMap — mail-absorbed implications may be locally un-interned, and a mint there would shift the dumped id table. An OR cohort id is itself the interned canonical packed pair `(parentValidityId, orSignatureId)`; `orDisjunctCount` keys by cohort and `orBookkeeping` packs `(conclusionId, cohortId)` ([I-167](#i-167)). All writers are single-threaded. The interner does NOT reset at `destroyGrid`: `expandedImplications` deliberately survives grid teardown (existing behavior), and the space is NameMap-decoupled — ids never re-bind, decode stays valid across grids.
+2. **The integration-prep gates key in the TEMPLATE space** (packed (templateId, validityId); `integrationStartIntMap` by the bare template id — its key never had a validity dimension). Gates are non-minting `lookupTemplateKey` probes; writes mint; `wipeSubtree` filters by the low-32-bits validity predicate.
 3. **`pendingWipeScopes` holds NameMap validity ids.** Every queued scope was created via `encodePush`, so the insert is a non-minting `lookup` + assert (a firing assert = an un-interned scope was queued — report, not fallback). The drain sorts the ids by their decoded names (`compareSpans` over `decodeView`, tie-free — deduped vids, injective interner) before the per-vid `wipeSubtree` calls — the former string-set order ([I-84](#i-84)) with zero owned strings.
 4. **Every observable ordering is decoded order.** `ordisMerge`'s disjunct sets are decoded-lex ordered storage (`orBookkeeping`, a `ColdSetMap` since Batch 2, kept sorted by a `DecodedIdLess` supplied per call to `insertSorted` — comparator state is the `lbStateInterner`; read in RUN order via `valueAt`, never `coldIntSetAt`); the seen-disjunct copy that feeds the D-36 origin rows and the per-branch cleanup decodes in that order; `sanitizeHashMemory` walks a decoded lex-sorted `expandedImplications` snapshot; every dump section derives decode + lex-sort.
 5. **`orAdmissionSet` no longer exists.** The legacy gate is the `allowOrDisintegration` flag alone (the container had no insert site — [D-31](40_decisions.md#d-31)); the dump prints the literal empty section header for byte stability.
@@ -2261,7 +2362,7 @@ These three are the ONLY sanctioned extra reservations; a fifth, or a second MAI
 
 **Scope.** Statification cold substrate ([`memory_infra/lb_arena.hpp`](../GL_Quick_VS/GL_Quick/src/memory_infra/lb_arena.hpp), [`memory_infra/arena_vector.hpp`](../GL_Quick_VS/GL_Quick/src/memory_infra/arena_vector.hpp)); every statified container.
 
-**Rule.** Cold containers store **virtual offsets** (`ArenaOffset`) into their LB's `LbArena` — a byte position relative to the arena base, resolved to a physical address per access by `resolve` (`block = offset >> blockShift`, `within = offset & blockMask`). An offset is a pure function of allocation order (single-threaded per LB); the only operation that changes an offset is the copying compaction (`LbMemory::reshuffle`), which runs with exclusive LB access, reassigns every offset densely, and leaves logical content untouched ([D-162](40_decisions.md#d-162)). Physical pointers are resolved per access and are never stored across deload- or compaction-capable boundaries, never compared, never ordered on, never dumped. Block grant order from the global manager (mutex under parallel sweeps — nondeterministic) must be invisible: every output (trace dumps, proof artifacts, deload bytes) derives from logical content only.
+**Rule.** Cold containers store **virtual offsets** (`ArenaOffset`) into their LB's `LbArena` — a byte position relative to the arena base, resolved to a physical address per access by `resolve` (`block = offset >> blockShift`, `within = offset & blockMask`). An offset (and a page-tier vid) is a pure function of the LB's allocation/free SEQUENCE (single-threaded per LB): byte offsets bump monotonically, and page vids recycle through the per-arena free-vid LIFO (`allocPage` pops the most recently freed vid before minting a fresh tail vid — [D-228](40_decisions.md#d-228)), so the same mutation history yields the same offsets and vids. On a raw reload the free-vid chain is DERIVED canonically from the live-vid bitmap (ascending-vid pop order), which is deterministic because deload points themselves derive from deterministic state ([I-106](#i-106)). The only operation that changes an offset is the copying compaction (`LbMemory::reshuffle`), which runs with exclusive LB access, reassigns every offset densely, and leaves logical content untouched ([D-162](40_decisions.md#d-162)); compaction moves physical page bindings but never vid values. Physical pointers are resolved per access and are never stored across deload- or compaction-capable boundaries, never compared, never ordered on, never dumped. Block grant order from the global manager (mutex under parallel sweeps — nondeterministic) must be invisible: every output (trace dumps, proof artifacts, deload bytes) derives from logical content only — vid values themselves never reach canonical proof bytes ([I-103](#i-103)).
 
 **Why.** A deload/reload cycle may bind entirely different physical blocks, and parallel grant order varies run to run. GL's determinism doctrine (every cross-run deviation is a bug) is reconciled with a shared physical pool exactly by this indirection — offset sequences are a pure function of the LB's own deterministic mutation history.
 
@@ -2273,7 +2374,7 @@ These three are the ONLY sanctioned extra reservations; a fifth, or a second MAI
 
 **Fix.** Store offsets; resolve via `LbArena::resolve` at the access site; derive any output from decoded logical state.
 
-**Code.** `LbArena::alloc` / `popTo` / `resolve` / `releaseAll`; `LbMemory::reshuffle`.
+**Code.** `LbArena::alloc` / `popTo` / `resolve` / `releaseAll`; `LbArena::allocPage` / `freePage` (the free-vid LIFO) / `restoreForRawLoadEnd` (the canonical reload chain); `LbMemory::reshuffle`.
 
 ---
 
@@ -3501,6 +3602,82 @@ Because the split set is a deterministic function of the PRIOR iteration's deter
 **Code.** `memory_infra/deloadable_mail_out.hpp::DeloadableMailOut`; `memory_infra/lb_memory.hpp::LbMemory`; `memory.hpp::Memory::insertMailOutStatement`, `::addMailOutOrigin`, `::clearMailOut`; `prover.cpp::ExpressionAnalyzer::proveKernel`; `mail_log.hpp::MailLog::commit`. Tests: `test_mail_log.cpp` deloadable-mail-out tests and `test_lb_deload.cpp::memory_deload_reload_roundtrip`.
 
 **See also.** [D-205](40_decisions.md#d-205), [I-101](#i-101), [I-102](#i-102), [I-162](#i-162).
+
+---
+
+<a id="i-173"></a>
+## I-173 a normal LB's main contradiction flags the LB, deactivates its subtree, and suppresses every emission at or below it; anchor-level contradiction asserts
+
+
+**Scope.** `prover.hpp::ExpressionAnalyzer::dischargeContradiction` (normal-LB branch), `Memory::mainContradiction`, `prover.hpp::hasContradictedAncestor`, `stageSubtreeDeactivation` / `drainSubtreeDeactivations`, `prover.cpp::drainUpdateGlobalDirect`, the induction promotion in `prover.cpp::updateGlobal`, `UpdateGlobalDirectRec::producer`.
+
+**Rule.** When an LB with no discharge role (not `primedForContradiction`, not CE, not `isPartOfRecursion`) holds a statement and its negation both at exact `main`, its premise set is inconsistent: the sweep sets `mainContradiction`, deactivates the LB, and stages it for the post-join subtree drain, which deactivates every descendant (twin-flip contract: `isActive` false, `contradictionTheoremId` cleared, `dischargedForever` untouched). Every theorem emission is gated at the single-threaded post-join seams by the self-or-ancestor flag walk: `drainUpdateGlobalDirect` skips a record whose producer LB has a flagged self-or-ancestor, and `updateGlobal` refuses the induction promotion likewise. At the batch root or an anchor premise LB the same pair asserts. Decision inputs are live statement state only — never `exprOriginMap` (Rule 16).
+
+**Why.** Inconsistent premises prove any head (ex falso), so everything derivable at or below such an LB is vacuous; exporting it pollutes the corpus and produces reductio records whose seed was never used — exactly what the verifier's `contradiction trace` check rejects. The parent-side detection discriminates exactly: a genuine reductio's contradiction needs the seed, which only the `__contradiction__` child holds, so the parent stays clean; a premises-only contradiction is derivable at the parent no later than at any child (same mail commits, same broadcast rules, no burst caps).
+
+**How to spot.** A `(>` theorem row whose premise set is jointly inconsistent appearing in `theorems.txt`; a `contradiction trace` verifier failure (ingredients not reaching the seed); an active `__contradiction__` LB under a deactivated flagged parent; a `mainContradiction` LB still emitting.
+
+**How to fix on violation.** Check the emission seams still consult `hasContradictedAncestor` on the record's producer; check both seal sites still carry `&memoryBlock`; check `drainSubtreeDeactivations` still runs in `proveKernel`'s collector after the twin drain. Never suppress by reading origin history, and never widen the assert away — an anchor-level contradiction is a definition-set bug.
+
+**Code.** `prover.hpp::dischargeContradiction`, `::hasContradictedAncestor`, `::drainSubtreeDeactivations`; `prover.cpp::drainUpdateGlobalDirect`, `::updateGlobal`, `::proveKernel` (drain call); `memory.hpp::Memory::mainContradiction`. Tests: `tests/test_vacuous_premise_suppression.cpp`.
+
+**See also.** [D-236](40_decisions.md#d-236), [I-78](#i-78), [I-28](#i-28), [I-112](#i-112).
+
+---
+
+<a id="i-171"></a>
+## I-171 a fired head's witnesses mint at max premise iteration + 1; the name is the carrier and `maxIterationNumberVariable` is the per-batch generation cap
+
+
+**Scope.** `memory.cpp::checkLocalEncodedMemoryStatic` (the `req.maxIteration + 1` stamp on the head `FiringRecord`), `memory.cpp::applyFiringRecords` → `setInternalDisintegrationSignal` (the carrier write), `cold_mail.hpp::ColdMail::setDisintegrationSignal` / `::getDisintegrationSignal` / `::packSignals` / `::unpackIteration` (the packed int32 signal record), the internal-mail absorb drain in `prover.hpp::standardProcessing` (passes the carried value into `addExprToMemoryBlock`), `prover.cpp::disintegrateExprCore2` (the `it_<iteration>_lev_...` mint; -1 maps to 0), `memory.hpp::filterIntEncodedStatements` (the cap gate) and `encodeExpression` (the `argIteration` / `maxIteration` parse).
+
+**Rule.** A statement deposited by a hash-rule FIRING carries the witness-generation stamp `max over the request premises' maxIteration, plus one` through the disintegration-signal side-map into `addExprToMemoryBlock`, so its disintegration witnesses are named `it_<stamp>_lev_...`. Every other deposit path (seeds, branch assumptions, discharge emissions, routing mail — which has no signal column) carries -1 and mints at generation 0. On a duplicate signal write for one (expression, scope): bools last-write, iteration min-merged. The name is the sole cross-LB carrier — receivers re-derive generations by parsing argument names. `maxIterationNumberVariable` (per batch) is the containment: `filterIntEncodedStatements` drops statements above the cap from request building, terminating the witness-of-witness cascade at the configured depth. The rejectedMap revival doors (`revisitRejected2`'s markedExpr guard and the prepared-witness marker-slot guard) use the same strict-`>` convention — generations up to and including the cap revive, so the demand side and the request side share one ceiling. Admission shares it too: admission values are stamped with `maxIterationNumberVariable` as their depth, so `isAdmitted`'s per-value verdict (`mn <= depth`) enforces the same bound — the standalone `standardMaxAdmissionDepth` parameter is retired ([D-232](40_decisions.md#d-232); a narrower admission depth silently turns every deeper-generation fact into a park-revive-re-reject cycle that never deposits — the rung-1 regression).
+
+**Why.** Without the wire every witness minted at generation 0 and the cap was vacuous on the derived path — the totality-closure explosion (witnesses of witnesses breeding quadratically per round) ran unbounded the moment demand admission went broad (the IncubatorGauss3 post-proof runaway of 2026-07-29, ~400-second bursts). The generation slot, the encoder's parse, and the config cap all pre-existed; the stamp restores the designed meaning.
+
+**How to spot.** A trace whose witness population grows super-linearly with ALL names `it_0_lev_...` (the wire lost again); a fired head's witnesses at generation 0 despite witness-carrying premises; witness-carrying statements above the cap still appearing as request constituents.
+
+**How to fix on violation.** Check the stamp is still `req.maxIteration + 1` at the head-record fill; check the absorb still passes the carried value (not -1); never widen the cap or bypass `filterIntEncodedStatements` to recover lost firings — a chain that needs deeper generations is a per-batch cap decision for the maintainer.
+
+**Code.** `memory.cpp::checkLocalEncodedMemoryStatic`, `::applyFiringRecords`; `cold_mail.hpp::ColdMail`; `prover.hpp::standardProcessing` (absorb drain); `prover.cpp::disintegrateExprCore2`. Tests: `tests/test_cold_mail.cpp` signal tests, `tests/test_lb_split.cpp::apply_firing_records_carries_iteration_min_merged`, `::deposit_iteration_reaches_witness_mint`, `tests/test_lb_deload.cpp` (stamp survives deload).
+
+**See also.** [D-233](40_decisions.md#d-233), [I-102](#i-102), [I-94](#i-94), [I-77](#i-77).
+
+<a id="i-170"></a>
+## I-170 every goal-driven integration scope minted on MAIN carries its root goal in the payload (`<goal>_subproof_<bare>`); statement-driven mints stay bare; consumers parse via the split helpers only
+
+
+**Scope.** `prover.hpp::prepareIntegrationCore2` (Case A / Case OR payload + gate mints, the `rootGoal` parameter and `embedGoal` rule), `prover.hpp::prepareIntegration` (the `rootGoal` pass-through), `prover.hpp::splitSubproofPayload` / `stripSubproofPrefixView` (the sole payload parsers), `prover.hpp::classifyOrScope` / `classifyOrScopeView` (bare-half classification), the `closeScopedGoal` NotOrScope deposit in `prover.hpp::dischargeToBeProved`.
+
+**Rule.** A Case A / Case OR scope pushed on MAIN during a goal-driven preparation (non-empty `rootGoal`) has payload `<rootGoal>_subproof_<bare>` where `<bare>` is the legacy payload, and its `integrationPrepared` gate template is the same prefixed string; a statement-driven preparation (empty `rootGoal`: admission / marker replays, load-time prefill) and every non-main mint keep the bare legacy payload. No consumer pattern-matches the prefix ad hoc — `splitSubproofPayload` / `stripSubproofPrefixView` are the single parsing choke point (the `classifyOrScope*` discipline extended to the goal prefix). The grammar is injective against every legacy payload shape: a leading (optionally `!`-negated) balanced-paren group followed by the literal `_subproof_` cannot occur in a legacy compact, `orint_` / `ordis_` / hypo payload, and `)_subproof_` cannot occur inside a well-formed MPL expression.
+
+**Why.** The payload is the only deload-persisted, artifact-visible carrier that lets a disproof of the root goal enumerate every scope its integration spawned ([D-239](40_decisions.md#d-239)); goal-qualified gates keep per-goal machinery independent so one goal's wipe cannot starve another goal's subproof.
+
+**How to spot.** A Case A / OR scope on main whose payload lacks the prefix while a goal drove it (cleanup will miss it — remnants in the hashburst trace after a disproof); a consumer substring-matching `_subproof_` outside the split helpers; a gate keyed on the bare compact for a goal-driven mint (second goal silently gated off).
+
+**How to fix on violation.** Route the new payload consumer through the split helpers; thread `rootGoal` to the new mint site rather than widening the statement-driven branch.
+
+**Code.** `prover.hpp::prepareIntegrationCore2`, `::splitSubproofPayload`, `::stripSubproofPrefixView`. Tests: `tests/test_str_ops.cpp::split_subproof_payload_grammar`, `::classify_or_scope_view_twin` (prefix cases), `tests/test_memory.cpp::core2_goal_carrying_scope_payloads`.
+
+**See also.** [D-239](40_decisions.md#d-239), [I-93](#i-93), [I-50](#i-50).
+
+<a id="i-172"></a>
+## I-172 a retired `_ordis_` branch never returns, and a cohort's bookkeeping never holds a dead branch's disjunct entry when its count is compared
+
+
+**Scope.** `prover.hpp::ordisMerge` (the dead-branch probe), `prover.cpp::drainDeadOrBranches` (the end-of-burst retirement), `Memory::pendingDeadOrBranches` (the persistent-arena staging inbox), `Memory::orDisjunctCount` / `Memory::orBookkeeping` (the shrunk cohort state).
+
+**Rule.** A deposit at an `_ordis_` branch scope whose asserted disjunct has its negation `known` at the branch scope or an ancestor stages the branch vid; the drain then (in this order) queues the branch subtree wipe plus the `intValidityNamesToFilter` insert, decrements the cohort's `orDisjunctCount` in place (zero survivors retires the cohort wholesale: the count row leaves the container and every run empties in the surgery), and removes the dead branches' disjunct entries from every `orBookkeeping` run of the cohort BEFORE any convergence count comparison. A filtered branch never receives a deposit again and the probe skips filtered scopes, so retirement is permanent and single-shot. The convergence re-check at the reduced count goes through `ordisMerge` itself — never a hand-rolled promotion.
+
+**Why.** Soundness: a convergence must be backed by a derivation in every counted branch; a stale dead entry against a reduced count would promote to the parent a fact derived only ex falso. Runtime and memory: a refuted branch is a pure ex-falso variant factory (the rung-2.1 ES3 profile: 68% of the LB's final statements lived in four dead branches) and permanently blocks its cohort's convergence.
+
+**How to spot.** An `orBookkeeping` run citing a disjunct whose branch scope is in `intValidityNamesToFilter`; an `orDisjunctCount` value above the cohort's live branch count; statements accumulating at a branch scope whose assumption's negation sits at `main` in the same dump.
+
+**How to fix on violation.** Clean the runs before the decrement, never after; never re-admit a filtered branch scope; the joint contradiction a zero-survivor cohort implies belongs to the K rules + contradiction machinery, never to the drain.
+
+**Code.** `prover.hpp::ordisMerge`, `prover.cpp::drainDeadOrBranches`, `memory.hpp` (`pendingDeadOrBranches`). Tests: `tests/test_memory.cpp::drain_dead_or_branches_retires_refuted_branch`.
+
+**See also.** [D-242](40_decisions.md#d-242), [I-167](#i-167), [I-58](#i-58), [I-48](#i-48), [I-50](#i-50).
 
 ---
 

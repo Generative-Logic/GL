@@ -36,7 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests.test_harness import (  # noqa: E402
     register, make_state_with_binaries, make_proof_line,
-    assert_failure, run_all_tests,
+    assert_failure, assert_pass, run_all_tests,
 )
 from verifier import (  # noqa: E402
     check_or_theorem, check_or_disintegration, check_or_convergence,
@@ -56,6 +56,27 @@ def _state_with_or3() -> object:
         "signature": "(or3[u_1,u_2,u_3])",
         "arity": 3,
         "elements": ["(=[u_1,X])", "(=[u_2,X])", "(=[u_3,X])"],
+    }
+    state.current_gl_binary = state.gl_binaries["Peano"]
+    return state
+
+
+def _state_with_nested_or() -> object:
+    """Install an outer OR whose first child is another compiled OR."""
+    state = make_state_with_binaries(("Peano",))
+    state.gl_binaries = dict(state.gl_binaries)
+    state.gl_binaries["Peano"] = dict(state.gl_binaries["Peano"])
+    state.gl_binaries["Peano"]["or90"] = {
+        "category": "or",
+        "signature": "(or90[u_1,u_2])",
+        "arity": 2,
+        "elements": ["(=[u_1,X])", "(=[u_2,X])"],
+    }
+    state.gl_binaries["Peano"]["or91"] = {
+        "category": "or",
+        "signature": "(or91[u_1,u_2,u_3])",
+        "arity": 3,
+        "elements": ["(or90[u_1,u_2])", "(=[u_3,X])"],
     }
     state.current_gl_binary = state.gl_binaries["Peano"]
     return state
@@ -256,6 +277,20 @@ def test_or_disintegration_no_or_origin_in_chapter():
     assert_failure(check_or_disintegration, line, [line], state)
 
 
+@register
+def test_nested_or_disintegration_rejects_intermediate_or_branch():
+    """The old two-hashburst intermediate ``or90`` branch is not a leaf."""
+    state = _state_with_nested_or()
+    line = make_proof_line(
+        "(or90[a,b])",
+        "main_boundary_ordis_(or91[a,b,c])_((or90[a,b]))",
+        "or disintegration",
+        "(or91[a,b,c])", "main",
+    )
+    origin = make_proof_line("(or91[a,b,c])", "main", "task formulation")
+    assert_failure(check_or_disintegration, line, [line, origin], state)
+
+
 # ===========================================================================
 #  tag: or convergence
 # ===========================================================================
@@ -437,9 +472,140 @@ def test_or_convergence_or_arity_mismatch():
     assert_failure(check_or_convergence, line, [line], state)
 
 
+@register
+def test_or_convergence_reduced_cohort_mixed_row_passes():
+    """Dead-branch retirement: one survivor entry plus two retired entries
+    (the dead branches' asserted disjuncts refuted at main) cover all three
+    disjuncts, each with its own chapter row -> PASS."""
+    state = _state_with_or3()
+    convergence = make_proof_line(
+        "(conclusion)", "main", "or convergence",
+        "(or3[a,b,c])", "main",
+        "(conclusion)", "main_boundary_ordis_(or3[a,b,c])_((=[c,X]))",
+        "!(=[a,X])", "main",
+        "!(=[b,X])", "main",
+    )
+    deriv_c = make_proof_line(
+        "(conclusion)", "main_boundary_ordis_(or3[a,b,c])_((=[c,X]))",
+        "task formulation")
+    ref_a = make_proof_line("!(=[a,X])", "main", "task formulation")
+    ref_b = make_proof_line("!(=[b,X])", "main", "task formulation")
+    chapter = [convergence, deriv_c, ref_a, ref_b]
+    assert_pass(check_or_convergence, convergence, chapter, state)
+
+
+@register
+def test_or_convergence_retired_self_refutation_in_branch_passes():
+    """A retired entry may cite the refutation inside the retired branch
+    itself (ex-falso self-refutation: the branch assuming D derived !D)."""
+    state = _state_with_or3()
+    branch_a = "main_boundary_ordis_(or3[a,b,c])_((=[a,X]))"
+    convergence = make_proof_line(
+        "(conclusion)", "main", "or convergence",
+        "(or3[a,b,c])", "main",
+        "!(=[a,X])", branch_a,
+        "(conclusion)", "main_boundary_ordis_(or3[a,b,c])_((=[b,X]))",
+        "(conclusion)", "main_boundary_ordis_(or3[a,b,c])_((=[c,X]))",
+    )
+    ref_a = make_proof_line("!(=[a,X])", branch_a, "task formulation")
+    deriv_b = make_proof_line(
+        "(conclusion)", "main_boundary_ordis_(or3[a,b,c])_((=[b,X]))",
+        "task formulation")
+    deriv_c = make_proof_line(
+        "(conclusion)", "main_boundary_ordis_(or3[a,b,c])_((=[c,X]))",
+        "task formulation")
+    chapter = [convergence, ref_a, deriv_b, deriv_c]
+    assert_pass(check_or_convergence, convergence, chapter, state)
+
+
+@register
+def test_or_convergence_retired_negation_not_a_disjunct():
+    """A retired entry whose expression negates nothing in the OR -> reject."""
+    state = _state_with_or3()
+    convergence = make_proof_line(
+        "(conclusion)", "main", "or convergence",
+        "(or3[a,b,c])", "main",
+        "(conclusion)", "main_boundary_ordis_(or3[a,b,c])_((=[c,X]))",
+        "!(=[z,X])", "main",
+        "!(=[b,X])", "main",
+    )
+    assert_failure(check_or_convergence, convergence, [convergence], state)
+
+
+@register
+def test_or_convergence_retired_scope_not_parent_visible():
+    """A retired entry at a scope the parent does not inherit from -> reject."""
+    state = _state_with_or3()
+    convergence = make_proof_line(
+        "(conclusion)", "main", "or convergence",
+        "(or3[a,b,c])", "main",
+        "(conclusion)", "main_boundary_ordis_(or3[a,b,c])_((=[c,X]))",
+        "!(=[a,X])", "main_boundary_(unrelated)",
+        "!(=[b,X])", "main",
+    )
+    assert_failure(check_or_convergence, convergence, [convergence], state)
+
+
+@register
+def test_or_convergence_double_cover_same_disjunct():
+    """Two entries covering the same disjunct leave another uncovered ->
+    reject (exactly-once coverage)."""
+    state = _state_with_or3()
+    convergence = make_proof_line(
+        "(conclusion)", "main", "or convergence",
+        "(or3[a,b,c])", "main",
+        "(conclusion)", "main_boundary_ordis_(or3[a,b,c])_((=[c,X]))",
+        "!(=[c,X])", "main",
+        "!(=[b,X])", "main",
+    )
+    assert_failure(check_or_convergence, convergence, [convergence], state)
+
+
+@register
+def test_or_convergence_retired_evidence_missing():
+    """Mixed row structurally OK, but one retired refutation has no chapter
+    row of its own -> reject."""
+    state = _state_with_or3()
+    convergence = make_proof_line(
+        "(conclusion)", "main", "or convergence",
+        "(or3[a,b,c])", "main",
+        "(conclusion)", "main_boundary_ordis_(or3[a,b,c])_((=[c,X]))",
+        "!(=[a,X])", "main",
+        "!(=[b,X])", "main",
+    )
+    deriv_c = make_proof_line(
+        "(conclusion)", "main_boundary_ordis_(or3[a,b,c])_((=[c,X]))",
+        "task formulation")
+    ref_a = make_proof_line("!(=[a,X])", "main", "task formulation")
+    chapter = [convergence, deriv_c, ref_a]   # ref_b missing
+    assert_failure(check_or_convergence, convergence, chapter, state)
+
+
 # ===========================================================================
 #  tag: or branch proven
 # ===========================================================================
+
+@register
+def test_nested_or_branch_proven_accepts_atomic_leaf():
+    state = _state_with_nested_or()
+    line = make_proof_line(
+        "(or91[a,b,c])", "main", "or branch proven",
+        "(=[a,X])",
+        "main_boundary_orint_(or91[a,b,c])_((=[a,X]))",
+    )
+    assert_pass(check_or_branch_proven, line, [line], state)
+
+
+@register
+def test_nested_or_branch_proven_rejects_intermediate_or():
+    state = _state_with_nested_or()
+    line = make_proof_line(
+        "(or91[a,b,c])", "main", "or branch proven",
+        "(or90[a,b])",
+        "main_boundary_orint_(or91[a,b,c])_((or90[a,b]))",
+    )
+    assert_failure(check_or_branch_proven, line, [line], state)
+
 
 @register
 def test_or_branch_proven_rest_empty():
@@ -548,6 +714,38 @@ def test_or_branch_proven_branch_ns_wrong_disjunct():
 # ===========================================================================
 #  tag: or branch assumption
 # ===========================================================================
+
+@register
+def test_nested_or_branch_assumption_accepts_other_atomic_leaf():
+    state = _state_with_nested_or()
+    branch = "main_boundary_orint_(or91[a,b,c])_((=[a,X]))"
+    proven = make_proof_line(
+        "(or91[a,b,c])", "main", "or branch proven",
+        "(=[a,X])", branch,
+    )
+    assumption = make_proof_line(
+        "!(=[c,X])", branch, "or branch assumption",
+        "(or91[a,b,c])_integration_goal", "main",
+    )
+    assert_pass(
+        check_or_branch_assumption, assumption, [proven, assumption], state)
+
+
+@register
+def test_nested_or_branch_assumption_rejects_intermediate_or():
+    state = _state_with_nested_or()
+    branch = "main_boundary_orint_(or91[a,b,c])_((=[c,X]))"
+    proven = make_proof_line(
+        "(or91[a,b,c])", "main", "or branch proven",
+        "(=[c,X])", branch,
+    )
+    assumption = make_proof_line(
+        "!(or90[a,b])", branch, "or branch assumption",
+        "(or91[a,b,c])_integration_goal", "main",
+    )
+    assert_failure(
+        check_or_branch_assumption, assumption, [proven, assumption], state)
+
 
 @register
 def test_or_branch_assumption_rest_empty():

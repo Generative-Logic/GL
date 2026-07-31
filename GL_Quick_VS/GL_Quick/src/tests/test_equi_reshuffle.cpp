@@ -53,6 +53,78 @@ TEST(equi_reshuffle, apply_equi_classes_symbol_signature) {
     ASSERT_TRUE(fn != nullptr);
 }
 
+TEST(equi_reshuffle, apply_equi_classes_expands_preexisting_negated_equality) {
+    // The insertion-order hole (D-226): a negated
+    // equality that arrives BEFORE its variable's class forms gets no
+    // arrival-time expansion, and the general class-application pass used to
+    // skip negated equalities entirely — so it was never expanded. Pass 1
+    // must now revisit it when the class forms: negation !(=[2,a]) at a
+    // branch scope, class {a,c} forming later at main, must yield !(=[2,c])
+    // at the branch scope.
+    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::Memory& mb = ana.body;
+    mb.isActive = true;
+
+    const gl::NameId branchId = mb.nameMap.encodePush(
+        gl::NameMap::MAIN_ID, "ordis_(or9[1,7,3,2])_((=[6,x]))");
+    const std::string branch = mb.nameMap.decode(branchId);
+    const std::string mainNs = "main";
+
+    gl::DirtyState outDirty = gl::DirtyState::Clean;
+    gl::PagedVector<gl::IntEncodedExpr> out(
+        &gl::genScratchArenas().forSlot(0), &outDirty);
+    const int lv[1] = { 0 };
+    const gl::TransientOrigin noOrigin{};
+
+    // 1. The negation arrives FIRST, at the branch scope — no class exists,
+    //    so the arrival-time expansion is a no-op.
+    const std::string negation = "!(=[2,a])";
+    ana.addStatement(gl::StrSpan(negation), mb, true, lv, 1, noOrigin,
+                     gl::StrSpan(branch), out);
+    // 2. The class {a, c} forms LATER, at main (positive-equality arrival).
+    //    The equality carries a real origin — production equalities always
+    //    do under trackHistory, and the arrival write is what the Pass-1
+    //    expansion's citation probe later resolves against.
+    out.clear();
+    const std::string equality = "(=[a,c])";
+    const gl::TransientOrigin eqOrigin{ true, gl::OriginTag::broadcast,
+                                        nullptr, 0 };
+    ana.addStatement(gl::StrSpan(equality), mb, true, lv, 1, eqOrigin,
+                     gl::StrSpan(mainNs), out);
+
+    // Pre-check: the expanded form does not exist yet.
+    const std::string expanded = "!(=[2,c])";
+    ASSERT_TRUE(gl::lookupStatementLevels(mb.intStatementLevelsMap, mb.nameMap,
+        gl::StrSpan(expanded), gl::StrSpan(branch)) == 0);
+
+    // 3. The class-application pass expands the pre-existing negation.
+    ana.applyEquiClasses(mb);
+
+    ASSERT_TRUE(gl::lookupStatementLevels(mb.intStatementLevelsMap, mb.nameMap,
+        gl::StrSpan(expanded), gl::StrSpan(branch)) != 0);
+
+    // 4. Citation-scope contract: the expanded row's equality1 history line
+    //    cites the justifying equality at the scope where its origin row
+    //    lives (main — the class's scope), never at the branch scope. A
+    //    branch-scope citation is unresolvable for the chapter walker: its
+    //    ancestor lift refuses to cross an or-branch boundary.
+    int64_t expandedPk = 0;
+    ASSERT_TRUE(gl::lookupOriginKey(mb.originInterner, expanded, branch,
+                                    expandedPk));
+    const std::vector<gl::IdOrigin> expandedRows =
+        mb.exprOriginMap.recordsAt(mb.exprOriginMap.lookup(expandedPk));
+    bool citeChecked = false;
+    for (const gl::IdOrigin& o : expandedRows) {
+        const auto line = gl::decodeOrigin(o, mb.originInterner);
+        if (line.first != "equality1") continue;
+        ASSERT_TRUE(line.second.size() == 2);
+        ASSERT_TRUE(line.second[1].original == equality);
+        ASSERT_TRUE(line.second[1].validityName == mainNs);
+        citeChecked = true;
+    }
+    ASSERT_TRUE(citeChecked);
+}
+
 TEST(equi_reshuffle, discharge_to_be_proved_symbol_signature) {
     // Symbol-existence + signature check for the toBeProved-discharge
     // helper. Compiles only if `dischargeToBeProved` is declared on
@@ -249,7 +321,7 @@ TEST(equi_reshuffle, discharge_contradiction_symbol_signature) {
     // The function sweeps the int statement registry once per step (from
     // `standardProcessing`, directly before `dischargeToBeProved`) and fires
     // the matching incubator / CE-filter / vacuous-truth reaction on the
-    // first in-scope contradiction. Behavioral coverage is the three tests
+    // first main-scope contradiction. Behavioral coverage is the tests
     // below plus the full main.py + verifier run.
     using DischargeContraFn = void (gl::ExpressionAnalyzer::*)(gl::Memory&, int);
     DischargeContraFn fn = &gl::ExpressionAnalyzer::dischargeContradiction;
@@ -261,8 +333,8 @@ TEST(equi_reshuffle, discharge_contradiction_refutes_ce_lb) {
     // (moved off the addExprToMemoryBlock gate): a CE LB's fired heads enter
     // the statement registry, so this post-burst sweep sees a contradicting
     // pair and refutes the conjecture. This pins that a CE LB
-    // (contradictionIndex >= 0) whose statement has its negation known at an
-    // ancestor scope gets its contradictionTable row marked and is
+    // (contradictionIndex >= 0) whose statement and negation are both known at
+    // main gets its contradictionTable row marked and is
     // deactivated.
     gl::ExpressionAnalyzer ana(std::string("Peano"));
     gl::Memory& mb = ana.body;
@@ -303,6 +375,42 @@ TEST(equi_reshuffle, discharge_contradiction_no_contradiction_noop) {
 
     ASSERT_TRUE(mb.isActive);
     ASSERT_FALSE(ana.contradictionTable[0].successful);
+}
+
+TEST(equi_reshuffle, discharge_contradiction_requires_both_sides_at_main) {
+    // A branch-local positive opposed by a main-scope negation rejects no LB:
+    // branch rejection / OR-disintegration rewriting is a separate known gap.
+    // When the same positive also exists at main, the main row is sufficient
+    // and the CE contradiction discharges even though the deeper copy remains.
+    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    gl::Memory& mb = ana.body;
+    mb.isActive = true;
+    ana.contradictionTable.push_back(
+        gl::ContradictionItem(std::string("(in[7,N])"), false));
+    mb.contradictionIndex = 0;
+
+    const std::string P = "(in[7,N])";
+    const gl::NameId branchId = mb.nameMap.encodePush(
+        gl::NameMap::MAIN_ID,
+        "ordis_(or0[7,N])_((in[7,N]))");
+    const std::string branch = mb.nameMap.decode(branchId);
+    mb.intEncodedStatements.push_back(
+        gl::encodeExpression(gl::EncodedExpression(P, branch), mb.nameMap));
+    const gl::NameId negId = mb.nameMap.encode(ana.negate(P));
+    mb.intKnownStatements.insert(
+        gl::StatementKey{ negId, gl::NameMap::MAIN_ID },
+        gl::StatementFlags{ true, false, true, true });
+
+    ana.dischargeContradiction(mb, /*coreId=*/0);
+    ASSERT_TRUE(mb.isActive);
+    ASSERT_FALSE(ana.contradictionTable[0].successful);
+
+    mb.intEncodedStatements.push_back(
+        gl::encodeExpression(
+            gl::EncodedExpression(P, std::string("main")), mb.nameMap));
+    ana.dischargeContradiction(mb, /*coreId=*/0);
+    ASSERT_FALSE(mb.isActive);
+    ASSERT_TRUE(ana.contradictionTable[0].successful);
 }
 
 TEST(equi_reshuffle, discharge_contradiction_inactive_noop) {

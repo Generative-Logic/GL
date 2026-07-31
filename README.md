@@ -66,10 +66,11 @@ For implementation depth — exact validity-stack semantics, the `K` mutual-excl
 | Logical transformations (Gauss) | shipped 2026-02 |
 | Case differentiation — branching 0.1 | shipped 2026-05 (FTA-ladder rung 1, `EnumerationSet2 ⟹ interval`) |
 | Runtime & memory — MPU 0.1 (static prover memory) | shipped 2026-07 (v0.9.0) |
+| Case differentiation — branching 0.2 | shipped 2026-07 (v0.10.0, FTA-ladder rungs 2 + 2.1: nested case analysis proves `{0,1,2} = [0,2]` and `{0,1,2} ≠ [0,1]`) |
 
 The next frontier — see [`docs/fta_ladder/README.md`](docs/fta_ladder/README.md) for the rung-by-rung index, and `docs/fta_ladder/rung<N>/current_proof_state.md` for any in-flight rung's live analysis trace:
 
-**Next release: v0.10.0 — incubator theorems that require branching.**
+**Next releases: v0.11.x — the lemmas leading up to FTA, and FTA itself.**
 
 - **Incubator-side ground facts** to filter statements about intervals and sequences — extensions of the rung-1 pattern to larger fixed sets, e.g. `{0,1,2}=[0,2]`, `{0,1,2,3}=[0,3]`, and analogous claims. These are the concrete-instance theorems the CE filter needs in order to kill false conjectures about general intervals and sequences before they reach the prover.
 - **Euclid's lemma**.
@@ -87,7 +88,7 @@ Verifier coverage: one entry per proof-graph tag in `verifier.py`'s `TAG_CHECKER
 
 There is only one run mode (previously called "Full Mode"). `python main.py` orchestrates the full ten-stage pipeline end-to-end (MPL definitions → conjecturer → CE filter → prover → compressor → process-proof-graph → HTML export → verifier; plus the incubator counterpart for ground-fact discovery). Each stage is documented in its own chapter under [`docs/agentic_swdd/10_pipeline/`](docs/agentic_swdd/10_pipeline/) — read those if you need to understand or modify a specific stage.
 
-Latest full Windows reference (2026-07-12, Dell G16 7630, MSVC): 1,478.95102 seconds (24 minutes 38.951 seconds), with 1,241/1,241 native unit tests, 352/352 verifier unit tests, and 131,886 proof checks passing with zero failures. The largest main static-pool high-water was 16,105 of 16,384 256-KiB blocks in `IncubatorGauss1`: 4,026.250 MiB of the 4,096-MiB reservation (98.297%). Other pools and process overhead are separate; these pool peaks are not additive. The Linux build needs `libmimalloc-dev` installed (see *Why mimalloc is required by default* in the build section).
+Latest full reference (2026-07-30, the v0.10.0 release gate, WSL Ubuntu native-ext4 copy of the working tree, g++): 1,137 seconds wall (18 minutes 57 seconds) for the full pipeline, with 138,948 main-pass and 17,452 incubator-pass proof checks, zero failures. Windows build gate on the same tree (MSVC): 1,345/1,345 native unit tests; Python-side suite 375/375. The Linux build needs `libmimalloc-dev` installed (see *Why mimalloc is required by default* in the build section).
 
 ## Prerequisites
 

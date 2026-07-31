@@ -37,7 +37,7 @@
     },
     "full_mpl": "(=[1,2])",
     "short_mpl": "(=[1,2])",
-    "max_count_per_conjecture": 1,
+    "max_count_per_conjecture": 2,
     "input_args": [
       "1",
       "2"
@@ -113,6 +113,37 @@
     ],
     "max_size_expression_before_existence": 5,
     "max_size_expression_after_existence": 5
+  },
+  "preorder": {
+    "arity": 4,
+    "definition_sets": {
+      "1": [
+        "P(1)",
+        false
+      ],
+      "2": [
+        "P(x(1)(x(1)(1)))",
+        false
+      ],
+      "3": [
+        "(1)",
+        true
+      ],
+      "4": [
+        "(1)",
+        true
+      ]
+    },
+    "full_mpl": "preorder.mpl",
+    "short_mpl": "(preorder[N,+,n,m])",
+    "max_count_per_conjecture": 2,
+    "input_args": [
+      "n",
+      "m"
+    ],
+    "output_args": [],
+    "max_size_expression_before_existence": 3,
+    "max_size_expression_after_existence": 3
   },
   "fXY": {
     "arity": 3,
@@ -234,11 +265,32 @@
     "max_size_expression_before_existence": 5,
     "max_size_expression_after_existence": 5
   },
-  "patterns_to_exclude": [],
+  "patterns_to_exclude": [
+    "\\(preorder\\[\\d+,\\d+,(?:[26],\\d+|\\d+,[26])\\]\\)",
+    "\\(preorder\\[\\d+,5,\\d+,\\d+\\]\\)",
+    "^(?=[^=]*[^!]\\(=\\[[^=]*[^!]\\(=\\[).*\\(in2?\\[",
+    "^(?=[^=]*[^!]\\(=\\[[^=]*[^!]\\(=\\[).*\\(preorder\\[",
+    "^[^=]*[^!]\\(=\\[[^=]*[^!]\\(=\\[(?!2,)[0-9]+,[0-9]+\\]\\)+$",
+    "^(?=[^=]*[^!]\\(=\\[[^=]*[^!]\\(=\\[)[^=]*\\(=\\[(?:[26],[0-9]+\\]|[0-9]+,[26]\\])"
+  ],
   "only_in_head": [],
-  "prohibited_combinations": [],
+  "prohibited_combinations": [
+    [
+      "preorder",
+      "in"
+    ],
+    [
+      "preorder",
+      "in2"
+    ],
+    [
+      "preorder",
+      "in3"
+    ]
+  ],
   "prohibited_heads": [
-    "in"
+    "in",
+    "preorder"
   ],
   "parameters": {
     "min_number_simple_expressions": 2,
@@ -310,7 +362,6 @@
     "maxIterationNumberVariable": 1,
     "standardMaxSecondaryNumber": 1,
     "trackHistory": true,
-    "standardMaxAdmissionDepth": 0,
     "inductionMaxAdmissionDepth": 1,
     "inductionMaxSecondaryNumber": 2,
     "counterExampleBoundary": 6,
@@ -319,6 +370,9 @@
     "debug": false,
     "max_origin_per_expr": 30,
     "compressor_max_origins_per_expr": 30,
+    "try_contradiction": true,
+    "try_contradiction_negated_head": true,
+    "mirror_refutation": true,
     "allow_multiplication": false,
     "max_partition_size": 1,
     "max_or_depth": 1

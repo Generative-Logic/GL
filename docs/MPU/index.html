@@ -190,15 +190,15 @@ exploring a tree. Inference is a <b>memory-access problem</b>.
 <p>That single design choice fixes the datapath, and the datapath is friendly:</p>
 
 <div class="stats">
-  <div class="stat"><div class="big">16-bit</div><div class="lbl">symbol &amp; scope ids (the working width). 32-bit packed statement keys; 64-bit hash digests.</div></div>
+  <div class="stat"><div class="big">32-bit</div><div class="lbl">symbol &amp; scope ids (the working width). 64-bit packed statement keys; 64-bit hash digests.</div></div>
   <div class="stat"><div class="big">0</div><div class="lbl">floating-point operations on the proof path. None. (The whole prover has one FP compare, and it only picks how to split work.)</div></div>
-  <div class="stat"><div class="big">176 B</div><div class="lbl">one statement line (<code>IntEncodedExpr</code>) — a fixed, all-int16 record. The natural SRAM line / register width.</div></div>
+  <div class="stat"><div class="big">352 B</div><div class="lbl">one statement line (<code>IntEncodedExpr</code>) — a fixed, all-int32 record. The natural SRAM line / register width.</div></div>
   <div class="stat"><div class="big">FNV-1a</div><div class="lbl">the hash — a per-byte XOR-then-multiply. A few gates, one pipelined multiplier.</div></div>
 </div>
 
 <p>
 A statement line is a fixed-capacity record: a name id, a handful of flags, and
-up to <b>16 arguments</b> (<code>MAX_ARITY</code>), each a 16-bit id — all int16,
+up to <b>16 arguments</b> (<code>MAX_ARITY</code>), each a 32-bit id — all int32,
 176 bytes, identical shape for every fact in the system. A hash key holds up to
 <b>8 sub-expressions</b> of those. There are no variable-length structures and no
 pointers in the hot record: the engine compares ids, tests set membership and
@@ -278,7 +278,7 @@ the rest.
   <!-- hash engine (ALU) -->
   <rect x="280" y="56" width="220" height="120" rx="9" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
   <text x="390" y="78" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">hash-inference engine</text>
-  <text x="390" y="93" fill="#8B8FA5" font-size="9.5" text-anchor="middle">the "ALU" · int16 + FNV only</text>
+  <text x="390" y="93" fill="#8B8FA5" font-size="9.5" text-anchor="middle">the "ALU" · int32 + FNV only</text>
   <text x="390" y="116" fill="#F0E8DC" font-size="9.5" text-anchor="middle">FNV-1a key → table lookup</text>
   <text x="390" y="131" fill="#F0E8DC" font-size="9.5" text-anchor="middle">subset / membership compare</text>
   <text x="390" y="146" fill="#F0E8DC" font-size="9.5" text-anchor="middle">bind args · admission gate</text>
@@ -289,7 +289,7 @@ the rest.
   <text x="620" y="78" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">register file</text>
   <text x="620" y="93" fill="#8B8FA5" font-size="9.5" text-anchor="middle">known statements</text>
   <g font-size="8">
-    <rect x="536" y="104" width="168" height="14" rx="2" fill="#1C1F2B" stroke="#3A3D4A"/><text x="620" y="114" fill="#8B8FA5" text-anchor="middle">IntEncodedExpr line · 176 B · all int16</text>
+    <rect x="536" y="104" width="168" height="14" rx="2" fill="#1C1F2B" stroke="#3A3D4A"/><text x="620" y="114" fill="#8B8FA5" text-anchor="middle">IntEncodedExpr line · 352 B · all int32</text>
     <rect x="536" y="120" width="168" height="14" rx="2" fill="#1C1F2B" stroke="#3A3D4A"/><text x="620" y="130" fill="#8B8FA5" text-anchor="middle">name · flags · ≤16 arg ids</text>
     <rect x="536" y="136" width="168" height="14" rx="2" fill="#1C1F2B" stroke="#3A3D4A"/><text x="620" y="146" fill="#8B8FA5" text-anchor="middle">…</text>
     <rect x="536" y="152" width="168" height="14" rx="2" fill="#1C1F2B" stroke="#3A3D4A"/><text x="620" y="162" fill="#8B8FA5" text-anchor="middle">fixed-width rows</text>
@@ -372,14 +372,14 @@ physical memory bank:
 
 <table>
 <tr><th>Pool</th><th>Size (provisioned)</th><th>Block</th><th>Backs</th><th>Deloads to SSD?</th></tr>
-<tr><td><b>Main</b></td><td class="num">4 GiB</td><td class="num">256 KiB</td><td>all per-LB working containers (the bump arena)</td><td><b>yes</b></td></tr>
+<tr><td><b>Main</b></td><td class="num">12 GiB</td><td class="num">256 KiB</td><td>all per-LB working containers (the bump arena)</td><td><b>yes</b></td></tr>
 <tr><td><b>Persistent</b></td><td class="num">1 GiB</td><td class="num">32 KiB</td><td>the goal registry — kept always-resident so deactivation logic can read it while a block is cold</td><td>no</td></tr>
 <tr><td><b>Mail</b></td><td class="num">2 GiB</td><td class="num">256 KiB</td><td>the cross-block mail log (who sent what to whom)</td><td>no</td></tr>
 <tr><td><b>LB-body</b></td><td class="num">2 GiB</td><td class="num">256 KiB</td><td>the block objects themselves (fixed slots, never moved)</td><td>no</td></tr>
 </table>
 
 <p>
-Total program-start reservation: <b>9 GiB</b>, fixed. These are <i>ceilings</i>,
+Total program-start reservation: <b>17 GiB</b>, fixed. These are <i>ceilings</i>,
 not consumption — the sizing knob you would tune for a real part is the
 <i>measured peak</i>, which §7 puts (from the booklet's own dated figures) at
 roughly 1 GB for the named theorem batches and ~4–5 GB for the heaviest exploration
@@ -394,7 +394,7 @@ is the whole reason the cost story has a hot tier and a cold tier.
   <defs><marker id="h2-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
 
   <rect x="20" y="14" width="720" height="96" rx="10" fill="#1C1F2B" stroke="#EF9F27" stroke-width="2"/>
-  <text x="380" y="36" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">POOL — one reservation at start-up (Main = 4 GiB = 16384 blocks)</text>
+  <text x="380" y="36" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">POOL — one reservation at start-up (Main = 12 GiB = 49152 blocks)</text>
   <text x="380" y="52" fill="#8B8FA5" font-size="9.5" text-anchor="middle">the software model of the SRAM-macro fabric — block == one 256 KiB SRAM · carved under one mutex · never grown</text>
   <g font-size="8.5">
     <rect x="40"  y="64" width="64" height="32" rx="4" fill="#262938" stroke="#5DCAA5"/><text x="72"  y="84" fill="#5DCAA5" text-anchor="middle">LB A</text>
@@ -953,8 +953,8 @@ further.</figcaption>
 <table class="map">
 <tr><th>GL concept</th><th>Silicon</th><th>Note</th></tr>
 <tr><td>logic block</td><td>a core</td><td>logically self-contained; peers exchange only via mail (shared pools underneath)</td></tr>
-<tr><td>hash-inference engine</td><td>match-and-emit datapath</td><td>FNV unit + int16 compare/subset; no FPU</td></tr>
-<tr><td>known statements</td><td>register file / SRAM lines</td><td>fixed 176-byte all-int16 records</td></tr>
+<tr><td>hash-inference engine</td><td>match-and-emit datapath</td><td>FNV unit + int32 compare/subset; no FPU</td></tr>
+<tr><td>known statements</td><td>register file / SRAM lines</td><td>fixed 352-byte all-int32 records</td></tr>
 <tr><td>per-LB containers</td><td>blocks in the SRAM-macro fabric (block == SRAM)</td><td>virtual-offset = (macro-select, intra-macro address)</td></tr>
 <tr><td>phase-2 split parts</td><td>compute lanes per core</td><td>read-only; merged by a sort</td></tr>
 <tr><td>mail (pull from ancestors)</td><td>any-to-any memory NoC</td><td>tree = access pattern, not wiring; the root log is a hotspot</td></tr>
@@ -1046,7 +1046,7 @@ RAM ceiling into a cheap, deep SSD that is, for practical purposes, unlimited.
 <h3>7.2 · Compute — small, and that's the good news</h3>
 <p>
 A single LB core is modest: an FNV-1a hasher (a pipelined multiplier and some
-XORs), int16 comparators, set-subset/membership logic, a small register file for
+XORs), int32 comparators, set-subset/membership logic, a small register file for
 statement lines, a control FSM, and one or more phase-2 lanes. There is no
 floating-point unit, no wide vector engine, no matrix array. In gate terms this is
 small — comparable to a simple integer core, not a CPU or a GPU shader. The
@@ -1303,15 +1303,15 @@ this is what it means: treat ±2× as normal.
 <h3>A · GL sizing constants — code/log-derived (update with the code)</h3>
 <table>
 <tr><th>Constant</th><th>Value</th><th>Source / note</th></tr>
-<tr><td>Main pool (deloadable)</td><td class="num">4 GiB</td><td>16384 × 256 KiB blocks; 8 KiB pages; includes per-LB mailOut + private ids</td></tr>
+<tr><td>Main pool (deloadable)</td><td class="num">12 GiB</td><td>49152 × 256 KiB blocks; 8 KiB pages; includes per-LB mailOut + private ids</td></tr>
 <tr><td>Persistent pool</td><td class="num">1 GiB</td><td>goal registry; never deloaded</td></tr>
 <tr><td>Mail pool</td><td class="num">2 GiB</td><td>mailIn + cross-block log/global ids; never deloaded, rolling when safe</td></tr>
 <tr><td>LB-body pool</td><td class="num">2 GiB</td><td>block objects; never deloaded</td></tr>
 <tr><td>Per-worker scratch</td><td class="num">transient</td><td>cold-grant from the main pool, released per worker task</td></tr>
-<tr><td><b>Total reservation</b></td><td class="num"><b>9 GiB</b></td><td>fixed at start-up, never grown</td></tr>
+<tr><td><b>Total reservation</b></td><td class="num"><b>17 GiB</b></td><td>fixed at start-up, never grown</td></tr>
 <tr><td>Address resolve</td><td class="num">off&gt;&gt;18 · off&amp;0x3FFFF</td><td>1 shift + 1 mask + 1 add (per-LB MMU)</td></tr>
-<tr><td>Statement line</td><td class="num">176 B, all int16</td><td>fixed record; ≤16 args</td></tr>
-<tr><td>Datapath widths</td><td class="num">16 / 32 / 64-bit</td><td>ids / packed keys / FNV digest</td></tr>
+<tr><td>Statement line</td><td class="num">352 B, all int32</td><td>fixed record; ≤16 args</td></tr>
+<tr><td>Datapath widths</td><td class="num">32 / 64 / 64-bit</td><td>ids / packed keys / FNV digest</td></tr>
 <tr><td>Hash</td><td class="num">FNV-1a 64-bit</td><td>per-byte XOR-then-multiply</td></tr>
 <tr><td>Pager reserve</td><td class="num">2048 blocks</td><td>512-block emergency floor; two-tier farthest-next-use eviction outside the worker-scaled keep window</td></tr>
 <tr><td>Floating-point on proof path</td><td class="num">0</td><td>one FP compare exists, only to pick split granularity</td></tr>

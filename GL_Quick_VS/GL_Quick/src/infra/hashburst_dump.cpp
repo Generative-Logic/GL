@@ -163,7 +163,7 @@ namespace hashburst_dump {
                                   AdmissionValueSet>> rows;
             rows.reserve(am.count());
             for (int32_t id = 1; id <= am.count(); ++id) {
-                const int32_t pk = am.keyAt(id);
+                const int64_t pk = am.keyAt(id);
                 rows.emplace_back(decodeTemplateKey(pk, body.templateInterner, body.nameMap),
                                   admissionRecordsAt(am, pk, body.valueInterner));
             }
@@ -304,7 +304,7 @@ namespace hashburst_dump {
         /// @param nm The LB's NameMap.
         /// @param id Candidate id.
         /// @return Whether @p id is a printable row.
-        static bool nameInRange(const NameMap& nm, int16_t id) {
+        static bool nameInRange(const NameMap& nm, NameId id) {
             return id >= 0 && static_cast<int32_t>(id) <= nm.nameCount();
         }
 
@@ -314,7 +314,7 @@ namespace hashburst_dump {
         /// @param nm The LB's NameMap.
         /// @param id An id satisfying `nameInRange`.
         /// @return The name (owned copy).
-        static std::string nameAt(const NameMap& nm, int16_t id) {
+        static std::string nameAt(const NameMap& nm, NameId id) {
             return id == 0 ? std::string() : nm.decode(id);
         }
 
@@ -331,7 +331,7 @@ namespace hashburst_dump {
             for (std::size_t id = 0; id < nameRows; ++id) {
                 f << "  [" << id << "] "
                   << (id == 0 ? std::string()
-                              : nm.decode(static_cast<int16_t>(id)))
+                              : nm.decode(static_cast<NameId>(id)))
                   << "\n";
             }
             const std::size_t subRows =
@@ -341,26 +341,26 @@ namespace hashburst_dump {
             for (std::size_t id = 0; id < subRows; ++id) {
                 f << "  [" << id << "] "
                   << (id == 0 ? std::string()
-                              : nm.decodeSub(static_cast<int16_t>(id)))
+                              : nm.decodeSub(static_cast<NameId>(id)))
                   << "\n";
             }
             f << "-- nameMap.stackOfValidity (" << nm.stackSize() << "):\n";
             for (int32_t id = 0; id < nm.stackSize(); ++id) {
                 f << "  [" << id << "] {";
-                const int32_t stLen = nm.stackLen(static_cast<int16_t>(id));
+                const int32_t stLen = nm.stackLen(static_cast<NameId>(id));
                 for (int32_t i = 0; i < stLen; ++i) {
                     if (i) f << ",";
-                    f << nm.stackAt(static_cast<int16_t>(id), i);
+                    f << nm.stackAt(static_cast<NameId>(id), i);
                 }
                 f << "}\n";
             }
             f << "-- nameMap.ancestorsOf (" << nm.ancSize() << "):\n";
             for (int32_t id = 0; id < nm.ancSize(); ++id) {
                 f << "  [" << id << "] {";
-                const int32_t anLen = nm.ancLen(static_cast<int16_t>(id));
+                const int32_t anLen = nm.ancLen(static_cast<NameId>(id));
                 for (int32_t i = 0; i < anLen; ++i) {
                     if (i) f << ",";
-                    f << nm.ancAt(static_cast<int16_t>(id), i);
+                    f << nm.ancAt(static_cast<NameId>(id), i);
                 }
                 f << "}\n";
             }
@@ -379,11 +379,9 @@ namespace hashburst_dump {
             const int32_t levN = body.intStatementLevelsMap.count();
             rows.reserve(static_cast<std::size_t>(levN));
             for (int32_t id = 1; id <= levN; ++id) {
-                const int32_t key = body.intStatementLevelsMap.keyAt(id);
-                const int16_t origId = static_cast<int16_t>(
-                    (static_cast<uint32_t>(key) >> 16) & 0xFFFF);
-                const int16_t valId = static_cast<int16_t>(
-                    static_cast<uint32_t>(key) & 0xFFFF);
+                const int64_t key = body.intStatementLevelsMap.keyAt(id);
+                const NameId origId = Codec<StatementKey>::decode(key).orig;
+                const NameId valId = Codec<StatementKey>::decode(key).validity;
                 rows.emplace_back(
                     std::make_pair(body.nameMap.decode(origId),
                                    body.nameMap.decode(valId)),
@@ -410,11 +408,9 @@ namespace hashburst_dump {
             rows.reserve(body.intKnownStatements.count());
             for (int32_t i = 1; i <= body.intKnownStatements.count(); ++i) {
                 if (!body.intKnownStatements.valueAt(i).registered) continue;
-                const int32_t key = body.intKnownStatements.keyAt(i);
-                const int16_t origId = static_cast<int16_t>(
-                    (static_cast<uint32_t>(key) >> 16) & 0xFFFF);
-                const int16_t valId = static_cast<int16_t>(
-                    static_cast<uint32_t>(key) & 0xFFFF);
+                const int64_t key = body.intKnownStatements.keyAt(i);
+                const NameId origId = Codec<StatementKey>::decode(key).orig;
+                const NameId valId = Codec<StatementKey>::decode(key).validity;
                 rows.emplace_back(body.nameMap.decode(origId),
                                   body.nameMap.decode(valId));
             }
@@ -446,7 +442,7 @@ namespace hashburst_dump {
             // Section contract: the `known`-membership rows (the Site F
             // dedup record). The packed map also carries registered-only
             // rows, which belong to the wholeExpressions section.
-            std::vector<int32_t> keys;
+            std::vector<int64_t> keys;
             keys.reserve(body.intKnownStatements.count());
             for (int32_t i = 1; i <= body.intKnownStatements.count(); ++i)
                 if (body.intKnownStatements.valueAt(i).known)
@@ -454,9 +450,9 @@ namespace hashburst_dump {
             std::sort(keys.begin(), keys.end());
             f << "-- intKnownStatements (" << keys.size()
               << " packed (origId,validityId) keys):\n";
-            for (int32_t k : keys) {
-                const int16_t origId  = static_cast<int16_t>((static_cast<uint32_t>(k) >> 16) & 0xFFFF);
-                const int16_t valId   = static_cast<int16_t>(static_cast<uint32_t>(k) & 0xFFFF);
+            for (int64_t k : keys) {
+                const NameId origId  = Codec<StatementKey>::decode(k).orig;
+                const NameId valId   = Codec<StatementKey>::decode(k).validity;
                 f << "  origId=" << origId << " valId=" << valId;
                 if (nameInRange(body.nameMap, origId))
                     f << " orig=" << nameAt(body.nameMap, origId);
@@ -476,7 +472,7 @@ namespace hashburst_dump {
             const int32_t eqKeyCount = body.equivalenceClassesMap.count();
             rows.reserve(static_cast<std::size_t>(eqKeyCount));
             for (int32_t kid = 1; kid <= eqKeyCount; ++kid) {
-                const int16_t vId = body.equivalenceClassesMap.keyAt(kid);
+                const NameId vId = body.equivalenceClassesMap.keyAt(kid);
                 rows.emplace_back(std::string(body.nameMap.decode(vId)),
                                   body.decodeClassesById(vId));
             }
@@ -491,12 +487,32 @@ namespace hashburst_dump {
                     const auto& ec = classes[ci];
                     f << "    [" << ci << "] vars={";
                     bool first = true;
-                    for (const int16_t mid : ec.memberIds) {
+                    for (const NameId mid : ec.memberIds) {
                         if (!first) f << ",";
                         f << body.nameMap.decode(mid);
                         first = false;
                     }
                     f << "}\n";
+                    // Per-class equalityOriginMap (user-directed Rule-14
+                    // extension): decoded + key-sorted derived view, same
+                    // row format as exprOriginMap — the class-side origin
+                    // record rides the LB's originInterner space (D-131),
+                    // so the same decoder applies.
+                    f << "      equalityOriginMap ("
+                      << ec.equalityOriginMap.size() << "):\n";
+                    const auto originRows = decodeOriginMapSorted(
+                        ec.equalityOriginMap, body.originInterner);
+                    for (const auto& row : originRows) {
+                        f << "      " << row.first.first
+                          << " | v=" << row.first.second << "\n";
+                        for (const auto& [tag, deps] : row.second) {
+                            f << "        <- " << tag;
+                            for (const auto& d : deps)
+                                f << " | " << d.original
+                                  << " (v=" << d.validityName << ")";
+                            f << "\n";
+                        }
+                    }
                 }
             }
         }
@@ -505,7 +521,7 @@ namespace hashburst_dump {
             // Derived views (Rule 14): decoded + lex-sorted — identical
             // bytes to the former EWV-set / string-map iterations.
             auto writePackedTemplateSection = [&](const char* name,
-                                                  const ColdHashSet<PodKeyStore<int32_t>>& c) {
+                                                  const ColdHashSet<PodKeyStore<int64_t>>& c) {
                 f << "-- " << name << " (" << c.count() << "):\n";
                 std::vector<std::pair<std::string, std::string>> rows;
                 rows.reserve(c.count());
@@ -566,10 +582,10 @@ namespace hashburst_dump {
             std::vector<std::pair<std::string, std::string>> rows;
             rows.reserve(body.intWeakVariables.count());
             for (int32_t i = 1; i <= body.intWeakVariables.count(); ++i) {
-                const int32_t pk = body.intWeakVariables.decode(i);
+                const int64_t pk = body.intWeakVariables.decode(i);
                 rows.emplace_back(
-                    std::string(body.nameMap.decode(static_cast<int16_t>((pk >> 16) & 0xFFFF))),
-                    std::string(body.nameMap.decode(static_cast<int16_t>(pk & 0xFFFF))));
+                    std::string(body.nameMap.decode(Codec<StatementKey>::decode(pk).orig)),
+                    std::string(body.nameMap.decode(Codec<StatementKey>::decode(pk).validity)));
             }
             std::sort(rows.begin(), rows.end());
             for (const auto& [orig, val] : rows) {
@@ -583,36 +599,48 @@ namespace hashburst_dump {
             // empty section keeps the Rule-14 row format byte-identical.
             f << "-- orAdmissionSet (0):\n";
             f << "-- orBookkeeping (" << body.orBookkeeping.count() << "):\n";
-            // Derived view (Rule 14): decoded + (expr, orSig) lex-sorted —
-            // identical bytes to the former std::map iteration; the cold run
-            // is decoded-lex ordered storage already (insertSorted +
-            // DecodedIdLess), so the per-disjunct run order is iterated as-is
-            // (never coldIntSetAt, which would re-sort by raw int).
+            // Derived view (Rule 14): decoded + (expr, parent, orSig)
+            // lex-sorted. The cold run is decoded-lex ordered storage already
+            // (insertSorted + DecodedIdLess), so the per-disjunct run order is
+            // iterated as-is (never coldIntSetAt, which would re-sort by raw
+            // int). The user-approved parent field exposes the scoped cohort.
             {
-                std::vector<std::pair<std::pair<std::string, std::string>,
-                                      std::vector<int32_t>>> obRows;
+                struct OrBookkeepingDumpRow {
+                    std::string expr;
+                    std::string parent;
+                    std::string orSig;
+                    std::vector<int32_t> disjuncts;
+                };
+                std::vector<OrBookkeepingDumpRow> obRows;
                 const int32_t obN = body.orBookkeeping.count();
                 obRows.reserve(static_cast<std::size_t>(obN));
                 for (int32_t id = 1; id <= obN; ++id) {
-                    const int64_t pk = body.orBookkeeping.keyAt(id);
+                    const LbStatePairKey key = Codec<LbStatePairKey>::decode(
+                        body.orBookkeeping.keyAt(id));
+                    const LbStatePairKey cohort =
+                        decodeOrCohortIds(body.lbStateInterner, key.low);
                     std::vector<int32_t> djs;
                     const int32_t rl = body.orBookkeeping.runLen(id);
                     for (int32_t j = 0; j < rl; ++j)
                         djs.push_back(body.orBookkeeping.valueAt(id, j));
-                    obRows.emplace_back(std::make_pair(
-                        std::string(body.lbStateInterner.decode(
-                            static_cast<int32_t>(static_cast<uint64_t>(pk) >> 32))),
-                        std::string(body.lbStateInterner.decode(
-                            static_cast<int32_t>(pk & 0xFFFFFFFFLL)))),
-                        std::move(djs));
+                    obRows.push_back({
+                        std::string(body.lbStateInterner.decode(key.high)),
+                        std::string(body.lbStateInterner.decode(cohort.high)),
+                        std::string(body.lbStateInterner.decode(cohort.low)),
+                        std::move(djs) });
                 }
                 std::sort(obRows.begin(), obRows.end(),
-                    [](const auto& a, const auto& b) { return a.first < b.first; });
+                    [](const auto& a, const auto& b) {
+                        if (a.expr != b.expr) return a.expr < b.expr;
+                        if (a.parent != b.parent) return a.parent < b.parent;
+                        return a.orSig < b.orSig;
+                    });
                 for (const auto& row : obRows) {
-                    f << "  expr=" << row.first.first << " | orSig=" << row.first.second
+                    f << "  expr=" << row.expr << " | parent=" << row.parent
+                      << " | orSig=" << row.orSig
                       << " | disjuncts={";
                     bool first = true;
-                    for (const int32_t d : row.second) {
+                    for (const int32_t d : row.disjuncts) {
                         if (!first) f << ",";
                         f << body.lbStateInterner.decode(d);
                         first = false;
@@ -622,17 +650,29 @@ namespace hashburst_dump {
             }
             f << "-- orDisjunctCount (" << body.orDisjunctCount.count() << "):\n";
             {
-                std::vector<std::pair<std::string, int>> dcRows;
+                struct OrDisjunctCountDumpRow {
+                    std::string parent;
+                    std::string orSig;
+                    int count;
+                };
+                std::vector<OrDisjunctCountDumpRow> dcRows;
                 dcRows.reserve(body.orDisjunctCount.count());
                 for (int32_t i = 1; i <= body.orDisjunctCount.count(); ++i) {
-                    dcRows.emplace_back(
-                        std::string(body.lbStateInterner.decode(
-                            body.orDisjunctCount.keyAt(i))),
-                        body.orDisjunctCount.valueAt(i));
+                    const LbStatePairKey cohort = decodeOrCohortIds(
+                        body.lbStateInterner, body.orDisjunctCount.keyAt(i));
+                    dcRows.push_back({
+                        std::string(body.lbStateInterner.decode(cohort.high)),
+                        std::string(body.lbStateInterner.decode(cohort.low)),
+                        body.orDisjunctCount.valueAt(i) });
                 }
-                std::sort(dcRows.begin(), dcRows.end());
-                for (const auto& [sig, cnt] : dcRows) {
-                    f << "  " << sig << " | count=" << cnt << "\n";
+                std::sort(dcRows.begin(), dcRows.end(),
+                    [](const auto& a, const auto& b) {
+                        if (a.parent != b.parent) return a.parent < b.parent;
+                        return a.orSig < b.orSig;
+                    });
+                for (const auto& row : dcRows) {
+                    f << "  parent=" << row.parent << " | orSig=" << row.orSig
+                      << " | count=" << row.count << "\n";
                 }
             }
         }
@@ -645,12 +685,12 @@ namespace hashburst_dump {
             f << "-- intValidityNamesToFilter (" << body.intValidityNamesToFilter.count()
               << "):\n";
             {
-                std::vector<int16_t> ids;
+                std::vector<NameId> ids;
                 ids.reserve(body.intValidityNamesToFilter.count());
                 for (int32_t i = 1; i <= body.intValidityNamesToFilter.count(); ++i)
                     ids.push_back(body.intValidityNamesToFilter.decode(i));
                 std::sort(ids.begin(), ids.end());
-                for (int16_t id : ids) {
+                for (NameId id : ids) {
                     f << "  id=" << id;
                     if (nameInRange(body.nameMap, id))
                         f << " v=" << nameAt(body.nameMap, id);
@@ -659,12 +699,12 @@ namespace hashburst_dump {
             }
             f << "-- pendingWipeScopes (" << body.pendingWipeScopes.count() << "):\n";
             {
-                std::vector<int16_t> pw;
+                std::vector<NameId> pw;
                 pw.reserve(body.pendingWipeScopes.count());
                 for (int32_t i = 1; i <= body.pendingWipeScopes.count(); ++i)
                     pw.push_back(body.pendingWipeScopes.decode(i));
                 std::sort(pw.begin(), pw.end());
-                for (const int16_t v : pw) f << "  " << v << "\n";
+                for (const NameId v : pw) f << "  " << v << "\n";
             }
             // Section contract: decoded names in lexicographic order
             // (Rule-14 byte format); sourced from the id sets.
@@ -701,12 +741,12 @@ namespace hashburst_dump {
             }
             f << "-- intAxedVariables (" << body.intAxedVariables.count() << "):\n";
             {
-                std::vector<int16_t> ids;
+                std::vector<NameId> ids;
                 ids.reserve(body.intAxedVariables.count());
                 for (int32_t i = 1; i <= body.intAxedVariables.count(); ++i)
                     ids.push_back(body.intAxedVariables.decode(i));
                 std::sort(ids.begin(), ids.end());
-                for (int16_t id : ids) {
+                for (NameId id : ids) {
                     f << "  id=" << id;
                     if (nameInRange(body.nameMap, id))
                         f << " name=" << nameAt(body.nameMap, id);
@@ -817,7 +857,7 @@ namespace hashburst_dump {
             auto writeIntKey = [&](const IntNormalizedKey& k) {
                 f << "{nExpr=" << k.numberExpressions << " len=" << k.length
                   << " data=[";
-                for (int16_t i = 0; i < k.length; ++i) {
+                for (NameId i = 0; i < k.length; ++i) {
                     if (i) f << ",";
                     f << k.data[i];
                 }
@@ -849,7 +889,7 @@ namespace hashburst_dump {
                 for (const auto& [k, ownerSet] : rows) {
                     f << "  key=";
                     const IntNormalizedKey ik(k.numberExpressions, k.data.data(),
-                        static_cast<int16_t>(k.data.size()));
+                        static_cast<NameId>(k.data.size()));
                     writeIntKey(ik);
                     f << " | owners=" << ownerSet.partitionIds.size() << " | {";
                     // Derived view (Rule 14): both halves of each packed
@@ -858,12 +898,10 @@ namespace hashburst_dump {
                     // former owners-map iteration order.
                     std::vector<std::pair<std::string, std::string>> ownerRows;
                     ownerRows.reserve(ownerSet.partitionIds.size());
-                    for (const int32_t ownerId : ownerSet.partitionIds) {
+                    for (const int64_t ownerId : ownerSet.partitionIds) {
                         ownerRows.emplace_back(
-                            std::string(nm.decode(static_cast<int16_t>(
-                                static_cast<uint32_t>(ownerId) >> 16))),
-                            std::string(nm.decode(
-                                static_cast<int16_t>(ownerId & 0xFFFF))));
+                            std::string(nm.decode(Codec<StatementKey>::decode(ownerId).orig)),
+                            std::string(nm.decode(Codec<StatementKey>::decode(ownerId).validity)));
                     }
                     std::sort(ownerRows.begin(), ownerRows.end());
                     bool first = true;
@@ -887,7 +925,7 @@ namespace hashburst_dump {
             // canonical form), the inner NormKeys lex-sorted by (numberExpressions,
             // data). Per-key format (writeIntKey) unchanged.
             {
-                std::vector<std::pair<std::vector<int16_t>, std::vector<NormKey>>> raRows;
+                std::vector<std::pair<std::vector<NameId>, std::vector<NormKey>>> raRows;
                 raRows.reserve(static_cast<std::size_t>(
                     hm.remainingArgsNormalizedEncodedMap.count()));
                 for (int32_t id = 1;
@@ -897,14 +935,14 @@ namespace hashburst_dump {
                         hm.remainingArgsNormalizedEncodedMap.recordsAt(id));
                 }
                 std::sort(raRows.begin(), raRows.end(),
-                    [](const std::pair<std::vector<int16_t>, std::vector<NormKey>>& a,
-                       const std::pair<std::vector<int16_t>, std::vector<NormKey>>& b) {
+                    [](const std::pair<std::vector<NameId>, std::vector<NormKey>>& a,
+                       const std::pair<std::vector<NameId>, std::vector<NormKey>>& b) {
                         return a.first < b.first;
                     });
                 for (auto& [argSet, keys] : raRows) {
                     f << "  remainingArgs={";
                     bool first = true;
-                    for (int16_t a : argSet) { if (!first) f << ","; f << a; first = false; }
+                    for (NameId a : argSet) { if (!first) f << ","; f << a; first = false; }
                     f << "} | keys=" << keys.size() << "\n";
                     std::sort(keys.begin(), keys.end(),
                         [](const NormKey& a, const NormKey& b) {
@@ -915,7 +953,7 @@ namespace hashburst_dump {
                     for (const NormKey& k : keys) {
                         f << "    ";
                         const IntNormalizedKey ik(k.numberExpressions,
-                            k.data.data(), static_cast<int16_t>(k.data.size()));
+                            k.data.data(), static_cast<NameId>(k.data.size()));
                         writeIntKey(ik);
                         f << "\n";
                     }
@@ -929,7 +967,7 @@ namespace hashburst_dump {
                                   AdmissionValueSet>> amRows;
             amRows.reserve(hm.admissionMap.count());
             for (int32_t id = 1; id <= hm.admissionMap.count(); ++id) {
-                const int32_t pk = hm.admissionMap.keyAt(id);
+                const int64_t pk = hm.admissionMap.keyAt(id);
                 amRows.emplace_back(decodeTemplateKey(pk, ti, nm),
                                     admissionRecordsAt(hm.admissionMap, pk, valIn));
             }
@@ -974,7 +1012,7 @@ namespace hashburst_dump {
                                   IntegrationEntryMap>> amiRows;
             amiRows.reserve(hm.admissionMapIntegration.count());
             for (int32_t id = 1; id <= hm.admissionMapIntegration.count(); ++id) {
-                const int32_t pk = hm.admissionMapIntegration.keyAt(id);
+                const int64_t pk = hm.admissionMapIntegration.keyAt(id);
                 amiRows.emplace_back(decodeTemplateKey(pk, ti, nm),
                                      admissionIntegrationRecordsAt(
                                          hm.admissionMapIntegration, pk, valIn));
@@ -1006,7 +1044,7 @@ namespace hashburst_dump {
                 // Derived views (Rule 14): decoded lex-sorted — identical
                 // bytes to the former EWV std::set iteration.
                 auto writePackedSection = [&](const char* name,
-                                              const TypedColdSet<int32_t>& c) {
+                                              const TypedColdSet<int64_t>& c) {
                     f << "-- " << tag << "." << name << " (" << c.count() << "):\n";
                     std::vector<std::pair<std::string, std::string>> setRows;
                     setRows.reserve(c.count());
@@ -1030,7 +1068,7 @@ namespace hashburst_dump {
                                   RejectedValueSet>> rmRows;
             rmRows.reserve(hm.rejectedMap.count());
             for (int32_t id = 1; id <= hm.rejectedMap.count(); ++id) {
-                const int32_t pk = hm.rejectedMap.keyAt(id);
+                const int64_t pk = hm.rejectedMap.keyAt(id);
                 rmRows.emplace_back(decodeTemplateKey(pk, ti, nm),
                                     rejectedRecordsAt(hm.rejectedMap, pk, valIn));
             }
@@ -1067,7 +1105,7 @@ namespace hashburst_dump {
                                   RejectedIntegrationValueSet>> rmiRows;
             rmiRows.reserve(hm.rejectedMapIntegration.count());
             for (int32_t id = 1; id <= hm.rejectedMapIntegration.count(); ++id) {
-                const int32_t pk = hm.rejectedMapIntegration.keyAt(id);
+                const int64_t pk = hm.rejectedMapIntegration.keyAt(id);
                 rmiRows.emplace_back(decodeTemplateKey(pk, ti, nm),
                                      rejectedIntegrationRecordsAt(
                                          hm.rejectedMapIntegration, pk, valIn));
@@ -1101,7 +1139,7 @@ namespace hashburst_dump {
             // Decoded names, lex-sorted, read off the cold key column
             // (D-172).
             auto writeColdTemplateIdSet = [&](const char* name,
-                                              const TypedColdSet<int16_t>& c) {
+                                              const TypedColdSet<NameId>& c) {
                 f << "-- " << tag << "." << name << " (" << c.count() << "):\n";
                 std::vector<std::string> names;
                 names.reserve(c.count());
@@ -1121,7 +1159,7 @@ namespace hashburst_dump {
                 std::vector<std::pair<std::pair<std::string, std::string>, bool>> stRows;
                 stRows.reserve(hm.admissionStatusMap.count());
                 for (int32_t id = 1; id <= hm.admissionStatusMap.count(); ++id) {
-                    const int32_t pk = hm.admissionStatusMap.keyAt(id);
+                    const int64_t pk = hm.admissionStatusMap.keyAt(id);
                     stRows.emplace_back(decodeTemplateKey(pk, ti, nm),
                                         hm.admissionStatusMap.valueAt(id) != 0);
                 }
@@ -1154,17 +1192,17 @@ namespace hashburst_dump {
             // unordered_set raw-iteration order is gone; sorted is the
             // deterministic canonical form (D-173).
             {
-                std::vector<int16_t> prodRecIdsSorted;
+                std::vector<NameId> prodRecIdsSorted;
                 prodRecIdsSorted.reserve(hm.productsOfRecursionIds.count());
                 for (int32_t i = 1; i <= hm.productsOfRecursionIds.count(); ++i)
                     prodRecIdsSorted.push_back(hm.productsOfRecursionIds.keyAt(i));
                 std::sort(prodRecIdsSorted.begin(), prodRecIdsSorted.end());
-                for (int16_t id : prodRecIdsSorted) f << "  " << id << "\n";
+                for (NameId id : prodRecIdsSorted) f << "  " << id << "\n";
             }
             // Cold-set variant (D-172): the derived
             // view (decoded (template, validity), lex-sorted) off the cold keys.
             auto writeColdPackedTemplateSet = [&](const char* name,
-                                                  const TypedColdSet<int32_t>& c) {
+                                                  const TypedColdSet<int64_t>& c) {
                 f << "-- " << tag << "." << name << " (" << c.count() << "):\n";
                 std::vector<std::pair<std::string, std::string>> setRows;
                 setRows.reserve(c.count());
@@ -1231,24 +1269,21 @@ namespace hashburst_dump {
     } // anonymous namespace
 
     bool isTargetLB(const Memory& body) {
-        // User-directed target (Rule 14): the Gauss summation theorem's
-        // induction LB — recursion block #1 (exprKey (in2[rec0,9,3]),
-        // digitArg 9, successor id 3) under the compiled theorem
-        // (AnchorGauss)(in3[9,10,11,5])(fold[1,3,4,8,2,9,12])(in2[9,10,3])
-        // -> head (in3[7,12,11,5]). Full parent chain to the root sentinel
-        // per Rule 12 — the twin theorem copy spawns a recursion LB with
-        // the same exprKey under a different chain and must NOT match.
-        if (body.exprKey() != "(in2[rec0,9,3])") return false;
+        // User-directed target (Rule 14): the ES3 premise LB
+        // (EnumerationSet3[2,6,7,10]) of the IncubatorGauss3 batch —
+        // the rung-2.1 LB whose _ordis_ false-assumption branch cohorts
+        // (e.g. assumption 0=1 with 0≠1 known) are the dead-branch
+        // removal's acceptance case (OPEN-1, 07_or_branching.md).
+        // Argument ids: 1=N, 4=+, 2=0, 6=1, 7=2, 10=M. Full parent
+        // chain to the root sentinel per Rule 12: root →
+        // (AnchorIncubator3) → (EnumerationSet3[2,6,7,10]); the chain
+        // exists only in the IncubatorGauss3 batch (the sole emitter
+        // of the ES2/ES3 conjecture families).
+        if (body.exprKey() != "(EnumerationSet3[2,6,7,10])") return false;
         const Memory* p1 = body.parentMemory;
-        if (!p1 || p1->exprKey() != "(in2[9,10,3])") return false;
+        if (!p1 || p1->exprKey() != "(AnchorIncubator3[1,2,3,4,5,6,7,8,9])") return false;
         const Memory* p2 = p1->parentMemory;
-        if (!p2 || p2->exprKey() != "(fold[1,3,4,8,2,9,12])") return false;
-        const Memory* p3 = p2->parentMemory;
-        if (!p3 || p3->exprKey() != "(in3[9,10,11,5])") return false;
-        const Memory* p4 = p3->parentMemory;
-        if (!p4 || p4->exprKey() != "(AnchorGauss[1,2,3,4,5,6,7,8])") return false;
-        const Memory* p5 = p4->parentMemory;
-        return p5 && p5->exprKey().empty() && p5->parentMemory == nullptr;
+        return p2 && p2->exprKey().empty() && p2->parentMemory == nullptr;
     }
 
     void dumpEntry(const Memory& body,

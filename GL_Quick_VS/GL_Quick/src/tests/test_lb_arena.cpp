@@ -35,10 +35,10 @@
 /// determinism property — offsets are a pure function of allocation order,
 /// independent of which physical blocks back them.
 ///
-/// Also covers the page tier that backs the paged containers: monotonic vid
-/// allocation, block-granular page carving, the tail-free page-cursor
-/// bump-back, interior-hole free-list reuse, and page-block return on
-/// `releaseAll`.
+/// Also covers the page tier that backs the paged containers: vid allocation
+/// with free-vid LIFO reuse (D-228 — the table is bounded by
+/// the live-page high water), block-granular page carving, physical free-list
+/// reuse, and page-block return on `releaseAll`.
 
 #include "test_harness.hpp"
 
@@ -48,6 +48,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <vector>
 
 namespace {
     // 1 MiB pool / 256 KiB block — 4 blocks, as in the static-memory and
@@ -138,7 +139,7 @@ TEST(lb_arena, page_grows_by_one_block_per_block_of_pages) {
     ASSERT_EQ(a.livePages(), ppb + 1);
 }
 
-TEST(lb_arena, page_tail_free_bumps_the_cursor_back) {
+TEST(lb_arena, page_tail_free_vid_recycles) {
     gl::GlobalMemoryManager m;
     m.init(kArenaTestCfg);
     gl::LbArena a(&m);
@@ -146,16 +147,17 @@ TEST(lb_arena, page_tail_free_bumps_the_cursor_back) {
     a.allocPage();                       // v1
     const int32_t v2 = a.allocPage();    // v2 (tail)
     ASSERT_EQ(a.pageHighWater(), 3);
-    a.freePage(v2);                      // freeing the tail rolls the cursor back
-    ASSERT_EQ(a.pageHighWater(), 2);
+    a.freePage(v2);                      // tail free: vid parks on the free list
+    ASSERT_EQ(a.pageHighWater(), 3);     // live high water — never shrinks
     ASSERT_EQ(a.livePages(), 2);
-    // The next alloc lands at the rolled-back vid.
+    // The next alloc reuses the freed vid.
     const int32_t v2b = a.allocPage();
     ASSERT_EQ(v2b, 2);
     ASSERT_EQ(a.pageHighWater(), 3);
+    a.assertInvariants();
 }
 
-TEST(lb_arena, page_interior_free_holes_then_reuses) {
+TEST(lb_arena, page_interior_free_vid_recycles) {
     gl::GlobalMemoryManager m;
     m.init(kArenaTestCfg);
     gl::LbArena a(&m);
@@ -164,15 +166,72 @@ TEST(lb_arena, page_interior_free_holes_then_reuses) {
     a.allocPage();                       // v2 stays live -> v1 is interior
     char* freed = a.pageAt(v1);
     const int32_t freeBefore = a.freePageCount();
-    a.freePage(v1);                      // interior free: a hole, no bump-back
-    ASSERT_EQ(a.pageHighWater(), 3);     // cursor unchanged
+    a.freePage(v1);                      // interior free: vid parks on the free list
+    ASSERT_EQ(a.pageHighWater(), 3);     // table size unchanged
     ASSERT_EQ(a.livePages(), 2);
     ASSERT_EQ(a.freePageCount(), freeBefore + 1);
-    // LIFO reuse: the just-freed page returns first, under a fresh tail vid.
-    const int32_t v3 = a.allocPage();
-    ASSERT_EQ(v3, 3);
-    ASSERT_EQ(a.pageAt(v3), freed);
+    // The freed vid AND its physical page both recycle (LIFO).
+    const int32_t v1b = a.allocPage();
+    ASSERT_EQ(v1b, v1);
+    ASSERT_EQ(a.pageAt(v1b), freed);
+    ASSERT_EQ(a.pageHighWater(), 3);     // no fresh tail vid minted
+    a.assertInvariants();
     (void)v0;
+}
+
+// The vid-ratchet pin (D-228): a churn loop with a live pin
+// above the churned vids must NOT grow the page table — freed vids recycle,
+// so the table stays at the live-page high water instead of the cumulative
+// allocation count (the rung-2 524K-vid PtrDirectory overflow shape).
+TEST(lb_arena, page_churn_with_pin_does_not_ratchet_vid_space) {
+    gl::GlobalMemoryManager m;
+    m.init(kArenaTestCfg);
+    gl::LbArena a(&m);
+    a.allocPage();                                 // v0: long-lived pin
+    const int32_t churn = a.allocPage();           // v1
+    a.allocPage();                                 // v2: a second pin ABOVE
+    a.freePage(churn);                             // interior hole below a pin
+    const int32_t peak = a.pageHighWater();        // 3
+    for (int32_t i = 0; i < 10000; ++i) {
+        const int32_t v = a.allocPage();           // reuses the hole every time
+        ASSERT_EQ(v, churn);
+        a.freePage(v);
+    }
+    ASSERT_EQ(a.pageHighWater(), peak);            // NOT 3 + 10000
+    ASSERT_EQ(a.livePages(), 2);
+    a.assertInvariants();
+}
+
+// Deterministic LIFO reuse: two arenas driven through the same allocation/free
+// sequence hand out identical vids at every step (I-107's allocation/free-
+// sequence purity), and the LIFO pops the most recently freed vid first.
+TEST(lb_arena, page_free_vid_reuse_is_lifo_and_deterministic) {
+    gl::GlobalMemoryManager m;
+    m.init(kArenaTestCfg);
+    gl::LbArena a(&m);
+    gl::LbArena b(&m);
+    const auto drive = [](gl::LbArena& x) {
+        std::vector<int32_t> got;
+        for (int32_t i = 0; i < 6; ++i) got.push_back(x.allocPage()); // 0..5
+        x.freePage(1);
+        x.freePage(4);
+        x.freePage(2);
+        got.push_back(x.allocPage());   // LIFO head: 2
+        got.push_back(x.allocPage());   // then 4
+        got.push_back(x.allocPage());   // then 1
+        got.push_back(x.allocPage());   // list dry: fresh tail vid 6
+        return got;
+    };
+    const std::vector<int32_t> ga = drive(a);
+    const std::vector<int32_t> gb = drive(b);
+    ASSERT_TRUE(ga == gb);
+    ASSERT_EQ(ga[6], 2);
+    ASSERT_EQ(ga[7], 4);
+    ASSERT_EQ(ga[8], 1);
+    ASSERT_EQ(ga[9], 6);
+    ASSERT_EQ(a.pageHighWater(), 7);
+    a.assertInvariants();
+    b.assertInvariants();
 }
 
 TEST(lb_arena, page_release_all_returns_blocks_and_resets) {

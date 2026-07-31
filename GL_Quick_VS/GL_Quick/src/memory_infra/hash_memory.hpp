@@ -139,7 +139,7 @@ namespace gl {
         TypedColdBlobMap<NormKey, OwnerSet>::RunStartsView normalizedEncodedSubkeysMinusTwoRunStarts;
         TypedColdBlobMap<NormKey, OwnerSet>::BlobStartsView normalizedEncodedSubkeysMinusTwoBlobStarts;
         TypedColdBlobMap<NormKey, OwnerSet>::BlobPoolView normalizedEncodedSubkeysMinusTwoBlobPool;
-        int16_t maxKeyLength = 0;
+        NameId maxKeyLength = 0;
         // --- shared members (path-independent) ---
         // Implication chains (premises + head) as ruleInterner id vectors
         // (D-133). Written at install; iterated (decoded lex-sorted) by the
@@ -161,11 +161,11 @@ namespace gl {
         // (insertAdmissionValue); the hot read (isAdmitted) snapshots via
         // admissionRecordsAt. Four facets: key, run-starts, blob-starts,
         // blob-pool. Only ever used via overallHashMemory.
-        TypedColdBlobMap<int32_t, AdmissionMapValue> admissionMap;
-        TypedColdBlobMap<int32_t, AdmissionMapValue>::KeysView admissionMapKeys;
-        TypedColdBlobMap<int32_t, AdmissionMapValue>::RunStartsView admissionMapRunStarts;
-        TypedColdBlobMap<int32_t, AdmissionMapValue>::BlobStartsView admissionMapBlobStarts;
-        TypedColdBlobMap<int32_t, AdmissionMapValue>::BlobPoolView admissionMapBlobPool;
+        TypedColdBlobMap<int64_t, AdmissionMapValue> admissionMap;
+        TypedColdBlobMap<int64_t, AdmissionMapValue>::KeysView admissionMapKeys;
+        TypedColdBlobMap<int64_t, AdmissionMapValue>::RunStartsView admissionMapRunStarts;
+        TypedColdBlobMap<int64_t, AdmissionMapValue>::BlobStartsView admissionMapBlobStarts;
+        TypedColdBlobMap<int64_t, AdmissionMapValue>::BlobPoolView admissionMapBlobPool;
         // Packed (templateId, validityId) keys — u_-form templates
         // (D-132); stored instructions and payloads
         // id-form (D-1322).
@@ -178,11 +178,11 @@ namespace gl {
         // nested map via admissionIntegrationRecordsAt. Entries persist across
         // revival/consumption (I-22). Four facets: key, run-starts, blob-starts,
         // blob-pool. Only ever used via overallHashMemory.
-        TypedColdBlobMap<int32_t, IntegrationEntry> admissionMapIntegration;
-        TypedColdBlobMap<int32_t, IntegrationEntry>::KeysView admissionMapIntegrationKeys;
-        TypedColdBlobMap<int32_t, IntegrationEntry>::RunStartsView admissionMapIntegrationRunStarts;
-        TypedColdBlobMap<int32_t, IntegrationEntry>::BlobStartsView admissionMapIntegrationBlobStarts;
-        TypedColdBlobMap<int32_t, IntegrationEntry>::BlobPoolView admissionMapIntegrationBlobPool;
+        TypedColdBlobMap<int64_t, IntegrationEntry> admissionMapIntegration;
+        TypedColdBlobMap<int64_t, IntegrationEntry>::KeysView admissionMapIntegrationKeys;
+        TypedColdBlobMap<int64_t, IntegrationEntry>::RunStartsView admissionMapIntegrationRunStarts;
+        TypedColdBlobMap<int64_t, IntegrationEntry>::BlobStartsView admissionMapIntegrationBlobStarts;
+        TypedColdBlobMap<int64_t, IntegrationEntry>::BlobPoolView admissionMapIntegrationBlobPool;
         // Packed (templateId, validityId) keys (D-1322).
         // Members are TEMPLATE-population strings (u_-stripped marker forms
         // and repl_-form trigger expressions), so the template space owns
@@ -191,10 +191,10 @@ namespace gl {
         // decoded lex-sorted snapshots.
         // Statified COLD set (D-173): packed key set,
         // per-scope radical-wipe removal via eraseIf. One facet each: key.
-        TypedColdSet<int32_t> admissionSetIntegration;
-        TypedColdSet<int32_t>::KeysView admissionSetIntegrationKeys;
-        TypedColdSet<int32_t> triggersForAdmissionSetIntegration;
-        TypedColdSet<int32_t>::KeysView triggersForAdmissionSetIntegrationKeys;
+        TypedColdSet<int64_t> admissionSetIntegration;
+        TypedColdSet<int64_t>::KeysView admissionSetIntegrationKeys;
+        TypedColdSet<int64_t> triggersForAdmissionSetIntegration;
+        TypedColdSet<int64_t>::KeysView triggersForAdmissionSetIntegrationKeys;
         // Packed (templateId, validityId) keys (D-132);
         // id-form values ordered by DecodedRejectedValueLess.
         // Statified COLD blob map (D-172): packed
@@ -204,11 +204,11 @@ namespace gl {
         // written directly by the equi-class hook (I-37); the revival consumer
         // revisitRejected2 erases the consumed cohort. Four facets: key,
         // run-starts, blob-starts, blob-pool.
-        TypedColdBlobMap<int32_t, RejectedMapValue> rejectedMap;
-        TypedColdBlobMap<int32_t, RejectedMapValue>::KeysView rejectedMapKeys;
-        TypedColdBlobMap<int32_t, RejectedMapValue>::RunStartsView rejectedMapRunStarts;
-        TypedColdBlobMap<int32_t, RejectedMapValue>::BlobStartsView rejectedMapBlobStarts;
-        TypedColdBlobMap<int32_t, RejectedMapValue>::BlobPoolView rejectedMapBlobPool;
+        TypedColdBlobMap<int64_t, RejectedMapValue> rejectedMap;
+        TypedColdBlobMap<int64_t, RejectedMapValue>::KeysView rejectedMapKeys;
+        TypedColdBlobMap<int64_t, RejectedMapValue>::RunStartsView rejectedMapRunStarts;
+        TypedColdBlobMap<int64_t, RejectedMapValue>::BlobStartsView rejectedMapBlobStarts;
+        TypedColdBlobMap<int64_t, RejectedMapValue>::BlobPoolView rejectedMapBlobPool;
         // Integration-side rejection buffer — keyed on a non-in[] constituent's
         // marker form. See RejectedMapIntegrationValue for shape + rationale.
         // Packed (templateId, validityId) keys (D-132);
@@ -220,11 +220,11 @@ namespace gl {
         // snapshot (rejectedIntegrationRecordsAt). NEVER written directly by the
         // equi-class hook (I-37); revisitRejectedIntegration2 erases the consumed
         // cohort. Four facets: key, run-starts, blob-starts, blob-pool.
-        TypedColdBlobMap<int32_t, RejectedMapIntegrationValue> rejectedMapIntegration;
-        TypedColdBlobMap<int32_t, RejectedMapIntegrationValue>::KeysView rejectedMapIntegrationKeys;
-        TypedColdBlobMap<int32_t, RejectedMapIntegrationValue>::RunStartsView rejectedMapIntegrationRunStarts;
-        TypedColdBlobMap<int32_t, RejectedMapIntegrationValue>::BlobStartsView rejectedMapIntegrationBlobStarts;
-        TypedColdBlobMap<int32_t, RejectedMapIntegrationValue>::BlobPoolView rejectedMapIntegrationBlobPool;
+        TypedColdBlobMap<int64_t, RejectedMapIntegrationValue> rejectedMapIntegration;
+        TypedColdBlobMap<int64_t, RejectedMapIntegrationValue>::KeysView rejectedMapIntegrationKeys;
+        TypedColdBlobMap<int64_t, RejectedMapIntegrationValue>::RunStartsView rejectedMapIntegrationRunStarts;
+        TypedColdBlobMap<int64_t, RejectedMapIntegrationValue>::BlobStartsView rejectedMapIntegrationBlobStarts;
+        TypedColdBlobMap<int64_t, RejectedMapIntegrationValue>::BlobPoolView rejectedMapIntegrationBlobPool;
         // Monotonically-growing cache of non-marker args that appear in any
         // rejectedMapIntegration key. Used by applyEquivalenceClassToRejectedMapIntegration
         // to short-circuit when an eq class has no overlap with any stored
@@ -237,15 +237,15 @@ namespace gl {
         // decoded class member.
         // Statified COLD set (D-172). Monotone
         // over-approximation cache; never wiped. One facet: key.
-        TypedColdSet<int16_t> varsInRejectedMapIntegrationKeys;
-        TypedColdSet<int16_t>::KeysView varsInRejectedMapIntegrationKeysKeys;
+        TypedColdSet<NameId> varsInRejectedMapIntegrationKeys;
+        TypedColdSet<NameId>::KeysView varsInRejectedMapIntegrationKeysKeys;
         // Symmetric cache for admissionMap, populated at every admissionMap
         // insert. Used by applyEquivalenceClassToAdmissionMap to short-circuit
         // when an eq class has no overlap with any stored admission key.
         // Statified COLD set (D-172). Monotone
         // over-approximation cache; never wiped. One facet: key.
-        TypedColdSet<int16_t> varsInAdmissionMapKeys;
-        TypedColdSet<int16_t>::KeysView varsInAdmissionMapKeysKeys;
+        TypedColdSet<NameId> varsInAdmissionMapKeys;
+        TypedColdSet<NameId>::KeysView varsInAdmissionMapKeysKeys;
         // Symmetric cache for admissionMapIntegration. Stores BARE-form
         // (u_-stripped) non-marker args because admissionMapIntegration keys
         // are u_-prefixed and class members are bare names; the overlap probe
@@ -255,25 +255,25 @@ namespace gl {
         // admissionMapIntegration insert site.
         // Statified COLD set (D-172). Monotone
         // over-approximation cache; never wiped. One facet: key.
-        TypedColdSet<int16_t> varsInAdmissionMapIntegrationKeys;
-        TypedColdSet<int16_t>::KeysView varsInAdmissionMapIntegrationKeysKeys;
+        TypedColdSet<NameId> varsInAdmissionMapIntegrationKeys;
+        TypedColdSet<NameId>::KeysView varsInAdmissionMapIntegrationKeysKeys;
         // Statified COLD single-value map (D-172):
         // packed key -> partOfRecursion flag (uint8). Parallel to admissionMap.
         // Two facets: key, value.
-        TypedColdMap<int32_t, uint8_t> admissionStatusMap;
-        TypedColdMap<int32_t, uint8_t>::KeysView admissionStatusMapKeys;
-        TypedColdMap<int32_t, uint8_t>::ValuesView admissionStatusMapValues;
+        TypedColdMap<int64_t, uint8_t> admissionStatusMap;
+        TypedColdMap<int64_t, uint8_t>::KeysView admissionStatusMapKeys;
+        TypedColdMap<int64_t, uint8_t>::ValuesView admissionStatusMapValues;
         // Statified COLD set (D-173): NameMap-id
         // membership cache (never per-scope wiped). One facet: key.
-        TypedColdSet<int16_t> productsOfRecursionIds;
-        TypedColdSet<int16_t>::KeysView productsOfRecursionIdsKeys;
+        TypedColdSet<NameId> productsOfRecursionIds;
+        TypedColdSet<NameId>::KeysView productsOfRecursionIdsKeys;
         // Statified COLD set (D-172). One facet: key.
-        TypedColdSet<int32_t> consumedAdmissionKeys;
-        TypedColdSet<int32_t>::KeysView consumedAdmissionKeysKeys;
+        TypedColdSet<int64_t> consumedAdmissionKeys;
+        TypedColdSet<int64_t>::KeysView consumedAdmissionKeysKeys;
         // Statified COLD set (D-172). Re-entrant
         // revival guard (empty at barriers). One facet: key.
-        TypedColdSet<int32_t> revisitInProgress;
-        TypedColdSet<int32_t>::KeysView revisitInProgressKeys;
+        TypedColdSet<int64_t> revisitInProgress;
+        TypedColdSet<int64_t>::KeysView revisitInProgressKeys;
 
         /// @brief Bind the rule store to the owning LB's arena + dirty flag.
         ///

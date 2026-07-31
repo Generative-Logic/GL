@@ -13,7 +13,7 @@ and a commercial license — see https://generative-logic.com/license.
 
 > Normalisation/reshuffle is no longer a separately orchestrated stage — it is a workaround inside the conjecturer's emit logic. The `reshuffled_*.txt` files are still written, but the conjecturer writes them itself.
 
-> **Input:** `files/theorems/conjectures.txt` (conjecturer output) + `files/simple_facts/simple_facts_<anchor>_<n>.txt` (fact tables) + `parameters.skip_ce_filter` flag.
+> **Input:** `files/theorems/conjectures.txt` (conjecturer output) + `files/theorems/mirror_pairs.txt` (conjecturer-written mirror pairing for the mirror-refutation pass) + `files/simple_facts/simple_facts_<anchor>_<n>.txt` (fact tables) + `parameters.skip_ce_filter` / `parameters.mirror_refutation` flags.
 > **Output:** `files/theorems/filtered_conjectures.txt` (surviving conjectures).
 > **Owner:** `filter.cpp` (extracted from `prover.cpp`, 2026-05-04). Public surface (top-level entry points):
 > - `readSimpleFacts` ([`filter.cpp`](../../GL_Quick_VS/GL_Quick/src/filter.cpp)) — load `files/simple_facts/*` for the active anchor.
@@ -161,8 +161,9 @@ The per-file filter is where the real work lives. Flow of `filterConjecturesWith
  - `burstDeactivates` stops the burst the instant a refuting head fires, and phase 3's `dischargeContradiction` CE branch records the refutation into the clone's disjoint `contradictionTable` slot;
  - deletes the clone and grabs the next conjecture.
  There is **no batch barrier** — a freed worker takes new work immediately, so no core idles on the slowest conjecture in a batch.
-5. **Collect survivors.** For each `i`, if `contradictionTable[i].successful == false` (no contradiction discovered), the conjecture is kept.
-6. **Tear-down.** `releaseCEBatchMemory` frees the template.
+5. **Tear-down.** `releaseCEBatchMemory` frees the template.
+6. **Mirror refutation** (gated on `parameters.mirror_refutation`, default on — [D-229](../40_decisions.md#d-229)). The single-threaded flip pass `applyMirrorRefutations` ([`filter.cpp`](../../GL_Quick_VS/GL_Quick/src/filter.cpp)) snapshots which slots this pass's CE bursts refuted and, for each, flips the `contradictionTable` slots of its mirror partners to refuted as well. Pairing comes from `mirror_pairs.txt` (conjecturer-written, both columns byte-identical to `conjectures.txt` lines), loaded once per batch in `runCeFilterOnly` by `loadMirrorPairs` into the symmetric `mirrorPartnerMap` member. Only CE-confirmed refutations seed — no cascading — so the flip set is a pure function of the CE verdicts plus the pairs file. One summary line per pass: `CE filter: mirror refutation flipped N conjectures.` Refutation-side only; no mirror ever re-enters as a proof step ([I-81](../30_invariants.md#i-81) / D-112). Across multiple fact files the passes compose: a flipped conjecture drops out of the next pass's input.
+7. **Collect survivors.** For each `i`, if `contradictionTable[i].successful == false` (no contradiction discovered, no mirror flip), the conjecture is kept.
 
 CE filtering runs **one hashburst per conjecture**: `numberIterationsConjectureFiltering` is `1` in every config (asserted before the pool), so the single burst checks whether the conjecture's negation immediately contradicts the facts — there is no iterative deepening.
 
@@ -172,7 +173,7 @@ CE mode differs from main-prover mode in one key detail: **no mandatory elements
 
 ```
 facts template LB (loaded once)  +  conjectures.txt / simple_facts_*
-                 |
+                 |                  (+ mirror_pairs.txt -> mirrorPartnerMap)
                  v
    filterConjecturesWithCE  --  pool of max(1, logicalCores) workers over a
                  |              global atomic conjecture queue (no batch
@@ -182,6 +183,8 @@ facts template LB (loaded once)  +  conjectures.txt / simple_facts_*
                  |                burstDeactivates stops the burst early
                  |                dischargeContradiction -> contradictionTable[i]
                  |                delete clone
+                 |              post-join: applyMirrorRefutations flips the
+                 |              mirror partners of every refuted conjecture
                  v
    filtered_conjectures.txt  (survivors)
 ```
@@ -194,7 +197,8 @@ facts template LB (loaded once)  +  conjectures.txt / simple_facts_*
 |---|---|---|---|
 | `parameters.skip_ce_filter` | `bool` | `false` | Skip CE filtering entirely. Set to `true` for incubator batches via config. |
 | `parameters.numberIterationsConjectureFiltering` | `int` | `1` | Hashbursts per conjecture. `1` in every config (asserted in `filterConjecturesWithCE`); the CE filter does exactly one burst per conjecture, no iterative deepening. |
-| `parameters.simple_facts_parameters` | `vector<int>` | config-driven | Parameters passed through to fact loading (exact semantics require a read of `loadFactsForCEFiltering`). |
+| `parameters.simple_facts_parameters` | `vector<int>` | config-driven | Dead knob — parsed into the conjecturer's parameter struct only, never read by `loadFactsForCEFiltering` or any other CE code. Cleanup candidate. |
+| `parameters.mirror_refutation` | `bool` | `true` | Mirror-refutation heuristic ([D-229](../40_decisions.md#d-229)): after each pass's pool joins, `applyMirrorRefutations` flips the `contradictionTable` slots of every CE-refuted conjecture's mirror partners (pairing from `mirror_pairs.txt`, loaded once in `runCeFilterOnly` via `loadMirrorPairs`). `false` disables the pass entirely — the pairs file is not even loaded. |
 | `parameters.logicalCores` | `unsigned` | host logical cores | Worker count of the CE pool — `max(1, logicalCores)` threads drain the global conjecture queue in parallel. |
 
 ---
@@ -218,7 +222,7 @@ In other words: the CE filter is *fast* because someone else (the incubator) did
 ### Suspected fragility
 
 - **Anchor-name-based filename inference.** `readSimpleFacts` derives `<actual_name>` from the anchor string by removing the `Anchor` prefix and lowercasing. A typo in the anchor name, or a non-`Anchor*` anchor identifier, silently falls back to a no-match (empty `hits`), yielding zero fact files read and zero filtering. The only symptom is "no filtering happened" — no warning printed.
-- **`simple_facts_parameters` semantics.** A `vector<int>` passed through from config into `loadFactsForCEFiltering`. The exact per-element meaning is not documented here; risk of silent misinterpretation on config changes.
+- **`simple_facts_parameters` semantics.** Corrected 2026-07-26: the field is a dead knob — parsed only into the conjecturer's parameter struct, never read by `loadFactsForCEFiltering` or any CE-side code. `ConfigPeano.json` sets it to `[]`. Cleanup candidate rather than a semantics risk.
 - **j-copy assumption symmetry.** The fact tables always include `i`-copy and `j`-copy for every constant. If a future fact generator produces asymmetric j-copies (e.g., `i0` but no `j0`), the hash-request generator's expected pattern breaks with no fail-loud path.
 
 ### Not exercised by tests

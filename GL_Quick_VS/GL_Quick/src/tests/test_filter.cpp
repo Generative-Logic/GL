@@ -40,7 +40,11 @@
 #include "test_harness.hpp"
 
 #include "../filter.hpp"
+#include "../parameters.hpp"
 
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <string>
 #include <vector>
@@ -121,4 +125,172 @@ TEST(filter, contradictionitem_int_max_is_truthy) {
 TEST(filter, contradictionitem_int_min_is_truthy) {
     gl::ContradictionItem ci("expr", std::numeric_limits<int>::min());
     ASSERT_TRUE(ci.successful);   // INT_MIN != 0
+}
+
+// =============================================================================
+// Mirror refutation (D-229) — the free
+// functions loadMirrorPairs / applyMirrorRefutations, plus the config
+// default. The flip's call-site gating on parameters.mirror_refutation
+// lives in filterConjecturesWithCE, which needs a full ExpressionAnalyzer;
+// it is pinned here indirectly by the default-value test and the Doxygen
+// contract.
+// =============================================================================
+
+namespace {
+
+    std::vector<gl::ContradictionItem> makeTable(
+        const std::vector<std::string>& conjectures,
+        const std::vector<int>& refuted) {
+        std::vector<gl::ContradictionItem> table;
+        for (std::size_t i = 0; i < conjectures.size(); ++i) {
+            table.emplace_back(conjectures[i], 0);
+        }
+        for (int idx : refuted) table[idx].successful = true;
+        return table;
+    }
+
+    gl::MirrorPartnerMap makePartners(const std::string& a, const std::string& b) {
+        gl::MirrorPartnerMap partners;
+        partners[a].push_back(b);
+        partners[b].push_back(a);
+        return partners;
+    }
+
+} // namespace
+
+TEST(filter, parameters_default_mirror_refutation_true) {
+    gl::ProverParameters p;
+    ASSERT_TRUE(p.mirror_refutation);
+}
+
+TEST(filter, apply_mirror_refutations_flips_partner_of_refuted_source) {
+    const std::vector<std::string> conjectures = {"srcA", "mirA", "other"};
+    auto table = makeTable(conjectures, {0});
+    const auto partners = makePartners("srcA", "mirA");
+    const int flipped = gl::applyMirrorRefutations(table, conjectures, partners);
+    ASSERT_EQ(flipped, 1);
+    ASSERT_TRUE(table[0].successful);
+    ASSERT_TRUE(table[1].successful);
+    ASSERT_FALSE(table[2].successful);
+}
+
+TEST(filter, apply_mirror_refutations_symmetric_mirror_to_source) {
+    // Refuting the MIRROR member dooms the source: the map carries both
+    // directions.
+    const std::vector<std::string> conjectures = {"srcA", "mirA"};
+    auto table = makeTable(conjectures, {1});
+    const auto partners = makePartners("srcA", "mirA");
+    const int flipped = gl::applyMirrorRefutations(table, conjectures, partners);
+    ASSERT_EQ(flipped, 1);
+    ASSERT_TRUE(table[0].successful);
+    ASSERT_TRUE(table[1].successful);
+}
+
+TEST(filter, apply_mirror_refutations_no_flip_when_pair_absent) {
+    const std::vector<std::string> conjectures = {"srcA", "mirA"};
+    auto table = makeTable(conjectures, {0});
+    const gl::MirrorPartnerMap empty;
+    const int flipped = gl::applyMirrorRefutations(table, conjectures, empty);
+    ASSERT_EQ(flipped, 0);
+    ASSERT_TRUE(table[0].successful);
+    ASSERT_FALSE(table[1].successful);
+}
+
+TEST(filter, apply_mirror_refutations_partner_missing_from_batch_is_noop) {
+    // The partner was refuted in an earlier fact-file pass and is no longer
+    // in this pass's conjecture list — a defined no-op, not a failure.
+    const std::vector<std::string> conjectures = {"srcA", "other"};
+    auto table = makeTable(conjectures, {0});
+    const auto partners = makePartners("srcA", "mirA");
+    const int flipped = gl::applyMirrorRefutations(table, conjectures, partners);
+    ASSERT_EQ(flipped, 0);
+    ASSERT_TRUE(table[0].successful);
+    ASSERT_FALSE(table[1].successful);
+}
+
+TEST(filter, apply_mirror_refutations_no_cascade_from_flipped_rows) {
+    // Chain srcA↔mirA and mirA↔srcB: refuting srcA flips mirA, but the
+    // flipped mirA must NOT seed a second-generation flip of srcB — only
+    // CE-confirmed refutations seed.
+    const std::vector<std::string> conjectures = {"srcA", "mirA", "srcB"};
+    auto table = makeTable(conjectures, {0});
+    gl::MirrorPartnerMap partners;
+    partners["srcA"].push_back("mirA");
+    partners["mirA"].push_back("srcA");
+    partners["mirA"].push_back("srcB");
+    partners["srcB"].push_back("mirA");
+    const int flipped = gl::applyMirrorRefutations(table, conjectures, partners);
+    ASSERT_EQ(flipped, 1);
+    ASSERT_TRUE(table[1].successful);
+    ASSERT_FALSE(table[2].successful);
+}
+
+TEST(filter, apply_mirror_refutations_already_refuted_partner_not_recounted) {
+    // Both members CE-refuted independently: the pass flips nothing and
+    // reports zero.
+    const std::vector<std::string> conjectures = {"srcA", "mirA"};
+    auto table = makeTable(conjectures, {0, 1});
+    const auto partners = makePartners("srcA", "mirA");
+    const int flipped = gl::applyMirrorRefutations(table, conjectures, partners);
+    ASSERT_EQ(flipped, 0);
+}
+
+TEST(filter, load_mirror_pairs_parses_both_directions) {
+    namespace fs = std::filesystem;
+    const fs::path path =
+        fs::temp_directory_path() / "gl_test_mirror_pairs_bidir.txt";
+    {
+        std::ofstream out(path);
+        out << "srcA\tmirA\n";
+        out << "srcB\tmirB\n";
+    }
+    const auto partners = gl::loadMirrorPairs(path);
+    std::remove(path.string().c_str());
+    ASSERT_EQ(partners.size(), static_cast<std::size_t>(4));
+    ASSERT_EQ(partners.at("srcA").size(), static_cast<std::size_t>(1));
+    ASSERT_EQ(partners.at("srcA")[0], std::string("mirA"));
+    ASSERT_EQ(partners.at("mirA")[0], std::string("srcA"));
+    ASSERT_EQ(partners.at("mirB")[0], std::string("srcB"));
+}
+
+TEST(filter, load_mirror_pairs_strips_cr_and_skips_empty_lines) {
+    namespace fs = std::filesystem;
+    const fs::path path =
+        fs::temp_directory_path() / "gl_test_mirror_pairs_crlf.txt";
+    {
+        std::ofstream out(path, std::ios::binary);
+        out << "srcA\tmirA\r\n";
+        out << "\r\n";
+        out << "\n";
+    }
+    const auto partners = gl::loadMirrorPairs(path);
+    std::remove(path.string().c_str());
+    ASSERT_EQ(partners.size(), static_cast<std::size_t>(2));
+    ASSERT_EQ(partners.at("srcA")[0], std::string("mirA"));
+}
+
+TEST(filter, load_mirror_pairs_empty_file_yields_empty_map) {
+    // The incubator-mode contract: the file exists but carries no rows.
+    namespace fs = std::filesystem;
+    const fs::path path =
+        fs::temp_directory_path() / "gl_test_mirror_pairs_empty.txt";
+    { std::ofstream out(path); }
+    const auto partners = gl::loadMirrorPairs(path);
+    std::remove(path.string().c_str());
+    ASSERT_TRUE(partners.empty());
+}
+
+TEST(filter, load_mirror_pairs_duplicate_rows_deduplicated) {
+    namespace fs = std::filesystem;
+    const fs::path path =
+        fs::temp_directory_path() / "gl_test_mirror_pairs_dup.txt";
+    {
+        std::ofstream out(path);
+        out << "srcA\tmirA\n";
+        out << "srcA\tmirA\n";
+    }
+    const auto partners = gl::loadMirrorPairs(path);
+    std::remove(path.string().c_str());
+    ASSERT_EQ(partners.at("srcA").size(), static_cast<std::size_t>(1));
+    ASSERT_EQ(partners.at("mirA").size(), static_cast<std::size_t>(1));
 }

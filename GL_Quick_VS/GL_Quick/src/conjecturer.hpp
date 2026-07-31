@@ -1649,6 +1649,54 @@ private:
     ///            source after both pass through `reshuffle`.
     std::string createReshuffledMirrored(const std::string& expr, bool anchorFirst = false) const;
 
+    /// @brief Test whether a conjecture consists exclusively of plain
+    ///        operator applications, anchor exempt.
+    ///
+    /// @details
+    /// Disintegrates `expr` into its full premise chain plus head via
+    /// `ce::disintegrateImplication` and checks every constituent:
+    /// the anchor premise (core name equal to `config_.getAnchorName()`)
+    /// is exempt; every other premise and the head must be a plain,
+    /// non-negated operator application — an expression whose core name
+    /// is in `operators_` (entries with both input and output
+    /// arguments). Equality elements, `or0` / existence shapes, nested
+    /// implication elements, and negated elements all fail the test.
+    ///
+    /// Negation is detected on the element string itself
+    /// (`elem[0] == '!'`), never via the extracted core name, because
+    /// `ce::extractExpression` strips the `!(...)` wrapper and would
+    /// report the inner operator for a negated element.
+    ///
+    /// This is the emission gate for `mirror_pairs.txt`: the CE
+    /// filter's mirror-refutation heuristic applies only to
+    /// operator-only conjectures (see
+    /// [D-229](../../docs/agentic_swdd/40_decisions.md#d-229)).
+    ///
+    /// @param expr Conjecture in canonical pool form.
+    /// @return `true` when every non-anchor constituent is a plain
+    ///         operator application.
+    bool consistsOnlyOfOperators(const std::string& expr) const;
+
+    /// @brief Build the `mirror_pairs.txt` rows from the captured
+    ///        source→mirror map.
+    ///
+    /// @details
+    /// Iterates `capturedPairs` in ascending source order (the
+    /// `std::map` iteration order — deterministic output) and keeps
+    /// only rows whose source passes `consistsOnlyOfOperators`. Each
+    /// kept row is emitted as `source + "\t" + mirror`. Both strings
+    /// are byte-identical to their `conjectures.txt` lines because the
+    /// capture sites in `run()` record them at pool admission, before
+    /// any further mutation. An empty mirror is a capture-site bug,
+    /// not a defined case — asserted.
+    ///
+    /// @param capturedPairs Source-conjecture → mirror-conjecture map
+    ///                      captured at the pool-admission sites.
+    /// @return Tab-separated rows for `mirror_pairs.txt`, source-sorted.
+    /// @see consistsOnlyOfOperators — the emission gate.
+    std::vector<std::string> buildMirrorPairRows(
+        const std::map<std::string, std::string>& capturedPairs) const;
+
     /// @brief Count `(>[` operator-block headers in `s`. Equivalent
     ///        to the conjecture's complexity level. String-path
     ///        twin of `countOperatorOccurrencesInt`.
@@ -1824,6 +1872,65 @@ private:
     /// prover treats them via the `or disintegration` /
     /// `or convergence` tags.
     std::vector<std::pair<std::string,std::string>> generateOrConjectures() const;
+
+    // ---- Template addon: injectivity-contrapositive stumps ----
+
+    /// @brief Names of operators eligible for the template addon.
+    ///
+    /// @details
+    /// An operator qualifies when it has exactly one input argument,
+    /// exactly one output argument, and a positive
+    /// `max_count_per_conjecture`. Additionally the whole addon is
+    /// gated on equality: when `=` is absent from the config or
+    /// carries `max_count_per_conjecture == 0`, the returned list is
+    /// empty regardless of the operators (the template's negated
+    /// equalities would cite an expression the batch does not use).
+    /// Names are returned in `expressionOrder` (JSON key order) so
+    /// the emission order is deterministic across runs.
+    ///
+    /// @return Qualifying operator names; empty when equality is not
+    ///         usable in this batch.
+    std::vector<std::string> templateQualifyingOperators() const;
+
+    /// @brief Build the injectivity-contrapositive stump for one
+    ///        single-input operator.
+    ///
+    /// @details
+    /// The stump encodes `op(a)=b and op(c)=d and b!=d implies a!=c`
+    /// with digit
+    /// variable names: `a=1, b=2` in the first premise copy,
+    /// `c=3, d=4` in the second, and one fresh shared variable
+    /// (`5`, `6`, ...) per remaining operator slot, identical in both
+    /// copies and bound by no stump binder. For `in2` the result is
+    /// `(>[1,2](in2[1,2,5])(>[3,4](in2[3,4,5])(>[]!(=[2,4])!(=[1,3]))))`.
+    /// Because the stump binds `1..4` itself, `findArgMap` leaves
+    /// exactly the shared slot variables free, so the anchor-coupling
+    /// enumeration couples only those to anchor slots of matching
+    /// type — in all possible ways, like any other body.
+    ///
+    /// @param opName Config key of a qualifying operator; must be a
+    ///               member of `templateQualifyingOperators()`.
+    /// @return `(stump, defSetMap)` — the stump text and its free-arg
+    ///         map from `findArgMap` (only the shared slot variables).
+    std::pair<std::string, DefSetMap> buildTemplateStump(const std::string& opName) const;
+
+    /// @brief Generate all template-addon conjectures for this batch.
+    ///
+    /// @details
+    /// For every qualifying operator, builds the stump via
+    /// `buildTemplateStump` and routes it through the standard
+    /// string-path anchor attachment `singleExprAnchorConnection`,
+    /// which enumerates every coupling of the stump's free slot
+    /// variables to anchor slots and applies the standard filters.
+    /// The bundles are concatenated in operator order. The mirrored
+    /// lane stays empty by construction (the head `!(=[..])` is not
+    /// an operator, so `createReshuffledMirrored` yields `""`).
+    ///
+    /// @pre `mappingsMapAnchor_` and `allPermutations_` are
+    ///      populated (`run()` pre-computation).
+    /// @return Concatenated `WorkerResult` across all qualifying
+    ///         operators; empty lists when none qualify.
+    WorkerResult generateTemplateConjectures() const;
 
     // ---- Int-path: encode/decode ----
 

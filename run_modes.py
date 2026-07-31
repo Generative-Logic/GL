@@ -266,6 +266,7 @@ def _setup_theorem_folder(theorems_dir: Path):
     for fname in [
         "theorems.txt",
         "compressed_out_theorems.txt",
+        "vacuous_theorems.txt",
     ]:
         fpath = theorems_dir / fname
         with open(fpath, 'w', encoding='utf-8') as f:
@@ -291,6 +292,119 @@ def _discover_configs_for_tag(base_tag: str) -> list:
             if m:
                 out.append(m.group(1))
     return sorted(out)
+
+
+def _filter_vacuous_tainted(theorems_dir: Path, raw_dir: Path) -> None:
+    """@brief Taint closure of the vacuity classification: retire theorems
+    whose proofs cite a vacuous theorem, directly or transitively.
+
+    @details
+    The C++ side seeds ``vacuous_theorems.txt`` with the two certificates
+    (``retracted producer`` — the producer LB derived its own main-scope
+    contradiction; ``premise contradiction`` — same-chain theorems with
+    contradictory heads). A vacuous theorem may have been broadcast as a
+    rule and used by other proofs before its retirement, so this pass —
+    running after every batch, before the next batch reads the pool —
+    builds the citation graph over the batch family's RAW proof chapters
+    (producer-form namespace, so seeds and citations share one string
+    space; rows tagged ``theorem`` / ``externally provided theorem`` cite
+    other theorems by statement), computes the transitive closure from the
+    seeds, and rewrites ``theorems.txt`` / ``compiled_theorems.txt``
+    (line-paired by the ``saveProvedTheoremsFiltered`` contract) without
+    the tainted theorems. Tainted theorems are appended to
+    ``vacuous_theorems.txt`` with the ``tainted`` label; their chapters
+    are KEPT — the derivations are honest and auditable, they merely rest
+    on a vacuous fact — only the deliverable pool shrinks (dependency-
+    directed retraction in the Truth-Maintenance-System sense over the
+    proof graph GL already ships).
+
+    A missing seed file, empty seed set, missing manifest, or zero
+    tainted theorems is a defined no-op. A seed string re-proved
+    legitimately in a later batch would be conservatively retired too —
+    over-removal loses a true theorem but never ships a vacuous one.
+
+    @param theorems_dir  The batch family's theorem folder (holds the
+                         seed artifact and the paired pool files).
+    @param raw_dir       The batch family's raw proof-graph folder (the
+                         citation source; accumulates across the family's
+                         batches, so cross-batch citations are covered).
+    @return None.
+    @invariant Deterministic: seeds and chapters are read in file order;
+               the closure is order-independent; the pool rewrite
+               preserves surviving line order.
+    """
+    vac_path = theorems_dir / "vacuous_theorems.txt"
+    if not vac_path.is_file():
+        return
+    seeds = set()
+    with open(vac_path, encoding="utf-8") as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if line.strip():
+                seeds.add(line.split("\t")[0])
+    if not seeds:
+        return
+
+    _theorems, ordered = verifier.load_global_theorem_list(str(raw_dir))
+    if not ordered:
+        return
+    chapter_files = sorted(
+        (fn for fn in os.listdir(raw_dir)
+         if fn.endswith(".txt") and fn != "global_theorem_list.txt"),
+        key=verifier.chapter_sort_key)
+    ch_map = verifier.build_chapter_theorem_map(chapter_files, ordered)
+
+    cites = {}
+    for fn, (thm_expr, _type, _ref) in ch_map.items():
+        edges = cites.setdefault(thm_expr, set())
+        with open(raw_dir / fn, encoding="utf-8") as f:
+            for line in f:
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) >= 3 and parts[2] in (
+                        "theorem", "externally provided theorem"):
+                    edges.add(parts[0])
+
+    tainted = set()
+    changed = True
+    while changed:
+        changed = False
+        for thm, edges in cites.items():
+            if thm in tainted or thm in seeds:
+                continue
+            if edges & (seeds | tainted):
+                tainted.add(thm)
+                changed = True
+    if not tainted:
+        return
+
+    compiled_path = theorems_dir / "compiled_theorems.txt"
+    theorems_path = theorems_dir / "theorems.txt"
+    if not (compiled_path.is_file() and theorems_path.is_file()):
+        return
+    with open(compiled_path, encoding="utf-8") as f:
+        compiled = [l.rstrip("\n") for l in f if l.strip()]
+    with open(theorems_path, encoding="utf-8") as f:
+        raw_lines = [l.rstrip("\n") for l in f if l.strip()]
+    assert len(compiled) == len(raw_lines), (
+        "theorems.txt / compiled_theorems.txt line pairing broken")
+    keep_compiled, keep_raw, removed = [], [], []
+    for c_line, r_line in zip(compiled, raw_lines):
+        if c_line in tainted:
+            removed.append(c_line)
+        else:
+            keep_compiled.append(c_line)
+            keep_raw.append(r_line)
+    if not removed:
+        return
+    with open(compiled_path, "w", encoding="utf-8") as f:
+        f.write("".join(l + "\n" for l in keep_compiled))
+    with open(theorems_path, "w", encoding="utf-8") as f:
+        f.write("".join(l + "\n" for l in keep_raw))
+    with open(vac_path, "a", encoding="utf-8") as f:
+        for thm in removed:
+            f.write(f"{thm}\ttainted\n")
+    for thm in removed:
+        print(f"[VACUOUS-TAINT] {thm}")
 
 
 def _run_batch(tag: str, prev_tags: list, theorems_dir: Path = None,
@@ -358,6 +472,17 @@ def _run_batch(tag: str, prev_tags: list, theorems_dir: Path = None,
     # the shared registry so the next batch starts with them.
     with StageTimer("python.binary_merge", parent="python.pipeline", batch=tag):
         _merge_into_shared(tag)
+
+    # Vacuity taint closure: retire pool theorems whose proofs cite a
+    # vacuous theorem before the next batch reads the pool. The batch's
+    # config names its folders (the same keys the native side reads).
+    with StageTimer("python.vacuity_filter", parent="python.pipeline", batch=tag):
+        cfg = configuration_reader(
+            PROJECT_ROOT / "files" / "config" / f"Config{tag}.json")
+        t_dir = (theorems_dir if theorems_dir is not None
+                 else PROJECT_ROOT / "files" / "theorems")
+        raw_dir = PROJECT_ROOT / cfg.raw_proof_graph_folder
+        _filter_vacuous_tainted(t_dir, raw_dir)
 
 
 

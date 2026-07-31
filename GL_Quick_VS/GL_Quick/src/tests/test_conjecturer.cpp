@@ -219,6 +219,14 @@ public:
     extractOperatorExpressions(const Conjecturer& c, const std::string& expr) {
         return c.extractOperatorExpressions(expr);
     }
+    static bool consistsOnlyOfOperators(const Conjecturer& c, const std::string& expr) {
+        return c.consistsOnlyOfOperators(expr);
+    }
+    static std::vector<std::string>
+    buildMirrorPairRows(const Conjecturer& c,
+                        const std::map<std::string, std::string>& capturedPairs) {
+        return c.buildMirrorPairRows(capturedPairs);
+    }
 
     // ---- Sub-functions of checkInputVariablesOrder ----
     static std::set<std::string> findDigitArgs(const Conjecturer& c, const std::string& theorem) {
@@ -330,6 +338,24 @@ public:
     static std::vector<std::pair<std::string,std::string>>
     generateOrConjectures(const Conjecturer& c) {
         return c.generateOrConjectures();
+    }
+
+    // ---- Template addon ----
+    static std::vector<std::string> templateQualifyingOperators(const Conjecturer& c) {
+        return c.templateQualifyingOperators();
+    }
+    static std::pair<std::string, DefSetMap> buildTemplateStump(const Conjecturer& c,
+                                                                 const std::string& opName) {
+        return c.buildTemplateStump(opName);
+    }
+    static WorkerResult generateTemplateConjectures(const Conjecturer& c) {
+        return c.generateTemplateConjectures();
+    }
+    static void precomputeAnchorTables(Conjecturer& c) {
+        c.mappingsMapAnchor_ = Conjecturer::createMapAnchor(
+            c.determineLeftSideBoundary(), c.determineRightSideBoundary());
+        c.allPermutations_ = ce::generateAllPermutations(
+            c.config_.parameters.max_number_simple_expressions + 1);
     }
 
     // ---- Post-existence filters ----
@@ -3221,6 +3247,92 @@ TEST(conjecturer, reshuffle_mirror_in2_collapses) {
 }
 
 
+// ---- consistsOnlyOfOperators (6 tests) ----
+// The mirror_pairs.txt emission gate: every non-anchor constituent must
+// be a plain, non-negated operator application.
+
+TEST(conjecturer, consists_only_of_operators_accepts_operator_chain_with_anchor) {
+    conj::Conjecturer c("Peano");
+    ASSERT_TRUE(conj::testing::Friend::consistsOnlyOfOperators(
+        c, "(>[1,2,3](AnchorPeano[1,2,3,4,5,6])(in2[1,2,3]))"));
+    ASSERT_TRUE(conj::testing::Friend::consistsOnlyOfOperators(
+        c, "(>[1,2,3,7](AnchorPeano[1,2,3,4,5,6])(in2[1,2,3])(in3[1,2,7,4]))"));
+}
+
+TEST(conjecturer, consists_only_of_operators_rejects_equality_head) {
+    conj::Conjecturer c("Peano");
+    ASSERT_FALSE(conj::testing::Friend::consistsOnlyOfOperators(
+        c, "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(=[1,2]))"));
+}
+
+TEST(conjecturer, consists_only_of_operators_rejects_equality_element) {
+    conj::Conjecturer c("Peano");
+    ASSERT_FALSE(conj::testing::Friend::consistsOnlyOfOperators(
+        c, "(>[1,2,3](AnchorPeano[1,2,3,4,5,6])(=[1,2])(in2[1,2,3]))"));
+}
+
+TEST(conjecturer, consists_only_of_operators_rejects_negated_premise) {
+    conj::Conjecturer c("Peano");
+    ASSERT_FALSE(conj::testing::Friend::consistsOnlyOfOperators(
+        c, "(>[1,2,3](AnchorPeano[1,2,3,4,5,6])!(in2[1,2,3])(in2[2,1,3]))"));
+}
+
+TEST(conjecturer, consists_only_of_operators_rejects_existence_head) {
+    conj::Conjecturer c("Peano");
+    // Existence heads are negated-implication shaped, so they start with
+    // '!' — rejected on the element string, not the extracted core.
+    ASSERT_FALSE(conj::testing::Friend::consistsOnlyOfOperators(
+        c, "(>[1,2,3,7](AnchorPeano[1,2,3,4,5,6])!(>[8](in[8,1])!(in2[8,7,3]))"
+           ")"));
+}
+
+TEST(conjecturer, consists_only_of_operators_rejects_relation_element) {
+    conj::Conjecturer c("Peano");
+    // `in` has no output arguments (a relation, not an operator).
+    ASSERT_FALSE(conj::testing::Friend::consistsOnlyOfOperators(
+        c, "(>[1,2,3,7](AnchorPeano[1,2,3,4,5,6])(in[7,1])(in2[7,1,3]))"));
+}
+
+
+// ---- buildMirrorPairRows (3 tests) ----
+
+TEST(conjecturer, build_mirror_pair_rows_tab_format_and_gate) {
+    conj::Conjecturer c("Peano");
+    std::map<std::string, std::string> captures;
+    captures["(>[1,2,3](AnchorPeano[1,2,3,4,5,6])(in2[1,2,3]))"] =
+        "(>[1,2,3](AnchorPeano[1,2,3,4,5,6])(in2[2,1,3]))";
+    auto rows = conj::testing::Friend::buildMirrorPairRows(c, captures);
+    ASSERT_EQ(static_cast<int>(rows.size()), 1);
+    ASSERT_EQ(rows[0],
+        "(>[1,2,3](AnchorPeano[1,2,3,4,5,6])(in2[1,2,3]))\t"
+        "(>[1,2,3](AnchorPeano[1,2,3,4,5,6])(in2[2,1,3]))");
+}
+
+TEST(conjecturer, build_mirror_pair_rows_gate_filters_non_operator_source) {
+    conj::Conjecturer c("Peano");
+    std::map<std::string, std::string> captures;
+    // Equality-head source fails the operator-only gate — no row.
+    captures["(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(=[1,2]))"] =
+        "(>[1,2,3](AnchorPeano[1,2,3,4,5,6])(in2[1,2,3]))";
+    auto rows = conj::testing::Friend::buildMirrorPairRows(c, captures);
+    ASSERT_TRUE(rows.empty());
+}
+
+TEST(conjecturer, build_mirror_pair_rows_source_sorted_deterministic) {
+    conj::Conjecturer c("Peano");
+    std::map<std::string, std::string> captures;
+    captures["(>[1,2,3](AnchorPeano[1,2,3,4,5,6])(in3[1,2,3,4]))"] =
+        "(>[1,2,3](AnchorPeano[1,2,3,4,5,6])(in3[2,1,3,4]))";
+    captures["(>[1,2,3](AnchorPeano[1,2,3,4,5,6])(in2[1,2,3]))"] =
+        "(>[1,2,3](AnchorPeano[1,2,3,4,5,6])(in2[2,1,3]))";
+    auto rows = conj::testing::Friend::buildMirrorPairRows(c, captures);
+    ASSERT_EQ(static_cast<int>(rows.size()), 2);
+    // std::map iteration: ascending source order — in2 row before in3 row.
+    ASSERT_TRUE(rows[0].find("(in2[1,2,3])") != std::string::npos);
+    ASSERT_TRUE(rows[1].find("(in3[1,2,3,4])") != std::string::npos);
+}
+
+
 // ---- countOperatorOccurrences + staysOutputVariable (5 tests) ----
 
 TEST(conjecturer, reshuffle_count_operator_occurrences_zero_for_atom) {
@@ -3590,5 +3702,88 @@ TEST(conjecturer, or_pair_generate_or_conjectures_pairs_well_formed) {
         ASSERT_FALSE(ex.empty());
         ASSERT_FALSE(comp.empty());
     }
+}
+
+// ============================================================================
+// template_*  — template addon: injectivity-contrapositive stumps
+// ============================================================================
+
+TEST(conjecturer, template_gate_peano_selects_in2) {
+    conj::Conjecturer c("Peano");
+    auto ops = conj::testing::Friend::templateQualifyingOperators(c);
+    // ConfigPeano.json: `in2` is the only single-input single-output
+    // operator with a positive count cap; `in3` (two inputs) and `in`
+    // (no output) must not qualify.
+    ASSERT_EQ(static_cast<int>(ops.size()), 1);
+    ASSERT_EQ(ops[0], std::string("in2"));
+}
+
+TEST(conjecturer, template_gate_gauss_selects_none) {
+    conj::Conjecturer c("Gauss");
+    auto ops = conj::testing::Friend::templateQualifyingOperators(c);
+    // ConfigGauss.json carries `=` with max_count_per_conjecture 0, so
+    // the equality gate disables the addon for the whole batch.
+    ASSERT_TRUE(ops.empty());
+}
+
+TEST(conjecturer, template_gate_incubator_peano_selects_in2) {
+    conj::Conjecturer c("IncubatorPeano1");
+    auto ops = conj::testing::Friend::templateQualifyingOperators(c);
+    // Incubator configs keep `=` usable, so the addon emits there too.
+    ASSERT_EQ(static_cast<int>(ops.size()), 1);
+    ASSERT_EQ(ops[0], std::string("in2"));
+}
+
+TEST(conjecturer, template_stump_shape_in2) {
+    conj::Conjecturer c("Peano");
+    auto [stump, map] = conj::testing::Friend::buildTemplateStump(c, "in2");
+    ASSERT_EQ(stump, std::string(
+        "(>[1,2](in2[1,2,5])(>[3,4](in2[3,4,5])(>[]!(=[2,4])!(=[1,3]))))"));
+}
+
+TEST(conjecturer, template_stump_defmap_only_slot_free) {
+    conj::Conjecturer c("Peano");
+    auto [stump, map] = conj::testing::Friend::buildTemplateStump(c, "in2");
+    // The stump binds 1..4 itself; only the operator slot stays free.
+    ASSERT_EQ(static_cast<int>(map.size()), 1);
+    ASSERT_TRUE(map.find("5") != map.end());
+    ASSERT_EQ(std::get<0>(map.at("5")), std::string("P(x(1)(1))"));
+    ASSERT_FALSE(std::get<1>(map.at("5")));
+}
+
+TEST(conjecturer, template_end_to_end_peano_conjecture) {
+    conj::Conjecturer c("Peano");
+    conj::testing::Friend::precomputeAnchorTables(c);
+    auto out = conj::testing::Friend::generateTemplateConjectures(c);
+    // One qualifying operator x one type-matching anchor slot -> one
+    // anchored conjecture; the mirror lane is empty (head not an
+    // operator).
+    ASSERT_EQ(static_cast<int>(out.connected_list2.size()), 1);
+    ASSERT_EQ(out.connected_list2[0], std::string(
+        "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])"
+        "(>[7,8](in2[7,8,3])(>[9,10](in2[9,10,3])(>[]!(=[8,10])!(=[7,9])))))"));
+    ASSERT_EQ(static_cast<int>(out.reshuffled_list.size()), 1);
+    ASSERT_EQ(static_cast<int>(out.reshuffled_mirrored_list.size()), 1);
+    ASSERT_TRUE(out.reshuffled_mirrored_list[0].empty());
+}
+
+TEST(conjecturer, template_generate_deterministic_second_call_identical) {
+    conj::Conjecturer c("Peano");
+    conj::testing::Friend::precomputeAnchorTables(c);
+    auto out1 = conj::testing::Friend::generateTemplateConjectures(c);
+    auto out2 = conj::testing::Friend::generateTemplateConjectures(c);
+    ASSERT_TRUE(out1.connected_list2 == out2.connected_list2);
+    ASSERT_TRUE(out1.reshuffled_list == out2.reshuffled_list);
+    ASSERT_TRUE(out1.reshuffled_mirrored_list == out2.reshuffled_mirrored_list);
+}
+
+TEST(conjecturer, template_end_to_end_gauss_empty) {
+    conj::Conjecturer c("Gauss");
+    conj::testing::Friend::precomputeAnchorTables(c);
+    auto out = conj::testing::Friend::generateTemplateConjectures(c);
+    // The equality gate disables the addon for Gauss end-to-end.
+    ASSERT_TRUE(out.connected_list2.empty());
+    ASSERT_TRUE(out.reshuffled_list.empty());
+    ASSERT_TRUE(out.reshuffled_mirrored_list.empty());
 }
 

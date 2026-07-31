@@ -53,12 +53,19 @@ namespace gl {
     ///
     /// @details
     /// One MAIN-pool data block holds `262144 / 8 = 32768` `char*` entries. With
-    /// `kArenaDirRootCap == 16` the spilled region addresses up to `16 * 32768 =
-    /// 524288` entries on top of the inline buffer — i.e. far beyond any single LB
-    /// (the whole 4 GiB main pool contains only 16384 data blocks). Exhaustion
-    /// (a 17th spilled data block is needed) is a hard assert naming this constant
-    /// (Rule 19 / I-19) — never a third directory level, never a fallback.
-    constexpr int32_t kArenaDirRootCap = 16;
+    /// `kArenaDirRootCap == 128` the spilled region addresses up to `128 * 32768
+    /// = 4194304` entries on top of the inline buffer. The binding consumer is
+    /// `LbArena::pageTable_`, whose entry count is the arena's LIVE-page high
+    /// water: freed vids recycle through the free-vid LIFO threaded through the
+    /// dead slots (D-228), so the table is bounded by peak
+    /// simultaneous live pages — ~4.2M entries ≈ 33 GiB of 8 KiB pages per
+    /// arena, far past any single LB. The block directories (`blocks_` /
+    /// `pageBlocks_`) are bounded by the pool itself — 12 GiB / 256 KiB =
+    /// 49,152 blocks, two spill blocks — and can never approach this cap.
+    /// Exhaustion (a spill block past the cap is needed) is a hard assert
+    /// naming this constant (Rule 19 / I-19) — never a third directory level,
+    /// never a fallback.
+    constexpr int32_t kArenaDirRootCap = 128;
 
     /// @brief Inline-buffer size for the per-LB page table (`LbArena::pageTable_`).
     ///
@@ -126,9 +133,10 @@ namespace gl {
     ///            (spilled data blocks are retained on shrink and returned only by
     ///            `clear` / `shrinkToFit`); root slots `[0, numBlocks_)` are
     ///            non-null pool blocks and `[numBlocks_, kArenaDirRootCap)` null.
-    /// @invariant Entries may be null (a `pageTable_` slot for a freed vid is
-    ///            null); `PtrDirectory` imposes no non-null entry contract — that
-    ///            is the owning table's semantics, checked in
+    /// @invariant Entries are opaque to the directory — null or tagged values
+    ///            are legal (`LbArena::pageTable_` stores tagged free-vid chain
+    ///            nodes in dead slots); `PtrDirectory` imposes no entry
+    ///            contract — that is the owning table's semantics, checked in
     ///            `LbArena::assertInvariants`.
     /// @see `LbArena` (the owner), `PagedHashIndex` (the page-tier-backed
     ///      mutable-slot sibling), `GlobalMemoryManager`, `kArenaDirRootCap`.

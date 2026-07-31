@@ -334,8 +334,56 @@ namespace gl {
         // carves each into static_page_bytes pages. Pages are addressed by a
         // stable virtual id (vid) resolved through pageAt, so the background
         // compaction can rebind a vid to a different physical page without any
-        // container noticing (I-107). The byte
-        // bump above is retired once every container is paged.
+        // container noticing (I-107). Freed vids
+        // recycle through an intrusive free-vid LIFO threaded through the dead
+        // page-table slots themselves (D-228), so the vid
+        // space is bounded by the LIVE-page high water, never by cumulative
+        // churn. The byte bump above is retired once every container is paged.
+
+        /// @brief Whether a page-table slot holds a LIVE page binding.
+        ///
+        /// @details
+        /// A live slot is a real (page-aligned, low-bit-0) page pointer; a
+        /// dead slot is a tagged free-vid chain node (`deadSlotEncode`, low
+        /// bit 1). A null slot never occurs — every dead vid is a chain node.
+        ///
+        /// @param slot A `pageTable_` entry.
+        /// @return `true` iff @p slot binds a live page.
+        /// @see deadSlotEncode, deadSlotNextVid.
+        static bool isLivePageSlot(const char* slot) {
+            return slot != nullptr
+                && (reinterpret_cast<std::uintptr_t>(slot) & 1u) == 0;
+        }
+
+        /// @brief Encode a free-vid chain node for a dead page-table slot.
+        ///
+        /// @details
+        /// Stores the NEXT free vid (or `-1` for end-of-chain) in the slot,
+        /// tagged with low bit 1 so it can never alias a page pointer (pages
+        /// are page-aligned). The chain is the vid free list itself — no side
+        /// container, no heap (Rule 28).
+        ///
+        /// @param nextVid The next free vid in the LIFO chain, or `-1`.
+        /// @return The tagged slot value.
+        /// @see isLivePageSlot, deadSlotNextVid — the decode twin.
+        static char* deadSlotEncode(int32_t nextVid) {
+            return reinterpret_cast<char*>(
+                (static_cast<std::uintptr_t>(static_cast<std::uint32_t>(nextVid))
+                     << 1) | 1u);
+        }
+
+        /// @brief Decode a dead slot's NEXT free vid — `deadSlotEncode`'s twin.
+        ///
+        /// @param slot A dead (tagged) page-table entry.
+        /// @return The next free vid in the chain, or `-1` at the end.
+        /// @see deadSlotEncode.
+        static int32_t deadSlotNextVid(const char* slot) {
+            assert(slot != nullptr
+                && (reinterpret_cast<std::uintptr_t>(slot) & 1u) != 0
+                && "deadSlotNextVid on a live page slot");
+            return static_cast<int32_t>(static_cast<std::uint32_t>(
+                reinterpret_cast<std::uintptr_t>(slot) >> 1));
+        }
 
         /// @brief Allocate one page and return its virtual id (vid).
         ///
@@ -344,12 +392,14 @@ namespace gl {
         /// otherwise carves the next page, acquiring a fresh block
         /// (`acquireBlock`) and carving it
         /// into `pageBytes` pages the first time the free-list runs dry. The
-        /// returned vid is the next slot of the page table; vids roll back when
-        /// the tail page is freed (`freePage`), so the id space stays compact
-        /// under stack-like (hot per-scope) use. Asserts residency.
+        /// returned vid pops the free-vid LIFO when a freed vid is available
+        /// (D-228) and is the next
+        /// page-table slot otherwise, so the vid space is bounded by the
+        /// live-page high water — freed vids recycle instead of ratcheting
+        /// the table. Reuse order is deterministic: same allocation/free
+        /// sequence, same vids. Asserts residency.
         ///
-        /// @return The new page's vid — a stable handle until the page is
-        ///         freed.
+        /// @return The page's vid — a stable handle until the page is freed.
         /// @invariant `pageAt(vid)` resolves to `pageBytes()` writable bytes
         ///            until `freePage(vid)`.
         int32_t allocPage();
@@ -358,12 +408,11 @@ namespace gl {
         ///
         /// @details
         /// Poisons the page (`poisonByte_`) so a stale read announces itself,
-        /// parks the physical page on the free-list for reuse, and marks the
-        /// vid dead. Freeing the CURRENT tail vid (and any freed vids exposed
-        /// beneath it) rolls the page cursor back — the page-level bump-back
-        /// the hot per-call / per-scope windows rely on; freeing an interior
-        /// vid leaves a hole the free-list fills later. Asserts residency and
-        /// that the vid is live.
+        /// parks the physical page on the free-list for reuse, and pushes the
+        /// vid onto the free-vid LIFO (the dead slot itself stores the chain
+        /// link — D-228), so the
+        /// next `allocPage` reuses it. Asserts residency and that the vid is
+        /// live.
         ///
         /// @param vid A vid returned by `allocPage` and not yet freed.
         void freePage(int32_t vid);
@@ -387,7 +436,7 @@ namespace gl {
             assert(resident_ && "LbArena::pageAt on a deloaded arena");
             assert(vid >= 0 && vid < pageTable_.size()
                 && "LbArena::pageAt on an out-of-range vid");
-            assert(pageTable_.peek(vid) != nullptr
+            assert(isLivePageSlot(pageTable_.peek(vid))
                 && "LbArena::pageAt on a freed vid");
 #endif
             return pageTable_.peek(vid);
@@ -404,7 +453,7 @@ namespace gl {
             assert(resident_ && "LbArena::pageAt on a deloaded arena");
             assert(vid >= 0 && vid < pageTable_.size()
                 && "LbArena::pageAt on an out-of-range vid");
-            assert(pageTable_.peek(vid) != nullptr
+            assert(isLivePageSlot(pageTable_.peek(vid))
                 && "LbArena::pageAt on a freed vid");
 #endif
             return pageTable_.peek(vid);
@@ -415,14 +464,16 @@ namespace gl {
         /// @return Live page count (telemetry / tests).
         int32_t livePages() const { return livePages_; }
 
-        /// @brief Page id high-water — the page cursor, i.e. the next vid
-        ///        `allocPage` would issue (equals the page-table size).
+        /// @brief Page id high-water — the page-table size, i.e. the all-time
+        ///        LIVE-page high water of this arena.
         ///
         /// @details
-        /// The hot per-scope windows capture it as a mark and free back down to
-        /// it; it shrinks on tail `freePage`.
+        /// Freed vids recycle through the free-vid LIFO
+        /// (D-228), so the table
+        /// never grows past the peak simultaneous live-page count and never
+        /// shrinks (dead slots are chain nodes awaiting reuse).
         ///
-        /// @return The current vid count.
+        /// @return The current vid count (live high water).
         int32_t pageHighWater() const {
             return pageTable_.size();
         }
@@ -583,7 +634,7 @@ namespace gl {
             int64_t runLen = 0;
             for (int32_t v = 0; v < hw; ++v) {
                 const char* page = pageTable_.peek(v);
-                if (page == nullptr) continue;   // interior dead-vid hole
+                if (!isLivePageSlot(page)) continue;   // dead-vid chain node
                 if (runStart != nullptr && page == runStart + runLen) {
                     runLen += pb;
                 } else {
@@ -728,7 +779,7 @@ namespace gl {
             int64_t runLen = 0;
             for (int32_t v = 0; v < hw; ++v) {
                 char* page = pageTable_.peek(v);
-                if (page == nullptr) continue;   // interior dead-vid hole
+                if (!isLivePageSlot(page)) continue;   // dead-vid chain node
                 if (runStart != nullptr && page == runStart + runLen) {
                     runLen += pb;
                 } else {
@@ -818,8 +869,9 @@ namespace gl {
         /// The legitimate-assert centrepiece for the arena (Rule 19 / I-19): the
         /// three `PtrDirectory` tables (`blocks_` / `pageBlocks_` / `pageTable_`)
         /// are each internally consistent; the byte-bump block count exactly spans
-        /// the cursor; `livePages_` equals the non-null `pageTable_` entries; the
-        /// table tail is never a freed vid (`freePage` pops trailing nulls); the
+        /// the cursor; `livePages_` equals the live `pageTable_` entries; every
+        /// dead slot is a tagged free-vid chain node and the chain visits exactly
+        /// the dead slots, terminating (D-228); the
         /// intrusive free-list length matches `freePageCount_`; and every carved
         /// page is accounted as either live or free. Under `GL_ARENA_PARANOID` it
         /// additionally proves every live and free page is distinct and lies in a
@@ -907,15 +959,18 @@ namespace gl {
         // Page tier (parallel to the byte bump above; see the page-tier section
         // of the public API). All three tables are pool-backed PtrDirectory drawn
         // from the same manager (small inline buffers keep tiny arenas
-        // block-free); the free list is threaded intrusively through the free
-        // pages themselves (no side container). The determinism contract
-        // constrains element payloads and the per-LB virtual ids, not these
-        // private tables (physical block identity stays invisible).
+        // block-free); the physical free list is threaded intrusively through
+        // the free pages themselves and the free-VID list through the dead
+        // page-table slots (D-228) — no side container. The
+        // determinism contract constrains element payloads and the per-LB
+        // virtual ids, not these private tables (physical block identity stays
+        // invisible).
         PtrDirectory<kArenaBlockTableInline> pageBlocks_;  // blocks carved into pages
-        PtrDirectory<kArenaPageTableInline> pageTable_;  // vid -> physical page (null=freed)
+        PtrDirectory<kArenaPageTableInline> pageTable_;  // vid -> page | dead-slot chain node
         char* freeHead_ = nullptr;       // free-page LIFO, threaded through pages
         int32_t freePageCount_ = 0;      // length of the freeHead_ chain
         int32_t livePages_ = 0;          // allocated minus freed
+        int32_t freeVidHead_ = -1;       // free-vid LIFO head; -1 = empty (D-228)
     };
 
 }

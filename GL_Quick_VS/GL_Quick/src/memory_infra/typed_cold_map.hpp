@@ -24,6 +24,7 @@
 
 #pragma once
 
+#include "../parameters.hpp"
 #include "cold_hash_map.hpp"
 
 #include <cassert>
@@ -863,24 +864,25 @@ namespace gl {
     //  record VALUE codecs live beside their record types in memory.hpp).
     // ===================================================================
 
-    /// @brief Validity id `int16_t` key (e.g. `equivalenceClassesMap`) — the
-    ///        identity over `PodKeyStore<int16_t>`.
+    /// @brief Generic `int16_t` identity key over `PodKeyStore<int16_t>` — kept
+    ///        for any true 16-bit key domain (validity-id maps now key on
+    ///        `NameId` via `Codec<int32_t>`).
     template <>
     struct Codec<int16_t> : IdentityKeyCodec<int16_t> {};
 
-    /// @brief Pre-packed `(templateId, validityId)` `int32_t` key — the identity
-    ///        over `PodKeyStore<int32_t>`.
+    /// @brief Bare `NameId` (`int32_t`) key — the identity over
+    ///        `PodKeyStore<int32_t>`.
     ///
     /// @details
-    /// The admission / rejection subsystem (`admissionMap`, `rejectedMap`,
-    /// `admissionStatusMap`, `consumedAdmissionKeys`, `revisitInProgress`) already
-    /// threads the packed key as a raw `int32_t` produced by `mintTemplateKey`
-    /// (`(uint16(templateId) << 16) | uint16(validityId)` — the same packing
-    /// `Codec<StatementKey>` produces), so the cold containers key on that scalar
-    /// directly: the stored form, the probe, and the decoded key are all the
-    /// `int32_t` itself. Byte-identical on disk to keying on `StatementKey`.
+    /// Serves the containers keyed by a single NameMap id — the validity-id
+    /// key of `equivalenceClassesMap` is the production instance. The stored
+    /// form, the probe, and the decoded key are all the `int32_t` itself.
+    /// (The admission / rejection subsystem's packed `(templateId, validityId)`
+    /// keys are `int64_t` since the `NameId` widening — `mintTemplateKey` packs
+    /// two `NameId` halves via `packInt32Pair` — so those containers key
+    /// through `Codec<int64_t>` below, not this specialization.)
     ///
-    /// @see `Codec<StatementKey>`, `IdentityKeyCodec`.
+    /// @see `Codec<int64_t>`, `Codec<StatementKey>`, `IdentityKeyCodec`.
     template <>
     struct Codec<int32_t> : IdentityKeyCodec<int32_t> {};
 
@@ -910,9 +912,9 @@ namespace gl {
     /// @see `Codec<EqClassKey>`.
     struct EqClassKey {
         /// @brief The class's validity-scope id.
-        int16_t validity;
+        NameId validity;
         /// @brief The class's sorted member ids.
-        std::vector<int16_t> members;
+        std::vector<NameId> members;
 
         /// @brief Value equality (for tests + decoded-key comparisons).
         ///
@@ -924,8 +926,8 @@ namespace gl {
     };
 
     /// @brief Codec for `EqClassKey` — the byte layout `encodeEqClassKey`
-    ///        produced: fixed-width 2-byte little-endian `validity` then each
-    ///        `member`, no separators.
+    ///        produced: fixed-width `sizeof(NameId)`-byte little-endian `validity`
+    ///        then each `member`, no separators.
     ///
     /// @see `EqClassKey`, `BytesKeyCodecBase`, I-117.
     template <>
@@ -933,50 +935,54 @@ namespace gl {
         /// @brief Encode to the canonical byte key.
         ///
         /// @param k The key.
-        /// @return `2*(members.size()+1)` bytes: `validity` then each `member`.
+        /// @return `sizeof(NameId)*(members.size()+1)` bytes: `validity` then
+        ///         each `member`.
         static std::string encode(const EqClassKey& k) {
-            std::string key(sizeof(int16_t) * (k.members.size() + 1), '\0');
-            std::memcpy(&key[0], &k.validity, sizeof(int16_t));
+            std::string key(sizeof(NameId) * (k.members.size() + 1), '\0');
+            std::memcpy(&key[0], &k.validity, sizeof(NameId));
             for (std::size_t i = 0; i < k.members.size(); ++i)
-                std::memcpy(&key[sizeof(int16_t) * (i + 1)], &k.members[i],
-                            sizeof(int16_t));
+                std::memcpy(&key[sizeof(NameId) * (i + 1)], &k.members[i],
+                            sizeof(NameId));
             return key;
         }
 
         /// @brief Decode the byte key back to the typed form.
         ///
-        /// @param s The stored bytes (a multiple of 2, at least 2).
+        /// @param s The stored bytes (a multiple of `sizeof(NameId)`, at least
+        ///          `sizeof(NameId)`).
         /// @return The decoded key.
         static EqClassKey decode(StrSpan s) {
-            assert(s.len >= static_cast<int32_t>(sizeof(int16_t))
-                && (s.len % static_cast<int32_t>(sizeof(int16_t))) == 0
+            assert(s.len >= static_cast<int32_t>(sizeof(NameId))
+                && (s.len % static_cast<int32_t>(sizeof(NameId))) == 0
                 && "Codec<EqClassKey>::decode: malformed key length");
             EqClassKey k{};
-            std::memcpy(&k.validity, s.ptr, sizeof(int16_t));
+            std::memcpy(&k.validity, s.ptr, sizeof(NameId));
             const int32_t n =
-                s.len / static_cast<int32_t>(sizeof(int16_t)) - 1;
+                s.len / static_cast<int32_t>(sizeof(NameId)) - 1;
             k.members.resize(static_cast<std::size_t>(n));
             for (int32_t i = 0; i < n; ++i)
                 std::memcpy(&k.members[static_cast<std::size_t>(i)],
-                            s.ptr + sizeof(int16_t) * (i + 1), sizeof(int16_t));
+                            s.ptr + sizeof(NameId) * (i + 1), sizeof(NameId));
             return k;
         }
     };
 
     /// @brief A 2-field statement-registry key — an original/template id (high
-    ///        16 bits) plus a validity id (low 16 bits) — packed to one `int32_t`.
+    ///        32 bits) plus a validity id (low 32 bits) — packed to one `int64_t`.
     ///
     /// @details
     /// The typed form of the `packStatementKey` packed key
     /// (`intToBeProved` / `intStatementLevelsMap` / `intKnownStatements` /
-    /// the admission-rejected subsystem).
+    /// the admission-rejected subsystem). Both halves are `NameId` (32-bit), so
+    /// the pack is an `int64_t` — the same `packInt32Pair` primitive
+    /// `Codec<LbStatePairKey>` uses.
     ///
     /// @see `Codec<StatementKey>`.
     struct StatementKey {
-        /// @brief Original / template id (the high 16 bits).
-        int16_t orig;
-        /// @brief Validity-scope id (the low 16 bits).
-        int16_t validity;
+        /// @brief Original / template id (the high 32 bits).
+        NameId orig;
+        /// @brief Validity-scope id (the low 32 bits).
+        NameId validity;
 
         /// @brief Value equality (for tests + decoded-key comparisons).
         ///
@@ -988,30 +994,29 @@ namespace gl {
     };
 
     /// @brief Codec for `StatementKey` — the scalar `packStatementKey` produced:
-    ///        `(uint16(orig) << 16) | uint16(validity)`.
+    ///        `packInt32Pair(orig, validity)` (`orig` in the high 32 bits,
+    ///        `validity` in the low 32).
     ///
-    /// @see `StatementKey`, `PackedKeyCodecBase`.
+    /// @see `StatementKey`, `PackedKeyCodecBase`, `packInt32Pair`.
     template <>
-    struct Codec<StatementKey> : PackedKeyCodecBase<int32_t> {
-        /// @brief Pack to the canonical `int32_t` key.
+    struct Codec<StatementKey> : PackedKeyCodecBase<int64_t> {
+        /// @brief Pack to the canonical `int64_t` key.
         ///
         /// @param k The key.
         /// @return The packed scalar.
-        static int32_t encode(const StatementKey& k) {
-            return (static_cast<int32_t>(static_cast<uint16_t>(k.orig)) << 16)
-                 | static_cast<int32_t>(static_cast<uint16_t>(k.validity));
+        static int64_t encode(const StatementKey& k) {
+            return packInt32Pair(k.orig, k.validity);
         }
 
         /// @brief Unpack the scalar back to the typed form.
         ///
         /// @param s The packed scalar.
         /// @return The decoded key.
-        static StatementKey decode(const int32_t& s) {
+        static StatementKey decode(const int64_t& s) {
             return StatementKey{
-                static_cast<int16_t>(static_cast<uint16_t>(
-                    static_cast<uint32_t>(s) >> 16)),
-                static_cast<int16_t>(static_cast<uint16_t>(
-                    static_cast<uint32_t>(s) & 0xFFFFu)) };
+                static_cast<NameId>(static_cast<uint64_t>(s) >> 32),
+                static_cast<NameId>(static_cast<uint32_t>(
+                    static_cast<uint64_t>(s) & 0xFFFFFFFFu)) };
         }
     };
 
@@ -1020,7 +1025,8 @@ namespace gl {
     ///
     /// @details
     /// The typed form of the `packLbStateKey` packed key (`orBookkeeping` keyed by
-    /// `(exprId, sigId)`; `expandedImplications` keyed by
+    /// `(exprId, cohortId)`, where the cohort id contains parent + signature;
+    /// `expandedImplications` keyed by
     /// `(maybeAncestor, descendant)`).
     ///
     /// @see `Codec<LbStatePairKey>`.
@@ -1081,9 +1087,9 @@ namespace gl {
     /// @see `Codec<NormKey>`, `IntNormalizedKey`.
     struct NormKey {
         /// @brief The leading expression-count field of the normalized key.
-        int16_t numberExpressions;
-        /// @brief The key's `int16_t` payload; `data.size()` is the key length.
-        std::vector<int16_t> data;
+        int32_t numberExpressions;
+        /// @brief The key's `NameId` payload; `data.size()` is the key length.
+        std::vector<NameId> data;
 
         /// @brief Value equality (for tests + decoded-key comparisons).
         ///
@@ -1108,19 +1114,20 @@ namespace gl {
         /// @return The hash.
         std::size_t operator()(const NormKey& k) const {
             std::size_t h = 1469598103934665603ULL;
-            const auto mix = [&h](int16_t v) {
+            const auto mix = [&h](NameId v) {
                 h ^= static_cast<std::size_t>(
-                    static_cast<std::uint16_t>(v));
+                    static_cast<std::uint32_t>(v));
                 h *= 1099511628211ULL;
             };
             mix(k.numberExpressions);
-            for (const int16_t v : k.data) mix(v);
+            for (const NameId v : k.data) mix(v);
             return h;
         }
     };
 
-    /// @brief Codec for `NormKey` — the byte layout `int16 numberExpressions ++
-    ///        int16 length ++ length×int16 data`, all fixed-width little-endian.
+    /// @brief Codec for `NormKey` — the byte layout `NameId numberExpressions ++
+    ///        NameId length ++ length×NameId data`, all fixed-width little-endian
+    ///        (the whole record is uniform `sizeof(NameId)`).
     ///
     /// @details
     /// The `length` field is redundant with the byte count but kept so the decode
@@ -1133,37 +1140,40 @@ namespace gl {
         /// @brief Encode to the canonical byte key.
         ///
         /// @param k The key.
-        /// @return `2*(k.data.size()+2)` bytes: `numberExpressions`, `length`, data.
+        /// @return `sizeof(NameId)*(k.data.size()+2)` bytes: `numberExpressions`,
+        ///         `length`, data.
         static std::string encode(const NormKey& k) {
-            const int16_t length = static_cast<int16_t>(k.data.size());
-            std::string key(sizeof(int16_t) * (k.data.size() + 2), '\0');
-            std::memcpy(&key[0], &k.numberExpressions, sizeof(int16_t));
-            std::memcpy(&key[sizeof(int16_t)], &length, sizeof(int16_t));
+            const int32_t numExpr = k.numberExpressions;
+            const int32_t length = static_cast<int32_t>(k.data.size());
+            std::string key(sizeof(NameId) * (k.data.size() + 2), '\0');
+            std::memcpy(&key[0], &numExpr, sizeof(NameId));
+            std::memcpy(&key[sizeof(NameId)], &length, sizeof(NameId));
             for (std::size_t i = 0; i < k.data.size(); ++i)
-                std::memcpy(&key[sizeof(int16_t) * (i + 2)], &k.data[i],
-                            sizeof(int16_t));
+                std::memcpy(&key[sizeof(NameId) * (i + 2)], &k.data[i],
+                            sizeof(NameId));
             return key;
         }
 
         /// @brief Decode the byte key back to the typed form.
         ///
-        /// @param s The stored bytes (a multiple of 2, at least 4).
+        /// @param s The stored bytes (a multiple of `sizeof(NameId)`, at least
+        ///          `2*sizeof(NameId)`).
         /// @return The decoded key.
         static NormKey decode(StrSpan s) {
-            assert(s.len >= 2 * static_cast<int32_t>(sizeof(int16_t))
-                && (s.len % static_cast<int32_t>(sizeof(int16_t))) == 0
+            assert(s.len >= 2 * static_cast<int32_t>(sizeof(NameId))
+                && (s.len % static_cast<int32_t>(sizeof(NameId))) == 0
                 && "Codec<NormKey>::decode: malformed key length");
             NormKey k{};
-            std::memcpy(&k.numberExpressions, s.ptr, sizeof(int16_t));
-            int16_t length = 0;
-            std::memcpy(&length, s.ptr + sizeof(int16_t), sizeof(int16_t));
+            std::memcpy(&k.numberExpressions, s.ptr, sizeof(NameId));
+            int32_t length = 0;
+            std::memcpy(&length, s.ptr + sizeof(NameId), sizeof(NameId));
             const int32_t n =
-                s.len / static_cast<int32_t>(sizeof(int16_t)) - 2;
+                s.len / static_cast<int32_t>(sizeof(NameId)) - 2;
             assert(n == length && "Codec<NormKey>::decode: length field mismatch");
             k.data.resize(static_cast<std::size_t>(n));
             for (int32_t i = 0; i < n; ++i)
                 std::memcpy(&k.data[static_cast<std::size_t>(i)],
-                            s.ptr + sizeof(int16_t) * (i + 2), sizeof(int16_t));
+                            s.ptr + sizeof(NameId) * (i + 2), sizeof(NameId));
             return k;
         }
 
@@ -1188,18 +1198,21 @@ namespace gl {
         }
     };
 
-    /// @brief An ascending set of `int16_t` ids as one byte key — the
+    /// @brief An ascending set of `NameId` ids as one byte key — the
     ///        `remainingArgsNormalizedEncodedMap` key (the former
-    ///        `std::set<int16_t>`) — backed by a `BytesKeyStore`.
+    ///        `std::set<NameId>`) — backed by a `BytesKeyStore`.
     ///
     /// @details
-    /// The caller passes `ids` in ascending order (the `std::set<int16_t>`
+    /// The caller passes `ids` in ascending order (the `std::set<NameId>`
     /// iteration order), so the byte form is the canonical set representation.
+    /// The historical `Int16SetKey` name is kept even though the ids are now
+    /// `NameId` (32-bit), to bound the migration diff — the remaining-arg ids are
+    /// NameMap ids and can exceed the old 16-bit ceiling.
     ///
     /// @see `Codec<Int16SetKey>`.
     struct Int16SetKey {
         /// @brief The set's ids, ascending.
-        std::vector<int16_t> ids;
+        std::vector<NameId> ids;
 
         /// @brief Value equality (for tests + decoded-key comparisons).
         ///
@@ -1208,8 +1221,8 @@ namespace gl {
         bool operator==(const Int16SetKey& o) const { return ids == o.ids; }
     };
 
-    /// @brief Codec for `Int16SetKey` — the byte layout `int16 count ++
-    ///        count×int16` ascending, all fixed-width little-endian.
+    /// @brief Codec for `Int16SetKey` — the byte layout `NameId count ++
+    ///        count×NameId` ascending, all fixed-width little-endian.
     ///
     /// @see `Int16SetKey`, `BytesKeyCodecBase`.
     template <>
@@ -1217,35 +1230,36 @@ namespace gl {
         /// @brief Encode to the canonical byte key.
         ///
         /// @param k The key.
-        /// @return `2*(k.ids.size()+1)` bytes: `count` then each id.
+        /// @return `sizeof(NameId)*(k.ids.size()+1)` bytes: `count` then each id.
         static std::string encode(const Int16SetKey& k) {
-            const int16_t count = static_cast<int16_t>(k.ids.size());
-            std::string key(sizeof(int16_t) * (k.ids.size() + 1), '\0');
-            std::memcpy(&key[0], &count, sizeof(int16_t));
+            const NameId count = static_cast<NameId>(k.ids.size());
+            std::string key(sizeof(NameId) * (k.ids.size() + 1), '\0');
+            std::memcpy(&key[0], &count, sizeof(NameId));
             for (std::size_t i = 0; i < k.ids.size(); ++i)
-                std::memcpy(&key[sizeof(int16_t) * (i + 1)], &k.ids[i],
-                            sizeof(int16_t));
+                std::memcpy(&key[sizeof(NameId) * (i + 1)], &k.ids[i],
+                            sizeof(NameId));
             return key;
         }
 
         /// @brief Decode the byte key back to the typed form.
         ///
-        /// @param s The stored bytes (a multiple of 2, at least 2).
+        /// @param s The stored bytes (a multiple of `sizeof(NameId)`, at least
+        ///          `sizeof(NameId)`).
         /// @return The decoded key.
         static Int16SetKey decode(StrSpan s) {
-            assert(s.len >= static_cast<int32_t>(sizeof(int16_t))
-                && (s.len % static_cast<int32_t>(sizeof(int16_t))) == 0
+            assert(s.len >= static_cast<int32_t>(sizeof(NameId))
+                && (s.len % static_cast<int32_t>(sizeof(NameId))) == 0
                 && "Codec<Int16SetKey>::decode: malformed key length");
             Int16SetKey k{};
-            int16_t count = 0;
-            std::memcpy(&count, s.ptr, sizeof(int16_t));
+            NameId count = 0;
+            std::memcpy(&count, s.ptr, sizeof(NameId));
             const int32_t n =
-                s.len / static_cast<int32_t>(sizeof(int16_t)) - 1;
+                s.len / static_cast<int32_t>(sizeof(NameId)) - 1;
             assert(n == count && "Codec<Int16SetKey>::decode: count mismatch");
             k.ids.resize(static_cast<std::size_t>(n));
             for (int32_t i = 0; i < n; ++i)
                 std::memcpy(&k.ids[static_cast<std::size_t>(i)],
-                            s.ptr + sizeof(int16_t) * (i + 1), sizeof(int16_t));
+                            s.ptr + sizeof(NameId) * (i + 1), sizeof(NameId));
             return k;
         }
     };

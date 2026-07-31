@@ -988,6 +988,34 @@ The hashburst trace expansion in [D-74](40_decisions.md#d-74) and the `nameMap.i
 
 ---
 
+<a id="g-61"></a>
+## G-61 — a paren-anchored subexpression extractor silently strips a leading negation
+
+
+**Symptom.** An induction-hypothesis rule silently INVERTS a negated premise. For the OR-companion theorem, `createAuxyImplication` installed `(in[u_rec,u_1]) (existence3[u_1,u_rec,u_3]) ⇒ (=[u_rec,u_2])` — "anything with a predecessor is 0", mathematically false — where the source theorem's premise is the NEGATED `!(existence3[…])`. The unsound rule is latent while its frozen premises are unsatisfiable and proves false statements the moment they are not.
+
+**Mechanism.** `extractSubstringsForAuxy` captured paren-to-paren windows `(X[...])` only; a `!` immediately preceding the `(` sat outside the window, so every negated leaf premise entered the auxiliary chain positive. Nothing crashes — the rule installs and sits in `overallHashMemory.originals` looking legitimate.
+
+**Spot.** Dump the recursion sub-LB (sacred dump) and compare each auxiliary rule's premises against the source theorem's chain: a premise that lost its `!` is this gotcha. Any lexical extractor whose window starts at a fixed opening byte is suspect for the same class of drop.
+
+**Fix.** The extractor includes a `!` immediately preceding the matched `(` (lexical twin of `!?\(([^>(\[]+\[[^\]]*\])\)`); the regex-oracle unit test carries negated forms and pins the companion shape verbatim (`test_memory.cpp`, `extract_substrings_for_auxy_matches_regex_oracle`).
+
+---
+
+<a id="g-62"></a>
+## G-62 — `patterns_to_exclude` never sees negated-premise variants
+
+
+**Symptom.** A `patterns_to_exclude` regex written to bar a conjecture shape has no effect on rows carrying a negated premise: the barred shape's `!(...)`-premise variants appear in `conjectures.txt` even though the regex matches them.
+
+**Mechanism.** `generateNegatedPremiseVariants` runs AFTER the string-lane filter cascade (`patternInConjecture` included) and derives one negated-premise variant per negatable premise from each *surviving* positive row. The variants are emitted without re-entering the filters, so a pattern only ever screens positive base forms. Conversely, a pattern that matches only mixed-polarity text (e.g. one negated plus one positive `=`) is dead config — no candidate carrying that text ever reaches `patternInConjecture`.
+
+**Spot.** Emitted rows whose only difference from a pattern-barred shape is a `!` on one premise; or a pattern whose removal changes nothing in the pool.
+
+**Fix.** Bar the positive base form — the variants die with it. Verify a new pattern empirically by diffing the pool with and without it (`--conjecture <Tag>` twice).
+
+---
+
 ## See also
 
 - [`30_invariants.md`](30_invariants.md) — the rules that, when forgotten, produce the gotchas above.

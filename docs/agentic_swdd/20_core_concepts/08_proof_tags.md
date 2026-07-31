@@ -44,8 +44,8 @@ Rest fields **alternate** `(expression, namespace)` pairs — i.e. `rest[0]` is 
 - [`implication`](#implication) — compiled implication rule fired.
 - [`incubator back reformulation`](#incubator-back-reformulation) — incubator operator-equality rewritten.
 - [`multiplied from`](#equalize-variable--multiplied-from) — re-emitted with bound vars identified per Bell partition.
-- [`or branch assumption`](#or-branch-assumption) — negated-other-disjunct seeded as branch-local fact.
-- [`or branch proven`](#or-branch-proven) — OR case-split into a branch carrying the asserted disjunct.
+- [`or branch assumption`](#or-branch-assumption) — negated-other-disjunct seeded as an `_orint_` subproof premise.
+- [`or branch proven`](#or-branch-proven) — one `_orint_` subproof proved the parent OR goal.
 - [`or convergence`](#or-convergence) — all branches reached the same conclusion.
 - [`or disintegration`](#or-disintegration) — case split on an OR head.
 - [`or theorem`](#or-theorem) — an OR-shaped theorem was reached.
@@ -122,11 +122,11 @@ Rest fields **alternate** `(expression, namespace)` pairs — i.e. `rest[0]` is 
 
 ## `contradiction`
 
-**Purpose.** Under an assumption of the opposite of the conclusion, the prover derives both `X` and `!X`. The assumption discharges; the original conclusion is emitted.
+**Purpose.** Under the contradiction LB's proof assumption, the prover derives both `X` and `!X` at that LB's `main`. The assumption discharges and the original conclusion is emitted. A pair available only in a deeper branch scope does not emit this tag.
 
-**Emitted by.** `dischargeContradiction` ([`prover.hpp`](../../GL_Quick_VS/GL_Quick/src/prover.hpp)) — the single per-step sweep over `intEncodedStatements` that detects an in-scope contradiction and fires the discharge. (Formerly the "Site G" block inside `addExprToMemoryBlock`; see the [prover chapter](../10_pipeline/04_prover.md#contradiction-discharge).)
+**Emitted by.** `dischargeContradiction` ([`prover.hpp`](../../GL_Quick_VS/GL_Quick/src/prover.hpp)) — the single per-step sweep over `intEncodedStatements` that detects a main/main contradiction and fires the discharge. (Formerly the "Site G" block inside `addExprToMemoryBlock`; see the [prover chapter](../10_pipeline/04_prover.md#contradiction-discharge).)
 
-**Checker.** `check_contradiction` at [`verifier.py`](../../verifier.py).
+**Checker.** `check_contradiction` at [`verifier.py`](../../verifier.py). Accepts the row/seed relation in either polarity: the row's expression and the seed (`cleanOp`, rest[4]) must be exact negations of each other — `"!"+cleanOp` for a verbatim positive-seed LB, `cleanOp == "!"+expression` for a complement negated-seed LB ([D-214](../40_decisions.md#d-214)).
 
 **Rest fields.** Origin chain — references the two contradicting expressions and the discharged assumption.
 
@@ -311,7 +311,7 @@ Every constituent (impl + 3 premises) at `main`; result at `main_boundary_(impli
 
 ## `or branch assumption`
 
-**Purpose.** When an OR is case-split into per-branch scopes, every branch where disjunct `D_i` is asserted gets the negation `!D_j` of every other disjunct (`j ≠ i`) seeded as a branch-local fact. Each such seeding emits one `or branch assumption` row.
+**Purpose.** When an OR goal is rewritten into `_orint_` subproofs, every subproof targeting disjunct `D_i` gets the negation `!D_j` of every other disjunct (`j ≠ i`) as a local premise. Each such premise emits one `or branch assumption` row. Despite the historical tag name, this is not an `_ordis_` case-split event.
 
 **Checker.** `check_or_branch_assumption` at `verifier.py` (D-35).
 
@@ -328,7 +328,7 @@ Every constituent (impl + 3 premises) at `main`; result at `main_boundary_(impli
 3. `line.expression` is `!<disjunct>` where `<disjunct>` is one of the OR's disjuncts modulo equality symmetry.
 4. `line.namespace` is **EXACTLY** `parent + "_boundary_orint_" + or_expr + "_(" + <asserted> + ")"` for some disjunct `<asserted>` of the OR — no substring search, no trailing content allowed. The asserted disjunct is parsed by walking one balanced parens group inside the wrapper.
 5. The asserted disjunct (parsed in step 4) is DIFFERENT from the negated one (modulo equality symmetry). The row asserts a disjunct's negation only in branches where ANOTHER disjunct is asserted.
-6. **A matching `or branch proven` row exists (Codex round-3).** Some chapter row with `tag == "or branch proven"`, `expression == or_expr`, `namespace == parent_ns`, `len(rest) == 2`, `rest[1] == branch_ns`, and `rest[0]` matching the asserted disjunct (modulo equality symmetry). Without this check the assumption row could pass structurally even when the corresponding case-split was never opened.
+6. **A matching `or branch proven` row exists (Codex round-3).** Some chapter row with `tag == "or branch proven"`, `expression == or_expr`, `namespace == parent_ns`, `len(rest) == 2`, `rest[1] == branch_ns`, and `rest[0]` matching the selected disjunct (modulo equality symmetry). Without this check the assumption row could pass structurally even when the corresponding `_orint_` subproof did not prove the OR goal.
 
 History: pre-D-35 the tag was claimed retired (overridden before export). The override never existed; the prover (`prover.hpp` `or branch assumption` site) emits this tag live, and FTA-rung-1 chapter `1209_direct_proof.txt` line 43 carries it. Iterations: round-1 added the checker; round-2 tightened to `len(rest) == 2`, exact-equality branch-namespace match, and balanced-parens disjunct parsing; round-3 added the matching-`or branch proven` cross-check. Chapter 1209's `or branch assumption` row continues to pass after round-3 — the matching `or branch proven` row at line 22 satisfies all five sub-conditions.
 
@@ -336,26 +336,26 @@ History: pre-D-35 the tag was claimed retired (overridden before export). The ov
 
 ## `or branch proven`
 
-**Purpose.** Records the case-split itself: an OR `(or<N>[…])` was opened into a per-branch scope carrying one specific disjunct as its asserted seed.
+**Purpose.** Records that one `_orint_` subproof has proved its parent OR goal through a selected atomic leaf. Despite the historical tag name, this is not the opening of an `_ordis_` case-split branch.
 
 **Checker.** `check_or_branch_proven` at `verifier.py` (D-35).
 
 **Row layout (exactly two rest fields).**
 
 ```text
-<or-expr>  <parent-ns>  or branch proven  <asserted-disjunct>  <branch-ns>
+<or-expr>  <parent-ns>  or branch proven  <asserted-leaf>  <branch-ns>
 ```
 
 **Validation (strict per Codex round-2; round-3 check #1 dropped per [D-36](../40_decisions.md#d-36)):**
 
 1. `len(rest) == 2` exactly. The tag is in `_ORIGIN_EXEMPT_TAGS`, so any extra rest pairs would be silently accepted by the generic origin check; reject up front so the row's contract stays auditable.
-2. `line.expression` is a known compiled OR with ≥2 disjuncts after `u_i` substitution against the OR's args (and matching arity per the binary's `signature`).
-3. `rest[0]` is one of those disjuncts (modulo equality symmetry).
-4. `rest[1]` is **EXACTLY** `parent + "_boundary_orint_" + or_expr + "_(" + <disjunct> + ")"` for `<disjunct>` matching `rest[0]` (modulo equality symmetry). No substring search — the row's claim is "this immediate-child subproof", not "some descendant that contains the substring".
+2. `line.expression` is a known compiled OR with ≥2 ordered atomic leaves after recursive substitution against the loaded OR binaries.
+3. `rest[0]` is one of those leaves (modulo equality symmetry).
+4. `rest[1]` is **EXACTLY** `parent + "_boundary_orint_" + or_expr + "_(" + <leaf> + ")"` for `<leaf>` matching `rest[0]` (modulo equality symmetry). No substring search — the row claims this exact atomic subproof.
 
-**About the missing step 5 ([D-36](../40_decisions.md#d-36)).** An earlier Codex round-3 step required a non-`or branch proven` derivation row for the OR at parent scope. That check was based on a wrong mental model of `_orint_` (treated it as case-split with a separately-derived OR). Correct semantics: `_orint_` rewrites the OR goal `(A ∨ B)` into two sub-implications-to-prove `(!A → B)` and `(!B → A)`; when one fires, the `or branch proven` row IS the OR's derivation by design — there is no separate derivation row to look for. The check was unsatisfiable for legitimate proofs (e.g. chapter `1209_direct_proof.txt` line 22) and dropped as a verifier correction, not a relaxation.
+**About the missing step 5 ([D-36](../40_decisions.md#d-36)).** An earlier Codex round-3 step required a non-`or branch proven` derivation row for the OR at parent scope. That check was based on a wrong mental model of `_orint_` (treated it as case-split with a separately-derived OR). Correct semantics: `_orint_` rewrites the OR goal into K atomic sub-implications-to-prove; when one fires, the `or branch proven` row IS the OR's derivation by design — there is no separate derivation row to look for. The check was unsatisfiable for legitimate proofs and dropped as a verifier correction, not a relaxation.
 
-**Terminology note ([D-36](../40_decisions.md#d-36)).** "branch" in this tag's name and in `or branch assumption` is historical — these rows record per-SUBPROOF events, not case-split branch events. A "subproof" here is one of the two `(!A → B)` / `(!B → A)` implications-to-prove that `_orint_` opens. The renaming hasn't happened yet to avoid touching every consumer.
+**Terminology note ([D-36](../40_decisions.md#d-36)).** "branch" in this tag's name and in `or branch assumption` is historical — these rows record per-SUBPROOF events, not case-split branch events. A "subproof" here is one of the K atomic-leaf implications-to-prove that `_orint_` opens. The renaming has not happened to avoid touching every consumer.
 
 History: pre-D-35 the tag was claimed retired (replaced by `or theorem`). `or theorem` is a different tag — it tags theorems whose head is an OR shape. `or branch proven` is the subproof-firing record, emitted live by the prover (`prover.cpp` `or branch proven` site) and first-class in the verifier since D-35. Iterations: round-1 added the checker; round-2 tightened to `len(rest) == 2` and exact-equality namespace match; round-3 added an OR-origin requirement (later dropped by D-36 as a correction — see above).
 
@@ -363,7 +363,7 @@ History: pre-D-35 the tag was claimed retired (replaced by `or theorem`). `or th
 
 ## `or convergence`
 
-**Purpose (mathematical contract).** An `or convergence` row certifies that the conclusion `line.expression` was independently derived in EVERY branch of the case split on the OR cited in `rest[0]`, and is therefore promoted to the OR's parent scope cited in `rest[1]`.
+**Purpose (mathematical contract).** An `or convergence` row certifies that the conclusion `line.expression` holds under EVERY branch of the case split on the OR cited in `rest[0]` — derived in each surviving branch, and discharged by reductio in each retired branch (dead-branch retirement: the branch's asserted disjunct is refuted) — and is therefore promoted to the OR's parent scope cited in `rest[1]`.
 
 **Checker.** `check_or_convergence` at [`verifier.py`](../../verifier.py) — validates the spec'd row layout. As of [D-36](../40_decisions.md#d-36) the producer side (`ordisMerge` in `prover.hpp`) emits the new layout, and chapter `1209_direct_proof.txt`'s convergence rows pass cleanly.
 
@@ -377,11 +377,12 @@ History: pre-D-35 the tag was claimed retired (replaced by `or theorem`). `or th
                                       <C>  <branch_DK>
 ```
 
-For an OR with `K` disjuncts, the rest field has `2 + 2*K` slots:
+For an OR with `K` disintegration leaves, the rest field has `2 + 2*K` slots. `K` is the recursively flattened, ordered non-OR leaf count for a contiguous nested OR; `rest[0]` remains the original outer compact signature:
 - `rest[0]` = OR (compiled `(or<N>[…])`)
 - `rest[1]` = parent (the OR's parent scope; must equal `line.namespace`)
-- `rest[2*i + 2]` = `C` (must equal `line.expression` for every `i`)
-- `rest[2*i + 3]` = `branch_Di` (the i-th branch's namespace)
+- one two-field entry per flattened disjunct: `rest[2*i + 2]` (an expression) and `rest[2*i + 3]` (a namespace)
+
+Each entry takes one of two forms ([D-238](../40_decisions.md#d-238)): a **survivor** entry `(C, branch_Di)` — the conclusion at that branch's exact `_ordis_` scope — or a **retired** entry `(negate(D_i), ns)` — the disjunct's negation at a scope the parent inherits from (the parent itself, an ancestor, or the retired branch itself for an ex-falso self-refutation). Either way the row accounts for all K flattened disjuncts.
 
 ### Validation contract
 
@@ -389,13 +390,11 @@ For the row to PASS, all of:
 
 1. **Layout.** `len(rest) == 2 + 2*K`; `len(rest)` is even; `len(rest) >= 6` (so `K >= 2`).
 2. **Parent-scope match.** `line.namespace == rest[1]`.
-3. **OR is real.** `rest[0]` is a compiled `(or<N>[…])` with a known GL-binary entry of `category == "or"` and `>= 2` elements; the disjunct count `K` matches the number of `(C, branch_Di)` pairs.
-4. **Conclusion repetition.** `rest[2*i + 2] == line.expression` for every `i` in `[0, K)`.
-5. **Branch-scope ancestry.** Each `branch_Di` is a strict descendant of `parent` (`branch_Di.startswith(parent + "_boundary_")`).
-6. **Branch distinctness.** The `K` branch namespaces are pairwise distinct.
-7. **Per-branch derivation evidence ("each ingredient has its own line").** For every `(C, branch_Di)` pair, a chapter row exists with `expression == C` and `namespace == branch_Di` under any tag — proves `C` was derived at that branch scope.
+3. **OR is real.** `rest[0]` is a compiled `(or<N>[…])` with a known GL-binary entry of `category == "or"`; recursively flattening every substituted OR child yields at least two ordered non-OR leaves, and that leaf count `K` matches the entry count.
+4. **Entry classification + coverage.** Every entry matches one uncovered disjunct — a survivor entry by the disjunct payload embedded in its `_ordis_` branch scope (`parent + "_boundary_ordis_" + OR + "_(" + D_i + ")"`), a retired entry by `negate(D_i)` plus a parent-visible scope — and the K entries cover all K disjuncts exactly once.
+5. **Per-entry derivation evidence ("each ingredient has its own line").** For every entry `(expr, ns)`, a chapter row exists with `expression == expr` and `namespace == ns` under any tag — a survivor's branch derivation of `C`, or a retired branch's refutation.
 
-Step 7 is the key strengthening per the user's directive — it ties each cited branch to a real chapter-local derivation of `C`. Without it the rest fields would be unverifiable assertions; with it the verifier reduces convergence-checking to standard chapter-row existence checks (the same pattern used by the inline origin check).
+Step 5 is the key strengthening per the user's directive — it ties each cited branch to a real chapter-local derivation of `C`. Without it the rest fields would be unverifiable assertions; with it the verifier reduces convergence-checking to standard chapter-row existence checks (the same pattern used by the inline origin check).
 
 ### Status (D-36)
 
@@ -407,7 +406,7 @@ A side-effect of the producer fix: 4 previously-hidden `or disintegration` rows 
 
 ## `or disintegration`
 
-**Purpose.** Case split on an `or` head. Each disjunct becomes a sub-goal inside a dedicated branch scope. The branch scope is named with the asserted disjunct in its payload (`_boundary_ordis_<or>_(<disjunct>)`). Sibling row to `or branch proven` — the `_ordis_` (case-split-and-converge) counterpart of `_orint_` (sub-implications-to-prove).
+**Purpose.** Case split on an `or` head. Every contiguous nested OR is recursively flattened in the same producer call; each ordered non-OR leaf becomes a sub-goal inside a dedicated branch scope. The branch scope is named with the original outer OR plus the asserted leaf in its payload (`_boundary_ordis_<outer-or>_(<leaf>)`). No intermediate compiled-OR branch is valid. Sibling row to `or branch proven` — both `_ordis_` and `_orint_` use the same ordered atomic leaves, with different convergence contracts.
 
 **Checker.** `check_or_disintegration` at [`verifier.py`](../../verifier.py) — D-36-extended for compiled-OR form + per-branch namespace check + OR-origin requirement.
 
@@ -420,18 +419,18 @@ A side-effect of the producer fix: 4 previously-hidden `or disintegration` rows 
 **Validation (D-36):**
 
 1. `len(rest) == 2` exactly. Same `_ORIGIN_EXEMPT_TAGS` rationale as the other OR-tag checkers.
-2. `rest[0]` is a known compiled OR `(or<N>[…])` with ≥2 disjuncts via GL-binary lookup (matching arity per the binary's `signature`).
-3. `line.expression` is one of those disjuncts (modulo equality symmetry).
-4. `line.namespace` is **EXACTLY** `rest[1] + "_boundary_ordis_" + rest[0] + "_(" + <disjunct> + ")"` for `<disjunct>` matching `line.expression` (modulo equality symmetry). No substring search.
+2. `rest[0]` is a known compiled OR `(or<N>[…])` whose recursively substituted contiguous OR tree yields at least two ordered non-OR leaves (matching arity at every node).
+3. `line.expression` is one of those flattened leaves (modulo equality symmetry); an intermediate compiled OR is not a leaf.
+4. `line.namespace` is **EXACTLY** `rest[1] + "_boundary_ordis_" + rest[0] + "_(" + <leaf> + ")"` for `<leaf>` matching `line.expression` (modulo equality symmetry). The outer OR stays in the namespace even when the leaf came from an inner OR. No substring search.
 5. **The OR has an independent derivation row at parent scope.** A chapter row exists with `expression == rest[0]`, `namespace == rest[1]`, and `tag!= "or disintegration"` — i.e. the OR was actually derived (via `implication`, `expansion`, `theorem`, …) before being case-split. This check IS well-founded for `_ordis_`: case-split CONSUMES an existing OR. The analogous check on `check_or_branch_proven` was dropped per [D-36](../40_decisions.md#d-36) because `_orint_` PRODUCES an OR — no separate derivation exists by design. This is the exact semantic asymmetry that motivated the round-3 correction.
 
-Pre-D-36 the checker accepted only the expanded `!(&!(…))` form in `rest[0]` and never validated namespace structure or OR-origin. It was effectively dead in the incubator path because chapter export didn't render `_ordis_` per-branch rows. Stage P1's `ordisMerge` extension exposed them; Stage P1b tightened the checker.
+Pre-D-36 the checker accepted only the expanded `!(&!(…))` form in `rest[0]` and never validated namespace structure or OR-origin. It was effectively dead in the incubator path because chapter export didn't render `_ordis_` per-branch rows. Stage P1's `ordisMerge` extension exposed them; Stage P1b tightened the checker. [D-218](../40_decisions.md#d-218) later made the checker recursively reconstruct the producer's one-go leaf cohort.
 
 ---
 
 ## `or theorem`
 
-**Purpose.** An OR-shaped theorem was reached as a goal — `line.expression` is the proven theorem and its head is an `or<N>[…]` node. Distinct from [`or branch proven`](#or-branch-proven), which is the per-branch case-split bookkeeping row inside a proof; `or theorem` is the chapter-conclusion record for theorems whose statement IS an OR.
+**Purpose.** An OR-shaped theorem was reached as a goal — `line.expression` is the proven theorem and its head is an `or<N>[…]` node. Distinct from [`or branch proven`](#or-branch-proven), which records an `_orint_` subproof discharging its parent OR goal; `or theorem` is the chapter-conclusion record for theorems whose statement IS an OR.
 
 **Checker.** `check_or_theorem` at [`verifier.py`](../../verifier.py).
 
@@ -524,7 +523,7 @@ Read: inside the step chapter, `(in2[v4,v1,s])` — meaning `s(v4) = v1` — is 
 
 ## `task formulation`
 
-**Purpose.** A root premise of the theorem under proof, asserted without justification at the top of the chapter.
+**Purpose.** A root premise of the theorem under proof, asserted without justification at the top of the chapter. In contradiction chapters, the assumed seed also carries this tag — always the exact negation of the theorem's head (the un-negated head for a negated-head theorem; the negated head for a positive-head theorem proved by reductio, [D-214](../40_decisions.md#d-214)).
 
 **Checker.** `check_task_formulation` at [`verifier.py`](../../verifier.py).
 
@@ -578,7 +577,7 @@ The cited expression is a proved theorem from `global_theorem_list.txt`. It appe
 | `rest[2..3]` | its negation + namespace |
 | `rest[4..5]` | the recursion-hypothesis expression + namespace (NEW) |
 
-**Emitted by.** `dischargeContradiction` ([`prover.hpp`](../../GL_Quick_VS/GL_Quick/src/prover.hpp)) — the single per-step sweep over `intEncodedStatements`; the vacuous-truth branch fires on `isPartOfRecursion` + `validityName == "main"` + an ancestor-scope contradiction. See the [prover chapter](../10_pipeline/04_prover.md#contradiction-discharge).
+**Emitted by.** `dischargeContradiction` ([`prover.hpp`](../../GL_Quick_VS/GL_Quick/src/prover.hpp)) — the single per-step sweep over `intEncodedStatements`; the vacuous-truth branch fires on `isPartOfRecursion` plus both contradicting expressions at `main`. See the [prover chapter](../10_pipeline/04_prover.md#contradiction-discharge).
 
 **Prover-side: no level gate.** The vacuous-truth discharge has **no** `mb.level` gate. An earlier gate (requiring at least one contradicting ingredient to carry `mb.level` in its per-statement level set) was removed: for theorems whose own premise is impossible (chapter-101-style lemmas) the contradiction is necessarily rooted in the theorem's outer premise, not the recursion step's hypothesis, so an `mb.level` gate would reject those legitimate vacuous-truth cases. Soundness rests on axiom consistency — no chapter-level contradiction can trace only to anchor-level facts.
 

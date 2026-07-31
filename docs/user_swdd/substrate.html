@@ -230,7 +230,7 @@ whole run; compressor blocks are independent throwaway trees.</figcaption>
 <tr><td><code>primedForContradiction</code></td><td>override that keeps a contradiction block alive past <code>deactivateRecursively</code> so its discharge can fire</td></tr>
 <tr><td><code>intToBeProved</code></td><td>goals not yet derived — packed int keys, auxy-set values; on a set-map in the never-deloaded persistent pool, so the deactivation survey reads it even while the block's main storage is on disk (<a href="memory.html">§6</a>)</td></tr>
 <tr><td><code>intKnownStatements</code></td><td>every known expression — packed int key with <code>registered</code> / <code>known</code> membership bits</td></tr>
-<tr><td><code>intEncodedStatements</code></td><td>the statement registry — int16 rows only; string form reconstructed on demand via <code>decodeExpression</code>; statified — paged storage (<a href="memory.html">§6</a>)</td></tr>
+<tr><td><code>intEncodedStatements</code></td><td>the statement registry — 32-bit id rows only; string form reconstructed on demand via <code>decodeExpression</code>; statified — paged storage (<a href="memory.html">§6</a>)</td></tr>
 <tr><td><code>intLocalEncodedStatements{,Delta}</code> · <code>intLocalEncodedStatementsSet</code></td><td>local-only deposits (when <code>addStatement(local=true)</code>); the <code>Set</code> is a packed-int-key O(1) view feeding the disintegration locality gate</td></tr>
 <tr><td><code>intStatementLevelsMap</code></td><td>per-expression admission ordering — packed int keys, level sets; statified onto a cold set-map (<a href="memory.html">§6</a>)</td></tr>
 <tr><td><code>overallHashMemory</code> · <code>localHashMemory{,Delta}</code></td><td>the rule index visible here (inherited+local) and the per-scope local rules / pending delta</td></tr>
@@ -240,7 +240,7 @@ whole run; compressor blocks are independent throwaway trees.</figcaption>
 <tr><td><code>parentMemory</code> · <code>SimpleMapStore</code></td><td>up-pointer; children by interned routing key (the down-edges live off the block, in a shared never-deloaded store)</td></tr>
 <tr><td><code>exprOriginMap</code></td><td>provenance for every emission (§7)</td></tr>
 <tr><td><code>startInt</code> · <code>startIntRepl</code> · <code>startIntPi</code></td><td>the three Pass&nbsp;B freshness counters (<b>I-17</b>: each must stay monotonic on its own)</td></tr>
-<tr><td><code>orBookkeeping</code></td><td>OR-branch convergence tracking — packed <code>(exprId, sigId)</code> keys → branch-disjunct id sets</td></tr>
+<tr><td><code>orBookkeeping</code></td><td>OR-branch convergence tracking — packed <code>(exprId, cohortId)</code> keys → branch-disjunct id sets; each cohort id canonically contains the parent-validity id plus the original OR-signature id, and <code>orDisjunctCount</code> uses that same cohort</td></tr>
 </table>
 <div class="note"><b>Nothing here is shared.</b> That is the entire reason a cycle can
 run blocks on different threads with no locks (<a href="parallel.html">Chapter&nbsp;5</a>).</div>
@@ -487,7 +487,7 @@ parent is an explicit audited step. A flat “is it proved?” flag would be uns
 <h3 id="scope-mint">3.4.2 &nbsp;<code>NameMap</code> &amp; minting</h3>
 <table>
 <tr><th><code>NameMap</code> member</th><th>Purpose</th></tr>
-<tr><td><code>encodePush(parentId, payload)</code></td><td>mint a child scope; returns a fresh <code>int16_t</code>; records its parent + own payload sub-id in <code>validityNodes</code> (O(1))</td></tr>
+<tr><td><code>encodePush(parentId, payload)</code></td><td>mint a child scope; returns a fresh <code>int32_t</code>; records its parent + own payload sub-id in <code>validityNodes</code> (O(1))</td></tr>
 <tr><td><code>encode(name)</code> / <code>decode(id)</code></td><td>string↔ID; <code>decode</code> returns an <i>owned</i> copy (always safe).</td></tr>
 <tr><td><code>decodeView(id)</code></td><td>zero-copy span over the cold bytes. <b>I-3:</b> copy before any nested mint or deload, or it dangles.</td></tr>
 <tr><td><code>validityNodes</code> · <code>verdict</code></td><td>per-scope {parent, payload} forest (paged); <code>comparable</code> / <code>deeperOf</code> walk it — no <code>pairMap</code></td></tr>
@@ -495,17 +495,17 @@ parent is an explicit audited step. A flat “is it proved?” flag would be uns
 <p>
 The canonical name is literally <code>parent + "_boundary_" + payload</code> (<b>I-2</b>:
 non-root scopes <i>must</i> be minted via <code>encodePush</code> — raw concatenation
-orphans the scope and corrupts depth comparison). The payload <i>prefix</i> encodes
+orphans the scope and corrupts depth comparison). The payload shape encodes
 the role, recoverable without a side table:
 </p>
 <table>
-<tr><th>Payload prefix</th><th>Role</th></tr>
+<tr><th>Payload shape</th><th>Role</th></tr>
 <tr><td><code>main</code></td><td>reserved root — every theorem head sits here</td></tr>
-<tr><td><code>hypo_</code></td><td>an assumed premise</td></tr>
-<tr><td><code>int_</code></td><td>reformulation-for-integration</td></tr>
-<tr><td><code>ordis_</code> / <code>orint_</code></td><td>OR branch (disintegration / re-integration)</td></tr>
-<tr><td><code>hypothetical_disintegration</code></td><td>throwaway structural probe — a hard TRIPWIRE asserts if it ever reaches the chapter walker</td></tr>
-<tr><td><code>sentinel_</code></td><td>placeholder bookkeeping scope</td></tr>
+<tr><td><code>&lt;goal&gt;_subproof_(implicationN[…])</code></td><td>a sub-implication subproof spawned on main by integrating <code>&lt;goal&gt;</code> — the goal rides in the name so a disproof of the goal can find and wipe every scope its integration spawned; each goal owns its own copy (subproofs are per-goal, never shared)</td></tr>
+<tr><td><code>(implicationN[…])</code></td><td>a sub-implication subproof with no owning goal (statement-driven admission machinery) or nested below a goal-owned scope</td></tr>
+<tr><td><code>ordis_…</code> / <code>orint_…</code></td><td>OR branch (disintegration / re-integration); goal-driven <code>orint_</code> branches on main carry the same <code>&lt;goal&gt;_subproof_</code> prefix</td></tr>
+<tr><td><code>_var0_&lt;x&gt;…_hypo_&lt;expr&gt;</code></td><td>hypothetical-disintegration working scope (embeds the integrated expression)</td></tr>
+<tr><td><code>product_of_hypo_disintegration_of_integration_goal_&lt;expr&gt;</code></td><td>throwaway structural probe — a hard TRIPWIRE asserts if it ever reaches the chapter walker</td></tr>
 </table>
 
 <h3 id="scope-stack">3.4.3 &nbsp;The stack, comparison &amp; cleanup</h3>
@@ -593,7 +593,7 @@ an uncompiled structural operator in it.</figcaption>
 Past precompilation, every string expression has an <code>EncodedExpression</code>
 form (head name, top-level negation, argument list with iteration/level metadata,
 the original string for round-trip, its <code>validityName</code>).
-<code>NameMap::encode</code> collapses every name to an <code>int16_t</code>; the
+<code>NameMap::encode</code> collapses every name to an <code>int32_t</code>; the
 resulting <code>IntNormalizedKey</code> is a packed <code>(name_id, arg_ids…)</code>
 array — cheap to hash, fast to compare. The string form is canonical but slow; the
 integer form is the hot path. This is why §3.2's lookup is O(1) <i>and</i> correct:
@@ -751,6 +751,21 @@ the kernel is holding (the kernel walks the local containers as it fires).
 The fix is queueing: every site that wants a wipe pushes the scope name
 into <code>pendingWipeScopes</code>; the burst boundary drains the queue and
 runs <code>wipeSubtree</code> once per queued entry. This is <b>I-50</b>.
+</p>
+<p>
+A <b>disproof</b> feeds the same queue from outside: when a primed
+contradiction block proves the negation of a parent goal, the theorem drain
+deposits the seed on the parent's disproved-goal inbox
+(<code>pendingDisprovedGoals</code>, never-deloaded persistent memory, so the
+deposit works even while the parent is evicted). At the parent's next burst
+boundary, <code>drainDisprovedGoals</code> probes the seed against the
+parent's main goals; on a hit it erases the dead goal, queues every scope
+whose payload names that goal (the <code>&lt;goal&gt;_subproof_</code> and
+hypothetical-disintegration shapes) for the subtree wipe, and additionally
+clears what a scope wipe cannot reach — the goal's preparation gates, its
+origin-history rows, orphaned internal-mail origins, and OR cohorts whose
+parent scope died. A miss is the benign twin case (the reductio twin proved
+the goal instead) and does nothing.
 </p>
 
 <figure>

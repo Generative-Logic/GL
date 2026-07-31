@@ -229,6 +229,30 @@ namespace gl {
             return nullptr;
         }
 
+        /// @brief Span twin of `findChild(parent, const std::string&)`.
+        ///
+        /// @details
+        /// The identical non-minting lookup over a caller-owned span, for
+        /// statified callers that must not materialize a `std::string`
+        /// (the contradiction-twin lookups in the discharge functions).
+        /// Same contract as the string overload: an unminted key is absent
+        /// by construction, and `nullptr` means "no such edge" — a defined
+        /// query result, not a defensive fallback.
+        ///
+        /// @param parent The parent LB (identity only — never dereferenced).
+        /// @param key    The routing-key span to look up.
+        /// @return The child LB, or `nullptr` if `parent` has no edge under `key`.
+        Memory* findChild(const Memory* parent, StrSpan key) const {
+            const std::int32_t keyId = skeletonInterner().lookup(key);
+            if (keyId == 0) return nullptr;
+            const EdgeHead* h = heads.find(lbKey(parent));
+            if (h == nullptr) return nullptr;
+            for (std::int32_t e = h->lastEdge; e >= 0; e = edges[e].prev) {
+                if (edges[e].keyId == keyId) return edges[e].child;
+            }
+            return nullptr;
+        }
+
         /// @brief Apply `fn` to each child of `parent`, in old-`std::map` key order.
         ///
         /// @details

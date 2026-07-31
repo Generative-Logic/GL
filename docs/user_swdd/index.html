@@ -556,7 +556,8 @@ inside one stage are deferred to the owning chapter.
 <tr><td><code>files/config/Config&lt;Tag&gt;.json</code></td><td>user input</td><td>Per-batch deductive-neighbourhood policy: anchor name, slot types, enumeration sizes, shape filters, prover iteration budgets, flags.</td><td>every stage</td></tr>
 <tr><td><code>files/GL_binaries/GL_binary_&lt;Tag&gt;.json</code></td><td>—</td><td>Compiled operator registry — head names, arities, bodies, the structural-operator <code>compiledExpressions</code> table. Built at C++ startup, internal to the prover (no longer a separate stage).</td><td>conjecturer + prover</td></tr>
 <tr><td><code>files/GL_binaries/GL_binary_shared.json</code></td><td>—</td><td>Cross-batch singleton: monotonic maxima of the four spontaneous counters (<a href="compilation.html#counters">§8.4</a>). Python-maintained (<code>run_modes.py</code> seed/merge).</td><td>every batch at startup, on shutdown</td></tr>
-<tr><td><code>files/theorems/conjectures.txt</code></td><td>1</td><td>Raw conjectures from the enumerator. Tens of thousands of candidates.</td><td>stage 2</td></tr>
+<tr><td><code>files/theorems/conjectures.txt</code></td><td>1</td><td>Raw conjectures from the enumerator, plus a handful of template-addon conjectures the enumeration cannot reach (targeted shapes such as the injectivity contrapositive of a single-input operator, anchor-coupled through the standard machinery). Tens of thousands of candidates.</td><td>stage 2</td></tr>
+<tr><td><code>files/theorems/mirror_pairs.txt</code></td><td>1</td><td>One <code>source&nbsp;&rarr;&nbsp;mirror</code> row (tab-separated) per operator-only conjecture whose reverse-direction mirror entered the pool; both columns byte-identical to <code>conjectures.txt</code> lines.</td><td>stage 2 (mirror refutation)</td></tr>
 <tr><td><code>files/theorems/filtered_conjectures.txt</code></td><td>2</td><td>CE-filter survivors. Hundreds, not thousands.</td><td>stage 3 (prover)</td></tr>
 <tr><td><code>files/simple_facts/simple_facts_&lt;name&gt;_&lt;n&gt;.txt</code></td><td>incubator output / user-supplied</td><td>Finite-model fact tables for CE filtering (size <code>&lt;n&gt;</code>).</td><td>CE filter</td></tr>
 <tr><td><code>files/theorems/theorems.txt</code></td><td>3</td><td>Raw MPL of every theorem proved this batch, with compiled structural heads (<code>or&lt;N&gt;</code>, <code>existence&lt;N&gt;</code>) expanded to base form so any downstream parser can read it. <b>Regression-claim source of truth</b> (per Chapter 10).</td><td>compressor + verifier + next batch (cross-batch external seed for downstream non-incubator parsers)</td></tr>
@@ -684,8 +685,9 @@ Branches recombine by <code>_orint_</code> (one branch proves) or
 <code>_ordis_</code> (all converge). — <a href="mechanisms.html#branch">§4.4</a></dd>
 
 <dt>Contradiction discharge</dt>
-<dd>The mechanism that turns a self-refuting branch into a positive parent-
-scope fact (<code>¬(branch assumption)</code>). — <a href="reformulation.html#contra">§10.6</a></dd>
+<dd>The mechanism that discharges a contradiction logic block when both
+opposing expressions exist at that block's exact <code>main</code> scope. —
+<a href="reformulation.html#contra">§10.6</a></dd>
 
 <dt>Induction triad</dt>
 <dd>The three sub-blocks a scheduled induction spawns: base, step, typing.

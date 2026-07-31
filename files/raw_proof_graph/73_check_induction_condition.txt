@@ -1,10 +1,10 @@
-(in3[11,12,13,4])	main	implication	(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11](in3[10,11,8,4])(>[12](in3[7,11,12,4])(in3[10,12,9,4])))))	main	(AnchorPeano[1,2,3,4,5,6])	main	(in3[11,it_0_lev_5_94,it_0_lev_5_350,4])	main	(in3[8,it_0_lev_5_350,13,4])	main	(in3[8,it_0_lev_5_94,12,4])	main
+(in3[11,12,13,4])	main	implication	(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11](in3[10,11,8,4])(>[12](in3[7,11,12,4])(in3[10,12,9,4])))))	main	(AnchorPeano[1,2,3,4,5,6])	main	(in3[11,it_0_lev_5_94,it_1_lev_5_350,4])	main	(in3[8,it_0_lev_5_94,12,4])	main	(in3[8,it_1_lev_5_350,13,4])	main
 (>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11](in3[10,11,8,4])(>[12](in3[7,11,12,4])(in3[10,12,9,4])))))	main	theorem
 (AnchorPeano[1,2,3,4,5,6])	main	task formulation
-(in3[11,it_0_lev_5_94,it_0_lev_5_350,4])	main	implication	(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11](in3[10,11,7,4])(>[12](in3[10,8,12,4])(in3[12,11,9,4])))))	main	(AnchorPeano[1,2,3,4,5,6])	main	(in3[it_0_lev_5_102,7,it_0_lev_5_350,4])	main	(in3[it_0_lev_5_86,7,11,4])	main	(in3[it_0_lev_5_86,it_0_lev_5_94,it_0_lev_5_102,4])	main
+(in3[11,it_0_lev_5_94,it_1_lev_5_350,4])	main	implication	(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11](in3[10,11,7,4])(>[12](in3[10,8,12,4])(in3[12,11,9,4])))))	main	(AnchorPeano[1,2,3,4,5,6])	main	(in3[it_0_lev_5_102,7,it_1_lev_5_350,4])	main	(in3[it_0_lev_5_86,7,11,4])	main	(in3[it_0_lev_5_86,it_0_lev_5_94,it_0_lev_5_102,4])	main
 (>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11](in3[10,11,7,4])(>[12](in3[10,8,12,4])(in3[12,11,9,4])))))	main	theorem
-(in3[it_0_lev_5_102,7,it_0_lev_5_350,4])	main	disintegration	!(>[it_0_lev_5_350](in[it_0_lev_5_350,1])!(in3[it_0_lev_5_102,7,it_0_lev_5_350,4]))	main
-!(>[it_0_lev_5_350](in[it_0_lev_5_350,1])!(in3[it_0_lev_5_102,7,it_0_lev_5_350,4]))	main	expansion	(existence1[1,it_0_lev_5_102,7,4])	main
+(in3[it_0_lev_5_102,7,it_1_lev_5_350,4])	main	disintegration	!(>[it_1_lev_5_350](in[it_1_lev_5_350,1])!(in3[it_0_lev_5_102,7,it_1_lev_5_350,4]))	main
+!(>[it_1_lev_5_350](in[it_1_lev_5_350,1])!(in3[it_0_lev_5_102,7,it_1_lev_5_350,4]))	main	expansion	(existence1[1,it_0_lev_5_102,7,4])	main
 (existence1[1,it_0_lev_5_102,7,4])	main	implication	(>[1](in[1,u_1])(>[2](in[2,u_1])(existence1[u_1,1,2,u_4])))	main	(in[7,1])	main	(in[it_0_lev_5_102,1])	main
 (>[1](in[1,u_1])(>[2](in[2,u_1])(existence1[u_1,1,2,u_4])))	main	expansion	(implication9[1,1,1,4])	main
 (implication9[1,1,1,4])	main	disintegration	(&(&(&(&(implication6[4,1])(implication7[4,1]))(implication8[4,1]))(implication9[1,1,1,4]))(implication10[1,1,4]))	main
@@ -49,11 +49,11 @@
 (>[1,2,3](in3[1,2,3,u_4])(in[2,u_1]))	main	expansion	(implication7[4,1])	main
 (implication7[4,1])	main	disintegration	(&(&(&(&(implication6[4,1])(implication7[4,1]))(implication8[4,1]))(implication9[1,1,1,4]))(implication10[1,1,4]))	main
 (in3[9,rec,it_0_lev_5_102,5])	main	disintegration	!(>[it_0_lev_5_102](in[it_0_lev_5_102,1])!(in3[9,rec,it_0_lev_5_102,5]))	main
-(in3[8,it_0_lev_5_350,13,4])	main	implication	(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11](in3[10,11,8,4])(>[12](in3[7,11,12,4])(in3[10,12,9,4])))))	main	(AnchorPeano[1,2,3,4,5,6])	main	(in3[8,7,9,4])	main	(in3[it_0_lev_5_102,7,it_0_lev_5_350,4])	main	(in3[it_0_lev_5_102,9,13,4])	main
-(in3[8,7,9,4])	main	implication	(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(in3[8,7,9,4])))	main	(AnchorPeano[1,2,3,4,5,6])	main	(in3[7,8,9,4])	main
-(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(in3[8,7,9,4])))	main	theorem
-(in3[it_0_lev_5_102,9,13,4])	main	implication	(>[1](in[1,u_1])(>[2](in2[1,2,u_3])(>[3,4](in3[3,1,4,u_5])(>[5](in3[3,2,5,u_5])(in3[4,3,5,u_4])))))	main	(in2[rec,10,3])	main	(in3[9,10,13,5])	main	(in3[9,rec,it_0_lev_5_102,5])	main	(in[rec,1])	main
-(in3[9,10,13,5])	main	task formulation
 (in3[8,it_0_lev_5_94,12,4])	main	implication	(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(in3[8,7,9,4])))	main	(AnchorPeano[1,2,3,4,5,6])	main	(in3[it_0_lev_5_94,8,12,4])	main
+(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(in3[8,7,9,4])))	main	theorem
 (in3[it_0_lev_5_94,8,12,4])	main	implication	(>[1](in[1,u_1])(>[2](in2[1,2,u_3])(>[3,4](in3[3,1,4,u_5])(>[5](in3[3,2,5,u_5])(in3[4,3,5,u_4])))))	main	(in2[rec,10,3])	main	(in3[8,10,12,5])	main	(in3[8,rec,it_0_lev_5_94,5])	main	(in[rec,1])	main
 (in3[8,10,12,5])	main	task formulation
+(in3[8,it_1_lev_5_350,13,4])	main	implication	(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11](in3[10,11,8,4])(>[12](in3[7,11,12,4])(in3[10,12,9,4])))))	main	(AnchorPeano[1,2,3,4,5,6])	main	(in3[8,7,9,4])	main	(in3[it_0_lev_5_102,7,it_1_lev_5_350,4])	main	(in3[it_0_lev_5_102,9,13,4])	main
+(in3[8,7,9,4])	main	implication	(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(in3[8,7,9,4])))	main	(AnchorPeano[1,2,3,4,5,6])	main	(in3[7,8,9,4])	main
+(in3[it_0_lev_5_102,9,13,4])	main	implication	(>[1](in[1,u_1])(>[2](in2[1,2,u_3])(>[3,4](in3[3,1,4,u_5])(>[5](in3[3,2,5,u_5])(in3[4,3,5,u_4])))))	main	(in2[rec,10,3])	main	(in3[9,10,13,5])	main	(in3[9,rec,it_0_lev_5_102,5])	main	(in[rec,1])	main
+(in3[9,10,13,5])	main	task formulation

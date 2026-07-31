@@ -3901,12 +3901,13 @@ bool Conjecturer::evaluateOperatorExprs2(const std::string& expression, bool anc
         for (auto& rArgs : relArgsList) {
             auto it0 = argMap.find(rArgs[0]);
             auto it1 = argMap.find(rArgs[1]);
-            bool have0 = (it0 != argMap.end()) || (propArgs.count(rArgs[0]) > 0) || (anchorArgs.count(rArgs[0]) > 0);
-            bool have1 = (it1 != argMap.end()) || (propArgs.count(rArgs[1]) > 0) || (anchorArgs.count(rArgs[1]) > 0);
-            assert(have0 && have1);
             // Anchor args act as "known constants" — for the operator-chain dichotomy (both-outputs-only
             // vs both-inputs-only), treat them the same as property args: input-only (they flow into
             // the relation but don't emerge as any operator's output).
+            // An arg found in none of argMap / propArgs / anchorArgs appears only in relation atoms
+            // (reachable once a relation's per-conjecture count cap admits two relation atoms sharing
+            // an argument); it carries no input/output evidence, classifies as neither, and the
+            // dichotomy condition below rejects the candidate.
             auto classify = [&](const std::string& arg, auto it) {
                 bool hasIn  = (it != argMap.end() && !it->second.first.empty())
                             || (propArgs.count(arg) > 0)
@@ -5176,6 +5177,85 @@ std::string Conjecturer::createReshuffledMirrored(const std::string& expr, bool 
         auto [reshuffled, _, __] = reshuffle(newExpr, true);
         return reshuffled;
     }
+}
+
+/// @brief Test whether a conjecture consists exclusively of plain
+///        operator applications, anchor exempt.
+///
+/// @details
+/// Disintegrates `expr` into its full premise chain plus head via
+/// `ce::disintegrateImplication` and checks every constituent: the
+/// anchor premise (core name equal to `config_.getAnchorName()`) is
+/// exempt; every other premise and the head must be a plain,
+/// non-negated operator application — an expression whose core name is
+/// in `operators_` (entries with both input and output arguments).
+/// Equality elements, `or0` / existence shapes, nested implication
+/// elements, and negated elements all fail the test.
+///
+/// Negation is detected on the element string itself
+/// (`elem[0] == '!'`), never via the extracted core name, because
+/// `ce::extractExpression` strips the `!(...)` wrapper and would report
+/// the inner operator for a negated element.
+///
+/// This is the emission gate for `mirror_pairs.txt`: the CE filter's
+/// mirror-refutation heuristic applies only to operator-only
+/// conjectures (see
+/// [D-229](../../docs/agentic_swdd/40_decisions.md#d-229)).
+///
+/// @param expr Conjecture in canonical pool form.
+/// @return `true` when every non-anchor constituent is a plain
+///         operator application.
+bool Conjecturer::consistsOnlyOfOperators(const std::string& expr) const {
+    using CE = std::tuple<std::string, std::vector<std::string>, std::set<std::string>>;
+    std::vector<CE> tempChain;
+    const std::string head = ce::disintegrateImplication(expr, tempChain, coreExprMap_);
+
+    const std::string anchorName = config_.getAnchorName();
+
+    auto isPlainOperator = [this](const std::string& elem) {
+        if (elem.empty() || elem[0] == '!') return false;
+        const std::string core = ce::extractExpression(elem);
+        return std::find(operators_.begin(), operators_.end(), core) != operators_.end();
+    };
+
+    for (const auto& element : tempChain) {
+        const std::string& elem = std::get<0>(element);
+        if (!elem.empty() && elem[0] != '!'
+            && ce::extractExpression(elem) == anchorName) {
+            continue;
+        }
+        if (!isPlainOperator(elem)) return false;
+    }
+    return isPlainOperator(head);
+}
+
+/// @brief Build the `mirror_pairs.txt` rows from the captured
+///        source→mirror map.
+///
+/// @details
+/// Iterates `capturedPairs` in ascending source order (the `std::map`
+/// iteration order — deterministic output) and keeps only rows whose
+/// source passes `consistsOnlyOfOperators`. Each kept row is emitted
+/// as `source + "\t" + mirror`. Both strings are byte-identical to
+/// their `conjectures.txt` lines because the capture sites in `run()`
+/// record them at pool admission, before any further mutation. An
+/// empty mirror is a capture-site bug, not a defined case — asserted.
+///
+/// @param capturedPairs Source-conjecture → mirror-conjecture map
+///                      captured at the pool-admission sites.
+/// @return Tab-separated rows for `mirror_pairs.txt`, source-sorted.
+/// @see consistsOnlyOfOperators — the emission gate.
+std::vector<std::string> Conjecturer::buildMirrorPairRows(
+    const std::map<std::string, std::string>& capturedPairs) const {
+    std::vector<std::string> rows;
+    for (const auto& [source, mirror] : capturedPairs) {
+        assert(!mirror.empty()
+            && "buildMirrorPairRows: capture sites must only record non-empty mirrors");
+        if (consistsOnlyOfOperators(source)) {
+            rows.push_back(source + "\t" + mirror);
+        }
+    }
+    return rows;
 }
 
 // ============================================================================
@@ -6465,9 +6545,12 @@ Conjecturer::Conjecturer(const std::string& anchorId)
 ///    pass (`triggersExistenceReformulation` /
 ///    `reformulateToExistenceHead`) and the negated-premise
 ///    variant pass (`generateNegatedPremiseVariants`).
-/// 5. (Optionally) emit OR conjectures via
+/// 5. Fold in the template addon's anchor-coupled stumps
+///    (`generateTemplateConjectures`) with the same dedup the
+///    preliminary pass uses.
+/// 6. (Optionally) emit OR conjectures via
 ///    `generateOrConjectures`.
-/// 6. Write the survivors to:
+/// 7. Write the survivors to:
 ///    - `conjectures.txt` — raw survivors.
 ///    - `reshuffled_conjectures.txt` — canonical-form survivors.
 ///    - `reshuffled_mirrored_conjectures.txt` — mirror variants.
@@ -6477,12 +6560,19 @@ Conjecturer::Conjecturer(const std::string& anchorId)
 ///      The file is preserved (not deleted) by the upstream
 ///      cleanup pass that removes other stale outputs, but its
 ///      content is replaced on every successful run.
+///    - `mirror_pairs.txt` — OUTPUT artefact recording
+///      `source<TAB>mirror` rows for every operator-only conjecture
+///      whose mirror entered the pool (`buildMirrorPairRows`); both
+///      columns byte-identical to `conjectures.txt` lines. Written
+///      unconditionally (empty in incubator mode, where pool lines
+///      are rewritten post-capture); consumed by the CE filter's
+///      mirror-refutation pass.
 ///
 /// Equivalent to Python's `create_expressions_parallel(config)`.
 ///
 /// @pre  Constructor completed successfully.
 /// @post `files/theorems/` (or the override path from
-///       `config_.theorems_folder`) carries the four output files.
+///       `config_.theorems_folder`) carries the five output files.
 void Conjecturer::run() {
     auto _run_t0 = std::chrono::steady_clock::now();
     std::set<std::string> resultExprSet;
@@ -6530,6 +6620,11 @@ void Conjecturer::run() {
     prof::g_phase_precomp.add((uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now() - _prec_t0).count());
 
+    // Source→mirror pairs captured at pool admission, where connExpr and
+    // reshMir are byte-identical to their future conjectures.txt lines.
+    // Feeds the mirror_pairs.txt write below (CE mirror-refutation input).
+    std::map<std::string, std::string> mirrorPairCaptures;
+
     // --- Preliminary pass: nse=1 ---
     auto _prel_t0 = std::chrono::steady_clock::now();
     if (config_.parameters.min_number_simple_expressions <= 1) {
@@ -6549,6 +6644,7 @@ void Conjecturer::run() {
                         if (!reshMir.empty()) reshuffledMirroredExprSet.insert(reshMir);
                         controlSet.insert(resh);
                         if (!reshMir.empty()) controlSet.insert(reshMir);
+                        if (!reshMir.empty()) mirrorPairCaptures[connExpr] = reshMir;
                     }
                 }
             }
@@ -6661,6 +6757,7 @@ void Conjecturer::run() {
                             if (!reshMir.empty()) reshuffledMirroredExprSet.insert(reshMir);
                             controlSet.insert(reshuffled);
                             if (!reshMir.empty()) controlSet.insert(reshMir);
+                            if (!reshMir.empty()) mirrorPairCaptures[connExpr] = reshMir;
                         }
                     }
                 }
@@ -6670,6 +6767,34 @@ void Conjecturer::run() {
 
     prof::g_phase_mainLoop.add((uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now() - _main_t0).count());
+
+    // ---- Template addon: injectivity-contrapositive stumps ----
+    // Anchor-coupled template conjectures the main enumeration cannot
+    // build (they need two `=` atoms; the `=` count cap is 1). Fold-in
+    // mirrors the preliminary nse=1 pass, so the survivors participate
+    // in sorting, mirror merge, and the conjectures.txt write below.
+    {
+        auto templateResult = generateTemplateConjectures();
+        int addedTemplates = 0;
+        for (int i = 0; i < (int)templateResult.connected_list2.size(); ++i) {
+            auto& connExpr = templateResult.connected_list2[i];
+            if (exprGood(connExpr) && resultExprSet.find(connExpr) == resultExprSet.end()) {
+                auto& resh = templateResult.reshuffled_list[i];
+                auto& reshMir = templateResult.reshuffled_mirrored_list[i];
+                if (controlSet.find(resh) == controlSet.end() &&
+                    (reshMir.empty() || controlSet.find(reshMir) == controlSet.end())) {
+                    resultExprSet.insert(connExpr);
+                    reshuffledExprSet.insert(resh);
+                    if (!reshMir.empty()) reshuffledMirroredExprSet.insert(reshMir);
+                    controlSet.insert(resh);
+                    if (!reshMir.empty()) controlSet.insert(reshMir);
+                    if (!reshMir.empty()) mirrorPairCaptures[connExpr] = reshMir;
+                    ++addedTemplates;
+                }
+            }
+        }
+        std::cout << "Template addon: " << addedTemplates << " conjectures\n";
+    }
 
     // Sort results
     auto _sort_t0 = std::chrono::steady_clock::now();
@@ -6719,9 +6844,12 @@ void Conjecturer::run() {
         theoremsFolder = projectRoot_ / "files" / "theorems";
     }
 
-    // Clean folder (preserve special files)
+    // Clean folder (preserve special files). vacuous_theorems.txt is the
+    // run-cumulative vacuity classification record — seeds from every
+    // batch must survive to the run's end and feed each batch's
+    // taint-closure filter.
     std::set<std::string> preserve = {"theorems.txt", "externally_provided_theorems.txt",
-        "compressed_external_theorems.txt", "or_pairs.txt"};
+        "compressed_external_theorems.txt", "or_pairs.txt", "vacuous_theorems.txt"};
     if (std::filesystem::is_directory(theoremsFolder)) {
         for (auto& entry : std::filesystem::directory_iterator(theoremsFolder)) {
             if (preserve.find(entry.path().filename().string()) != preserve.end()) continue;
@@ -6748,6 +6876,22 @@ void Conjecturer::run() {
         for (const auto& [exist, companion] : orPairs) {
             orOut << exist << "\t" << companion << "\n";
         }
+    }
+
+    // Write mirror pairs metadata (source conjecture <TAB> its pool mirror),
+    // the CE filter's mirror-refutation input. Written unconditionally so the
+    // file always exists alongside conjectures.txt (the CE loader asserts on
+    // it). Rows are suppressed in incubator mode: reformulateOperatorHead
+    // rewrote every pool line above, breaking the byte-identity both columns
+    // rely on — and incubator batches skip the CE filter anyway.
+    {
+        std::vector<std::string> mirrorPairRows;
+        if (!config_.parameters.incubator_mode) {
+            mirrorPairRows = buildMirrorPairRows(mirrorPairCaptures);
+        }
+        writeFile(theoremsFolder / "mirror_pairs.txt", mirrorPairRows);
+        std::cout << "Mirror pairs: " << mirrorPairRows.size()
+                  << " operator-only pairs written to mirror_pairs.txt\n";
     }
 
     std::cout << "Number conjectures: " << sortedList.size() << "\n";
@@ -7056,6 +7200,156 @@ std::vector<std::pair<std::string,std::string>> Conjecturer::generateOrConjectur
         }
     }
 
+    return result;
+}
+
+// ============================================================================
+// Template addon: injectivity-contrapositive stumps
+// ============================================================================
+
+/// @brief Names of operators eligible for the template addon.
+///
+/// @details
+/// An operator qualifies when it has exactly one input argument,
+/// exactly one output argument, and a positive
+/// `max_count_per_conjecture`. Additionally the whole addon is gated
+/// on equality: when `=` is absent from the config or carries
+/// `max_count_per_conjecture == 0`, the returned list is empty
+/// regardless of the operators (the template's negated equalities
+/// would cite an expression the batch does not use). Names are
+/// returned in `expressionOrder` (JSON key order) so the emission
+/// order is deterministic across runs.
+///
+/// @return Qualifying operator names; empty when equality is not
+///         usable in this batch.
+std::vector<std::string> Conjecturer::templateQualifyingOperators() const {
+    std::vector<std::string> result;
+
+    auto eqIt = config_.data.find("=");
+    if (eqIt == config_.data.end() || eqIt->second.max_count_per_conjecture <= 0)
+        return result;
+
+    for (const auto& name : config_.expressionOrder) {
+        const auto& desc = config_.data.at(name);
+        if (desc.max_count_per_conjecture <= 0) continue;
+        if (desc.input_args.size() != 1 || desc.output_args.size() != 1) continue;
+        result.push_back(name);
+    }
+    return result;
+}
+
+/// @brief Build the injectivity-contrapositive stump for one
+///        single-input operator.
+///
+/// @details
+/// The stump encodes `op(a)=b and op(c)=d and b!=d implies a!=c`
+/// with digit variable names: `a=1, b=2` in the first premise copy,
+/// `c=3, d=4` in the second, and one fresh shared variable
+/// (`5`, `6`, ...) per remaining operator slot, identical in both
+/// copies and bound by no stump binder. For `in2` the result is
+/// `(>[1,2](in2[1,2,5])(>[3,4](in2[3,4,5])(>[]!(=[2,4])!(=[1,3]))))`.
+/// Because the stump binds `1..4` itself, `findArgMap` leaves
+/// exactly the shared slot variables free, so the anchor-coupling
+/// enumeration couples only those to anchor slots of matching type —
+/// in all possible ways, like any other body.
+///
+/// @param opName Config key of a qualifying operator; must be a
+///               member of `templateQualifyingOperators()`.
+/// @return `(stump, defSetMap)` — the stump text and its free-arg
+///         map from `findArgMap` (only the shared slot variables).
+std::pair<std::string, DefSetMap> Conjecturer::buildTemplateStump(const std::string& opName) const {
+    auto it = config_.data.find(opName);
+    assert(it != config_.data.end());
+    const auto& desc = it->second;
+
+    assert(desc.indices_input_args.size() == 1);
+    assert(desc.indices_output_args.size() == 1);
+    const int arity = desc.arity;
+    const int inPos = desc.indices_input_args[0];
+    const int outPos = desc.indices_output_args[0];
+    assert(arity >= 2);
+    assert(inPos >= 0 && inPos < arity);
+    assert(outPos >= 0 && outPos < arity);
+    assert(inPos != outPos);
+
+    // Shared slot variables (one per non-input/output position, same in
+    // both premise copies), numbered 5.. in ascending position order.
+    std::vector<std::string> args1(arity), args2(arity);
+    int nextSlotVar = 5;
+    for (int pos = 0; pos < arity; ++pos) {
+        if (pos == inPos) {
+            args1[pos] = "1";
+            args2[pos] = "3";
+        } else if (pos == outPos) {
+            args1[pos] = "2";
+            args2[pos] = "4";
+        } else {
+            args1[pos] = std::to_string(nextSlotVar);
+            args2[pos] = args1[pos];
+            ++nextSlotVar;
+        }
+    }
+
+    // Binders list each premise's fresh variables in atom-argument order.
+    auto binderOf = [&](const std::vector<std::string>& args,
+                        const std::string& inVar, const std::string& outVar) {
+        std::string binder;
+        for (const auto& a : args) {
+            if (a != inVar && a != outVar) continue;
+            if (!binder.empty()) binder += ",";
+            binder += a;
+        }
+        return binder;
+    };
+    const std::string binder1 = binderOf(args1, "1", "2");
+    const std::string binder2 = binderOf(args2, "3", "4");
+
+    auto atomOf = [&](const std::vector<std::string>& args) {
+        std::string atom = "(" + opName + "[";
+        for (std::size_t i = 0; i < args.size(); ++i) {
+            if (i > 0) atom += ",";
+            atom += args[i];
+        }
+        atom += "])";
+        return atom;
+    };
+
+    const std::string stump =
+        "(>[" + binder1 + "]" + atomOf(args1) +
+        "(>[" + binder2 + "]" + atomOf(args2) +
+        "(>[]!(=[2,4])!(=[1,3]))))";
+
+    return {stump, findArgMap(stump)};
+}
+
+/// @brief Generate all template-addon conjectures for this batch.
+///
+/// @details
+/// For every qualifying operator, builds the stump via
+/// `buildTemplateStump` and routes it through the standard
+/// string-path anchor attachment `singleExprAnchorConnection`, which
+/// enumerates every coupling of the stump's free slot variables to
+/// anchor slots and applies the standard filters. The bundles are
+/// concatenated in operator order. The mirrored lane stays empty by
+/// construction (the head `!(=[..])` is not an operator, so
+/// `createReshuffledMirrored` yields `""`).
+///
+/// @pre `mappingsMapAnchor_` and `allPermutations_` are populated
+///      (`run()` pre-computation).
+/// @return Concatenated `WorkerResult` across all qualifying
+///         operators; empty lists when none qualify.
+WorkerResult Conjecturer::generateTemplateConjectures() const {
+    WorkerResult result;
+    for (const auto& opName : templateQualifyingOperators()) {
+        auto [stump, stumpMap] = buildTemplateStump(opName);
+        auto workerResult = singleExprAnchorConnection(stump, stumpMap);
+        for (auto& e : workerResult.connected_list2)
+            result.connected_list2.push_back(std::move(e));
+        for (auto& e : workerResult.reshuffled_list)
+            result.reshuffled_list.push_back(std::move(e));
+        for (auto& e : workerResult.reshuffled_mirrored_list)
+            result.reshuffled_mirrored_list.push_back(std::move(e));
+    }
     return result;
 }
 

@@ -291,11 +291,11 @@ A theorem whose head is an `or<N>` node (disjunction). Distinct from [`or branch
 
 ### or branch proven
 
-OR-disintegration bookkeeping row. Records that the OR `(or<N>[…])` at the parent scope was case-split into a per-branch scope carrying one specific disjunct as its asserted seed. Row layout: `<or-expr> <parent-ns> or branch proven <asserted-disjunct> <branch-ns>`. Promoted to a first-class `TAG_CHECKERS` entry by [D-35](40_decisions.md#d-35) (previously claimed retired in the SwDD; the override path never existed and the prover always emitted the tag live). Checker: `check_or_branch_proven`.
+OR-integration bookkeeping row. Records that one `_orint_` subproof has proved the parent OR goal through its selected disjunct. Row layout: `<or-expr> <parent-ns> or branch proven <selected-disjunct> <subproof-ns>`. The historical tag name says "branch", but this is not an `_ordis_` case-split row. Promoted to a first-class `TAG_CHECKERS` entry by [D-35](40_decisions.md#d-35) (previously claimed retired in the SwDD; the override path never existed and the prover always emitted the tag live). Checker: `check_or_branch_proven`.
 
 ### or branch assumption
 
-OR-disintegration seeding row. Records that in a per-branch scope where disjunct `D_i` is asserted, the negation `!D_j` of every other disjunct (`j ≠ i`) is seeded as a branch-local assumption. Row layout: `<negated-other-disjunct> <branch-ns> or branch assumption <or-expr>_integration_goal <parent-ns>`. Promoted to first-class checker by [D-35](40_decisions.md#d-35). Checker: `check_or_branch_assumption`.
+OR-integration premise row. Records that in an `_orint_` subproof targeting disjunct `D_i`, the negation `!D_j` of every other disjunct (`j ≠ i`) is seeded as a local assumption. Row layout: `<negated-other-disjunct> <subproof-ns> or branch assumption <or-expr>_integration_goal <parent-ns>`. The historical tag name says "branch", but this is not an `_ordis_` case-split row. Promoted to first-class checker by [D-35](40_decisions.md#d-35). Checker: `check_or_branch_assumption`.
 
 ### multiplied from
 
@@ -612,7 +612,7 @@ A monotonically-increasing integer counter used by `disintegrateExpr2`'s freshne
 
 ### OR disintegration
 
-The case-split operation on an `or<N>` head. Each disjunct becomes a sub-goal inside a dedicated branch scope, with the other disjuncts' negations seeded as branch-local assumptions. Tagged `or disintegration`.
+The case-split operation on an `or<N>` head. Each disjunct is asserted inside its own dedicated `_ordis_` branch scope; the other disjuncts' negations are not seeded there. Tagged `or disintegration`.
 
 ### OR convergence
 
@@ -748,7 +748,11 @@ A separate pipeline (`run_modes.incubator_run`) with its own config (`ConfigIncu
 
 ### try_contradiction
 
-C++ prover parameter enabling contradiction-attempt LBs for negative conjectures. Set by the incubator config.
+C++ prover parameter enabling contradiction-attempt LBs for negative conjectures. Set by the incubator config. The LB assumes the registered head verbatim, so it can only ever *disprove* that head.
+
+### try_contradiction_negated_head
+
+C++ prover parameter — complement of `try_contradiction`. Every registered conjecture additionally gets a contradiction LB that assumes the *negation* of its head and, on a main-scope contradiction, emits the conjecture itself as proved (reductio). The polarity that can prove a negated head. Set by the IncubatorPeano2 config and both main configs.
 
 ### skip_ce_filter
 
@@ -765,7 +769,7 @@ Sorted alphabetically for quick lookup:
 | Tag | Checker (verifier.py) | One-line |
 |---|---:|---|
 | `anchor handling` | `check_anchor_handling` (2167) | Pin a raw bound-variable index to its anchor-slot name. |
-| `contradiction` | `check_contradiction` (2396) | Proof by contradiction — both `X` and `!X` derived under assumption. |
+| `contradiction` | `check_contradiction` (2396) | Proof by contradiction — both `X` and `!X` derived at the contradiction LB's `main` under its proof assumption. |
 | `disintegration` | `check_disintegration` (1417) | Compound split into its elements. |
 | `equality1` | `check_equality1` (1517) | Argument substitution via `(=[a,b])`. |
 | `equality2` | `check_equality2` (1646) | Transitivity of equality. |
@@ -775,8 +779,8 @@ Sorted alphabetically for quick lookup:
 | `implication` | `check_implication` (1014) | A compiled implication rule fired in hash memory. |
 | `incubator back reformulation` | `check_incubator_back_reformulation` (2350) | Incubator operator-equality rewritten to direct operator form. |
 | `multiplied from` | `check_equalize_variable` (2464) | Re-emitted with bound variables identified per Bell partition. |
-| `or branch assumption` | `check_or_branch_assumption` (2804) | Negated other-disjunct seeded as branch-local fact (D-35). |
-| `or branch proven` | `check_or_branch_proven` (2750) | OR case-split into a branch carrying the asserted disjunct (D-35). |
+| `or branch assumption` | `check_or_branch_assumption` (2804) | Negated other-disjunct seeded as an `_orint_` subproof premise (D-35). |
+| `or branch proven` | `check_or_branch_proven` (2750) | One `_orint_` subproof proved the parent OR goal (D-35). |
 | `or convergence` | `check_or_convergence` (2640) | All branches converged on the same conclusion. |
 | `or disintegration` | `check_or_disintegration` (2620) | Case split on an `or` head. |
 | `or theorem` | `check_or_theorem` (2302) | An OR-shaped theorem was reached as a goal. |

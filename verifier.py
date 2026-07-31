@@ -2900,7 +2900,9 @@ def _check_existence_disintegration(line: ProofLine,
 
 
 def _try_expand(binary_entry: dict, right_expr: str,
-                left_expr: str) -> bool:
+                left_expr: str,
+                or_elements: Optional[List[str]] = None,
+                binaries: Optional[List[dict]] = None) -> bool:
     """@brief Try to expand a compact ``right_expr`` and match it against ``left_expr``.
 
     @details
@@ -2909,8 +2911,9 @@ def _try_expand(binary_entry: dict, right_expr: str,
     signature + elements + category), substitute the compact's
     actual args into the elements, then build the expanded form per
     the category and compare with ``left_expr`` modulo
-    normalize-with-unchangeables (compact's actual args as
-    unchangeables).
+    normalize-with-unchangeables. For one-go OR production in either
+    direction, ``or_elements`` supplies the already-substituted recursive
+    leaf list.
 
     Category dispatch:
 
@@ -2923,6 +2926,13 @@ def _try_expand(binary_entry: dict, right_expr: str,
       Also accepts the empty-binding form ``(>[]…(…))``.
     - ``"or"`` — De Morgan form via ``_build_or_from_elements``,
       OR any of the K per-branch sub-implications per D-52.
+    - ``"implication"`` additionally accepts, when ``binaries`` is
+      supplied, the per-leaf OR-INTRO forms ``(>[bv](D_k)(orPremise))``
+      for each premise element that is a compiled OR — the producer's
+      ``disintegrateExprCore2`` implication branch emits one intro
+      implication per flattened disjunct alongside the main rule
+      (D-237). Additive: the full-implication form
+      remains the primary acceptance path.
     - Other categories → False (no expansion rule defined).
 
     @param binary_entry  The compact's binary entry
@@ -2931,6 +2941,10 @@ def _try_expand(binary_entry: dict, right_expr: str,
                          ``(some_compact[a,b,c])``).
     @param left_expr     The expanded form (e.g.
                          ``(&(in[a,N])(eq[a,b]))``).
+    @param or_elements   Optional already-substituted flattened OR leaves.
+    @param binaries      Optional GL binary dicts enabling the OR-INTRO
+                         acceptance for implication compacts (resolves each
+                         premise element's ``or<N>`` entry).
     @return  True iff the compact expands to the left form modulo
              normalization.
     """
@@ -2940,10 +2954,14 @@ def _try_expand(binary_entry: dict, right_expr: str,
         return False
 
     subst = dict(zip(sig_args, actual_args))
-    elements = [_replace_arg_safe_multi(e, subst)
-                for e in binary_entry['elements']]
-
     cat = binary_entry['category']
+    if or_elements is not None:
+        if cat != 'or':
+            return False
+        elements = or_elements
+    else:
+        elements = [_replace_arg_safe_multi(e, subst)
+                    for e in binary_entry['elements']]
     unch = set(actual_args)
 
     if cat == 'and':
@@ -2978,6 +2996,31 @@ def _try_expand(binary_entry: dict, right_expr: str,
             if (_normalize_with_unchangeables(sub, unch)
                     == _normalize_with_unchangeables(left_expr, unch)):
                 return True
+
+    # For 'implication' (D-237), also accept the per-leaf
+    # OR-INTRO forms `(>[bv](D_k)(orPremise))` for each premise element that
+    # is a compiled OR: the producer's `disintegrateExprCore2` implication
+    # branch emits one intro implication per flattened disjunct alongside
+    # the main rule. The binder lists the disjunct's non-unchangeable
+    # arguments in first-occurrence order — the producer binds every
+    # changeable argument at its (single) premise. Additive: the
+    # full-implication form above remains the primary acceptance path.
+    if cat == 'implication' and binaries is not None and len(elements) >= 2:
+        norm_left = _normalize_with_unchangeables(left_expr, unch)
+        for premise_elem in elements[:-1]:
+            intro_disjuncts = _or_disjuncts_from_compiled(
+                premise_elem, binaries, flatten_nested=True)
+            if intro_disjuncts is None:
+                continue
+            for dk in intro_disjuncts:
+                bound: List[str] = []
+                for arg in _extract_args(dk):
+                    if arg in unch or arg in bound:
+                        continue
+                    bound.append(arg)
+                intro = f'(>[{",".join(bound)}]{dk}{premise_elem})'
+                if _normalize_with_unchangeables(intro, unch) == norm_left:
+                    return True
 
     return False
 
@@ -3136,7 +3179,16 @@ def check_expansion(line: ProofLine, chapter: List[ProofLine],
 
     for binary in state.binaries_for_chapter():
         if core in binary:
-            if _try_expand(binary[core], right_expr, line.expression):
+            entry = binary[core]
+            flattened_or = None
+            if entry.get('category') == 'or':
+                flattened_or = _or_disjuncts_from_compiled(
+                    right_expr, state.binaries_for_chapter(),
+                    flatten_nested=True)
+                if flattened_or is None:
+                    continue
+            if _try_expand(entry, right_expr, line.expression, flattened_or,
+                           binaries=state.binaries_for_chapter()):
                 return True
 
     return False
@@ -3304,14 +3356,15 @@ def check_disintegration(line: ProofLine, chapter: List[ProofLine],
                         return True
 
                 elif category == 'or':
-                    if _check_or_disintegration_implication(line, compact, entry):
+                    if _check_or_disintegration_implication(
+                            line, compact, state.binaries_for_chapter()):
                         return True
 
     return False
 
 
 def _check_or_disintegration_implication(line: ProofLine, compact: str,
-                                         entry: dict) -> bool:
+                                         binaries: List[dict]) -> bool:
     """@brief Validate the mutual-exclusion sub-implication form of OR disintegration.
 
     @details
@@ -3325,8 +3378,8 @@ def _check_or_disintegration_implication(line: ProofLine, compact: str,
 
     **Algorithm.**
 
-    1. Substitute the compact's actual args into the binary's
-       signature args; produce the substituted disjunct list.
+    1. Decode the compact through ``_or_disjuncts_from_compiled`` with
+       recursive flattening; this is the exact one-go producer leaf list.
     2. Disintegrate ``line.expression`` into ``(premises, head)``.
        Reject if ``head`` is not one of the substituted disjuncts.
     3. Build the expected premise set:
@@ -3339,19 +3392,13 @@ def _check_or_disintegration_implication(line: ProofLine, compact: str,
     @param line     The OR-disintegration row.
     @param compact  The OR's compiled form (``rest[0]`` of the
                     matching expansion row).
-    @param entry    The OR's binary entry.
+    @param binaries The chapter's GL binaries, including nested OR entries.
     @return  True iff the row matches the mutual-exclusion sub-
              implication shape.
     """
-    sig_args = _extract_args(entry.get('signature', ''))
-    actual_args = _extract_args(compact)
-    if len(sig_args) != len(actual_args):
-        return False
-
-    subst = dict(zip(sig_args, actual_args))
-    disjuncts = [_replace_arg_safe_multi(e, subst)
-                 for e in entry.get('elements', [])]
-    if not disjuncts:
+    disjuncts = _or_disjuncts_from_compiled(
+        compact, binaries, flatten_nested=True)
+    if disjuncts is None or len(disjuncts) < 2:
         return False
 
     premises, head = disintegrate_implication_full(line.expression)
@@ -3387,6 +3434,14 @@ def check_task_formulation(line: ProofLine, chapter: List[ProofLine],
     contradiction LB as the hypothesis to be disproved. The verifier
     accepts ``line.expression == cleanOp`` in this case.
 
+    **Complement (reductio) case.** When the theorem's head is
+    positive, its negation ``"!" + head`` is also a valid
+    task-formulation expression — the complement contradiction LB
+    (``try_contradiction_negated_head``) seeds the head's negation
+    as the hypothesis whose refutation proves the head. Symmetric to
+    the case above: in both, the seed is exactly the negation of the
+    theorem's head.
+
     **Namespace gate.** Must be ``"main"``. Task formulations live
     only at the theorem root; descendant scopes derive their own
     seeded facts via OR-branch or recursion rules.
@@ -3407,6 +3462,9 @@ def check_task_formulation(line: ProofLine, chapter: List[ProofLine],
         return True
     # Contradiction seed: head is !(...), cleanOp is (...)
     if head.startswith('!') and line.expression == head[1:]:
+        return True
+    # Complement (reductio) seed: head is positive, seed is "!" + head
+    if not head.startswith('!') and line.expression == "!" + head:
         return True
     return False
 
@@ -4415,8 +4473,9 @@ def check_expansion_for_integration(line: ProofLine,
     2. Namespace match: ``line.namespace == rest[1]``.
     3. Strip the integration-goal postfix from both
        ``line.expression`` and ``rest[0]``.
-    4. Extract the right side's core; iterate every binary; on
-       match, delegate to ``_try_expand``.
+    4. Extract the right side's core; iterate every binary; for OR,
+       recursively decode the ordered atomic leaves, then delegate to
+       ``_try_expand``.
 
     @param line     The row.
     @param chapter  Sibling rows (unused for origin presence —
@@ -4444,10 +4503,69 @@ def check_expansion_for_integration(line: ProofLine,
 
     for binary in state.binaries_for_chapter():
         if core in binary:
-            if _try_expand(binary[core], right_clean, left_clean):
+            entry = binary[core]
+            flattened_or = None
+            if entry.get('category') == 'or':
+                flattened_or = _or_disjuncts_from_compiled(
+                    right_clean, state.binaries_for_chapter(),
+                    flatten_nested=True)
+                if flattened_or is None:
+                    continue
+            if _try_expand(entry, right_clean, left_clean, flattened_or,
+                           binaries=state.binaries_for_chapter()):
                 return True
 
     return False
+
+
+_SUBPROOF_SEP = "_subproof_"
+
+
+def _split_subproof_payload(payload: str):
+    """@brief Split a goal-carrying integration-scope payload
+    ``<goal>_subproof_<bare>`` into its root-goal and bare halves.
+
+    @details
+    Goal-driven integration scopes minted on MAIN carry the root
+    ``toBeProved`` goal in their validity payload so a disproof of that
+    goal can find and wipe the scopes its integration spawned (the
+    prover-side twin is ``ExpressionAnalyzer::splitSubproofPayload``).
+    The grammar is a leading balanced-paren group (optionally
+    ``!``-negated) — the goal expression verbatim — followed by the
+    literal ``_subproof_`` separator and a non-empty bare legacy
+    payload. The grammar is injective against every legacy payload
+    shape: a legacy compact is a single balanced group with nothing
+    after it, and ``)_subproof_`` cannot occur inside a well-formed MPL
+    expression.
+
+    @param payload  The validity payload (the namespace's last
+                    ``_boundary_``-delimited segment).
+    @return  ``(goal, bare)`` on a match, ``None`` otherwise.
+    """
+    i = 0
+    if i < len(payload) and payload[i] == '!':
+        i += 1
+    if i >= len(payload) or payload[i] != '(':
+        return None
+    depth = 0
+    close = -1
+    for k in range(i, len(payload)):
+        if payload[k] == '(':
+            depth += 1
+        elif payload[k] == ')':
+            depth -= 1
+            if depth == 0:
+                close = k
+                break
+    if close < 0:
+        return None
+    sep_start = close + 1
+    if not payload.startswith(_SUBPROOF_SEP, sep_start):
+        return None
+    bare = payload[sep_start + len(_SUBPROOF_SEP):]
+    if not bare:
+        return None
+    return payload[:sep_start], bare
 
 
 def check_premise_element(line: ProofLine, chapter: List[ProofLine],
@@ -4473,11 +4591,22 @@ def check_premise_element(line: ProofLine, chapter: List[ProofLine],
        integration"``, and rest has at least 1 entry. Strip the
        postfix from that expansion's ``rest[0]`` to derive the
        ``cleanSig``.
-    4. Namespace match: ``line.namespace`` must equal ``cleanSig``
-       OR end with ``_boundary_<cleanSig>``. The latter is the
-       canonical NameMap-minted form
-       (``encodePush(parent, cleanSig)``); the former is a backward-
-       compat fallback for older proof-graph emissions.
+    4. Namespace match. The subproof scope's payload comes in two
+       generations:
+       - legacy / statement-driven: the payload IS ``cleanSig`` —
+         ``line.namespace`` equals ``cleanSig`` or ends with
+         ``_boundary_<cleanSig>``;
+       - goal-carrying (goal-driven mints on MAIN): the payload is
+         ``<goal>_subproof_<cleanSig>`` — the namespace's LAST
+         ``_boundary_``-delimited segment must split under
+         ``_split_subproof_payload`` with its bare half equal to
+         ``cleanSig`` exactly. The goal half identifies which
+         ``toBeProved`` goal spawned the subproof; it is validated
+         structurally (balanced, optionally negated, non-empty) but
+         deliberately NOT matched against this chapter's rows — a
+         subproof's compact may be legitimately cited by a chapter
+         proving a DIFFERENT goal (the compact statement at main is
+         shared; only the machinery is per-goal).
 
     @param line     The premise-element row.
     @param chapter  All chapter rows (for expansion lookup).
@@ -4505,6 +4634,12 @@ def check_premise_element(line: ProofLine, chapter: List[ProofLine],
             clean_sig = _strip_integration_goal(ch_line.rest[0])
             if (line.namespace == clean_sig
                     or line.namespace.endswith("_boundary_" + clean_sig)):
+                return True
+            # Goal-carrying payload: the last boundary segment must be
+            # <goal>_subproof_<cleanSig> with the bare half EXACT.
+            last_payload = line.namespace.rsplit("_boundary_", 1)[-1]
+            split = _split_subproof_payload(last_payload)
+            if split is not None and split[1] == clean_sig:
                 return True
 
     return False
@@ -5076,7 +5211,7 @@ def check_contradiction(line: ProofLine, chapter: List[ProofLine],
 
     **Row layout.**
     ::
-        line.expression  = !(cleanOp)
+        line.expression  = negate(cleanOp)
         line.namespace   = "main"
         rest[0]          = expr
         rest[1]          = "main"
@@ -5090,7 +5225,12 @@ def check_contradiction(line: ProofLine, chapter: List[ProofLine],
     1. ``line.namespace == "main"``.
     2. ``len(rest) >= 6``.
     3. All three namespaces (rest[1], rest[3], rest[5]) are ``"main"``.
-    4. ``line.expression == "!" + cleanOp`` byte-exactly.
+    4. ``line.expression`` and ``cleanOp`` are negations of each
+       other — either ``line.expression == "!" + cleanOp`` (a
+       verbatim positive-seed LB) or ``cleanOp == "!" +
+       line.expression`` (a complement LB whose seed is the negated
+       head, ``try_contradiction_negated_head``). Symmetric mirror
+       of rule 5.
     5. ``expr`` and ``negate(expr)`` are negations of each other —
        either ``negate(expr) == "!" + expr`` or
        ``expr == "!" + negate(expr)``.
@@ -5122,8 +5262,14 @@ def check_contradiction(line: ProofLine, chapter: List[ProofLine],
     if expr_ns != "main" or neg_ns != "main" or clean_ns != "main":
         return False
 
-    # line.expression must be "!" + cleanOp
-    if line.expression != "!" + clean_op:
+    # line.expression and cleanOp must be negations of each other:
+    # "!"+cleanOp = verbatim positive-seed LB; cleanOp = "!"+expression =
+    # complement LB with a negated-head seed (mirrors rule 5).
+    if line.expression == "!" + clean_op:
+        pass
+    elif clean_op == "!" + line.expression:
+        pass
+    else:
         return False
 
     # expr and neg_expr must be negations of each other
@@ -5237,16 +5383,17 @@ def check_or_disintegration(line: ProofLine, chapter: List[ProofLine],
        ``_ORIGIN_EXEMPT_TAGS`` so any extra rest pairs would be
        silently accepted by the generic origin check; reject up front
        so the row's contract stays auditable.
-    2. ``rest[0]`` is a known compiled OR ``(or<N>[…])`` with ≥2
-       disjuncts after ``u_i`` substitution against the OR's args
-       (matching arity per the binary's ``signature``).
-    3. ``line.expression`` is one of those disjuncts (modulo
-       equality symmetry).
+    2. ``rest[0]`` is a known compiled OR ``(or<N>[…])`` whose
+       recursively substituted contiguous OR tree yields at least two
+       ordered non-OR leaves (matching arity at every node).
+    3. ``line.expression`` is one of those leaves (modulo equality
+       symmetry); an intermediate compiled OR is not a leaf.
     4. ``line.namespace`` is EXACTLY
        ``rest[1] + "_boundary_ordis_" + rest[0] + "_(" + <disjunct> + ")"``
        for ``<disjunct>`` matching ``line.expression`` (modulo
-       equality symmetry). No substring search — the row's claim is
-       "this immediate child branch", not "some descendant containing
+       equality symmetry). The outer OR remains in the namespace even
+       for an inner leaf. No substring search — the row's claim is
+       "this exact flat-cohort branch", not "some descendant containing
        the substring".
     5. The OR has an independent derivation row at parent scope
        (``rest[1]``). A chapter row exists with
@@ -5276,7 +5423,8 @@ def check_or_disintegration(line: ProofLine, chapter: List[ProofLine],
     parent_ns = line.rest[1]
     branch_ns = line.namespace
 
-    disjuncts = _or_disjuncts_from_compiled(or_expr, state.binaries_for_chapter())
+    disjuncts = _or_disjuncts_from_compiled(
+        or_expr, state.binaries_for_chapter(), flatten_nested=True)
     if disjuncts is None:
         return False
     if not _disjunct_matches(asserted, disjuncts):
@@ -5327,15 +5475,25 @@ def check_or_convergence(line: ProofLine, chapter: List[ProofLine],
                                           …
                                           <C> <branch_DK>
 
-    Where ``K`` is the OR's disjunct count. Concretely:
+    Where ``K`` is the recursively flattened non-OR leaf count. The
+    original outer compact OR remains the row identity. Concretely:
 
     - ``line.expression`` = ``C`` (the converged conclusion)
     - ``line.namespace`` = parent (the OR's parent scope)
     - ``rest[0]`` = OR (compiled ``(or<N>[…])``)
     - ``rest[1]`` = parent
-    - ``rest[2*i + 2]`` = ``C`` (must equal ``line.expression`` for
-      every ``i``)
-    - ``rest[2*i + 3]`` = ``branch_Di`` (the i-th branch's namespace)
+    - one two-field entry per flattened disjunct: ``rest[2*i + 2]``
+      (an expression) and ``rest[2*i + 3]`` (a namespace)
+
+    Each entry takes one of two forms. A **survivor** entry is
+    ``(C, branch_Di)`` — the conclusion derived at that branch's
+    exact ``_ordis_`` scope. A **retired** entry is
+    ``(negate(D_i), ns)`` — dead-branch retirement discharged the
+    branch by reductio: its asserted disjunct's negation is known at
+    ``ns``, a scope the parent inherits from (the parent itself, an
+    ancestor, or the retired branch itself for an ex-falso
+    self-refutation). Either way the row accounts for all K
+    flattened disjuncts.
 
     **Validation contract.** For the row to PASS, all of:
 
@@ -5343,41 +5501,18 @@ def check_or_convergence(line: ProofLine, chapter: List[ProofLine],
        (so ``K >= 2``).
     2. **Parent-scope match.** ``line.namespace == rest[1]``.
     3. **OR is real.** ``rest[0]`` is a compiled ``(or<N>[…])`` with
-       a known GL-binary entry of category ``"or"`` and ≥2 elements;
-       disjunct count ``K`` matches the ``(C, branch_Di)`` pair
-       count.
-    4. **Conclusion repetition.** ``rest[2*i + 2] == line.expression``
-       for every ``i`` in ``[0, K)``.
-    5. **Branch-scope ancestry.** Each ``branch_Di`` is a strict
-       descendant of parent
-       (``branch_Di.startswith(parent + "_boundary_")``).
-    6. **Branch distinctness.** The K ``branch_Di`` values are
-       pairwise distinct.
-    7. **Per-branch derivation evidence.** For every
-       ``(C, branch_Di)`` pair, a chapter row exists with
-       ``expression == C`` and ``namespace == branch_Di`` under any
-       tag. Proves ``C`` was derived at every branch scope (the
-       "each ingredient has its own line" rule).
-
-    **Status note.** The producer side does not yet emit this
-    layout. The currently-emitted convergence rows in chapter
-    ``1209_direct_proof.txt`` use the old 4-field layout
-    ``(C, parent, or convergence, OR, parent)`` and continue to fail
-    at the layout check (step 1: ``len(rest) == 4``, not ``>= 6``).
-    The deliberate-fail outcome is preserved; the failure message
-    changes from "unconditional" to "layout mismatch" once the
-    producer-side fix lands and the new layout shows up.
-
-    **Re-enabling cleanly.** Two coordinated producer-side changes
-    must land together (the "buildstack + history tracking" follow-on
-    task):
-
-    a. Prover emits the new convergence row layout above.
-    b. ``process_proof_graphs.py`` retains per-branch derivations of
-       ``C`` in chapter export (so step 7's chapter-row lookup
-       succeeds).
-
-    Either change without the other leaves the verifier failing.
+       a known GL-binary entry of category ``"or"`` whose recursive
+       contiguous-OR expansion yields at least two leaves; leaf count
+       ``K`` matches the entry count.
+    4. **Entry classification + coverage.** Every entry matches one
+       uncovered disjunct — a survivor entry by the disjunct payload
+       embedded in its ``_ordis_`` branch scope, a retired entry by
+       the negation of the disjunct plus the parent-visible scope —
+       and the K entries cover all K disjuncts exactly once.
+    5. **Per-entry derivation evidence.** For every entry
+       ``(expr, ns)``, a chapter row exists with
+       ``expression == expr`` and ``namespace == ns`` under any tag
+       (the "each ingredient has its own line" rule).
 
     @param line     The convergence row.
     @param chapter  All chapter rows (for per-branch derivation
@@ -5398,107 +5533,159 @@ def check_or_convergence(line: ProofLine, chapter: List[ProofLine],
 
     # 3. OR is real; count disjuncts via GL-binary lookup
     disjuncts = _or_disjuncts_from_compiled(
-        or_expr, state.binaries_for_chapter())
+        or_expr, state.binaries_for_chapter(), flatten_nested=True)
     if disjuncts is None or len(disjuncts) < 2:
         return False
     k = len(disjuncts)
     if len(line.rest) != 2 + 2 * k:
         return False
 
-    # 4 + 5 + 6: per-pair structural checks
-    branch_nss: List[str] = []
+    # 4-7. Per-entry classification. Dead-branch retirement can shrink a
+    # cohort (a branch whose asserted disjunct is refuted is wiped and its
+    # convergence count reduced), so each of the K entries is either a
+    # SURVIVOR entry — the conclusion ``C`` derived at that branch's exact
+    # ``_ordis_`` scope — or a RETIRED entry — the negation of that branch's
+    # asserted disjunct, at a scope from which the parent inherits it (the
+    # parent itself, one of its ancestors, or the retired branch itself for
+    # an ex-falso self-refutation). Together the K entries must cover all K
+    # flattened disjuncts exactly once, and every entry must have its own
+    # chapter row (the "each ingredient has its own line" rule).
     conclusion = line.expression
+    covered = [False] * k
+    branch_prefix = parent_ns + "_boundary_ordis_" + or_expr + "_("
     for i in range(k):
-        c_field = line.rest[2 + 2 * i]
-        b_field = line.rest[2 + 2 * i + 1]
-        # 4. Conclusion repetition
-        if c_field != conclusion:
+        e_field = line.rest[2 + 2 * i]
+        ns_field = line.rest[2 + 2 * i + 1]
+        matched = -1
+        if (e_field == conclusion
+                and ns_field.startswith(branch_prefix)
+                and ns_field.endswith(")")):
+            # Survivor: the branch scope's payload names its asserted
+            # disjunct — extract it and match against an uncovered disjunct.
+            dj = ns_field[len(branch_prefix):-1]
+            for d_idx, d in enumerate(disjuncts):
+                if not covered[d_idx] and d == dj:
+                    matched = d_idx
+                    break
+        else:
+            # Retired: the negation of an uncovered disjunct, at a scope the
+            # parent inherits from (or the retired branch itself).
+            for d_idx, d in enumerate(disjuncts):
+                if covered[d_idx]:
+                    continue
+                neg_d = d[1:] if d.startswith("!") else "!" + d
+                if e_field != neg_d:
+                    continue
+                branch_ns = branch_prefix + d + ")"
+                if (ns_field == parent_ns
+                        or parent_ns.startswith(ns_field + "_boundary_")
+                        or ns_field == branch_ns):
+                    matched = d_idx
+                    break
+        if matched < 0:
             return False
-        # 5. Branch-scope ancestry
-        if not b_field.startswith(parent_ns + "_boundary_"):
-            return False
-        branch_nss.append(b_field)
-    # 6. Branch distinctness
-    if len(set(branch_nss)) != k:
-        return False
-
-    # 7. Per-branch derivation evidence (each ingredient has its own line)
-    for branch_ns in branch_nss:
-        if not any(ch_line.expression == conclusion
-                   and ch_line.namespace == branch_ns
+        covered[matched] = True
+        # Per-entry derivation evidence (each ingredient has its own line).
+        if not any(ch_line.expression == e_field
+                   and ch_line.namespace == ns_field
                    for ch_line in chapter):
             return False
 
-    return True
+    return all(covered)
 
 
 def _or_disjuncts_from_compiled(
         or_expr: str,
-        binaries: List[dict]) -> Optional[List[str]]:
-    """@brief Decode a compiled OR ``(or<N>[…])`` into its substituted disjuncts.
+        binaries: List[dict],
+        *,
+        flatten_nested: bool = False) -> Optional[List[str]]:
+    """@brief Decode a compiled OR into substituted immediate or flattened leaves.
 
     @details
     Given a compiled OR expression ``(or<N>[arg1,arg2,…])``, look it
-    up in the supplied list of GL-binary dicts (each binary is
-    ``{name → entry}``) and return its disjuncts after substituting
-    ``u_i`` placeholders with the OR's args in order.
+    up in the supplied GL binaries and substitute ``u_i`` placeholders
+    with the OR's args in order. By default, return the immediate
+    disjuncts. When
+    ``flatten_nested`` is true, recursively expand every substituted
+    child that is itself a compiled OR and return the ordered non-OR
+    leaves (the one-go OR producer contract). A repeated OR
+    core on one recursion path or more than 64 leaves is malformed and
+    returns ``None``.
 
     Returns ``None`` if any of:
 
-    - the input does not match the ``(or<N>[…])`` shape;
-    - no loaded binary contains an entry for ``or<N>``;
-    - the entry's ``category`` is not ``"or"``;
-    - the entry has fewer than 2 elements;
-    - the OR's argument count does not match the binary's ``arity``
+    - the root or any nested OR does not match the ``(or<N>[…])`` shape;
+    - no loaded binary contains the corresponding ``or<N>`` entry;
+    - an entry's ``category`` is not ``"or"``;
+    - an entry has fewer than 2 elements;
+    - an OR's argument count does not match the binary's ``arity``
       (or, when ``arity`` is absent, the placeholder count parsed
       from ``signature``). A mismatched arity is treated as a
-      malformed OR expression and rejected.
+      malformed OR expression and rejected;
+    - recursive flattening finds a cycle or exceeds the 64-leaf cap.
 
-    Used by every OR-family checker that needs to know the actual
-    disjuncts of a compiled OR (``check_or_disintegration``,
-    ``check_or_convergence``, ``check_or_branch_proven``,
-    ``check_or_branch_assumption``).
+    Every OR producer/checker requests flattened leaves. The immediate mode
+    remains available only for callers explicitly inspecting one compiled
+    definition level.
 
     @param or_expr   The compiled OR expression.
     @param binaries  List of GL binary dicts to search (typically
                      ``state.binaries_for_chapter()``).
-    @return  Substituted disjunct list on success; ``None`` on any
-             of the failure conditions above.
+    @param flatten_nested Recursively return non-OR leaves when true.
+    @return  Substituted disjunct list on success; ``None`` on failure.
     """
-    m = re.match(r'^\(or(\d+)\[([^\]]*)\]\)$', or_expr)
-    if not m:
-        return None
-    core = f'or{m.group(1)}'
-    raw = m.group(2)
-    args = raw.split(',') if raw else []
-    for binary in binaries:
-        entry = binary.get(core)
-        if entry is None:
-            continue
-        if entry.get('category') != 'or':
-            continue
-        # Reject mismatched arity. Prefer the explicit `arity` field; fall
-        # back to counting placeholders in `signature` if `arity` is absent.
-        expected = entry.get('arity')
-        if expected is None:
-            sig = entry.get('signature', '')
-            sig_match = re.match(r'^\(or\d+\[([^\]]*)\]\)$', sig)
-            if sig_match:
-                sig_args = sig_match.group(1)
-                expected = len(sig_args.split(',')) if sig_args else 0
-        if expected is not None and len(args) != expected:
-            continue
-        elements = entry.get('elements', [])
-        if len(elements) < 2:
+    def decode(candidate: str, path_cores: Tuple[str, ...],
+               root: bool) -> Optional[List[str]]:
+        match = re.match(r'^\(or(\d+)\[([^\]]*)\]\)$', candidate)
+        if not match:
+            return None if root else [candidate]
+
+        core = f'or{match.group(1)}'
+        if core in path_cores:
             return None
-        subbed: List[str] = []
-        for elem in elements:
-            substituted = elem
-            for i, a in enumerate(args, start=1):
-                substituted = _replace_arg_safe(substituted, f'u_{i}', a)
-            subbed.append(substituted)
-        return subbed
-    return None
+        raw = match.group(2)
+        args = raw.split(',') if raw else []
+
+        for binary in binaries:
+            entry = binary.get(core)
+            if entry is None or entry.get('category') != 'or':
+                continue
+            expected = entry.get('arity')
+            if expected is None:
+                signature = entry.get('signature', '')
+                sig_match = re.match(r'^\(or\d+\[([^\]]*)\]\)$', signature)
+                if sig_match:
+                    sig_args = sig_match.group(1)
+                    expected = len(sig_args.split(',')) if sig_args else 0
+            if expected is not None and len(args) != expected:
+                continue
+
+            elements = entry.get('elements', [])
+            if len(elements) < 2:
+                return None
+            substituted_elements: List[str] = []
+            for element in elements:
+                substituted = element
+                for i, arg in enumerate(args, start=1):
+                    substituted = _replace_arg_safe(
+                        substituted, f'u_{i}', arg)
+                substituted_elements.append(substituted)
+
+            if not flatten_nested:
+                return substituted_elements
+
+            leaves: List[str] = []
+            for element in substituted_elements:
+                nested = decode(element, path_cores + (core,), False)
+                if nested is None:
+                    return None
+                leaves.extend(nested)
+                if len(leaves) > 64:
+                    return None
+            return leaves
+        return None
+
+    return decode(or_expr, (), True)
 
 
 def _disjunct_matches(candidate: str, disjuncts: List[str]) -> bool:
@@ -5539,16 +5726,16 @@ def check_or_branch_proven(line: ProofLine, chapter: List[ProofLine],
     Emitted by the prover (``prover.cpp::or branch proven`` site,
     see ``docs/agentic_swdd/20_core_concepts/07_or_branching.md``) when an OR
     needs to be proved via the _orint_ rewrite: the OR goal is
-    rewritten into two sub-implications-to-prove
-    (``!A → B`` and ``!B → A``); the per-branch scope is opened with
-    one disjunct asserted, and discharging it discharges the OR.
+    rewritten into K sub-implications-to-prove over its ordered atomic
+    leaves; the per-branch scope is opened with one leaf asserted, and
+    discharging it discharges the OR.
 
     **Row layout (exactly two rest fields).**
     ::
         line.expression  = the compiled OR (or<N>[…])
         line.namespace   = parent (the OR's parent scope)
-        rest[0]          = the asserted disjunct
-        rest[1]          = parent + "_boundary_orint_<or>_(<disjunct>)"
+        rest[0]          = the asserted atomic leaf
+        rest[1]          = parent + "_boundary_orint_<or>_(<leaf>)"
 
     **Validation.**
 
@@ -5556,18 +5743,18 @@ def check_or_branch_proven(line: ProofLine, chapter: List[ProofLine],
        ``_ORIGIN_EXEMPT_TAGS`` so any extra rest pairs would be
        silently accepted by the generic origin check; reject up front
        so the row's contract stays auditable.
-    2. ``line.expression`` is a known compiled OR with ≥2 disjuncts
+    2. ``line.expression`` is a known compiled OR with ≥2 atomic leaves
        after ``u_i`` substitution.
-    3. ``rest[0]`` is one of those disjuncts (modulo equality
+    3. ``rest[0]`` is one of those leaves (modulo equality
        symmetry).
     4. ``rest[1]`` is EXACTLY
-       ``parent + "_boundary_orint_" + or_expr + "_(" + <disjunct> + ")"``
-       for ``<disjunct>`` matching ``rest[0]`` (modulo equality
+       ``parent + "_boundary_orint_" + or_expr + "_(" + <leaf> + ")"``
+       for ``<leaf>`` matching ``rest[0]`` (modulo equality
        symmetry). No substring search.
 
     **D-36 note.** No non-``or branch proven`` derivation row for the
     OR at parent scope is required. ``_orint_`` rewrites the OR goal
-    into two sub-implications-to-prove; when one fires, the
+    into K atomic sub-implications-to-prove; when one fires, the
     ``or branch proven`` row IS the OR's derivation by design — so
     treating ``_orint_`` as a case-split with a separately-derived OR
     would be the wrong model.
@@ -5588,7 +5775,8 @@ def check_or_branch_proven(line: ProofLine, chapter: List[ProofLine],
     branch_ns = line.rest[1]
     parent_ns = line.namespace
 
-    disjuncts = _or_disjuncts_from_compiled(or_expr, state.binaries_for_chapter())
+    disjuncts = _or_disjuncts_from_compiled(
+        or_expr, state.binaries_for_chapter(), flatten_nested=True)
     if disjuncts is None:
         return False
     if not _disjunct_matches(asserted, disjuncts):
@@ -5612,20 +5800,20 @@ def check_or_branch_proven(line: ProofLine, chapter: List[ProofLine],
 
 def check_or_branch_assumption(line: ProofLine, chapter: List[ProofLine],
                                state: VerifierState) -> bool:
-    """@brief Verify an ``or branch assumption`` row seeds the other-disjunct negations.
+    """@brief Verify an ``or branch assumption`` row seeds other-leaf negations.
 
     @details
     Emitted by the prover (``prover.hpp::or branch assumption``
-    site) for each "other" disjunct of an OR that has been
+    site) for each other atomic leaf of an OR that has been
     case-split via the ``_orint_`` rewrite: in the branch where
-    disjunct ``D_i`` is asserted, the negation ``!D_j`` of every
-    other disjunct (``j != i``) is seeded as a branch-local
+    leaf ``D_i`` is asserted, the negation ``!D_j`` of every
+    other leaf (``j != i``) is seeded as a branch-local
     assumption (since the case-split's mutual exclusion makes
-    every other disjunct false in this branch).
+    every other leaf false in this branch).
 
     **Row layout (exactly two rest fields).**
     ::
-        line.expression  = the negated other-disjunct (e.g. !(=[i0,v5]))
+        line.expression  = the negated other leaf (e.g. !(=[i0,v5]))
         line.namespace   = parent + "_boundary_orint_<or>_(<asserted>)"
         rest[0]          = "<or>_integration_goal"
         rest[1]          = parent (the OR's parent scope)
@@ -5638,20 +5826,20 @@ def check_or_branch_assumption(line: ProofLine, chapter: List[ProofLine],
        suffix yields a compiled OR ``(or<N>[…])`` with a known
        GL-binary entry (matching arity).
     3. ``line.expression`` starts with ``!``; stripping it yields a
-       disjunct of the OR (modulo equality symmetry).
+       atomic leaf of the OR (modulo equality symmetry).
     4. ``line.namespace`` is EXACTLY
        ``parent + "_boundary_orint_" + or_expr + "_(" + <asserted> + ")"``
-       for some disjunct ``<asserted>`` of the OR. No substring
+       for some atomic leaf ``<asserted>`` of the OR. No substring
        search.
-    5. The asserted disjunct (extracted from ``line.namespace``'s
+    5. The asserted leaf (extracted from ``line.namespace``'s
        payload) is DIFFERENT from the negated one (modulo equality
-       symmetry) — the row asserts a disjunct's negation only in
-       branches where ANOTHER disjunct is asserted.
+       symmetry) — the row asserts a leaf's negation only in
+       branches where ANOTHER leaf is asserted.
     6. **Matching ``or branch proven`` row exists.** Some chapter
        row with ``tag == "or branch proven"``,
        ``expression == or_expr``, ``namespace == parent_ns``,
        ``len(rest) == 2``, ``rest[1] == branch_ns``, and ``rest[0]``
-       matching the asserted disjunct (modulo equality symmetry).
+       matching the asserted leaf (modulo equality symmetry).
        Without this check the assumption row could pass structurally
        even when the corresponding case-split was never opened.
 
@@ -5679,14 +5867,15 @@ def check_or_branch_assumption(line: ProofLine, chapter: List[ProofLine],
         return False
     negated = line.expression[1:]
 
-    disjuncts = _or_disjuncts_from_compiled(or_expr, state.binaries_for_chapter())
+    disjuncts = _or_disjuncts_from_compiled(
+        or_expr, state.binaries_for_chapter(), flatten_nested=True)
     if disjuncts is None:
         return False
     if not _disjunct_matches(negated, disjuncts):
         return False
 
     # Strict structural check: branch_ns must be EXACTLY
-    # parent_ns + _boundary_orint_<or>_(<disjunct>).
+    # parent_ns + _boundary_orint_<or>_(<leaf>).
     expected_prefix = (parent_ns
                        + "_boundary_orint_"
                        + or_expr
@@ -5694,7 +5883,7 @@ def check_or_branch_assumption(line: ProofLine, chapter: List[ProofLine],
     if not branch_ns.startswith(expected_prefix):
         return False
     after = branch_ns[len(expected_prefix):]
-    # Parse one balanced parens group (the asserted disjunct, which itself
+    # Parse one balanced parens group (the asserted leaf, which itself
     # starts with `(` since GL expressions are paren-wrapped). After that
     # group, exactly one `)` closes the wrapper, and nothing else may
     # follow.

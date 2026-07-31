@@ -184,7 +184,10 @@ TAG_DESCRIPTIONS = {
         "is always a premise by structure). In contradiction proofs &mdash; theorems "
         "whose head starts with <code>!</code> &mdash; the un-negated head is also "
         "valid as a task-formulation row, seeded into the contradiction LB as the "
-        "hypothesis to be disproved. Induction-hypothesis seeding uses the "
+        "hypothesis to be disproved. Symmetrically, for a positive-headed theorem "
+        "proved by reductio, the negated head is valid as a task-formulation row "
+        "&mdash; the complement contradiction LB's assumed hypothesis. "
+        "Induction-hypothesis seeding uses the "
         "<i>recursion</i> tag, not task formulation."
     ),
     "equality1": (
@@ -554,15 +557,18 @@ def _htmlify_readable(text):
         lambda m: f'{m.group(3)} &le; {m.group(4)}',
         h)
     # (interval[N,+,start,end,set]) -> set = [start,end]
+    # !(interval[N,+,start,end,set]) -> set ≠ [start,end]
     h = re.sub(
-        r'\(interval\[([^,]+),([^,]+),([^,]+),([^,]+),([^\]]+)\]\)',
-        lambda m: f'{m.group(5)} = [{m.group(3)},{m.group(4)}]',
+        r'(!?)\(interval\[([^,]+),([^,]+),([^,]+),([^,]+),([^\]]+)\]\)',
+        lambda m: f'{m.group(6)} {"&ne;" if m.group(1) else "="} [{m.group(4)},{m.group(5)}]',
         h)
-    # (EnumerationSet2[a,b,M]) -> M = {a,b}
-    h = re.sub(
-        r'\(EnumerationSet2\[([^,]+),([^,]+),([^\]]+)\]\)',
-        lambda m: f'{m.group(3)} = {{{m.group(1)},{m.group(2)}}}',
-        h)
+    # (EnumerationSetN[a,...,M]) -> M = {a,...} for every arity N
+    # !(EnumerationSetN[a,...,M]) -> M ≠ {a,...}
+    def _fmt_enum_set(m):
+        args = m.group(2).split(',')
+        rel = '&ne;' if m.group(1) else '='
+        return f'{args[-1]} {rel} {{{",".join(args[:-1])}}}'
+    h = re.sub(r'(!?)\(EnumerationSet\d+\[([^\]]+)\]\)', _fmt_enum_set, h)
     # (fXY[a,B,C]) -> a: B -> C
     h = re.sub(
         r'\(fXY\[([^,]+),([^,]+),([^\]]+)\]\)',

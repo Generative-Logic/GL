@@ -46,20 +46,21 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace {
     // 1 MiB pool / 256 KiB block — the bump-arena substrate this branch uses.
     const gl::StaticMemoryConfig kTypedCfg{ 1 << 20, 1 << 18 };
 
-    // The byte layout encodeEqClassKey produced: 2-byte LE validity then members.
-    inline std::string refEqClassBytes(int16_t validity,
-                                       const std::vector<int16_t>& members) {
-        std::string key(sizeof(int16_t) * (members.size() + 1), '\0');
-        std::memcpy(&key[0], &validity, sizeof(int16_t));
+    // The byte layout encodeEqClassKey produced: NameId LE validity then members.
+    inline std::string refEqClassBytes(gl::NameId validity,
+                                       const std::vector<gl::NameId>& members) {
+        std::string key(sizeof(gl::NameId) * (members.size() + 1), '\0');
+        std::memcpy(&key[0], &validity, sizeof(gl::NameId));
         for (std::size_t i = 0; i < members.size(); ++i)
-            std::memcpy(&key[sizeof(int16_t) * (i + 1)], &members[i],
-                        sizeof(int16_t));
+            std::memcpy(&key[sizeof(gl::NameId) * (i + 1)], &members[i],
+                        sizeof(gl::NameId));
         return key;
     }
 
@@ -114,9 +115,10 @@ namespace gl {
 
 TEST(typed_cold_map, codec_eqclasskey_layout_and_round_trip) {
     using gl::EqClassKey;
-    const std::vector<std::vector<int16_t>> memberSets = {
-        {}, { 5 }, { -3, 7, 1000 }, { 0, 1, 2, 3, 4 } };
-    for (int16_t v : { int16_t(0), int16_t(7), int16_t(-9), int16_t(32000) }) {
+    const std::vector<std::vector<gl::NameId>> memberSets = {
+        {}, { 5 }, { -3, 7, 1000 }, { 0, 1, 2, 3, 4 }, { 70000, 200000 } };
+    for (gl::NameId v : { gl::NameId(0), gl::NameId(7), gl::NameId(-9),
+                          gl::NameId(32000), gl::NameId(1000000) }) {
         for (const auto& members : memberSets) {
             const EqClassKey k{ v, members };
             const std::string enc = gl::Codec<EqClassKey>::encode(k);
@@ -130,16 +132,24 @@ TEST(typed_cold_map, codec_eqclasskey_layout_and_round_trip) {
 
 TEST(typed_cold_map, codec_statementkey_pack_unpack) {
     using gl::StatementKey;
-    const int16_t corners[] = { 0, 1, -1, 32000, -32000, 12345, -9999 };
-    for (int16_t o : corners) {
-        for (int16_t v : corners) {
+    // Include values past the old 16-bit ceiling to prove the halves no longer
+    // alias (the whole point of the migration).
+    const gl::NameId corners[] = { 0, 1, -1, 32000, -32000, 12345, -9999,
+                                   70000, 200000, 1000000, -1000000 };
+    for (gl::NameId o : corners) {
+        for (gl::NameId v : corners) {
             const StatementKey k{ o, v };
-            const int32_t packed = gl::Codec<StatementKey>::encode(k);
-            // The packStatementKey formula: (uint16(orig)<<16) | uint16(valid).
-            const int32_t ref =
-                (static_cast<int32_t>(static_cast<uint16_t>(o)) << 16)
-                | static_cast<int32_t>(static_cast<uint16_t>(v));
+            const int64_t packed = gl::Codec<StatementKey>::encode(k);
+            // The packStatementKey formula: packInt32Pair(orig, valid) — orig
+            // in the high 32 bits, valid in the low 32.
+            const int64_t ref = gl::packInt32Pair(o, v);
             ASSERT_EQ(packed, ref);
+            // Halves recover via >>32 / &0xFFFFFFFF.
+            ASSERT_EQ(static_cast<uint32_t>(static_cast<uint64_t>(packed) >> 32),
+                      static_cast<uint32_t>(o));
+            ASSERT_EQ(static_cast<uint32_t>(
+                          static_cast<uint64_t>(packed) & 0xFFFFFFFFu),
+                      static_cast<uint32_t>(v));
             const StatementKey back = gl::Codec<StatementKey>::decode(packed);
             ASSERT_TRUE(back == k);
         }
@@ -185,15 +195,14 @@ TEST(typed_cold_map, pack_int32_pair) {
 
 TEST(typed_cold_map, codec_normkey_round_trip) {
     using gl::NormKey;
-    const std::vector<std::vector<int16_t>> dataSets = {
-        {}, { 5 }, { -3, 7, 1000 }, { 0, 1, 2, 3, 4 } };
-    for (int16_t ne : { int16_t(0), int16_t(1), int16_t(7), int16_t(-9),
-                        int16_t(32000) }) {
+    const std::vector<std::vector<gl::NameId>> dataSets = {
+        {}, { 5 }, { -3, 7, 1000 }, { 0, 1, 2, 3, 4 }, { 70000, 1000000 } };
+    for (int32_t ne : { 0, 1, 7, 32000, 1000000 }) {
         for (const auto& data : dataSets) {
             const NormKey k{ ne, data };
             const std::string enc = gl::Codec<NormKey>::encode(k);
             ASSERT_EQ(static_cast<int>(enc.size()),
-                      static_cast<int>(sizeof(int16_t) * (data.size() + 2)));
+                      static_cast<int>(sizeof(gl::NameId) * (data.size() + 2)));
             const NormKey back = gl::Codec<NormKey>::decode(gl::StrSpan(enc));
             ASSERT_TRUE(back == k);
         }
@@ -202,13 +211,13 @@ TEST(typed_cold_map, codec_normkey_round_trip) {
 
 TEST(typed_cold_map, codec_int16setkey_round_trip) {
     using gl::Int16SetKey;
-    const std::vector<std::vector<int16_t>> idSets = {
-        {}, { 1 }, { -5, 0, 5 }, { -32000, 0, 32000 } };
+    const std::vector<std::vector<gl::NameId>> idSets = {
+        {}, { 1 }, { -5, 0, 5 }, { -32000, 0, 32000 }, { 0, 70000, 1000000 } };
     for (const auto& ids : idSets) {
         const Int16SetKey k{ ids };
         const std::string enc = gl::Codec<Int16SetKey>::encode(k);
         ASSERT_EQ(static_cast<int>(enc.size()),
-                  static_cast<int>(sizeof(int16_t) * (ids.size() + 1)));
+                  static_cast<int>(sizeof(gl::NameId) * (ids.size() + 1)));
         const Int16SetKey back =
             gl::Codec<Int16SetKey>::decode(gl::StrSpan(enc));
         ASSERT_TRUE(back == k);
@@ -229,6 +238,20 @@ TEST(typed_cold_map, codec_idveckey_round_trip) {
     }
 }
 
+// The NameId alias is a signed 32-bit integer; MAX_NAME_IDS is a NameId raised
+// to 1,000,000 now that the 32-bit width admits ids far past the old ceiling.
+TEST(typed_cold_map, nameid_is_32bit_signed) {
+    static_assert(std::is_signed_v<gl::NameId>, "NameId must be signed");
+    static_assert(sizeof(gl::NameId) >= 4, "NameId must be at least 32-bit");
+    static_assert(std::is_same_v<gl::NameId, std::int32_t>,
+                  "NameId is int32_t");
+    static_assert(std::is_same_v<
+                      std::remove_const_t<decltype(gl::ExecutionParameters::MAX_NAME_IDS)>,
+                      gl::NameId>,
+                  "MAX_NAME_IDS must be a NameId");
+    ASSERT_EQ(static_cast<int>(gl::ExecutionParameters::MAX_NAME_IDS), 1000000);
+}
+
 // ---- 2. Byte-identity: typed wrapper vs the raw engine map -----------------
 
 TEST(typed_cold_map, map_byte_identity_vs_raw_byte_key) {
@@ -244,8 +267,8 @@ TEST(typed_cold_map, map_byte_identity_vs_raw_byte_key) {
     gl::DirtyState dR = gl::DirtyState::Clean;
     gl::ColdHashMap<gl::BytesKeyStore, int> raw(&lbR, &dR);
 
-    for (int16_t v = 1; v <= 40; ++v) {
-        std::vector<int16_t> members{ v, int16_t(v * 3), int16_t(v - 7) };
+    for (gl::NameId v = 1; v <= 40; ++v) {
+        std::vector<gl::NameId> members{ v, gl::NameId(v * 3), gl::NameId(v - 7) };
         typed.insert(gl::EqClassKey{ v, members }, v * 100);
         const std::string b = refEqClassBytes(v, members);
         raw.insert(gl::StrSpan(b), v * 100);
@@ -270,8 +293,8 @@ TEST(typed_cold_map, map_byte_identity_vs_raw_byte_key) {
 }
 
 TEST(typed_cold_map, map_byte_identity_vs_raw_packed_key) {
-    // TypedColdMap<StatementKey,int> over a PodKeyStore<int32> vs the raw map fed
-    // the same packed scalars.
+    // TypedColdMap<StatementKey,int> over a PodKeyStore<int64> vs the raw map fed
+    // the same packed scalars (StatementKey packs to int64 now).
     gl::GlobalMemoryManager g;
     g.init(kTypedCfg);
     gl::LbArena lbT(&g);
@@ -280,7 +303,7 @@ TEST(typed_cold_map, map_byte_identity_vs_raw_packed_key) {
 
     gl::LbArena lbR(&g);
     gl::DirtyState dR = gl::DirtyState::Clean;
-    gl::ColdHashMap<gl::PodKeyStore<int32_t>, int> raw(&lbR, &dR);
+    gl::ColdHashMap<gl::PodKeyStore<int64_t>, int> raw(&lbR, &dR);
 
     for (int16_t i = 0; i < 60; ++i) {
         const gl::StatementKey k{ int16_t(i * 7 + 1), int16_t(i + 2) };
@@ -371,7 +394,7 @@ TEST(typed_cold_map, set_map_byte_identity_and_comparator) {
 
     gl::LbArena lbR(&g);
     gl::DirtyState dR = gl::DirtyState::Clean;
-    gl::ColdSetMap<gl::PodKeyStore<int32_t>, int32_t> raw(&lbR, &dR);
+    gl::ColdSetMap<gl::PodKeyStore<int64_t>, int32_t> raw(&lbR, &dR);
 
     // rank[v] = -v: a comparator that sorts the run by descending value id.
     int32_t rank[64];
@@ -386,7 +409,7 @@ TEST(typed_cold_map, set_map_byte_identity_and_comparator) {
 
     for (int16_t i = 0; i < 20; ++i) {
         const gl::StatementKey k{ int16_t(i + 1), int16_t(i + 100) };
-        const int32_t packed = gl::Codec<gl::StatementKey>::encode(k);
+        const int64_t packed = gl::Codec<gl::StatementKey>::encode(k);
         for (int32_t v : { 3, 1, 2, 1 }) {            // includes a dup
             typed.insertSorted(k, (v + i) % 64, cmp);
             raw.insertSorted(packed, (v + i) % 64, cmp);
@@ -820,7 +843,7 @@ TEST(typed_cold_map, set_map_raw_keyview_overloads) {
     gl::TypedColdSetMap<gl::StatementKey, int32_t> m(&lb, &d);
 
     const gl::StatementKey k{ 5, 9 };
-    const int32_t packed = gl::Codec<gl::StatementKey>::encode(k);
+    const int64_t packed = gl::Codec<gl::StatementKey>::encode(k);
 
     m.insertSorted(packed, 3);          // raw overload
     m.insertSorted(k, 1);               // typed overload — same key

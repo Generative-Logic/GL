@@ -36,11 +36,11 @@ The class that holds all of this is `Memory`, defined at [`memory.hpp`](../../GL
 
 ## The hierarchy
 
-An `ExpressionAnalyzer` has one root LB: `body`. Children are created dynamically for:
+An `ExpressionAnalyzer` has one root LB: `body`. Child LBs are created dynamically for the following proof structures; OR branching is the scope-level exception:
 
 1. **Target proofs** — one LB per conjecture being proved. The LB's `exprKey` is the conjecture's head.
 2. **Hypothesis LBs** — when the prover assumes a premise, a child LB opens with the premise as its `exprKey` and the assumed-premise's scope as its validity.
-3. **OR branch LBs** — one per disjunct on an OR disintegration. Each branch runs with the other disjuncts' negations as seeds.
+3. **OR branch scopes, not LBs** — `_ordis_` and `_orint_` branches are validity scopes inside the current LB. An `_ordis_` branch is seeded only with its selected disjunct.
 4. **Integration LBs** — created during reformulation-for-integration.
 5. **Auxiliary LBs** — for recursion sub-goals (induction base, step, and now typing).
 6. **Compressor LBs** — one per theorem during Phase 1 of the compressor. These are independent trees rooted at fresh `Memory` instances, not children of the main prover body.

@@ -327,7 +327,14 @@ per-<code>validityName</code> (<code>Memory::equivalenceClassesMap</code>).
 <code>a≠b</code> (<b>I-9</b>); transitivity is class membership, not a derived rule.</li>
 <li><b>Negated equality, one-sided.</b> <code>!(=[a,b])</code> expands to
 sibling inequalities on each side <i>separately</i>; the full cross-product is
-deliberately not emitted (combinatorial, no new content).</li>
+deliberately not emitted (combinatorial, no new content). The expansion fires
+both when the negation arrives and when a class touching either argument
+forms or grows later — insertion order does not matter. The recorded proof
+step cites the justifying equality at the scope where that equality's own
+history entry lives (the class's scope or an ancestor of it), never at the
+rewritten negation's scope — inside an or-branch the branch-scope form would
+be unresolvable for the proof-graph walker, whose ancestor lift deliberately
+stops at branch boundaries.</li>
 <li><b>Scoped &amp; additive.</b> A class at scope <code>S</code> is
 visible at every descendant. Cross-scope application deposits at
 <code>deeperOf(class, expr)</code> and <b>never overwrites the ancestor original</b>;
@@ -455,7 +462,11 @@ An <code>or&lt;N&gt;</code> is a compiled disjunction (De Morgan:
 </p>
 
 <h3 id="branch-split">4.4.1 &nbsp;Splitting an OR</h3>
-<p>Splitting does two things at once:</p>
+<p>Splitting first treats every contiguous nested OR as one logical level:
+<code>(D₁∨D₂)∨D₃</code> becomes the ordered leaf cohort
+<code>D₁, D₂, D₃</code> in the same cycle. The original outer compiled OR remains
+the branch, provenance, and bookkeeping identity. Splitting then does two things
+at once:</p>
 <ul class="inv">
 <li><b>1a · K mutual-exclusion implications, at the parent scope.</b> For each
 disjunct <code>D_i</code>, the rule “if every other disjunct is false then
@@ -464,8 +475,10 @@ disjunct <code>D_i</code>, the rule “if every other disjunct is false then
 is recorded <i>above</i> the admission gate so the OR stays auditable even if 1b is
 skipped.</li>
 <li><b>1b · one branch scope per disjunct.</b> <code>encodePush(…, "ordis_…")</code>,
-seeded with <code>D_i</code> asserted and the other disjuncts' negations as
-branch-local assumptions. Gated by the OR-admission check:
+seeded with <code>D_i</code> asserted. The other disjuncts' negations are not
+seeded in <code>_ordis_</code>; the parent-scope rules from 1a remain inherited.
+Gated by the OR nesting cap (<code>max_or_depth</code> — branch scopes never nest
+beyond it; the 1a rules still emit at any depth) and by the OR-admission check:
 <code>allowOrDisintegration</code>, fed from <code>LocalMemoryValue::productOfDisintegration</code>
 — set iff the firing rule itself is a product of disintegration (a premise carries a
 <code>u_</code> arg). Anchor-bound theorems never trigger it; this is the narrowed
@@ -485,46 +498,113 @@ form after D-31's broad version exploded.</li>
   <text x="190" y="178" fill="#EF9F27" font-size="9.5" text-anchor="middle">disintegration origin hoisted above the gate</text>
   <rect x="410" y="88" width="320" height="108" rx="9" fill="#1C1F2B" stroke="#B084EB"/>
   <text x="570" y="110" fill="#B084EB" font-size="12" font-weight="bold" text-anchor="middle">1b · branch scope per D_i</text>
-  <text x="570" y="131" fill="#F0E8DC" font-size="10" text-anchor="middle">D_i true, ¬D_j seeded as assumptions</text>
+  <text x="570" y="131" fill="#F0E8DC" font-size="10" text-anchor="middle">D_i asserted in its branch scope</text>
   <text x="570" y="151" fill="#8B8FA5" font-size="9.5" text-anchor="middle">gated by productOfDisintegration</text>
   <text x="570" y="178" fill="#8B8FA5" font-size="9.5" text-anchor="middle">each branch then runs on its own</text>
 </svg>
-<figcaption><b>Two things at once.</b> The parent-scope rules keep the OR auditable
-regardless; the branch scopes are where the case analysis happens.</figcaption>
+<figcaption><b>One flat cohort, two outputs.</b> Nested OR syntax is recursively
+flattened before either side is emitted. The outer signature keeps the cohort
+auditable; the leaf branch scopes are where the case analysis happens.</figcaption>
+</figure>
+
+<div class="note">
+<b>Nested ORs open in one go.</b> A compiled OR child is never stored as an
+opaque branch in either direction. Both <code>_ordis_</code> and
+<code>_orint_</code> recursively expand OR children until the leaves are non-OR
+expressions, preserve their order, and keep every leaf under the outer OR
+signature. Flattening stops at any non-OR operator, so it changes only
+disjunction syntax, not other definitions.
+</div>
+
+<p><b>1c · The introduction half.</b> The K rules of 1a consume a disjunction
+that is already known; nothing above produces one from a single true disjunct.
+That half emits at a different site: when the prover installs a compiled
+implication whose <i>premise</i> is a disjunction (for example an enumeration
+description's membership-intro conjunct “<code>x=a ∨ x=b ∨ x=c ⇒ x∈M</code>”),
+it also installs one intro rule per flattened leaf,
+<code>D_k → (D₁∨…∨D_K)</code> — propositionally valid unconditionally, a flat
+rule with no scopes. A single concretely-true disjunct — typically reached
+through an equality witness alias, since the true disjunct at a concrete
+element is reflexive — can then state the disjunction as a fact and fire the
+implication's own rule. This closed the rung-2.1 membership gap: the
+enumerated set's concrete memberships were underivable because the disjunction
+statement at a concrete element had no producer.</p>
+
+<figure>
+<svg viewBox="0 0 760 188" role="img" aria-label="Nested reverse OR integration becomes one atomic leaf cohort">
+  <defs><marker id="ori-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="28" y="64" width="190" height="54" rx="8" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="123" y="85" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">(D1 or D2) or D3</text>
+  <text x="123" y="104" fill="#8B8FA5" font-size="9.5" text-anchor="middle">one outer integration goal</text>
+  <path d="M218 91 L286 91" stroke="#5DCAA5" stroke-width="1.6" marker-end="url(#ori-ar)"/>
+  <rect x="288" y="46" width="188" height="90" rx="8" fill="#262938" stroke="#5DCAA5"/>
+  <text x="382" y="68" fill="#5DCAA5" font-size="11.5" font-weight="bold" text-anchor="middle">ordered atomic leaves</text>
+  <text x="382" y="91" fill="#F0E8DC" font-size="10" text-anchor="middle">D1 &nbsp; D2 &nbsp; D3</text>
+  <text x="382" y="113" fill="#8B8FA5" font-size="9.5" text-anchor="middle">one rename pass · outer identity</text>
+  <path d="M476 91 L542 91" stroke="#5DCAA5" stroke-width="1.6" marker-end="url(#ori-ar)"/>
+  <rect x="544" y="28" width="188" height="126" rx="8" fill="#1C1F2B" stroke="#B084EB"/>
+  <text x="638" y="50" fill="#B084EB" font-size="11.5" font-weight="bold" text-anchor="middle">K reverse subproofs</text>
+  <text x="638" y="76" fill="#F0E8DC" font-size="9.5" text-anchor="middle">not D2, not D3 -&gt; D1</text>
+  <text x="638" y="98" fill="#F0E8DC" font-size="9.5" text-anchor="middle">not D1, not D3 -&gt; D2</text>
+  <text x="638" y="120" fill="#F0E8DC" font-size="9.5" text-anchor="middle">not D1, not D2 -&gt; D3</text>
+  <text x="638" y="140" fill="#8B8FA5" font-size="8.8" text-anchor="middle">no intermediate OR branch</text>
+  <text x="638" y="151" fill="#8B8FA5" font-size="8.8" text-anchor="middle">parent + outer signature isolate cleanup</text>
+</svg>
+<figcaption><b>Reverse symmetry.</b> OR integration now prepares the same flat
+leaf set as forward case analysis. Every goal and every peer negation is
+atomic; the nested compiled OR never becomes a separate branch, and cleanup
+cannot cross into an equal signature under another parent.</figcaption>
 </figure>
 
 <h3 id="branch-conv">4.4.2 &nbsp;Convergence</h3>
 <p>Branches recombine in one of two shapes, detected by <code>classifyOrScope</code>:</p>
 <table>
 <tr><th><code>_orint_</code> — one branch proves</th><th><code>_ordis_</code> — all converge</th></tr>
-<tr><td>A single branch proves the goal's head. The OR is emitted at the OR's parent scope — computed by peeling the last <code>_boundary_</code> segment off the proving branch's name (not blindly <code>main</code>). The sibling branches are wiped by <code>cleanUpOrIntegrationBranches</code> (they were conditional on now-disproved assumptions).</td><td>Every branch independently reaches the same <code>C</code>. <code>ordisMerge</code> books each deposit in <code>orBookkeeping[(C, orSig)] → set&lt;branch&gt;</code>; when the count hits <code>orDisjunctCount[orSig]</code>, <code>C</code> is promoted to the parent via <code>sameIterationInternalMail</code> and only the converged copy collapsed — branches stay live for further convergences.</td></tr>
+<tr><td>A single branch proves the goal's head. The proof may already exist at any ancestor of the goal; the shallowest known source supplies levels and provenance without being copied into the branch. The OR is emitted at the exact goal's parent scope — computed by peeling the last <code>_boundary_</code> segment off the goal name (not blindly <code>main</code>). <code>cleanUpOrIntegrationBranches</code> wipes only direct integration children with that exact parent and outer signature; equal signatures under another parent remain live.</td><td>Every branch independently reaches the same <code>C</code>. The cohort is the exact pair <code>(parent, original OR signature)</code>. <code>ordisMerge</code> books each deposit in <code>orBookkeeping[(C, cohort)] → set&lt;branch&gt;</code>; when the count hits <code>orDisjunctCount[cohort]</code>, <code>C</code> is promoted to that parent via <code>sameIterationInternalMail</code> and only the converged copy collapsed. Equal signatures under different parents never share branches; each cohort stays live for further convergences. A branch whose asserted disjunct is refuted at an ancestor is a dead branch — everything it derives is ex falso — and is retired at the end of the burst: subtree wiped, its entry dropped from every booked run, the cohort count reduced, and convergence re-checked over the survivors. A convergence of the shrunk cohort still accounts for every branch in the exported proof: each retired branch contributes its refutation as a reductio ingredient instead of a branch derivation, and the verifier checks both forms.</td></tr>
 </table>
 
-<h3 id="branch-contra">4.4.3 &nbsp;Contradiction discharge</h3>
+<h3 id="branch-contra">4.4.3 &nbsp;Full contradiction discharge</h3>
 <p>
-If a branch's seeds are internally contradictory, it discharges by contradiction:
-reaching both <code>X</code> and <code>!X</code> lets the prover reconstruct the
-negated-head implication (stored in <code>contradictionTheoremId</code>), discharge the
-assumption, and emit the <i>original</i> conclusion into the parent scope.
-<code>primedForContradiction</code> is the flag that keeps the refuted block alive
-long enough for this. The discharge fires at most once per LB per step, gated on
-<code>isActive</code> (<b>I-78</b>). If <i>every</i> branch refutes, the parent ends up holding
-<code>¬D₁ ∧ … ∧ ¬D_K</code> (the OR itself is left unproved — no convergence fired).
+A full contradiction belongs to the current logic block, not to one conditional
+OR branch. The prover discharges only when both <code>X</code> and <code>!X</code>
+exist at that block's exact <code>main</code> scope. A copy may also exist deeper;
+the separate main row still qualifies. <code>primedForContradiction</code> keeps the
+block alive long enough to emit its stored <code>contradictionTheoremId</code>.
+The discharge fires at most once per block per step, gated on <code>isActive</code>
+(<b>I-78</b>).
+</p>
+<p>
+A block with no special role that reaches such a pair has proved its own
+premise set inconsistent: it is flagged and deactivated together with its
+whole subtree, every theorem produced at or below it is suppressed at
+emission, and rows it already submitted in earlier cycles are retracted
+from the global theorem list — nothing vacuous ships. After each batch a
+vacuity pass finishes the job: theorems whose premise sets are certified
+unsatisfiable (two proved theorems with the same premises and
+contradictory heads), and theorems whose proofs cite any vacuous theorem,
+are classified out of the deliverable pool into a dedicated artifact —
+their chapters stay for audit, but they never feed a later batch. A genuine
+reductio is unaffected, because only the contradiction child holds the
+assumed seed, so its parent never flags. The same pair at an anchor block
+stops the run: it would mean the definition set itself is inconsistent.
 </p>
 <figure>
-<svg viewBox="0 0 760 150" role="img" aria-label="Contradiction discharge from a branch to its parent">
+<svg viewBox="0 0 760 170" role="img" aria-label="Full contradiction requires both opposing expressions at the logic block main scope">
   <defs><marker id="c-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
-  <rect x="20" y="48" width="140" height="52" rx="9" fill="#262938" stroke="#B084EB"/><text x="90" y="70" fill="#B084EB" font-size="11" font-weight="bold" text-anchor="middle">branch seeds</text><text x="90" y="87" fill="#8B8FA5" font-size="9" text-anchor="middle">an assumption</text>
-  <path d="M160 74 L196 74" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#c-ar)"/>
-  <rect x="196" y="48" width="140" height="52" rx="9" fill="#262938" stroke="#EF9F27"/><text x="266" y="70" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">X and !X</text><text x="266" y="87" fill="#8B8FA5" font-size="9" text-anchor="middle">contradiction</text>
-  <path d="M336 74 L372 74" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#c-ar)"/>
-  <rect x="372" y="48" width="170" height="52" rx="9" fill="#262938" stroke="#5DCAA5"/><text x="457" y="70" fill="#5DCAA5" font-size="10.5" font-weight="bold" text-anchor="middle">contradictionTheoremId</text><text x="457" y="87" fill="#8B8FA5" font-size="9" text-anchor="middle">negated-head impl</text>
-  <path d="M542 74 L578 74" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#c-ar)"/>
-  <rect x="578" y="48" width="162" height="52" rx="9" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/><text x="659" y="70" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">conclusion</text><text x="659" y="87" fill="#8B8FA5" font-size="9" text-anchor="middle">→ parent scope</text>
-  <text x="380" y="130" fill="#8B8FA5" font-size="11" text-anchor="middle">All branches refute → parent holds ¬D₁ ∧ … ∧ ¬D_K; the OR stays unproved.</text>
+  <rect x="20" y="38" width="140" height="52" rx="9" fill="#262938" stroke="#B084EB"/><text x="90" y="60" fill="#B084EB" font-size="11" font-weight="bold" text-anchor="middle">LB main</text><text x="90" y="77" fill="#8B8FA5" font-size="9" text-anchor="middle">shallowest scope</text>
+  <path d="M160 64 L196 64" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#c-ar)"/>
+  <rect x="196" y="38" width="140" height="52" rx="9" fill="#262938" stroke="#EF9F27"/><text x="266" y="60" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">X @ main</text><text x="266" y="77" fill="#EF9F27" font-size="10" text-anchor="middle">!X @ main</text>
+  <path d="M336 64 L372 64" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#c-ar)"/>
+  <rect x="372" y="38" width="170" height="52" rx="9" fill="#262938" stroke="#5DCAA5"/><text x="457" y="60" fill="#5DCAA5" font-size="10.5" font-weight="bold" text-anchor="middle">contradictionTheoremId</text><text x="457" y="77" fill="#8B8FA5" font-size="9" text-anchor="middle">stored LB conclusion</text>
+  <path d="M542 64 L578 64" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#c-ar)"/>
+  <rect x="578" y="38" width="162" height="52" rx="9" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/><text x="659" y="60" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">LB discharge</text><text x="659" y="77" fill="#8B8FA5" font-size="9" text-anchor="middle">emit conclusion</text>
+  <rect x="120" y="116" width="520" height="36" rx="7" fill="#1C1F2B" stroke="#D14D41"/><text x="380" y="139" fill="#F0E8DC" font-size="10" text-anchor="middle">X in _ordis_ + !X at main → no full discharge; the refuted branch is retired instead</text>
 </svg>
-<figcaption><b>Discharge.</b> A self-contradictory case proves the negation of its
-own assumption and hands it up.</figcaption>
+<figcaption><b>Shallowest-scope rule.</b> Both sides must exist at the logic block's
+<code>main</code>. A contradiction confined to one <code>_ordis_</code> branch
+never discharges the block — instead the refuted branch is retired at the end
+of the burst: its subtree is wiped, future inserts are blocked, and its
+cohort's convergence count drops to the surviving branches.</figcaption>
 </figure>
 
 <h3 id="branch-thm">4.4.4 &nbsp;OR-theorem construction</h3>

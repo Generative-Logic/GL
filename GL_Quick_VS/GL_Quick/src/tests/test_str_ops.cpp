@@ -1464,6 +1464,14 @@ TEST(str_ops, classify_or_scope_view_twin) {
         { "main",                                    OSK::NotOrScope },  // root: empty stack
         { "main_boundary_something_else",            OSK::NotOrScope },  // non-or boundary
         { "main_boundary_ordis_nosephere",           OSK::NotOrScope },  // malformed: no `_(`
+        // Goal-carrying payloads classify by their bare half; the compact
+        // subproof shape stays NotOrScope.
+        { "main_boundary_(interval[1,4,2,7,10])_subproof_orint_(=[e,f])_((=[g,h]))",
+          OSK::Integration },
+        { "main_boundary_!(in[7,1])_subproof_ordis_(=[a,b])_((=[c,d]))",
+          OSK::Disintegration },
+        { "main_boundary_(interval[1,4,2,7,10])_subproof_(implication22[1,4,2,7,10])",
+          OSK::NotOrScope },
     };
     for (const Case& c : cases) {
         const int16_t vid = m.nameMap.encode(c.scope);
@@ -1477,6 +1485,60 @@ TEST(str_ops, classify_or_scope_view_twin) {
             ASSERT_EQ(sigV.toStdString(), sig);
             ASSERT_EQ(bodyV.toStdString(), body);
         }
+    }
+}
+
+TEST(str_ops, split_subproof_payload_grammar) {
+    // splitSubproofPayload must accept exactly the `<goal>_subproof_<bare>`
+    // grammar — optionally-negated balanced-paren goal, literal separator,
+    // non-empty bare half — and reject every legacy payload shape.
+    // stripSubproofPrefixView returns the bare half on a match and the
+    // payload unchanged otherwise.
+    gl::ExpressionAnalyzer ea("Peano");
+
+    struct Ok { const char* payload; const char* goal; const char* bare; };
+    const Ok oks[] = {
+        { "(interval[1,4,2,7,10])_subproof_(implication22[1,4,2,7,10])",
+          "(interval[1,4,2,7,10])", "(implication22[1,4,2,7,10])" },
+        { "!(in[7,1])_subproof_(implication5[a,b])",
+          "!(in[7,1])", "(implication5[a,b])" },
+        // Goal containing a nested compact — balanced-paren parse keeps the
+        // whole goal as the prefix.
+        { "(>[1](implication7[a,b])(in[1,2]))_subproof_orint_(or1[a,b])_((=[a,X]))",
+          "(>[1](implication7[a,b])(in[1,2]))", "orint_(or1[a,b])_((=[a,X]))" },
+    };
+    for (const Ok& c : oks) {
+        gl::StrSpan g, b;
+        ASSERT_TRUE(ea.splitSubproofPayload(
+            gl::StrSpan(c.payload, static_cast<int32_t>(std::strlen(c.payload))),
+            g, b));
+        ASSERT_EQ(g.toStdString(), std::string(c.goal));
+        ASSERT_EQ(b.toStdString(), std::string(c.bare));
+        ASSERT_EQ(ea.stripSubproofPrefixView(
+                      gl::StrSpan(c.payload,
+                                  static_cast<int32_t>(std::strlen(c.payload))))
+                      .toStdString(),
+                  std::string(c.bare));
+    }
+
+    const char* rejects[] = {
+        "(implication22[1,4,2,7,10])",               // legacy compact: nothing after group
+        "orint_(or1[a,b])_((=[a,X]))",               // legacy orint: no leading paren
+        "_var0_2_var1_7_hypo_(interval[1,4,2,7,10])",// hypo payload
+        "product_of_hypo_disintegration_of_integration_goal_(in[1,2])",
+        "(in[7,1]_subproof_(x)",                     // unbalanced goal group
+        "(in[7,1])_subproof_",                       // empty bare half
+        "(in[7,1])_subproo_(x)",                     // wrong separator
+        "",                                          // empty payload
+    };
+    for (const char* r : rejects) {
+        gl::StrSpan g, b;
+        ASSERT_FALSE(ea.splitSubproofPayload(
+            gl::StrSpan(r, static_cast<int32_t>(std::strlen(r))), g, b));
+        ASSERT_EQ(ea.stripSubproofPrefixView(
+                      gl::StrSpan(r, static_cast<int32_t>(std::strlen(r))))
+                      .toStdString(),
+                  std::string(r));
     }
 }
 

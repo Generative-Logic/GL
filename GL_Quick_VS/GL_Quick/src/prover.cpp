@@ -186,13 +186,13 @@ ExpressionAnalyzer::ExpressionAnalyzer(std::string anchorID)
                 if (pp.contains("maxSizeDefSetMapping")) parameters.maxSizeDefSetMapping = pp["maxSizeDefSetMapping"];
                 if (pp.contains("maxSizeTargetSetMapping")) parameters.maxSizeTargetSetMapping = pp["maxSizeTargetSetMapping"];
                 if (pp.contains("maxNumberSecondaryVariables")) parameters.maxNumberSecondaryVariables = pp["maxNumberSecondaryVariables"];
+                if (pp.contains("maxNumberSecondaryVariablesOrint")) parameters.maxNumberSecondaryVariablesOrint = pp["maxNumberSecondaryVariablesOrint"];
                 if (pp.contains("sizeAllPermutationsAna")) parameters.sizeAllPermutationsAna = pp["sizeAllPermutationsAna"];
                 if (pp.contains("minNumOperatorsKey")) parameters.minNumOperatorsKey = pp["minNumOperatorsKey"];
                 if (pp.contains("minNumOperatorsKeyCE")) parameters.minNumOperatorsKeyCE = pp["minNumOperatorsKeyCE"];
                 if (pp.contains("maxIterationNumberVariable")) parameters.maxIterationNumberVariable = pp["maxIterationNumberVariable"];
                 if (pp.contains("standardMaxSecondaryNumber")) parameters.standardMaxSecondaryNumber = pp["standardMaxSecondaryNumber"];
                 if (pp.contains("trackHistory")) parameters.trackHistory = pp["trackHistory"];
-                if (pp.contains("standardMaxAdmissionDepth")) parameters.standardMaxAdmissionDepth = pp["standardMaxAdmissionDepth"];
                 if (pp.contains("inductionMaxAdmissionDepth")) parameters.inductionMaxAdmissionDepth = pp["inductionMaxAdmissionDepth"];
                 if (pp.contains("inductionMaxSecondaryNumber")) parameters.inductionMaxSecondaryNumber = pp["inductionMaxSecondaryNumber"];
                 if (pp.contains("counterExampleBoundary")) parameters.counterExampleBoundary = pp["counterExampleBoundary"];
@@ -205,13 +205,17 @@ ExpressionAnalyzer::ExpressionAnalyzer(std::string anchorID)
                 if (pp.contains("compressor_max_origins_per_expr")) parameters.compressor_max_origins_per_expr = pp["compressor_max_origins_per_expr"];
                 if (pp.contains("compressor_hash_bursts")) parameters.compressor_hash_bursts = pp["compressor_hash_bursts"];
                 if (pp.contains("try_contradiction")) parameters.try_contradiction = pp["try_contradiction"];
+                if (pp.contains("try_contradiction_negated_head")) parameters.try_contradiction_negated_head = pp["try_contradiction_negated_head"];
                 if (pp.contains("skip_ce_filter")) parameters.skip_ce_filter = pp["skip_ce_filter"];
+                if (pp.contains("mirror_refutation")) parameters.mirror_refutation = pp["mirror_refutation"];
                 if (pp.contains("skip_eq_classes")) parameters.skip_eq_classes = pp["skip_eq_classes"];
                 if (pp.contains("incubator_mode")) parameters.incubator_mode = pp["incubator_mode"];
+                if (pp.contains("axed_anchor_exception")) parameters.axed_anchor_exception = pp["axed_anchor_exception"];
                 if (pp.contains("allow_multiplication")) parameters.allow_multiplication = pp["allow_multiplication"];
                 if (pp.contains("max_partition_size")) parameters.max_partition_size = pp["max_partition_size"];
                 if (pp.contains("max_or_depth")) parameters.max_or_depth = pp["max_or_depth"];
                 if (pp.contains("disable_lb_split")) parameters.disable_lb_split = pp["disable_lb_split"];
+                if (pp.contains("lb_split")) parameters.lb_split = pp["lb_split"];
                 if (pp.contains("split_growth_factor")) parameters.split_growth_factor = pp["split_growth_factor"];
                 if (pp.contains("max_number_splits")) parameters.max_number_splits = pp["max_number_splits"];
                 if (pp.contains("fixed_number_splits")) parameters.fixed_number_splits = pp["fixed_number_splits"];
@@ -1650,12 +1654,12 @@ void ExpressionAnalyzer::reactToHypo(Memory& mb) {
     // comparator's decodeView spans stay valid throughout (I-3).
     const int32_t n = mb.equivalenceClassesMap.count();
     if (n == 0) return;
-    int16_t* vids = reinterpret_cast<int16_t*>(gArena.resolve(
-        gArena.alloc(n * static_cast<int32_t>(sizeof(int16_t)),
-                     alignof(int16_t))));
+    NameId* vids = reinterpret_cast<NameId*>(gArena.resolve(
+        gArena.alloc(n * static_cast<int32_t>(sizeof(NameId)),
+                     alignof(NameId))));
     for (int32_t kid = 1; kid <= n; ++kid)
         vids[kid - 1] = mb.equivalenceClassesMap.keyAt(kid);
-    std::sort(vids, vids + n, [&](int16_t a, int16_t b) {
+    std::sort(vids, vids + n, [&](NameId a, NameId b) {
         return compareSpans(mb.nameMap.decodeView(a),
                             mb.nameMap.decodeView(b)) < 0;
     });
@@ -1663,7 +1667,7 @@ void ExpressionAnalyzer::reactToHypo(Memory& mb) {
     // Member-run snapshot pools — declared once, cleared per row (the
     // cleanUpExpressions idiom). Page tier; freed by the destructors.
     DirtyState poolDirty = DirtyState::Clean;
-    PagedVector<int16_t> memberPool(&gArena, &poolDirty);
+    PagedVector<NameId> memberPool(&gArena, &poolDirty);
     PagedVector<int32_t> classStarts(&gArena, &poolDirty);
 
     // Hoisted door levels run — one per call; mb.level is written only at
@@ -1671,7 +1675,7 @@ void ExpressionAnalyzer::reactToHypo(Memory& mb) {
     const int lvRun[1] = { mb.level };
 
     for (int32_t r = 0; r < n; ++r) {
-        const int16_t classesValId = vids[r];
+        const NameId classesValId = vids[r];
 
         // Cheap pre-filter on the raw span (gate 1; pure read). The full
         // parse below re-runs it on the owned copy — byte-identical
@@ -1713,7 +1717,7 @@ void ExpressionAnalyzer::reactToHypo(Memory& mb) {
                 ? classStarts[j + 1]
                 : static_cast<int32_t>(memberPool.size());
             for (int32_t mi = mStart; mi < mEnd; ++mi) {
-                const int16_t varId = memberPool[mi];
+                const NameId varId = memberPool[mi];
                 // decodeView is safe here: the span's last read (the
                 // equality fill below) completes before the add door
                 // mints, and kindOf writes only kindById_ — a different
@@ -1737,7 +1741,7 @@ void ExpressionAnalyzer::reactToHypo(Memory& mb) {
                 bool conditionMet = true;
                 bool hasOthers = false;
                 for (int32_t oi = mStart; oi < mEnd; ++oi) {
-                    const int16_t otherId = memberPool[oi];
+                    const NameId otherId = memberPool[oi];
                     if (otherId == varId) continue;
 
                     hasOthers = true;
@@ -1917,7 +1921,7 @@ void ExpressionAnalyzer::performElem2(const Memory& body, unsigned coreId,
         // once the LB hit the cap or was early-exited by another part.
         if (sink.canAccept() && !body.workingMemory.encodedMap.empty()) {
             RT_SCOPE_HERE("REQGEN_BATCH1_WORKING_MEMORY");
-            int16_t nMsl1 = this->makeMandatoryEncodedStatementLists1Static(
+            NameId nMsl1 = this->makeMandatoryEncodedStatementLists1Static(
                 body.workingMemory, body.nameMap,
                 IntStmtView(body.intLocalEncodedStatements),
                 stumpBuf, 4096);
@@ -1932,7 +1936,7 @@ void ExpressionAnalyzer::performElem2(const Memory& body, unsigned coreId,
         // --- Batch 2: new local delta ---
         if (sink.canAccept()) {
             RT_SCOPE_HERE("REQGEN_BATCH2_LOCAL_DELTA");
-            int16_t nMsl2 = this->makeMandatoryEncodedStatementLists1Static(
+            NameId nMsl2 = this->makeMandatoryEncodedStatementLists1Static(
                 body.overallHashMemory, body.nameMap,
                 IntStmtView(body.intLocalEncodedStatementsDelta),
                 stumpBuf, 4096);
@@ -1950,7 +1954,7 @@ void ExpressionAnalyzer::performElem2(const Memory& body, unsigned coreId,
         if (sink.canAccept()) {
             RT_SCOPE_HERE("REQGEN_BATCH3_LOCAL_X_MAIL");
             Stump pairsBuf[8192];
-            int16_t nPairs = this->makeMandatoryEncodedStatementLists2Static(
+            NameId nPairs = this->makeMandatoryEncodedStatementLists2Static(
                 body, body.overallHashMemory,
                 IntStmtView(body.intLocalEncodedStatements),
                 IntStmtView(body.intExternalStatements),
@@ -1968,7 +1972,7 @@ void ExpressionAnalyzer::performElem2(const Memory& body, unsigned coreId,
         // Mail side = body.intExternalStatements (filled by the absorb above).
         if (sink.canAccept() && !body.localHashMemory.encodedMap.empty() && !body.intExternalStatements.empty()) {
             RT_SCOPE_HERE("REQGEN_BATCH4_LOCAL_X_MAIL_SINGLES");
-            int16_t nMsl4 = this->makeMandatoryEncodedStatementLists1Static(
+            NameId nMsl4 = this->makeMandatoryEncodedStatementLists1Static(
                 body.localHashMemory, body.nameMap,
                 IntStmtView(body.intExternalStatements),
                 stumpBuf, 4096);
@@ -1983,7 +1987,7 @@ void ExpressionAnalyzer::performElem2(const Memory& body, unsigned coreId,
         // --- Batch 5: localHashMemoryDelta ---
         if (sink.canAccept() && !body.localHashMemoryDelta.encodedMap.empty()) {
             RT_SCOPE_HERE("REQGEN_BATCH5_LOCAL_HASH_DELTA");
-            int16_t nMsl5 = this->makeMandatoryEncodedStatementLists1Static(
+            NameId nMsl5 = this->makeMandatoryEncodedStatementLists1Static(
                 body.localHashMemoryDelta, body.nameMap,
                 IntStmtView(body.intEncodedStatements),
                 stumpBuf, 4096);
@@ -2287,6 +2291,20 @@ void ExpressionAnalyzer::performElemPhase3(Memory& body, unsigned coreId) {
     this->sanitizeHashMemory(body);
     this->sanitizeToBeProved(body);
 
+    // Disproved-goal cleanup: probe the inbox against this LB's MAIN goals
+    // and, on a hit, erase the goal plus its integration machinery — the
+    // matched scope roots land on pendingWipeScopes so the radical wipe
+    // below removes the nested state in this same burst.
+    this->drainDisprovedGoals(body);
+
+    // Dead _ordis_ branch retirement: a branch whose asserted disjunct is
+    // refuted (staged by ordisMerge's probe) is wiped, its cohort's
+    // bookkeeping shrinks, and convergence re-checks at the reduced count.
+    // Runs after the disproof drain (wholesale-retired cohorts are gone
+    // first) and before the wipe drain below so the branch wipes land in
+    // this same burst.
+    this->drainDeadOrBranches(body);
+
     // D-72: drain pending subtree wipes
     // queued during this burst by impl-closure call sites
     // (addExprToMemoryBlockKernel ~3872 / ~3950) and by
@@ -2319,13 +2337,13 @@ void ExpressionAnalyzer::performElemPhase3(Memory& body, unsigned coreId) {
         ScratchArena& gArena = genScratchArenas().forSlot(slot);
         const ArenaOffset drainMark = gArena.cursor();
         const int32_t n = body.pendingWipeScopes.count();
-        int16_t* ids = reinterpret_cast<int16_t*>(gArena.resolve(
-            gArena.alloc(n * static_cast<int32_t>(sizeof(int16_t)),
-                         alignof(int16_t))));
+        NameId* ids = reinterpret_cast<NameId*>(gArena.resolve(
+            gArena.alloc(n * static_cast<int32_t>(sizeof(NameId)),
+                         alignof(NameId))));
         for (int32_t i = 1; i <= n; ++i)
             ids[i - 1] = body.pendingWipeScopes.decode(i);
         body.pendingWipeScopes.resetToFresh();
-        std::sort(ids, ids + n, [&](int16_t a, int16_t b) {
+        std::sort(ids, ids + n, [&](NameId a, NameId b) {
             return compareSpans(body.nameMap.decodeView(a),
                                 body.nameMap.decodeView(b)) < 0;
         });
@@ -2694,7 +2712,151 @@ bool ExpressionAnalyzer::tryBackReformulateOperatorHead(
 /// @param coreId  Producing thread id.
 /// @invariant [I-28](../../docs/agentic_swdd/30_invariants.md#i-28).
 /// @see `updateGlobal` — auxy-indexed counterpart.
-void ExpressionAnalyzer::updateGlobalDirect(const std::string& theorem, int coreId) {
+/// @brief Append a theorem tuple to `globalTheoremList` unless the theorem
+///        string is already present — the sink dedup.
+///
+/// @details
+/// The single door for every `globalTheoremList` insertion. Locks
+/// `theoremListMutex`, probes the companion `globalTheoremStrings` set, and
+/// appends only on first sight of the theorem string (first emission wins).
+/// See the declaration in `prover.hpp` for the full contract.
+///
+/// @param theorem  The theorem string (the dedup key).
+/// @param method   Emission-path label (`direct`, `induction`, ...).
+/// @param aux2     Method-specific third column.
+/// @param aux3     Method-specific fourth column.
+/// @param producer The emitting grid LB (vacuous-reversion attribution), or
+///                 `nullptr` for producer-less paths.
+/// @return `true` when appended, `false` when the duplicate was dropped.
+bool ExpressionAnalyzer::appendGlobalTheorem(const std::string& theorem,
+    const std::string& method, const std::string& aux2,
+    const std::string& aux3, const Memory* producer) {
+    std::lock_guard<std::mutex> lock(this->theoremListMutex);
+    if (!this->globalTheoremStrings.insert(theorem).second) return false;
+    this->globalTheoremList.emplace_back(theorem, method, aux2, aux3);
+    this->globalTheoremProducers.push_back(producer);
+    return true;
+}
+
+/// @brief Retract every global-theorem row whose producer LB turned out
+///        unintentionally contradictory.
+///
+/// @details
+/// See the declaration's Doxygen block in `prover.hpp` for the full contract.
+/// Implementation notes: the sweep walks the list back to front so the
+/// aligned erases keep indices valid; the `fullTheoremList` sweep matches on
+/// the theorem string (the same key the list rows carry); the dedup-set
+/// erase frees the string for a later legitimate re-prove.
+///
+/// @return Nothing.
+/// @invariant `globalTheoremProducers` stays aligned with
+///            `globalTheoremList` across the erases.
+/// @see appendGlobalTheorem, hasContradictedAncestor.
+void ExpressionAnalyzer::revertVacuousGlobalTheorems() {
+    std::lock_guard<std::mutex> lock(this->theoremListMutex);
+    assert(this->globalTheoremProducers.size()
+               == this->globalTheoremList.size()
+        && "producer attribution out of step with globalTheoremList");
+    for (std::size_t i = this->globalTheoremList.size(); i-- > 0; ) {
+        const Memory* producer = this->globalTheoremProducers[i];
+        if (producer == nullptr || !hasContradictedAncestor(producer)) continue;
+        const std::string theorem = std::get<0>(this->globalTheoremList[i]);
+        std::cout << "[VACUOUS-REVERT] " << theorem << std::endl;
+        this->retractedVacuousTheorems.push_back(theorem);
+        this->globalTheoremStrings.erase(theorem);
+        this->globalTheoremList.erase(this->globalTheoremList.begin()
+            + static_cast<std::ptrdiff_t>(i));
+        this->globalTheoremProducers.erase(this->globalTheoremProducers.begin()
+            + static_cast<std::ptrdiff_t>(i));
+        for (std::size_t j = this->fullTheoremList.size(); j-- > 0; ) {
+            if (std::get<0>(this->fullTheoremList[j]) == theorem) {
+                this->fullTheoremList.erase(this->fullTheoremList.begin()
+                    + static_cast<std::ptrdiff_t>(j));
+            }
+        }
+    }
+}
+
+/// @brief Post-prove vacuity certificate — same-chain contradictory heads
+///        retire every theorem on that premise chain as a vacuous truth.
+///
+/// @details
+/// See the declaration's Doxygen block in `prover.hpp` for the full
+/// contract. Implementation notes: theorems group by their SORTED premise
+/// chain (`ce::disintegrateImplication` chain elements, unit-separator
+/// joined — multiset identity); a group holding both some head `X` and
+/// `negate(X)` is classified whole; erasures walk descending so the
+/// aligned `globalTheoremProducers` indices stay valid.
+///
+/// @return The classified theorem strings, in pool order.
+/// @invariant `globalTheoremProducers` stays aligned with
+///            `globalTheoremList` across the erases.
+/// @see revertVacuousGlobalTheorems.
+std::vector<std::string> ExpressionAnalyzer::classifyVacuousPremisePairs() {
+    std::lock_guard<std::mutex> lock(this->theoremListMutex);
+    assert(this->globalTheoremProducers.size()
+               == this->globalTheoremList.size()
+        && "producer attribution out of step with globalTheoremList");
+    struct ChainGroup {
+        std::unordered_set<std::string> heads;
+        std::vector<std::size_t> indices;
+        std::vector<std::string> headByIndex;
+    };
+    std::map<std::string, ChainGroup> byChain;
+    for (std::size_t i = 0; i < this->globalTheoremList.size(); ++i) {
+        const std::string& thm = std::get<0>(this->globalTheoremList[i]);
+        std::vector<std::tuple<std::string, std::vector<std::string>,
+                               std::set<std::string>>> tempChain;
+        const std::string head = ce::disintegrateImplication(
+            thm, tempChain, this->coreExpressionMap);
+        std::vector<std::string> ky;
+        ky.reserve(tempChain.size());
+        for (const auto& el : tempChain) ky.push_back(std::get<0>(el));
+        std::sort(ky.begin(), ky.end());
+        std::string key;
+        for (const auto& el : ky) { key += el; key += '\x1f'; }
+        ChainGroup& g = byChain[key];
+        g.heads.insert(head);
+        g.indices.push_back(i);
+        g.headByIndex.push_back(head);
+    }
+    std::vector<std::size_t> vacIdx;
+    for (const auto& kv : byChain) {
+        const ChainGroup& g = kv.second;
+        if (g.indices.size() < 2) continue;
+        bool contradictory = false;
+        for (const std::string& h : g.headByIndex) {
+            if (g.heads.count(negate(h)) != 0) { contradictory = true; break; }
+        }
+        if (!contradictory) continue;
+        vacIdx.insert(vacIdx.end(), g.indices.begin(), g.indices.end());
+    }
+    std::sort(vacIdx.begin(), vacIdx.end());
+    std::vector<std::string> classified;
+    classified.reserve(vacIdx.size());
+    for (const std::size_t i : vacIdx)
+        classified.push_back(std::get<0>(this->globalTheoremList[i]));
+    for (std::size_t j = vacIdx.size(); j-- > 0; ) {
+        const std::size_t i = vacIdx[j];
+        const std::string& theorem = classified[j];
+        std::cout << "[VACUOUS-PREMISE-PAIR] " << theorem << std::endl;
+        this->globalTheoremStrings.erase(theorem);
+        this->globalTheoremList.erase(this->globalTheoremList.begin()
+            + static_cast<std::ptrdiff_t>(i));
+        this->globalTheoremProducers.erase(this->globalTheoremProducers.begin()
+            + static_cast<std::ptrdiff_t>(i));
+        for (std::size_t f = this->fullTheoremList.size(); f-- > 0; ) {
+            if (std::get<0>(this->fullTheoremList[f]) == theorem) {
+                this->fullTheoremList.erase(this->fullTheoremList.begin()
+                    + static_cast<std::ptrdiff_t>(f));
+            }
+        }
+    }
+    return classified;
+}
+
+void ExpressionAnalyzer::updateGlobalDirect(const std::string& theorem, int coreId,
+    const Memory* producer) {
     // 1) Disintegrate to chain + head
     std::vector<std::tuple<std::string, std::vector<std::string>, std::set<std::string>>> tempChain;
     Mail mailOut;
@@ -2706,6 +2868,14 @@ void ExpressionAnalyzer::updateGlobalDirect(const std::string& theorem, int core
     std::vector<std::string> ky;
     ky.reserve(tempChain.size());
     for (std::size_t i = 0; i < tempChain.size(); ++i) ky.push_back(std::get<0>(tempChain[i]));
+
+    // The opposite-polarity conjecture (same chain, negated head) is settled
+    // by this theorem too: a verbatim contradiction LB's disproof settles the
+    // ORIGINAL conjecture, and a proved head makes the opposite-head
+    // conjecture false — either way its recursion auxiliaries are pointless.
+    // Retire them through the same matching walk; a twin form that matches
+    // no originalAuxyMap entry is a defined no-op.
+    deactivateUnnecessary(reconstructImplication(ky, negate(value)), this->body);
 
     // Save original decomposition before sections 3/4 overwrite ky/value
     const std::vector<std::string> origKy = ky;
@@ -2721,10 +2891,7 @@ void ExpressionAnalyzer::updateGlobalDirect(const std::string& theorem, int core
             const std::string& refTheoremRaw = pair.first;
             const std::string& refTheoremCompiled = pair.second;
 
-            {
-                std::lock_guard<std::mutex> lock(this->theoremListMutex);
-                this->globalTheoremList.emplace_back(refTheoremCompiled, "reformulated statement", theorem, "-1");
-            }
+            this->appendGlobalTheorem(refTheoremCompiled, "reformulated statement", theorem, "-1", producer);
             std::cout << refTheoremCompiled << std::endl;
 
             if (parameters.trackHistory) {
@@ -2830,10 +2997,7 @@ void ExpressionAnalyzer::updateGlobalDirect(const std::string& theorem, int core
             ExpressionWithValidity ev(theorem, "main");
             addOrigin(mailOut.exprOriginMap, ev, std::make_pair("theorem", std::vector<ExpressionWithValidity>()), (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
         }
-        {
-            std::lock_guard<std::mutex> lock(this->theoremListMutex);
-            this->globalTheoremList.emplace_back(theorem, "direct", "-1", "-1");
-        }
+        this->appendGlobalTheorem(theorem, "direct", "-1", "-1", producer);
         std::cout << theorem << std::endl;
         checkOrCompletion(theorem, coreId);
     }
@@ -2846,12 +3010,10 @@ void ExpressionAnalyzer::updateGlobalDirect(const std::string& theorem, int core
             ExpressionWithValidity ev(theorem, "main");
             addOrigin(mailOut.exprOriginMap, ev, std::make_pair("theorem", std::vector<ExpressionWithValidity>()), (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
         }
-        {
-            std::lock_guard<std::mutex> lock(this->theoremListMutex);
-            this->globalTheoremList.emplace_back(theorem, "direct", "-1", "-1");
-            this->globalTheoremList.emplace_back(
-                backReformulated, "incubator back reformulation", theorem, "-1");
-        }
+        this->appendGlobalTheorem(theorem, "direct", "-1", "-1", producer);
+        this->appendGlobalTheorem(
+            backReformulated, "incubator back reformulation", theorem, "-1",
+            producer);
         std::cout << theorem << std::endl;
         std::cout << backReformulated << std::endl;
         checkOrCompletion(theorem, coreId);
@@ -2965,8 +3127,8 @@ void ExpressionAnalyzer::deactivateRecursively() {
         if (node->isActive) {
             int mainValidityCount = 0;
             for (int32_t tbpId = 1; tbpId <= node->intToBeProved.count(); ++tbpId) {
-                // Low 16 key bits carry the validity id; "main" is MAIN_ID (I-48).
-                if (static_cast<int16_t>(node->intToBeProved.keyAt(tbpId) & 0xFFFF)
+                // Low 32 key bits carry the validity id; "main" is MAIN_ID (I-48).
+                if (Codec<StatementKey>::decode(node->intToBeProved.keyAt(tbpId)).validity
                     == NameMap::MAIN_ID) {
                     mainValidityCount++;
                 }
@@ -3013,7 +3175,8 @@ void ExpressionAnalyzer::deactivateUnnecessary(const std::string& theorem, Memor
 
     // 2) Disintegrate theorem to find its Memory path
     std::vector<std::tuple<std::string, std::vector<std::string>, std::set<std::string>>> tempChain;
-    ce::disintegrateImplication(theorem, tempChain, this->coreExpressionMap);
+    const std::string head =
+        ce::disintegrateImplication(theorem, tempChain, this->coreExpressionMap);
     if (tempChain.empty()) return;
 
     // Walk down the chain from root, collecting the blocks on the path
@@ -3030,6 +3193,20 @@ void ExpressionAnalyzer::deactivateUnnecessary(const std::string& theorem, Memor
         }
         node = nextNode;
         chainBlocks.push_back(node);
+    }
+
+    // Retire both contradiction twins of this settled head at the final
+    // node. Emission-time counterpart of the D-224 goal-closure staging:
+    // the staging path fires only when the chain LB's own goal closes,
+    // which for a theorem proved by induction or in another LB happens one
+    // or more bursts after emission (on the broadcast re-fire) — this flip
+    // closes that lag at the emission drain, the same single-threaded seam
+    // the staged drain uses. A missing twin is a defined case (the head
+    // never took contradiction LBs, or they were retired already).
+    for (const std::string& seed : { head, this->negate(head) }) {
+        if (Memory* twin = simpleMapStore.findChild(node, "__contradiction__" + seed)) {
+            twin->isActive = false;
+        }
     }
 
     // Names depend only on the last node on the path
@@ -3088,7 +3265,7 @@ void ExpressionAnalyzer::deactivateUnnecessary(const std::string& theorem, Memor
             // validity id, and "main" is the pre-registered MAIN_ID.
             std::size_t mainTbpCount = 0;
             for (int32_t tbpId = 1; tbpId <= block->intToBeProved.count(); ++tbpId) {
-                if (static_cast<int16_t>(block->intToBeProved.keyAt(tbpId) & 0xFFFF)
+                if (Codec<StatementKey>::decode(block->intToBeProved.keyAt(tbpId)).validity
                     == NameMap::MAIN_ID) {
                     ++mainTbpCount; break;
                 }
@@ -3101,7 +3278,6 @@ void ExpressionAnalyzer::deactivateUnnecessary(const std::string& theorem, Memor
 
 	deactivateRecursively();  // Further prune the tree globally
 }
-
 
 
 // analyze_expressions.cpp
@@ -3174,6 +3350,14 @@ void ExpressionAnalyzer::updateGlobal(int auxyIndex, bool allLevelsInvolved, int
     // Walk to the memory block for this key
     Memory* memoryBlock = accessMemory(ky, this->body);
     if (memoryBlock != NULL) {
+        // Vacuous-premise emission gate (the induction twin of the
+        // drainUpdateGlobalDirect gate): an induction theorem whose chain
+        // LB sits at or below a contradicted premise set is vacuous — do
+        // not promote it. Runs at the single-threaded post-join drain of
+        // updateGlobalTuples, so the parent walk is race-free.
+        if (hasContradictedAncestor(memoryBlock)) {
+            return;
+        }
         // --- Induction typing gate ---
         // Before promoting an induction theorem, verify the induction variable is
         // constrained to N (anchor_args[0]). A sound induction requires
@@ -3203,7 +3387,7 @@ void ExpressionAnalyzer::updateGlobal(int auxyIndex, bool allLevelsInvolved, int
         if (tbpValId != 0) {
             // Python asserts this is an empty set
             assert(memoryBlock->intToBeProved.runLen(tbpValId) == 0);
-            const int16_t tbpOrigId = memoryBlock->nameMap.lookup(value);
+            const NameId tbpOrigId = memoryBlock->nameMap.lookup(value);
             assert(tbpOrigId != 0);
             memoryBlock->intToBeProved.eraseSet(
                 packStatementKey(tbpOrigId, NameMap::MAIN_ID));
@@ -3286,10 +3470,8 @@ void ExpressionAnalyzer::updateGlobal(int auxyIndex, bool allLevelsInvolved, int
             // left-column hit.
             const std::string exprFullBind =
                 this->reconstructImplicationFullBind(ky, value);
-            {
-                std::lock_guard<std::mutex> lock(this->theoremListMutex);
-                this->globalTheoremList.emplace_back(exprFullBind, "induction", indVar, recCounter);
-            }
+            this->appendGlobalTheorem(exprFullBind, "induction", indVar,
+                recCounter, memoryBlock);
             std::cout << exprFullBind << std::endl;
             // checkOrCompletion below intentionally keeps `expr` (the
             // partial-bind, as-scheduled form) because or_pairs.txt is loaded
@@ -3304,10 +3486,8 @@ void ExpressionAnalyzer::updateGlobal(int auxyIndex, bool allLevelsInvolved, int
                     const std::string& refTheoremRaw = pair.first;
                     const std::string& refTheoremCompiled = pair.second;
 
-                    {
-                        std::lock_guard<std::mutex> lock(this->theoremListMutex);
-                        this->globalTheoremList.emplace_back(refTheoremCompiled, "reformulated statement", expr, "-1");
-                    }
+                    this->appendGlobalTheorem(refTheoremCompiled,
+                        "reformulated statement", expr, "-1", memoryBlock);
                     std::cout << refTheoremCompiled << std::endl;
 
                     if (parameters.trackHistory) {
@@ -3718,15 +3898,581 @@ void ExpressionAnalyzer::drainUpdateGlobalDirect() {
 
     for (int32_t oi = 0; oi < n; ++oi) {
         const UpdateGlobalDirectRec& r = *refs[static_cast<size_t>(idx[oi])];
+        // Vacuous-premise emission gate: a theorem sealed by an LB whose
+        // premise set turned out inconsistent (self-or-ancestor
+        // mainContradiction) is vacuous — suppress it. The flags were set
+        // in this iteration's worker phases, so the single-threaded drain
+        // sees them; the parent walk is race-free here (the sanctioned
+        // I-28 seam).
+        assert(r.producer
+            && "drainUpdateGlobalDirect: seal sites must carry the producer LB");
+        if (hasContradictedAncestor(r.producer)) continue;
         // Materialize the std::string at the still-heap updateGlobalDirect edge
         // (the sink is not a statification target; the sealed bytes crossing the
         // join is the win). The sealed strings are live until freePages() below.
-        updateGlobalDirect(StrSpan(r.theorem).toStdString(), r.coreId);
+        updateGlobalDirect(StrSpan(r.theorem).toStdString(), r.coreId,
+                           r.producer);
+
+        // Disproof deposit: a primed __contradiction__ discharge emits a
+        // theorem whose head is negate(seed) (I-165), so hand the seed to the
+        // parent's disproved-goal inbox. The parent's own end-of-burst
+        // drainDisprovedGoals probes it against the parent's MAIN goals —
+        // a hit is a disproof (the verbatim twin fired), a miss is the
+        // complement twin proving the goal (normal closure handles it) or an
+        // already-closed goal; both are defined outcomes, so the deposit is
+        // unconditional for primed producers. Single-threaded post-join seam;
+        // the inbox rides the never-deloaded persistent pool (the I-108
+        // pattern), so no claim is needed while the parent is cold, and the
+        // hasWork wake satisfies I-153.
+        if (r.producer->primedForContradiction) {
+            Memory* parent = r.producer->parentMemory;
+            assert(parent
+                && "primed contradiction LB must have a parent LB");
+            const StrSpan key = r.producer->exprKeyView();
+            static const char CONTRA_PFX[] = "__contradiction__";
+            const int32_t pfxLen =
+                static_cast<int32_t>(sizeof(CONTRA_PFX) - 1);
+            assert(key.len > pfxLen
+                && std::memcmp(key.ptr, CONTRA_PFX,
+                               static_cast<size_t>(pfxLen)) == 0
+                && "primed LB exprKey must carry the __contradiction__ prefix");
+            parent->pendingDisprovedGoals.mint(
+                StrSpan(key.ptr + pfxLen, key.len - pfxLen));
+            parent->hasWork = true;
+        }
     }
     gArena.popTo(mark);
     ps.seal();
     ps.freePages();
     updateGlobalDirectPages.reset();
+}
+
+/// @brief End-of-burst drain of the disproved-goal inbox — erase a disproved
+///        MAIN goal and every piece of integration machinery its preparation
+///        spawned.
+///
+/// @details
+/// See the declaration's Doxygen block in `prover.hpp` for the full contract
+/// (deposit protocol, the six cleanup steps, determinism, and the flagged
+/// verbatim-match limitation). Implementation notes:
+///
+/// - Heap-free (Rule 28): seed snapshots ride the string-scratch tier, the
+///   root-name / dead-compact scratch rides the gen-scratch tiers, all
+///   reclaimed at exit.
+/// - No NameMap mint occurs anywhere in the body — every probe is a
+///   non-minting `lookup`, so `decodeView` / `decodeSubView` spans stay valid
+///   across the whole drain (I-3 different-container rule; the erases mutate
+///   other containers only).
+/// - Scope wipes are DELEGATED: matched roots go onto `pendingWipeScopes`
+///   (drained immediately after this function in `performElemPhase3`), so the
+///   radical sweep itself stays single-sourced in `Memory::wipeSubtree`.
+///
+/// @param body The LB whose inbox is drained (resident — its own burst).
+/// @invariant Seeds process in byte-lex order; every erase predicate is a
+///            pure function of container content (I-84 determinism).
+/// @see Memory::pendingDisprovedGoals, Memory::wipeSubtree,
+///      ExpressionAnalyzer::splitSubproofPayload,
+///      ExpressionAnalyzer::templateMatchesGoalWithMarkers.
+void ExpressionAnalyzer::drainDisprovedGoals(Memory& body) {
+    const int32_t seedN = body.pendingDisprovedGoals.count();
+    if (seedN == 0) return;
+    // Quiescence (D-194): the cleanup eradicates state; flag the mutation
+    // directly rather than relying on a count diff.
+    body.mutatedThisBurst = true;
+
+    const unsigned gSlot = (g_currentCoreId >= 0)
+        ? static_cast<unsigned>(g_currentCoreId)
+        : genScratchArenas().slotCount() - 1;
+    ScratchArena& gArena = genScratchArenas().forSlot(gSlot);
+    const ArenaOffset gMark = gArena.cursor();
+    const unsigned sSlot = (g_currentCoreId >= 0)
+        ? static_cast<unsigned>(g_currentCoreId)
+        : scratchArenas().slotCount() - 1;
+    ScratchArena& sArena = scratchArenas().forSlot(sSlot);
+    ScratchScope sScope(sArena);
+
+    // Snapshot the seed bytes onto the string tier (the inbox resets below so
+    // wipe-time inserts elsewhere run against a fresh container), then sort
+    // byte-lex for a deterministic processing order (I-84). The spans alias
+    // sArena bytes under the function-level sScope — nothing rewinds sArena
+    // below them (09c pitfall 4 discipline).
+    StrSpan* seeds = reinterpret_cast<StrSpan*>(gArena.resolve(
+        gArena.alloc(seedN * static_cast<int32_t>(sizeof(StrSpan)),
+                     static_cast<int32_t>(alignof(StrSpan)))));
+    for (int32_t i = 1; i <= seedN; ++i) {
+        const StrSpan v = body.pendingDisprovedGoals.view(i);
+        char* buf = sArena.allocBytes(v.len);
+        std::memcpy(buf, v.ptr, static_cast<size_t>(v.len));
+        seeds[i - 1] = StrSpan(buf, v.len);
+    }
+    body.pendingDisprovedGoals.resetToFresh();
+    std::sort(seeds, seeds + seedN, [](const StrSpan& a, const StrSpan& b) {
+        return compareSpans(a, b) < 0;
+    });
+
+    for (int32_t si = 0; si < seedN; ++si) {
+        const StrSpan seed = seeds[si];
+        const NameId goalId = body.nameMap.lookup(seed);
+        if (goalId == 0) continue;   // never a goal here — complement twin
+        const int64_t goalPk = packStatementKey(goalId, NameMap::MAIN_ID);
+        if (body.intToBeProved.lookup(goalPk) == 0) continue;  // closed / twin
+
+        // ---- 1. the goal row ----
+        body.intToBeProved.eraseSet(goalPk);
+
+        // The negated form of the seed — the disproof PRODUCT, which the
+        // MAIN-keyed origin sweep below must never erase.
+        StrSpan negSeed;
+        if (seed.len > 0 && seed.ptr[0] == '!') {
+            negSeed = StrSpan(seed.ptr + 1, seed.len - 1);
+        } else {
+            char* nb = sArena.allocBytes(seed.len + 1);
+            nb[0] = '!';
+            std::memcpy(nb + 1, seed.ptr, static_cast<size_t>(seed.len));
+            negSeed = StrSpan(nb, seed.len + 1);
+        }
+
+        // ---- 2. MAIN-level scope roots that embed the goal ----
+        // Subtree membership for the erases below is the TEXT gate
+        // (equal-or-boundary-prefix against the root names): the origin /
+        // cohort key spaces are originInterner / lbStateInterner, never the
+        // NameMap, so a NameMap-id bitmap cannot serve them (I-91, I-93).
+        //
+        // A subproof root whose PRODUCT already closed (the bare compact /
+        // OR signature is a REGISTERED statement at main) is SKIPPED
+        // entirely: its scope was wiped by the success path at closure, the
+        // product is a legitimate proven fact other proofs may cite, and its
+        // preserved history rows are what the chapter walker reads — only
+        // never-closed machinery is dead.
+        DirtyState rootsDirty = DirtyState::Clean;
+        PagedVector<StrSpan> rootNames(&gArena, &rootsDirty);
+        static const char SENT_PFX[] =
+            "product_of_hypo_disintegration_of_integration_goal_";
+        const int32_t sentLen = static_cast<int32_t>(sizeof(SENT_PFX) - 1);
+        static const char HYPO_TOK[] = "_hypo_";
+        const int32_t hypoLen = static_cast<int32_t>(sizeof(HYPO_TOK) - 1);
+        static const char ORINT_PFX[] = "orint_";
+        const int32_t orintLen = static_cast<int32_t>(sizeof(ORINT_PFX) - 1);
+        for (NameId id = 2; id <= body.nameMap.nameCount(); ++id) {
+            if (body.nameMap.stackEmpty(id)) continue;
+            if (body.nameMap.parentOf(id) != NameMap::MAIN_ID) continue;
+            const StrSpan payload =
+                body.nameMap.decodeSubView(body.nameMap.stackBack(id));
+            bool matched = false;
+            StrSpan gOut, bOut;
+            if (splitSubproofPayload(payload, gOut, bOut)) {
+                matched = equalSpans(gOut, seed);
+                if (matched) {
+                    // Derive the subproof's product: the bare compact
+                    // (Case A) or the OR signature (Case OR branch).
+                    StrSpan product;
+                    if (bOut.len > 0 && bOut.ptr[0] == '(') {
+                        product = bOut;
+                    } else if (bOut.len > orintLen
+                               && std::memcmp(bOut.ptr, ORINT_PFX,
+                                              static_cast<size_t>(orintLen))
+                                      == 0) {
+                        int32_t sep = -1;
+                        for (int32_t p = orintLen; p + 1 < bOut.len; ++p) {
+                            if (bOut.ptr[p] == '_'
+                                && bOut.ptr[p + 1] == '(') { sep = p; break; }
+                        }
+                        if (sep > orintLen)
+                            product = StrSpan(bOut.ptr + orintLen,
+                                              sep - orintLen);
+                    }
+                    if (product.len > 0) {
+                        const StatementFlags* row = lookupStatementFlags(
+                            body.intKnownStatements, body.nameMap, product,
+                            StrSpan("main", 4));
+                        if (row && row->registered) continue;  // closed — keep
+                    }
+                }
+            } else if (payload.len == sentLen + seed.len
+                       && std::memcmp(payload.ptr, SENT_PFX,
+                                      static_cast<size_t>(sentLen)) == 0
+                       && equalSpans(StrSpan(payload.ptr + sentLen, seed.len),
+                                     seed)) {
+                matched = true;   // the hypo sentinel of this goal
+            } else if (payload.len > hypoLen + seed.len
+                       && payload.ptr[0] == '_'
+                       && equalSpans(StrSpan(payload.ptr + payload.len
+                                                 - seed.len, seed.len),
+                                     seed)
+                       && std::memcmp(payload.ptr + payload.len - seed.len
+                                          - hypoLen,
+                                      HYPO_TOK,
+                                      static_cast<size_t>(hypoLen)) == 0) {
+                matched = true;   // the `_var…_hypo_<goal>` working scope
+            }
+            if (!matched) continue;
+            body.pendingWipeScopes.mint(id);
+            body.intValidityNamesToFilter.mint(id);
+            rootNames.push_back(body.nameMap.decodeView(id));
+        }
+
+        // ---- 3. goal-template gates at MAIN ----
+        const auto tmplMatches = [&](int32_t tid) -> bool {
+            const StrSpan t = body.templateInterner.decodeView(tid);
+            if (templateMatchesGoalWithMarkers(t, seed)) return true;
+            StrSpan tg, tb;
+            return splitSubproofPayload(t, tg, tb) && equalSpans(tg, seed);
+        };
+        body.integrationPrepared.eraseIf([&](int64_t k) {
+            const StatementKey sk = Codec<StatementKey>::decode(k);
+            return sk.validity == NameMap::MAIN_ID && tmplMatches(sk.orig);
+        });
+        body.integrationPreparedMarker.eraseIf([&](int64_t k) {
+            const StatementKey sk = Codec<StatementKey>::decode(k);
+            return sk.validity == NameMap::MAIN_ID && tmplMatches(sk.orig);
+        });
+        body.integrationStartIntMap.eraseIf([&](NameId tid) {
+            return tmplMatches(tid);
+        });
+
+        // Origin keys pack BOTH halves in the originInterner space — NEVER
+        // the NameMap (I-91) — so subtree membership must gate on the DECODED
+        // validity name against the wiped root names (the expandedImplications
+        // text-gate idiom), not on the NameMap bitmap.
+        const StrSpan boundaryTok(
+            NameMap::BOUNDARY_STR,
+            static_cast<int32_t>(NameMap::BOUNDARY_LEN));
+        const auto underWipedRoot = [&](StrSpan vName) -> bool {
+            for (int32_t ri = 0; ri < rootNames.size(); ++ri) {
+                const StrSpan rn = rootNames[ri];
+                if (equalSpans(vName, rn)) return true;
+                if (vName.len > rn.len + boundaryTok.len
+                    && equalSpans(StrSpan(vName.ptr, rn.len), rn)
+                    && equalSpans(StrSpan(vName.ptr + rn.len,
+                                          boundaryTok.len),
+                                  boundaryTok))
+                    return true;
+            }
+            return false;
+        };
+
+        // ---- 4. exprOriginMap: wiped-subtree rows + MAIN goal rows ----
+        // (The maintainer-approved deviation from wipeSubtree's I-44
+        // preserve rule — disproof cleanup only; the success path keeps its
+        // history untouched.)
+        // MAIN-keyed rows erase on GOAL-TEXT containment, with the products
+        // excepted: the negated fact `negate(goal)` and the anchor-rooted
+        // theorem rows stay. Rows citing a dead subproof's bare compact but
+        // NOT the goal stay too — the same compact text can belong to a
+        // CLOSED subproof of another goal (per-goal duplication), whose main
+        // statement and history are load-bearing for the chapter walker.
+        body.exprOriginMap.eraseBlobIf([&](int64_t k) {
+            StrSpan e, v;
+            decodeOriginKeyView(k, body.originInterner, e, v);
+            if (underWipedRoot(v)) return true;
+            if (equalSpans(v, StrSpan("main", 4))
+                && containsSpan(e, seed)
+                && !equalSpans(e, negSeed)
+                && !containsSpan(e, StrSpan("(Anchor", 7)))
+                return true;
+            return false;
+        });
+
+        // ---- 5. internal-mail origins at wiped scopes ----
+        // (The statements are filtered by wipeSubtree itself right after this
+        // drain; without the origins sweep the orphaned history runs would
+        // outlive their statements in the discharge-surviving container.
+        // Same originInterner key space as exprOriginMap — text gate.)
+        body.sameIterationInternalMail.filterOrigins([&](int64_t k) {
+            StrSpan e, v;
+            decodeOriginKeyView(k, body.originInterner, e, v);
+            return underWipedRoot(v);
+        });
+
+        // ---- 6. OR cohort bookkeeping under wiped scopes ----
+        // Cohort identity is (parentValidity, orSignature) in the
+        // lbStateInterner space (I-167) — the parent arrives as TEXT, so the
+        // dead test is the equal-or-boundary-prefix gate against each wiped
+        // root name (the wipeSubtree expandedImplications idiom).
+        const auto cohortDead = [&](int32_t cohortId) -> bool {
+            const LbStatePairKey pv =
+                decodeOrCohortIds(body.lbStateInterner, cohortId);
+            return underWipedRoot(body.lbStateInterner.decodeView(pv.high));
+        };
+        body.orDisjunctCount.eraseIf([&](int32_t cid) {
+            return cohortDead(cid);
+        });
+        body.orBookkeeping.eraseSetIf([&](const LbStatePairKey& k) {
+            return cohortDead(static_cast<int32_t>(k.low));
+        });
+    }
+    gArena.popTo(gMark);
+}
+
+
+/// @brief End-of-burst drain of the dead OR-branch inbox — retire refuted
+///        `_ordis_` branches, shrink their cohorts, re-check convergence.
+///
+/// @details
+/// See the declaration's Doxygen block in `prover.hpp` for the full contract
+/// (staging protocol, the four retirement steps, the defined skips, and the
+/// history-preservation rule). Implementation notes:
+///
+/// - Heap-free (Rule 28): the vid snapshot, the per-cohort ledgers, and the
+///   `orBookkeeping` row snapshot ride the gen-scratch tier; the rebuilt
+///   branch-validity strings ride the string-scratch tier; all reclaimed at
+///   exit.
+/// - The only NameMap writes happen inside the re-fired `ordisMerge` (both
+///   encodes are lookup hits — the branch scope and the statement were
+///   interned by their original deposits), so no sub-table mint invalidates
+///   the held `decodeSubView` spans (I-3); `lbStateInterner.decodeView`
+///   spans survive that interner's own mints (paged appends never relocate).
+/// - The `orBookkeeping` surgery is erase-plus-reinsert through the two
+///   existing doors (`eraseSetIf`, `insertSorted` with `DecodedIdLess`), so
+///   the rebuilt runs keep the canonical decoded-lex order.
+/// - Scope wipes are DELEGATED to `pendingWipeScopes` (drained immediately
+///   after this function in `performElemPhase3`).
+///
+/// @param body The LB whose inbox is drained (resident — its own burst).
+/// @invariant Staged vids process in decoded-name byte-lex order; every
+///            erase predicate and rebuilt run is a pure function of
+///            container content (I-84 determinism).
+/// @see Memory::pendingDeadOrBranches, ordisMerge, mintOrCohortId,
+///      decodeOrCohortIds.
+void ExpressionAnalyzer::drainDeadOrBranches(Memory& body) {
+    const int32_t seedN = body.pendingDeadOrBranches.count();
+    if (seedN == 0) return;
+    // Quiescence (D-194): the retirement eradicates state; flag the mutation
+    // directly rather than relying on a count diff.
+    body.mutatedThisBurst = true;
+
+    const unsigned gSlot = (g_currentCoreId >= 0)
+        ? static_cast<unsigned>(g_currentCoreId)
+        : genScratchArenas().slotCount() - 1;
+    ScratchArena& gArena = genScratchArenas().forSlot(gSlot);
+    const ArenaOffset gMark = gArena.cursor();
+    const unsigned sSlot = (g_currentCoreId >= 0)
+        ? static_cast<unsigned>(g_currentCoreId)
+        : scratchArenas().slotCount() - 1;
+    ScratchArena& sArena = scratchArenas().forSlot(sSlot);
+    ScratchScope sScope(sArena);
+
+    // Snapshot the staged vids, reset the inbox (a re-fired ordisMerge below
+    // runs its probe against a fresh container), sort by decoded scope name
+    // (the pendingWipeScopes drain idiom: the pod set dedups and the NameMap
+    // is injective, so the sort is tie-free — I-84).
+    NameId* vids = reinterpret_cast<NameId*>(gArena.resolve(
+        gArena.alloc(seedN * static_cast<int32_t>(sizeof(NameId)),
+                     alignof(NameId))));
+    for (int32_t i = 1; i <= seedN; ++i)
+        vids[i - 1] = body.pendingDeadOrBranches.decode(i);
+    body.pendingDeadOrBranches.resetToFresh();
+    std::sort(vids, vids + seedN, [&](NameId a, NameId b) {
+        return compareSpans(body.nameMap.decodeView(a),
+                            body.nameMap.decodeView(b)) < 0;
+    });
+
+    // ---- 1. per-seed: wipe queue + cohort/disjunct ledger ----
+    DirtyState ledgerDirty = DirtyState::Clean;
+    PagedVector<int32_t> deadCohortIds(&gArena, &ledgerDirty);   // per seed
+    PagedVector<int32_t> deadDjIds(&gArena, &ledgerDirty);       // per seed
+    for (int32_t si = 0; si < seedN; ++si) {
+        const NameId vid = vids[si];
+        StrSpan orSigV, branchBodyV;
+        const OrScopeKind kind = classifyOrScopeView(body.nameMap, vid,
+                                                     orSigV, branchBodyV);
+        assert(kind == OrScopeKind::Disintegration
+            && "pendingDeadOrBranches vid must be an _ordis_ branch scope");
+        (void)kind;
+        const StrSpan vName = body.nameMap.decodeView(vid);
+        assert(!body.nameMap.stackEmpty(vid));
+        const int32_t payloadLen = body.nameMap.decodeSubView(
+            body.nameMap.stackBack(vid)).len;
+        const StrSpan parentV(vName.ptr,
+            vName.len - static_cast<int32_t>(NameMap::BOUNDARY_LEN)
+                - payloadLen);
+        const int32_t cohortId = mintOrCohortId(body.lbStateInterner,
+            body.lbStateInterner.encode(parentV),
+            body.lbStateInterner.encode(orSigV));
+        if (body.orDisjunctCount.lookup(cohortId) == 0) continue;
+        // Defined skip above: the cohort was retired wholesale by this same
+        // seam's drainDisprovedGoals — its parent scope lies in a
+        // disproof-wiped subtree, which covers this branch scope too.
+        body.pendingWipeScopes.mint(vid);
+        body.intValidityNamesToFilter.mint(vid);
+        const int32_t deadDjId = body.lbStateInterner.encode(branchBodyV);
+        deadCohortIds.push_back(cohortId);
+        deadDjIds.push_back(deadDjId);
+
+        // Record the retired disjunct with the SHALLOWEST scope where its
+        // negation is `known` — the reductio ingredient a later
+        // reduced-cohort `or convergence` row cites for this branch. The
+        // walk re-runs the ordisMerge probe (the record is immortal, I-58,
+        // so the staged branch is guaranteed a hit); preferring the
+        // shallowest hit cites the fact where it genuinely lives (typically
+        // main) rather than an inherited rewrite inside the dead branch.
+        {
+            assert(branchBodyV.len >= 2);
+            const StrSpan deadAsm(branchBodyV.ptr + 1, branchBodyV.len - 2);
+            NameId negId = 0;
+            if (deadAsm.len > 0 && deadAsm.ptr[0] == '!') {
+                negId = body.nameMap.lookup(
+                    StrSpan(deadAsm.ptr + 1, deadAsm.len - 1));
+            } else {
+                char* nb = sArena.allocBytes(deadAsm.len + 1);
+                nb[0] = '!';
+                std::memcpy(nb + 1, deadAsm.ptr,
+                            static_cast<std::size_t>(deadAsm.len));
+                negId = body.nameMap.lookup(StrSpan(nb, deadAsm.len + 1));
+            }
+            assert(negId != 0
+                && "staged dead branch lost its refutation interning");
+            NameId refutScope = 0;
+            for (NameId a = vid; a != 0; a = body.nameMap.parentOf(a)) {
+                const StatementFlags* row = body.intKnownStatements.find(
+                    StatementKey{ negId, a });
+                if (row && row->known) refutScope = a;
+                if (a == NameMap::MAIN_ID) break;
+            }
+            assert(refutScope != 0
+                && "staged dead branch lost its refutation record");
+            body.orRetiredDisjuncts.insertSorted(cohortId,
+                packInt32Pair(deadDjId, refutScope));
+        }
+    }
+    const int32_t deadN = deadCohortIds.size();
+    if (deadN == 0) { gArena.popTo(gMark); return; }
+
+    const auto isDeadCohort = [&](int32_t cid) -> bool {
+        for (int32_t i = 0; i < deadN; ++i)
+            if (deadCohortIds[i] == cid) return true;
+        return false;
+    };
+    const auto isDeadDj = [&](int32_t cid, int32_t dj) -> bool {
+        for (int32_t i = 0; i < deadN; ++i)
+            if (deadCohortIds[i] == cid && deadDjIds[i] == dj) return true;
+        return false;
+    };
+
+    // ---- 2. shrink each cohort's structural count ----
+    // Zero survivors retires the cohort wholesale (count row erased); the
+    // joint contradiction the fully-refuted disjunction implies is owned by
+    // the K rules + contradiction machinery, never by branch retirement.
+    for (int32_t i = 0; i < deadN; ++i) {
+        const int32_t cid = deadCohortIds[i];
+        bool firstOfCohort = true;
+        for (int32_t j = 0; j < i; ++j)
+            if (deadCohortIds[j] == cid) { firstOfCohort = false; break; }
+        if (!firstOfCohort) continue;
+        int32_t cohortDead = 0;
+        for (int32_t j = 0; j < deadN; ++j)
+            if (deadCohortIds[j] == cid) ++cohortDead;
+        const int32_t cntRow = body.orDisjunctCount.lookup(cid);
+        assert(cntRow != 0);
+        const int oldCount = body.orDisjunctCount.valueAt(cntRow);
+        const int newCount = oldCount - cohortDead;
+        assert(newCount >= 0
+            && "dead-branch retirement decremented an _ordis_ cohort below zero");
+        if (newCount == 0) {
+            // Every disjunct refuted: the disjunction's scope holds a joint
+            // contradiction. The cohort retires wholesale — the count row
+            // leaves the container here, and every bookkeeping run of the
+            // cohort empties in the surgery below (all entries are dead).
+            // The contradiction itself surfaces through the pre-existing
+            // machinery: the parent-scope K mutual-exclusion rules hold all
+            // the refutations, fire the last disjunct as a fact, and the
+            // resulting statement/negation pair drives the primed discharge
+            // (a reductio LB) or the vacuous-premise flag + global-theorem
+            // reversion (a normal LB at main).
+            body.orDisjunctCount.erase(cid);
+        } else {
+            body.orDisjunctCount.setValueAt(cntRow, newCount);
+        }
+    }
+
+    // ---- 3. orBookkeeping surgery: drop dead disjunct entries ----
+    // Snapshot every row of a dead cohort (key + surviving run), erase them
+    // all, reinsert the rows that keep at least one survivor. Required for
+    // soundness: a stale dead entry inflates the run length against the
+    // reduced count, so a later test could fire a convergence no surviving
+    // branch ever derived.
+    PagedVector<LbStatePairKey> rowKeys(&gArena, &ledgerDirty);
+    PagedVector<int32_t> rowStarts(&gArena, &ledgerDirty);
+    PagedVector<int32_t> rowSurvivors(&gArena, &ledgerDirty);
+    const int32_t obN = body.orBookkeeping.count();
+    for (int32_t id = 1; id <= obN; ++id) {
+        const LbStatePairKey key = Codec<LbStatePairKey>::decode(
+            body.orBookkeeping.keyAt(id));
+        const int32_t cid = static_cast<int32_t>(key.low);
+        if (!isDeadCohort(cid)) continue;
+        rowKeys.push_back(key);
+        rowStarts.push_back(rowSurvivors.size());
+        const int32_t rl = body.orBookkeeping.runLen(id);
+        for (int32_t j = 0; j < rl; ++j) {
+            const int32_t dj = body.orBookkeeping.valueAt(id, j);
+            if (!isDeadDj(cid, dj)) rowSurvivors.push_back(dj);
+        }
+    }
+    rowStarts.push_back(rowSurvivors.size());
+    body.orBookkeeping.eraseSetIf([&](const LbStatePairKey& k) {
+        return isDeadCohort(static_cast<int32_t>(k.low));
+    });
+    for (int32_t r = 0; r < rowKeys.size(); ++r) {
+        for (int32_t j = rowStarts[r]; j < rowStarts[r + 1]; ++j) {
+            body.orBookkeeping.insertSorted(rowKeys[r], rowSurvivors[j],
+                DecodedIdLess{ &body.lbStateInterner });
+        }
+    }
+
+    // ---- 4. convergence re-check at the reduced count ----
+    // A surviving row whose run already reaches the new count re-fires
+    // through ordisMerge — the canonical promotion path. The deposit spans
+    // (expression + rebuilt branch validity) alias lbStateInterner cold bytes
+    // and the string-scratch arena respectively, both stable across the
+    // re-fire's mints. A missing levels row is the already-converged defined
+    // skip (the expression was promoted and collapsed from its branches by an
+    // earlier full-cohort convergence).
+    const StrSpan BOUNDARY_ORDIS("_boundary_ordis_", 16);
+    for (int32_t r = 0; r < rowKeys.size(); ++r) {
+        const int32_t survN = rowStarts[r + 1] - rowStarts[r];
+        if (survN == 0) continue;
+        const int32_t cid = static_cast<int32_t>(rowKeys[r].low);
+        const int* cnt = body.orDisjunctCount.find(cid);
+        assert(cnt != nullptr);
+        if (survN < *cnt) continue;
+        const StrSpan exprV = body.lbStateInterner.decodeView(
+            static_cast<int32_t>(rowKeys[r].high));
+        const LbStatePairKey cohort =
+            decodeOrCohortIds(body.lbStateInterner, cid);
+        const StrSpan parentV = body.lbStateInterner.decodeView(cohort.high);
+        const StrSpan sigV = body.lbStateInterner.decodeView(cohort.low);
+        const StrSpan djV = body.lbStateInterner.decodeView(
+            rowSurvivors[rowStarts[r]]);
+        const int32_t bvLen =
+            parentV.len + BOUNDARY_ORDIS.len + sigV.len + 1 + djV.len;
+        char* bvBuf = sArena.allocBytes(bvLen);
+        {
+            int32_t at = 0;
+            std::memcpy(bvBuf + at, parentV.ptr,
+                static_cast<std::size_t>(parentV.len));
+            at += parentV.len;
+            std::memcpy(bvBuf + at, BOUNDARY_ORDIS.ptr,
+                static_cast<std::size_t>(BOUNDARY_ORDIS.len));
+            at += BOUNDARY_ORDIS.len;
+            std::memcpy(bvBuf + at, sigV.ptr,
+                static_cast<std::size_t>(sigV.len));
+            at += sigV.len;
+            bvBuf[at++] = '_';
+            std::memcpy(bvBuf + at, djV.ptr,
+                static_cast<std::size_t>(djV.len));
+            at += djV.len;
+            assert(at == bvLen);
+        }
+        const StrSpan branchV(bvBuf, bvLen);
+        const int32_t lvlsId = lookupStatementLevels(
+            body.intStatementLevelsMap, body.nameMap, exprV, branchV);
+        if (lvlsId == 0) continue;
+        int lvRun[256];
+        const int32_t lvN = coldIntRunAt(
+            body.intStatementLevelsMap, lvlsId, lvRun, 256);
+        ordisMerge(exprV, branchV, lvRun, lvN, body);
+    }
+    gArena.popTo(gMark);
 }
 
 
@@ -3790,7 +4536,7 @@ bool ExpressionAnalyzer::allowedForMail(StrSpan expression, const Memory& body) 
     // Non-minting probe: a never-interned expression cannot carry a
     // memo entry (inserts encode at single-threaded sites).
     {
-        const int16_t exprId = body.nameMap.lookup(expression);
+        const NameId exprId = body.nameMap.lookup(expression);
         if (exprId != 0 && body.canBeSentIds.contains(exprId)) {
             return true;
         }
@@ -3817,7 +4563,7 @@ bool ExpressionAnalyzer::allowedForMail(StrSpan expression, const Memory& body) 
     const StrReplacement pair[1] = { { theVar, StrSpan("marker", 6) } };
     const ScratchString markerExpr = replaceKeysScratch(strArena, expression, pair, 1);
 
-    const int16_t markerId = body.nameMap.lookup(StrSpan(markerExpr));
+    const NameId markerId = body.nameMap.lookup(StrSpan(markerExpr));
     if (markerId != 0 && body.canBeSentMarkerIds.contains(markerId)) {
         const LogicalEntity* e = compiledEntity(extractExpressionSpan(expression));
         assert(e && "allowedForMail: core expression must be compiled");
@@ -4192,7 +4938,7 @@ void ExpressionAnalyzer::addEquality(StrSpan expr,
     if (!(eqRow && eqRow->registered))
     {
         // 1. Register the original equality
-        const int32_t pkEq = packStatementKey(
+        const int64_t pkEq = packStatementKey(
             memoryBlock.nameMap.encode(expr),
             memoryBlock.nameMap.encode(validityName));
         memoryBlock.intStatementLevelsMap.assignSetRange(
@@ -4257,7 +5003,7 @@ void ExpressionAnalyzer::addEquality(StrSpan expr,
         assert(!(mirrorRow && mirrorRow->registered));
         (void)mirrorRow;
 
-        const int32_t pkEqM = packStatementKey(
+        const int64_t pkEqM = packStatementKey(
             memoryBlock.nameMap.encode(mirrored),
             memoryBlock.nameMap.encode(validitySpan));
         memoryBlock.intStatementLevelsMap.assignSetRange(
@@ -4339,7 +5085,7 @@ void ExpressionAnalyzer::addNegatedEquality(StrSpan expr,
     if (!(negRow && negRow->registered))
     {
         // 1. Register the original negated equality
-        const int32_t pkNeg = packStatementKey(
+        const int64_t pkNeg = packStatementKey(
             memoryBlock.nameMap.encode(expr),
             memoryBlock.nameMap.encode(validityName));
         memoryBlock.intStatementLevelsMap.assignSetRange(
@@ -4404,7 +5150,7 @@ void ExpressionAnalyzer::addNegatedEquality(StrSpan expr,
         assert(!(negMirrorRow && negMirrorRow->registered));
         (void)negMirrorRow;
 
-        const int32_t pkNegM = packStatementKey(
+        const int64_t pkNegM = packStatementKey(
             memoryBlock.nameMap.encode(mirrored),
             memoryBlock.nameMap.encode(validitySpan));
         memoryBlock.intStatementLevelsMap.assignSetRange(
@@ -4597,7 +5343,7 @@ void ExpressionAnalyzer::checkNecessityForEquality(StrSpan inputExprStr, Memory&
                 argsSet[lo] = removedArgs[a]; ++argsSetN;
             }
 
-            prepareIntegration(StrSpan(removed), argsSet, argsSetN, mb, StrSpan(validityName));
+            prepareIntegration(StrSpan(removed), argsSet, argsSetN, mb, StrSpan(validityName), inputExprStr);
 
             // NEW: Explicitly check inputArgs[constantIndex] occurs 2 times
             // and did NOT occur 2 times before replacement
@@ -4637,13 +5383,13 @@ void ExpressionAnalyzer::checkNecessityForEquality(StrSpan inputExprStr, Memory&
             // We check the equivalence classes for the current validity scope.
             bool hasExistingEquality = false;
             {
-                const int16_t targetVarId = mb.nameMap.lookup(targetVar);
+                const NameId targetVarId = mb.nameMap.lookup(targetVar);
                 // Zero-copy view walk over the scope's class run — the former
                 // decodeClassesAt heap snapshot. Pure read (lookup non-minting,
                 // classHasMember / memberCount), the whole scan consumed before
                 // any mint, so the peeked views stay valid. Bucket resolution
                 // mirrors decodeClassesAt: name -> id -> bucket, {} at either miss.
-                const int16_t gateValId = mb.nameMap.lookup(validityName);
+                const NameId gateValId = mb.nameMap.lookup(validityName);
                 const int32_t bucketId = (gateValId == 0)
                     ? 0 : mb.equivalenceClassesMap.lookup(gateValId);
                 if (bucketId != 0) {
@@ -4759,7 +5505,7 @@ bool ExpressionAnalyzer::checkForEquivalence(StrSpan expr,
     const int32_t argN = getArgsSpans(StrSpan(expr), args, ExecutionParameters::MAX_ARITY);
 
     // Access the equivalence class list for this validity scope
-    const int16_t eqClassesValId = memoryBlock.nameMap.lookup(validityName);
+    const NameId eqClassesValId = memoryBlock.nameMap.lookup(validityName);
     assert(eqClassesValId != 0
         && memoryBlock.equivalenceClassesMap.lookup(eqClassesValId) != 0
         && "disintegrateEquivalenceClass: expected a bucket at this validity");
@@ -4774,7 +5520,7 @@ bool ExpressionAnalyzer::checkForEquivalence(StrSpan expr,
         : genScratchArenas().slotCount() - 1;
     ScratchArena& eqArena = genScratchArenas().forSlot(eqSlot);
     DirtyState snapDirty = DirtyState::Clean;
-    PagedVector<int16_t> memberPool(&eqArena, &snapDirty);
+    PagedVector<NameId> memberPool(&eqArena, &snapDirty);
     PagedVector<int32_t> classStarts(&eqArena, &snapDirty);
     {
         const int32_t bucketId =
@@ -4804,7 +5550,7 @@ bool ExpressionAnalyzer::checkForEquivalence(StrSpan expr,
     for (int32_t ai = 0; ai < argN; ++ai) {
         const StrSpan arg = args[ai];
         // Non-minting probe: a never-interned arg is in no class.
-        const int16_t argId = memoryBlock.nameMap.lookup(arg);
+        const NameId argId = memoryBlock.nameMap.lookup(arg);
         const int32_t classCount = classStarts.size();
         bool foundClass = false;
         for (int32_t ci = 0; ci < classCount && !foundClass; ++ci) {
@@ -4893,7 +5639,7 @@ void ExpressionAnalyzer::updateWeakVariables(Memory& mb, StrSpan validityName, S
     if (eqVarN == 0) return;
     // Non-minting id probes: a variable never interned cannot be a class
     // member (members are interned by rebuildIntMirror).
-    int16_t eqVarIds[ExecutionParameters::MAX_ARITY];
+    NameId eqVarIds[ExecutionParameters::MAX_ARITY];
     for (int32_t i = 0; i < eqVarN; ++i)
         eqVarIds[i] = mb.nameMap.lookup(eqVarSpans[i]);
 
@@ -4908,7 +5654,7 @@ void ExpressionAnalyzer::updateWeakVariables(Memory& mb, StrSpan validityName, S
     // (the cleanUpExpressions / updateEquivalenceClasses /
     // applyEquivalenceClassToNegatedEquality siblings already retired their
     // std::vector<char> buffers via this overload).
-    const int16_t weakValId = mb.nameMap.lookup(validityName);
+    const NameId weakValId = mb.nameMap.lookup(validityName);
     const int32_t bucketId = mb.equivalenceClassesMap.lookup(weakValId);
     assert(weakValId != 0 && bucketId != 0
         && "updateWeakVariables: expected a bucket at this validity");
@@ -4941,14 +5687,14 @@ void ExpressionAnalyzer::updateWeakVariables(Memory& mb, StrSpan validityName, S
 
         // 3. Canonical variable: first int_lev_* member in decoded-lex order,
         // fallback first it_*_lev_* (firstSpecialMemberId, templated on the view).
-        const int16_t canonicalId = firstSpecialMemberId(ec, mb);
+        const NameId canonicalId = firstSpecialMemberId(ec, mb);
         if (canonicalId == 0) return;  // no special-tier members -> nothing weak
 
         // 4. Weak = special tier (int_/it_) AND not canonical. Dual-write via the
         // packed twin (D-134). Write site, minting allowed.
-        const int16_t weakValidityId = mb.nameMap.encode(validityName);
+        const NameId weakValidityId = mb.nameMap.encode(validityName);
         for (int32_t k = 0; k < ec.memberCount(); ++k) {
-            const int16_t id = ec.memberId(k);
+            const NameId id = ec.memberId(k);
             if (id == canonicalId) continue;
             const NameKind kind = mb.eqClassNameCaches.kindOf(id, mb.nameMap);
             if (kind == NameKind::Normal) continue;
@@ -5039,7 +5785,6 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
     bool doNotDisintegrate,
     bool allowOrDisintegration) {
 
-
     // D-32: OR-disintegration may fire only when general disintegration
     // is allowed. If doNotDisintegrate is true the disintegrateExpr2
     // call below is skipped anyway, so this assignment is defensive —
@@ -5050,8 +5795,8 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
 
     // --- Static (int-based) early checks ---
     // Fast path: duplicate + validity filter with just nm.encode (no regex, no vector alloc)
-    int16_t origId = memoryBlock.nameMap.encode(expr);
-    int16_t valId = memoryBlock.nameMap.encode(validityName);
+    NameId origId = memoryBlock.nameMap.encode(expr);
+    NameId valId = memoryBlock.nameMap.encode(validityName);
 
     // Site F — dup suppression via ancestor scan. A known statement at any
     // ancestor scope (including self) means the same fact already holds at a
@@ -5064,7 +5809,7 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
     if (!parameters.compressor_mode) {
         for (int32_t ancK = 0, ancN = memoryBlock.nameMap.ancLen(valId);
              ancK < ancN; ++ancK) {
-            const int16_t anc = memoryBlock.nameMap.ancAt(valId, ancK);
+            const NameId anc = memoryBlock.nameMap.ancAt(valId, ancK);
             const StatementFlags* kf = memoryBlock.intKnownStatements.find(StatementKey{ origId, anc });
             if (kf != nullptr && kf->known) return;
         }
@@ -5075,7 +5820,7 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
     // the filter because they carry strictly more assumptions).
     for (int32_t ancK = 0, ancN = memoryBlock.nameMap.ancLen(valId);
          ancK < ancN; ++ancK) {
-        const int16_t anc = memoryBlock.nameMap.ancAt(valId, ancK);
+        const NameId anc = memoryBlock.nameMap.ancAt(valId, ancK);
         if (memoryBlock.intValidityNamesToFilter.contains(anc)) return;
     }
 
@@ -5085,8 +5830,25 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
     IntEncodedExpr ie =
         encodeExpression(expr, validityName, memoryBlock.nameMap);
 
-    for (int16_t a = 0; a < ie.arity; ++a) {
-        if (memoryBlock.intAxedVariables.contains(ie.argFullId[a])) return;
+    // Axed-variable containment: a deposit carrying an x-copy name in any
+    // argument slot is dropped — the copies exist to serve as anchor-premise
+    // completions, never to breed derived x-facts. Flag-gated exception
+    // (D-234, parameters.axed_anchor_exception,
+    // default off): a POSITIVE anchor-category statement passes — an
+    // anchor-bridge rule firing on the x-copied batch anchor derives an
+    // external anchor's x-form (e.g. (AnchorPeano[1,x2,3,4,5,x6]) from
+    // (AnchorIncubator3[1,x2,3,4,5,x6,x7,8,9])), and that form must be a
+    // live statement so external-anchor-premise rules can bind element
+    // arguments at anchor slot values. Off by default because a live
+    // x-anchor opens the whole external anchor's rule universe at
+    // x-arguments and explodes the batch runtime. Negated anchor forms stay
+    // filtered even when enabled: a derived negated x-anchor at main would
+    // pair against the positive form as a spurious premise-inconsistency
+    // (D-236).
+    if (!(parameters.axed_anchor_exception && ie.isAnchor && !ie.negation)) {
+        for (NameId a = 0; a < ie.arity; ++a) {
+            if (memoryBlock.intAxedVariables.contains(ie.argFullId[a])) return;
+        }
     }
 
 
@@ -5113,7 +5875,7 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
     // updateAdmissionMap3 all take StrSpan, and the DisintProducts channels are
     // consumed directly -- no expr / validity std::string is materialized here.
 
-    const int16_t classValidityId = memoryBlock.nameMap.encode(validityName); // write site
+    const NameId classValidityId = memoryBlock.nameMap.encode(validityName); // write site
     if (memoryBlock.equivalenceClassesMap.lookup(classValidityId) == 0)
     {
         // Open an empty bucket for this validity (the cold-map form of the
@@ -5165,7 +5927,7 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
 
         // Packed goal key — origId/valId were encoded at function entry, so
         // the goal write mints nothing new.
-        const int32_t pkTBP = packStatementKey(origId, valId);
+        const int64_t pkTBP = packStatementKey(origId, valId);
 
         const int32_t tbpExistingId = memoryBlock.intToBeProved.lookup(pkTBP);
         if (tbpExistingId != 0) {
@@ -5203,7 +5965,7 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
             for (int32_t z = unchN; z > lo; --z) unchRun[z] = unchRun[z - 1];
             unchRun[lo] = v; ++unchN;
         }
-        prepareIntegration(expr, unchRun, unchN, memoryBlock, validityName);
+        prepareIntegration(expr, unchRun, unchN, memoryBlock, validityName, expr);
         // `allowedForMail` probes the memo only for `int_lev_*`-carrying
         // expressions (its lexical scanSingleDistinctIntLev gate short-circuits
         // everything else), so any other entry could never be read.
@@ -5231,18 +5993,24 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
         // Statuses 0/1/3 reach here (status 2 returned above, status 4
         // returned earlier). Status 0/1 (local derivations) always
         // disintegrate. status 3 (external-mail / non-local absorb) is
-        // admitted to disintegrateExpr2 ONLY if the expression is a
-        // compact implication "(implication<N>...)" — user-directed
-        // receiver fix (ASIC 0.1 reshuffle). A plain mail statement/fact
-        // must NOT be disintegrated under status=3: disintegrating it
-        // mints fresh it_/int_ names, which (a) overflows the static
+        // admitted to disintegrateExpr2 ONLY for the two RULE-CARRIER
+        // shapes: a compact implication "(implication<N>...)" and a
+        // negated compact existence "!(existence<N>...)" (a universal in
+        // De-Morgan clothing — disintegrating it installs its universal
+        // rule and mints NO witnesses; witness minting belongs to the
+        // positive existence opening). A plain mail statement/fact must
+        // NOT be disintegrated under status=3: disintegrating it mints
+        // fresh it_/int_ names, which (a) overflows the static
         // MAX_NAME_IDS cap (prover.hpp assert) and (b) drives the
-        // non-convergence runaway. Only the compact (implication<N>[...])
-        // form needs disintegration — to recover the broadcast rule. The
-        // guard is OUTSIDE disintegrateExpr2 (at this call site), not at
-        // the in-disintegrate variable-admission point. There is no
-        // in-disintegrate status=3 existence ban: once admitted, a
-        // compact implication disintegrates normally.
+        // non-convergence runaway. Without the negated-existence
+        // admission, a descendant LB receives a universal premise (e.g.
+        // an induction step sub-LB inheriting "7 has no predecessor")
+        // as a bare statement whose rule can then never meet the
+        // descendant-local facts it must refute — the ancestor's rule
+        // copy cannot see child-local typings, mail flows only
+        // parent->children (I-57). The guard is OUTSIDE
+        // disintegrateExpr2 (at this call site), not at the
+        // in-disintegrate variable-admission point.
         {
             // disintegrateExpr2's bool output, consumed after the stmts loop to
             // flag expr's intKnownStatements entry for cFE.
@@ -5254,12 +6022,19 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
                 expr.len > 12 && startsWithSpan(expr, "(implication", 12)
                 && expr.ptr[12] >= '0' && expr.ptr[12] <= '9';
 
+            // Negated compact existence = literal "!(existence" followed by
+            // a digit — the second rule-carrier shape admitted at status 3.
+            const bool isNegatedExistence =
+                expr.len > 11 && startsWithSpan(expr, "!(existence", 11)
+                && expr.ptr[11] >= '0' && expr.ptr[11] <= '9';
+
             // Suppress disintegration when an equivalence-class variant of
             // this expression is already a registered statement.
             const bool cfeEq = (!doNotDisintegrate)
                 ? checkForEquivalence(expr, validityName, memoryBlock) : false;
             const bool willDisintegrate =
-                !doNotDisintegrate && !cfeEq && (status != 3 || isCompactImplication);
+                !doNotDisintegrate && !cfeEq
+                && (status != 3 || isCompactImplication || isNegatedExistence);
             // Hoist the two return channels ABOVE the if/else so both branches
             // fill ONE `out` (per-slot arena, freed per task); consumed directly
             // below via forEachSorted (no std::set<EWV> edge-materialization).
@@ -5269,12 +6044,14 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
             DisintProducts out(&genScratchArenas().forSlot(deSlot));
             if (willDisintegrate)
             {
-                // Rule-19 invariant: a NON-compact-implication must only reach
+                // Rule-19 invariant: a non-rule-carrier must only reach
                 // disintegrateExpr2 under a local status (0/1). status=3 is
-                // admissible here ONLY as a compact implication (the guard
-                // enforces it); a non-implication reaching here with status=3
-                // fires this assert and pins the forbidden path.
-                assert(isCompactImplication || status == 0 || status == 1);
+                // admissible here ONLY for the two rule-carrier shapes —
+                // compact implication or negated compact existence (the
+                // guard enforces it); anything else reaching here with
+                // status=3 fires this assert and pins the forbidden path.
+                assert(isCompactImplication || isNegatedExistence
+                    || status == 0 || status == 1);
                 fullDisintegrationHappened = this->disintegrateExpr2(expr,
                         memoryBlock,
                         iteration,
@@ -5358,14 +6135,14 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
                 this->addToHashMemory(chainRun, chainRunN, headSpan, remKeyRun, remKeyRunN,
                     memoryBlock, memoryBlock.overallHashMemory,
                     involvedLevels, involvedLevelCount, impStr,
-                    parameters.standardMaxAdmissionDepth, parameters.standardMaxSecondaryNumber, false,
+                    parameters.maxIterationNumberVariable, parameters.standardMaxSecondaryNumber, false,
                     parameters.minNumOperatorsKey, StrSpan("implication", 11), true, impStr, impValidity);
                 if (status == 3)
                 {
                     this->addToHashMemory(chainRun, chainRunN, headSpan, remKeyRun, remKeyRunN,
                         memoryBlock, memoryBlock.workingMemory,
                         involvedLevels, involvedLevelCount, impStr,
-                        parameters.standardMaxAdmissionDepth, parameters.standardMaxSecondaryNumber, false,
+                        parameters.maxIterationNumberVariable, parameters.standardMaxSecondaryNumber, false,
                         parameters.minNumOperatorsKey, StrSpan("implication", 11), true, impStr, impValidity);
                 }
                 else
@@ -5373,12 +6150,12 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
                     this->addToHashMemory(chainRun, chainRunN, headSpan, remKeyRun, remKeyRunN,
                         memoryBlock, memoryBlock.localHashMemory,
                         involvedLevels, involvedLevelCount, impStr,
-                        parameters.standardMaxAdmissionDepth, parameters.standardMaxSecondaryNumber, false,
+                        parameters.maxIterationNumberVariable, parameters.standardMaxSecondaryNumber, false,
                         parameters.minNumOperatorsKey, StrSpan("implication", 11), true, impStr, impValidity);
                     this->addToHashMemory(chainRun, chainRunN, headSpan, remKeyRun, remKeyRunN,
                         memoryBlock, memoryBlock.localHashMemoryDelta,
                         involvedLevels, involvedLevelCount, impStr,
-                        parameters.standardMaxAdmissionDepth, parameters.standardMaxSecondaryNumber, false,
+                        parameters.maxIterationNumberVariable, parameters.standardMaxSecondaryNumber, false,
                         parameters.minNumOperatorsKey, StrSpan("implication", 11), true, impStr, impValidity);
                 }
 
@@ -5442,18 +6219,16 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
                 ScratchArena& tbpArena = genScratchArenas().forSlot(tbpSlot);
                 ScratchScope tbpScope(tbpArena);
                 int32_t tbpN = 0;
-                int32_t* tbpKeys = sortToBeProvedKeys(memoryBlock.intToBeProved,
+                int64_t* tbpKeys = sortToBeProvedKeys(memoryBlock.intToBeProved,
                     memoryBlock.nameMap, tbpArena, tbpN);
                 const unsigned goalStrSlot = (g_currentCoreId >= 0)
                     ? static_cast<unsigned>(g_currentCoreId)
                     : scratchArenas().slotCount() - 1;
                 ScratchArena& goalStrArena = scratchArenas().forSlot(goalStrSlot);
                 for (int32_t i = 0; i < tbpN; ++i) {
-                    const int32_t k = tbpKeys[i];
-                    const int16_t oid = static_cast<int16_t>(
-                        (static_cast<uint32_t>(k) >> 16) & 0xFFFF);
-                    const int16_t vid = static_cast<int16_t>(
-                        static_cast<uint32_t>(k) & 0xFFFF);
+                    const int64_t k = tbpKeys[i];
+                    const NameId oid = Codec<StatementKey>::decode(k).orig;
+                    const NameId vid = Codec<StatementKey>::decode(k).validity;
                     // copyFrom per row onto the string tier: checkNecessityFor-
                     // Equality mints NameMap, so a raw decodeView would dangle
                     // (I-3, 09c pitfall 5).
@@ -5602,7 +6377,7 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
             // if it was not self-returned, insert the entry.
             if (fullDisintegrationHappened) {
                 const bool isLocalExpr = (status == 0 || status == 1);
-                const int32_t intKeyFull = packStatementKey(
+                const int64_t intKeyFull = packStatementKey(
                     memoryBlock.nameMap.encode(expr),
                     memoryBlock.nameMap.encode(validityName));
                 upsertStatementKey(memoryBlock.intKnownStatements, intKeyFull,
@@ -5615,7 +6390,7 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
 }
 
 std::vector<std::string> ExpressionAnalyzer::extractSubstringsForAuxy(const std::string& expr2) {
-    // Lexical twin of the unanchored iterator over \(([^>(\[]+\[[^\]]*\])\):
+    // Lexical twin of the unanchored iterator over !?\(([^>(\[]+\[[^\]]*\])\):
     // at each '(' the [^>(\[]+ run is maximal and excludes '>','(','[', so its
     // terminator is the first such byte and the pattern then REQUIRES '[' — if
     // the terminator is '>' or '(' the attempt fails with no shorter-run retry
@@ -5623,12 +6398,17 @@ std::vector<std::string> ExpressionAnalyzer::extractSubstringsForAuxy(const std:
     // first ']'. One deterministic scan per attempt decides exactly what the
     // engine decides. Leftmost / resume-after-match / failed-start-advances-one;
     // a later match may START inside a failed attempt's window ("((a[b]))"
-    // matches at offset 1), which the ++pos rule preserves. The whole match
-    // (WITH the surrounding parens, == it->str(0)) is pushed as a std::string —
-    // the createAuxyImplication tuple-return boundary heap. THE RULE: in the
-    // burst kernel the only permitted heap is the Rule-14 hashburst_trace.txt
-    // dump; this tuple-return boundary heap is an OPEN violation to statify,
-    // not a sanctioned island.
+    // matches at offset 1), which the ++pos rule preserves. A '!' immediately
+    // preceding the matched '(' belongs to the subexpression — a NEGATED leaf
+    // premise (e.g. the OR-companion theorem's !(existence3[...]) universal)
+    // must keep its negation, or the induction-hypothesis rule built from the
+    // chain silently inverts that premise into an unsound positive form. The
+    // whole match (WITH the leading '!' when present and the surrounding
+    // parens) is pushed as a std::string — the createAuxyImplication
+    // tuple-return boundary heap. THE RULE: in the burst kernel the only
+    // permitted heap is the Rule-14 hashburst_trace.txt dump; this
+    // tuple-return boundary heap is an OPEN violation to statify, not a
+    // sanctioned island.
     const StrSpan s(expr2);
     const int32_t n = s.len;
     std::vector<std::string> out;
@@ -5643,8 +6423,9 @@ std::vector<std::string> ExpressionAnalyzer::extractSubstringsForAuxy(const std:
         while (j < n && s.ptr[j] != ']') ++j;
         if (j >= n) { ++pos; continue; }              // no ']'
         if (j + 1 >= n || s.ptr[j + 1] != ')') { ++pos; continue; }
-        out.push_back(std::string(s.ptr + pos,
-            static_cast<std::size_t>(j + 1 - pos + 1)));   // s[pos .. j+1] inclusive
+        const int32_t start = (pos > 0 && s.ptr[pos - 1] == '!') ? pos - 1 : pos;
+        out.push_back(std::string(s.ptr + start,
+            static_cast<std::size_t>(j + 1 - start + 1)));  // s[start .. j+1] inclusive
         pos = j + 2;
     }
     return out;
@@ -5784,6 +6565,96 @@ ExpressionAnalyzer::createAuxyImplication(const std::string& expr,
     const std::string implication = reconstructImplication(chain, head);
 
     return std::make_tuple(implication, chain, head, remainingArgsKey, zeroArgName, sName);
+}
+
+/// @brief Detect the antisymmetry conjecture shape and name the
+///        variable to duplicate — the fourth variable-copy trigger.
+///
+/// @details
+/// An antisymmetry-shaped conjecture carries two positive premises of
+/// the same operator whose argument lists are equal except exactly two
+/// positions holding the same two arguments swapped
+/// (`P[..,x,..,y,..]` / `P[..,y,..,x,..]`), with an equality head over
+/// exactly that argument pair. Proving such a head forces downstream
+/// rule instances to bind two template-distinct slots to one name — the
+/// collision pattern the exact normalized-key request match cannot
+/// assemble. The cure is a dead-end variable-copy axiom `(=[x,x_copy])`
+/// at the innermost premise LB: the equivalence class then generates
+/// all-distinct statement variants and the standard machinery (demand
+/// markers, witness revival, rule firings) closes the proof.
+///
+/// This function is the pure detection half: it scans every ordered
+/// pair of chain elements for the shape and, on the first match,
+/// reports the swapped argument that appears first left-to-right in the
+/// earlier premise — the variable the caller duplicates. Both verdicts
+/// are defined results of the detection contract (most conjectures
+/// simply do not have the shape).
+///
+/// Guards: both premises positive (no `!` prefix); identical operator
+/// name and arity; exactly two mismatching argument positions, mutually
+/// swapped, holding plain atoms (no parentheses — the shallow
+/// `ce::getArgs` parse is exact only for flat argument lists); the head
+/// a positive `(=[u,v])` over distinct arguments whose set equals the
+/// swapped pair. The swap condition itself excludes equal atoms at the
+/// mismatch positions (equal atoms cannot mismatch).
+///
+/// @param chain      The disintegrated premise chain of the conjecture
+///                   (raw element strings, e.g. `"(preorder[1,4,7,8])"`).
+/// @param head       The conjecture head (e.g. `"(=[7,8])"`).
+/// @param copyVarOut On detection, the variable to duplicate (the
+///                   swapped argument at the earlier mismatch position
+///                   of the earlier element); untouched otherwise.
+/// @return True iff the antisymmetry shape was detected.
+/// @see ExpressionAnalyzer::addTheoremToMemory — the deposit site;
+///      ExpressionAnalyzer::checkNecessityForEquality and
+///      ExpressionAnalyzer::reactToHypo — sibling variable-copy
+///      emission sites sharing the `variableCopy` origin contract.
+bool detectAntisymmetryCopyVar(const std::vector<std::string>& chain,
+                               const std::string& head,
+                               std::string& copyVarOut) {
+    if (head.empty() || head[0] == '!') return false;
+    if (ce::extractExpression(head) != "=") return false;
+    const std::vector<std::string> headArgs = ce::getArgs(head);
+    if (headArgs.size() != 2 || headArgs[0] == headArgs[1]) return false;
+
+    for (std::size_t i = 0; i < chain.size(); ++i) {
+        const std::string& p1 = chain[i];
+        if (p1.empty() || p1[0] == '!') continue;
+        for (std::size_t j = i + 1; j < chain.size(); ++j) {
+            const std::string& p2 = chain[j];
+            if (p2.empty() || p2[0] == '!') continue;
+            if (ce::extractExpression(p1) != ce::extractExpression(p2)) continue;
+            const std::vector<std::string> a1 = ce::getArgs(p1);
+            const std::vector<std::string> a2 = ce::getArgs(p2);
+            if (a1.size() != a2.size() || a1.empty()) continue;
+
+            int p = -1, q = -1;
+            bool tooMany = false;
+            for (std::size_t k = 0; k < a1.size(); ++k) {
+                if (a1[k] == a2[k]) continue;
+                if (p < 0) p = static_cast<int>(k);
+                else if (q < 0) q = static_cast<int>(k);
+                else { tooMany = true; break; }
+            }
+            if (tooMany || q < 0) continue;
+
+            const std::string& x = a1[static_cast<std::size_t>(p)];
+            const std::string& y = a1[static_cast<std::size_t>(q)];
+            if (a2[static_cast<std::size_t>(p)] != y
+             || a2[static_cast<std::size_t>(q)] != x) continue;
+            if (x.find('(') != std::string::npos
+             || y.find('(') != std::string::npos) continue;
+
+            const bool headMatches =
+                (headArgs[0] == x && headArgs[1] == y) ||
+                (headArgs[0] == y && headArgs[1] == x);
+            if (!headMatches) continue;
+
+            copyVarOut = x;
+            return true;
+        }
+    }
+    return false;
 }
 
 // Turn optimizations OFF for just this section
@@ -6060,13 +6931,49 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
                 if (headRow && headRow->registered) {
                     // Head already derived (e.g. from anchor disintegration) — register directly
                     std::string fullTheorem = reconstructImplication(chain, head);
-                    {
-                        std::lock_guard<std::mutex> lock(this->theoremListMutex);
-                        this->globalTheoremList.emplace_back(fullTheorem, "direct", "-1", "-1");
-                    }
+                    this->appendGlobalTheorem(fullTheorem, "direct", "-1",
+                        "-1", memoryBlock);
                     std::cout << fullTheorem << std::endl;
                 } else {
                     this->addExprToMemoryBlock(head, *memoryBlock, iteration, 2, nullptr, 0, TransientOrigin{}, -1, -1, StrSpan("main", 4), false);
+                }
+            }
+
+            // Antisymmetry-shaped conjecture: deposit the dead-end
+            // variable-copy axiom (=[X,X_copy]) at this innermost LB so
+            // the equivalence class can generate the all-distinct
+            // statement variants the exact request match needs
+            // (D-235). Family sibling rows
+            // sharing this LB re-run the deposit; the door dedups.
+            {
+                std::string copyVar;
+                if (detectAntisymmetryCopyVar(chain, head, copyVar)) {
+                    const std::string copyEquality =
+                        "(=[" + copyVar + "," + copyVar + "_copy])";
+                    const TransientOrigin copyOrigin{
+                        true, OriginTag::variableCopy, nullptr, 0 };
+                    const int lvRunCopy[1] = { memoryBlock->level };
+                    this->addExprToMemoryBlock(StrSpan(copyEquality),
+                        *memoryBlock, iteration, 0, lvRunCopy, 1,
+                        copyOrigin, -1, -1, StrSpan("main", 4), false);
+
+                    // LB-creation paired mailOut write — the same timing
+                    // exception as the premise deposit above: buildGrid's
+                    // startup commit needs mailOut populated so
+                    // descendants (the contradiction LBs created below)
+                    // receive the axiom and its history line on their
+                    // first phase-1 pull.
+                    if (parameters.trackHistory) {
+                        const int maxOriginsLocal = parameters.compressor_mode
+                            ? parameters.compressor_max_origins_per_expr
+                            : parameters.max_origin_per_expr;
+                        ExpressionWithValidity ev(copyEquality, "main");
+                        memoryBlock->insertMailOutStatement(StrSpan(ev.original),
+                            StrSpan(ev.validityName), lvRunCopy, 1);
+                        memoryBlock->addMailOutOrigin(StrSpan(ev.original),
+                            StrSpan(ev.validityName), copyOrigin.tag,
+                            copyOrigin.deps, copyOrigin.depN, maxOriginsLocal);
+                    }
                 }
             }
 
@@ -6197,6 +7104,51 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
                 }
             }
 
+            // --- Incubator: complementary contradiction LB (reductio) ---
+            // Assumes the NEGATION of the head; a contradiction then proves
+            // the conjecture itself. Dual of the try_contradiction LB above,
+            // which assumes the head verbatim and can only ever disprove it.
+            if (parameters.try_contradiction_negated_head && !proved) {
+                const std::string negHead = negate(head);
+                const std::string contradictionKey = "__contradiction__" + negHead;
+                if (simpleMapStore.findChild(memoryBlock, contradictionKey) == nullptr) {
+                    Memory* contradictionLB = lbStore.create<Memory>();
+                    simpleMapStore.linkChild(memoryBlock, contradictionKey, contradictionLB);
+
+                    contradictionLB->parentMemory = memoryBlock;
+                    contradictionLB->level = static_cast<int>(index + 1);
+                    contradictionLB->setExprKey(contradictionKey);
+                    contradictionLB->primedForContradiction = true;
+                    contradictionLB->contradictionTheoremId =
+                        contradictionLB->nameMap.encode(
+                            reconstructImplication(chain, head));
+
+                    this->permanentBodies.push_back(contradictionLB);
+
+                    // Add the negated head as fuel (status 0)
+                    const int lvRun[1] = { contradictionLB->level };
+                    const TransientOrigin origin{ true, OriginTag::taskFormulation, nullptr, 0 };
+                    this->addExprToMemoryBlock(negHead, *contradictionLB, iteration, 0, lvRun, 1, origin, -1, -1, StrSpan("main", 4), false);
+
+                    // LB-creation paired mailOut write — see comment at the
+                    // chain-walk LB-creation site for rationale. Documented
+                    // exception to fillMailOut sole-writer invariant.
+                    if (parameters.trackHistory) {
+                        const int maxOriginsLocal = parameters.compressor_mode
+                            ? parameters.compressor_max_origins_per_expr
+                            : parameters.max_origin_per_expr;
+                        ExpressionWithValidity ev(negHead, "main");
+                        contradictionLB->insertMailOutStatement(
+                            StrSpan(ev.original), StrSpan(ev.validityName),
+                            lvRun, 1);
+                        contradictionLB->addMailOutOrigin(
+                            StrSpan(ev.original), StrSpan(ev.validityName),
+                            origin.tag, origin.deps, origin.depN,
+                            maxOriginsLocal);
+                    }
+                }
+            }
+
         }
     }
 }
@@ -6211,9 +7163,10 @@ void ExpressionAnalyzer::revisitRejected2(StrSpan markedExpr,
 {
     auto& rm = memoryBlock.overallHashMemory.rejectedMap;
 
+
     // Guard: prevent re-entrant processing of the same marker. Non-minting
     // probe — a never-interned template is never in progress.
-    int32_t revisitPk = 0;
+    int64_t revisitPk = 0;
     const bool revisitKeyKnown = lookupTemplateKey(memoryBlock.templateInterner,
         memoryBlock.nameMap, markedExpr, validityName, revisitPk);
     if (revisitKeyKnown
@@ -6244,15 +7197,17 @@ void ExpressionAnalyzer::revisitRejected2(StrSpan markedExpr,
         return;
     }
 
-    // [user-directed fix] it_depth control for revival — symmetric with the
-    // maxNumberSecondaryVariables count guard above. Revival otherwise bypasses
-    // the iteration-depth bound entirely (the comment on the count guard notes
-    // the same for secondary count), re-admitting sums whose it_ depth exceeds
-    // what the disintegration gate allows. Parameterised via
-    // parameters.maxIterationNumberVariable (not hardcoded); reversible by
-    // raising the param. With maxIterationNumberVariable=1 this restricts
-    // revival to it_0 markers.
-    if (extractMaxIterationNumber(markedExpr) >= parameters.maxIterationNumberVariable) {
+    // [user-directed fix] it_depth control for revival. Revival otherwise
+    // bypasses the iteration-depth bound entirely (the comment on the count
+    // guard above notes the same for secondary count), re-admitting sums
+    // whose it_ depth exceeds what the disintegration gate allows.
+    // Parameterised via parameters.maxIterationNumberVariable (not
+    // hardcoded). Strict >, aligned with the request-building gate in
+    // filterIntEncodedStatements: generations up to and including the cap
+    // revive. (Unlike the count guard above, the iteration quantity has no
+    // marked-vs-constituent offset, so the comparison matches the request
+    // side verbatim.)
+    if (extractMaxIterationNumber(markedExpr) > parameters.maxIterationNumberVariable) {
         return;
     }
 
@@ -6294,7 +7249,7 @@ void ExpressionAnalyzer::revisitRejected2(StrSpan markedExpr,
     // so erasing them empties the run and the key is dropped — the heap path's
     // "preserve newly-added" branch was unreachable here too. Entries the
     // emission loop below adds via updateRejectedMap re-mint the key afresh.
-    rm.eraseBlobIf([revisitPk](int32_t k) { return k == revisitPk; });
+    rm.eraseBlobIf([revisitPk](int64_t k) { return k == revisitPk; });
 
     // No-equality direct revival — the rejection record's cohort is mailed
     // verbatim to sameIterationInternalMail (the span/run door takes an empty
@@ -6351,10 +7306,11 @@ void ExpressionAnalyzer::revisitRejected2(StrSpan markedExpr,
         // existence on revival. It sits at the marker slot of the rejected
         // statement (rejectedArgs[markerIndex]); markedExpr only carries the
         // "marker" placeholder, so the markedExpr-level guard above cannot see
-        // it. Skip revival when the witness's iteration depth reaches
-        // parameters.maxIterationNumberVariable — symmetric with the count /
-        // markedExpr-depth guards; reversible by raising the param.
-        if (extractMaxIterationNumber(rejectedArgs[markerIndex]) >= parameters.maxIterationNumberVariable) {
+        // it. Skip revival when the witness's iteration depth exceeds
+        // parameters.maxIterationNumberVariable — strict >, aligned with the
+        // markedExpr-depth guard and the request-building gate: generations
+        // up to and including the cap revive.
+        if (extractMaxIterationNumber(rejectedArgs[markerIndex]) > parameters.maxIterationNumberVariable) {
             continue;
         }
 
@@ -6395,7 +7351,7 @@ void ExpressionAnalyzer::revisitRejected2(StrSpan markedExpr,
     gArena.popTo(mark);
 
     {
-        int32_t donePk = 0;
+        int64_t donePk = 0;
         const bool ok = lookupTemplateKey(memoryBlock.templateInterner,
             memoryBlock.nameMap, markedExpr, validityName, donePk);
         assert(ok); // inserted above — both halves are interned
@@ -6423,7 +7379,7 @@ void ExpressionAnalyzer::revisitRejectedIntegration2(StrSpan markedKey,
 
     auto& rmi = memoryBlock.overallHashMemory.rejectedMapIntegration;
     // Non-minting probe — a never-interned template has no rejection cohort.
-    int32_t markedPk = 0;
+    int64_t markedPk = 0;
     if (!lookupTemplateKey(memoryBlock.templateInterner, memoryBlock.nameMap,
                            markedKey, validityName, markedPk)) {
         return;
@@ -6449,7 +7405,7 @@ void ExpressionAnalyzer::revisitRejectedIntegration2(StrSpan markedKey,
     const RejectedIntegrationRunSnapshot snap =
         snapshotRejectedIntegrationRun(rmi, markedPk, gArena);
 
-    rmi.eraseBlobIf([markedPk](int32_t k) { return k == markedPk; });
+    rmi.eraseBlobIf([markedPk](int64_t k) { return k == markedPk; });
 
     for (int32_t vi = 0; vi < snap.count; ++vi) {
         const RejectedIntegrationValueBlobView& val = snap.views[vi];
@@ -6578,7 +7534,7 @@ void ExpressionAnalyzer::updateAdmissionMapRecursion(StrSpan expression,
     // and the dump's status section counts it — the cold map reproduces that
     // byte-for-byte: a miss inserts the default-false entry, then returns
     // (D-172).
-    const int32_t markedPk = mintTemplateKey(mb.templateInterner, mb.nameMap,
+    const int64_t markedPk = mintTemplateKey(mb.templateInterner, mb.nameMap,
                                              StrSpan(markedExpr), validityName);
     {
         const uint8_t* stProbe =
@@ -6849,7 +7805,7 @@ void ExpressionAnalyzer::updateAdmissionMapRecursion(StrSpan expression,
                 // consumed-skip (mirror drainAdmissionKeysAlgebra): never re-add a
                 // consumed key to admissionMap (would violate isAdmitted's
                 // admissionMap/consumedAdmissionKeys mutual-exclusion assert).
-                const int32_t newMarkedPk = mintTemplateKey(mb.templateInterner,
+                const int64_t newMarkedPk = mintTemplateKey(mb.templateInterner,
                     mb.nameMap, StrSpan(newMarkedExpr), validityName);
                 if (mb.overallHashMemory.consumedAdmissionKeys.contains(newMarkedPk)) {
                     genArena.popTo(bMark);
@@ -7147,7 +8103,7 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
         std::atomic<bool>* stop;
         std::atomic<int>* partsLeft;
     };
-    const bool mainPath = !parameters.disable_lb_split && !parameters.incubator_mode;
+    const bool mainPath = parameters.lb_split && !parameters.disable_lb_split;
     // A straggler splits into logicalCores expression buckets; that is the only
     // split dimension now, so the whole-machine core count is the per-LB part
     // ceiling (Rule 19 -- a machine past the named constant stops HERE).
@@ -7371,14 +8327,14 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                 // both reach (I-158).
                 const int32_t nStumps = static_cast<int32_t>(run.size());
                 lbStumps[li] = nStumps;
-                const int16_t buckets = static_cast<int16_t>(
+                const NameId buckets = static_cast<NameId>(
                     std::min<int32_t>(nStumps, static_cast<int32_t>(logicalCores)));
                 lbBuckets[li] = buckets;
                 std::vector<ExpressionStump> dealt;
                 dealt.reserve(run.size());
                 std::vector<int32_t> bucketStart(
                     static_cast<std::size_t>(buckets) + 1, 0);
-                for (int16_t k = 0; k < buckets; ++k) {
+                for (NameId k = 0; k < buckets; ++k) {
                     bucketStart[static_cast<std::size_t>(k)] =
                         static_cast<int32_t>(dealt.size());
                     for (int32_t j = k; j < nStumps; j += buckets)
@@ -7387,13 +8343,13 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                 bucketStart[static_cast<std::size_t>(buckets)] =
                     static_cast<int32_t>(dealt.size());
                 run.swap(dealt);
-                for (int16_t k = 0; k < buckets; ++k) {
+                for (NameId k = 0; k < buckets; ++k) {
                     const int32_t lo = bucketStart[static_cast<std::size_t>(k)];
                     const int32_t hi = bucketStart[static_cast<std::size_t>(k) + 1];
                     nextTasks.push_back(ExecTask{ t.lb, li, /*processID=*/0,
                         /*splitCount=*/1, /*partCount=*/buckets, /*produceOnly=*/false,
                         SplitStumpRef{ run.data() + lo,
-                                       static_cast<int16_t>(hi - lo), k, buckets },
+                                       static_cast<NameId>(hi - lo), k, buckets },
                         &stopFlags[li], &partsRemaining[li] });
                 }
                 continue;
@@ -7499,8 +8455,17 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
             const bool straggler = ExpressionAnalyzer::isStraggler(
                 lbTotalSub[li], T, static_cast<int>(logicalCores),
                 static_cast<int64_t>(parameters.min_split_work));
+            const bool wasUnsplit = active[li]->numberOfParts == 1;
             active[li]->numberOfParts =
                 straggler ? static_cast<int>(logicalCores) : 1;
+            // Split-onset report: printed once per unsplit -> split transition so
+            // the run log shows which LBs the trigger promoted. Pure observation ->
+            // determinism intact.
+            if (straggler && wasUnsplit)
+                std::cout << "[SPLIT] straggler: work=" << lbTotalSub[li]
+                          << " T=" << T
+                          << " parts=" << active[li]->numberOfParts
+                          << " lb=" << active[li]->exprKey() << "\n";
             // Self-control report: a split LB whose busiest bucket is still a global
             // outlier has an irreducibly-serial core (a "runs and runs" induction LB)
             // that bucketing cannot subdivide. Pure observation -> determinism intact.
@@ -7658,6 +8623,19 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
     // Replay the proven direct theorems staged on updateGlobalDirectPages, sorted
     // (the former std::sort over updateGlobalDirectTuples + the replay loop).
     this->drainUpdateGlobalDirect();
+    // Retract already-submitted rows whose producer turned out
+    // unintentionally contradictory this iteration (the vacuous-premise
+    // flag): the emission gates cover new submissions, this sweep covers
+    // prior-iteration ones.
+    this->revertVacuousGlobalTheorems();
+    // Twin deactivation rides directly behind the theorem drain so every
+    // firing/closure of this iteration has staged its twins first.
+    this->drainPendingTwinDeactivations();
+    // Vacuous-premise subtree deactivation: every LB whose main turned
+    // contradictory this iteration takes its whole subtree out of the
+    // search — nothing sound and non-vacuous can be proved below an
+    // inconsistent premise set.
+    this->drainSubtreeDeactivations();
 
     // Deferred compaction drain (D-76,
     // Option A). Single-threaded, post-pool.join(): sorting makes the
@@ -7966,8 +8944,8 @@ void ExpressionAnalyzer::removeExpressionFromMemoryBlock(StrSpan original, StrSp
         // encodings whose every field derives from that pair. lookup is
         // non-minting: a never-interned target has no stored row, so the
         // sweep finds nothing — the same no-op the string scan produced.
-        const int16_t origId = mb.nameMap.lookup(original);
-        const int16_t valId = mb.nameMap.lookup(validityName);
+        const NameId origId = mb.nameMap.lookup(original);
+        const NameId valId = mb.nameMap.lookup(validityName);
         if (origId == 0 || valId == 0) return;
         // Erase back to front to keep indices valid.
         auto eraseIntRows = [origId, valId](PagedVector<IntEncodedExpr>& intVec) {
@@ -7986,11 +8964,11 @@ void ExpressionAnalyzer::removeExpressionFromMemoryBlock(StrSpan original, StrSp
         // Remove from the goal registry. The caller guarantees the goal is
         // registered, so both names were interned by its insert site — a
         // lookup miss here is a contract violation, not a probe miss.
-        const int16_t tbpOrigId = mb.nameMap.lookup(original);
-        const int16_t tbpValId = mb.nameMap.lookup(validityName);
+        const NameId tbpOrigId = mb.nameMap.lookup(original);
+        const NameId tbpValId = mb.nameMap.lookup(validityName);
         assert(tbpOrigId != 0 && tbpValId != 0
                && "removeExpressionFromMemoryBlock: goal names not interned");
-        const int32_t pkTBP = packStatementKey(tbpOrigId, tbpValId);
+        const int64_t pkTBP = packStatementKey(tbpOrigId, tbpValId);
         assert(mb.intToBeProved.lookup(pkTBP) != 0);
         mb.intToBeProved.eraseSet(pkTBP);
     }
@@ -8006,20 +8984,37 @@ void ExpressionAnalyzer::removeExpressionFromMemoryBlock(const EncodedExpression
 //#pragma optimize("", off)
 
 
-// D-72: impl-closure cleanup is done by `Memory::wipeSubtree(closedVid)`
-// directly, which performs a full prefix-scoped sweep of every per-LB
-// scope-tagged structure (see the Doxygen block above the declaration in
-// memory.hpp).
-//
-// `cleanUpOrIntegrationBranches` exists separately because its trigger
-// event is *OR convergence*, not impl closure, and its victim discovery
-// is by OR signature rather than scope ancestry. Internally it delegates
-// each victim's per-scope work to `Memory::wipeSubtree`, so the same
-// completeness applies (hash-engine rules, eq-classes, etc.).
-void ExpressionAnalyzer::cleanUpOrIntegrationBranches(StrSpan orExprSig,
+/// @brief Queue every sibling branch of one proved OR-integration cohort for
+///        radical subtree cleanup.
+///
+/// @details
+/// Selects only validity scopes that classify as OR integration, carry the
+/// exact outer signature @p orExprSig, and have @p parentValidityId as their
+/// direct NameMap parent. The victims are synchronously filtered for the rest
+/// of the current burst and queued for the end-of-burst `Memory::wipeSubtree`
+/// drain. Because parent validity participates in selection, equal OR
+/// signatures at another stack position remain live.
+///
+/// The scan stores ids on the request-generation scratch page tier and mints
+/// no NameMap entries, preserving the caller-owned signature span and every
+/// classify-view slice throughout both loops.
+///
+/// @param orExprSig Outer compiled OR signature shared by the cohort.
+/// @param parentValidityId Exact direct parent of the proving goal scope.
+/// @param mb Owning logic-block memory.
+/// @return Nothing.
+/// @invariant Every queued victim is a direct child of
+///            @p parentValidityId and belongs to @p orExprSig.
+/// @see Memory::wipeSubtree, ExpressionAnalyzer::classifyOrScopeView.
+void ExpressionAnalyzer::cleanUpOrIntegrationBranches(
+    StrSpan orExprSig,
+    NameId parentValidityId,
     Memory& mb)
 {
     const NameMap& nm = mb.nameMap;
+    assert(parentValidityId != 0
+           && parentValidityId <= nm.nameCount()
+           && "cleanUpOrIntegrationBranches: invalid parent validity id");
 
     // The victim validity ids ride a PagedVector on the per-slot gen-scratch
     // PAGE tier (I-138), freed by ~PagedVector
@@ -8029,7 +9024,7 @@ void ExpressionAnalyzer::cleanUpOrIntegrationBranches(StrSpan orExprSig,
         : genScratchArenas().slotCount() - 1;
     ScratchArena& gArena = genScratchArenas().forSlot(slot);
     DirtyState victimDirty = DirtyState::Clean;
-    PagedVector<int16_t> victimIds(&gArena, &victimDirty);
+    PagedVector<NameId> victimIds(&gArena, &victimDirty);
 
     StrSpan orExprOutV;
     StrSpan bodyOutV;
@@ -8048,16 +9043,17 @@ void ExpressionAnalyzer::cleanUpOrIntegrationBranches(StrSpan orExprSig,
     // from a previous iteration exists but is never read, identical to the
     // string form's stale content).
     const int32_t nameHighWater = nm.nameCount();
-    for (int16_t id = 2; id <= nameHighWater; ++id) {
+    for (NameId id = 2; id <= nameHighWater; ++id) {
         if (classifyOrScopeView(nm, id, orExprOutV, bodyOutV)
                 == OrScopeKind::Integration
+            && nm.parentOf(id) == parentValidityId
             && equalSpans(orExprOutV, orExprSig)) {
             victimIds.push_back(id);
         }
     }
 
     for (int32_t i = 0; i < victimIds.size(); ++i) {
-        const int16_t id = victimIds[i];
+        const NameId id = victimIds[i];
 
         // D-72: defer the radical sweep to
         // end-of-burst drainage by performElemPhase3 —
@@ -8068,7 +9064,7 @@ void ExpressionAnalyzer::cleanUpOrIntegrationBranches(StrSpan orExprSig,
             // Re-derive the decoded scope name from the stored id; no
             // NameMap mint occurs before this lookup, so the span is valid.
             const StrSpan vname = nm.decodeView(id);
-            const int16_t wipeVid = mb.nameMap.lookup(vname);
+            const NameId wipeVid = mb.nameMap.lookup(vname);
             assert(wipeVid != 0);
             mb.pendingWipeScopes.mint(wipeVid);
         }
@@ -8870,6 +9866,103 @@ ScratchString ExpressionAnalyzer::expandSignature(StrSpan category,
 
 // In GL_Quick_VS/GL_Quick/src/analyze_expressions.cpp
 
+/// @brief Flatten one compiled OR entity into its ordered atomic leaves in the
+///        current working instruction.
+///
+/// @details
+/// The instantiated `WorkInstruction` already contains the outer OR and every
+/// recursively prepared child entity. This function walks that read-only graph
+/// without re-parsing or re-substituting strings: a child whose exact signature
+/// resolves to another `or` entity is expanded immediately in the same call;
+/// any non-OR child is appended as one leaf. Element order is preserved across
+/// both left- and right-nested shapes. Duplicate entity records must be
+/// structurally identical, recursion-path cycles assert, and capacity overflow
+/// asserts before a write. The local recursive lambda is stack-only and the
+/// function mints and allocates nothing.
+///
+/// @param instructions The instantiated, read-only instruction graph.
+/// @param rootEntity The entity index of the outer OR.
+/// @param out Caller array receiving ordered leaf spans.
+/// @param cap Capacity of @p out.
+/// @return Number of leaves written; always at least two.
+/// @invariant Every returned span aliases `instructions`; the outer entity and
+///            every recursively entered entity are category `or` with at least
+///            two elements.
+/// @see ExpressionAnalyzer::disintegrateExprCore2.
+int32_t ExpressionAnalyzer::flattenOrLeaves(
+    const WorkInstruction& instructions,
+    int32_t rootEntity,
+    StrSpan* out,
+    int32_t cap) const
+{
+    assert(rootEntity >= 0 && rootEntity < instructions.entityCount());
+    assert(out != nullptr);
+    assert(cap >= 2);
+    assert(cap <= ExecutionParameters::MAX_INSTRUCTION_ELEMENTS);
+    assert(equalSpans(instructions.category(rootEntity), StrSpan("or", 2)));
+
+    StrSpan recursionPath[ExecutionParameters::MAX_INSTRUCTION_ELEMENTS];
+    int32_t recursionDepth = 0;
+    int32_t outCount = 0;
+
+    const auto walk = [&](int32_t entityIndex, const auto& self) -> void {
+        assert(entityIndex >= 0 && entityIndex < instructions.entityCount());
+        assert(equalSpans(instructions.category(entityIndex), StrSpan("or", 2)));
+        const StrSpan signature = instructions.signature(entityIndex);
+        for (int32_t i = 0; i < recursionDepth; ++i) {
+            assert(!equalSpans(recursionPath[i], signature)
+                && "flattenOrLeaves: cyclic OR instruction");
+        }
+        assert(recursionDepth < ExecutionParameters::MAX_INSTRUCTION_ELEMENTS
+            && "flattenOrLeaves: OR depth exceeds cap");
+        recursionPath[recursionDepth++] = signature;
+
+        const int32_t elementCount = instructions.elemCount(entityIndex);
+        assert(elementCount >= 2
+            && "flattenOrLeaves: OR entity has fewer than two elements");
+        for (int32_t i = 0; i < elementCount; ++i) {
+            const StrSpan element = instructions.elemAt(entityIndex, i);
+            int32_t childEntity = -1;
+            for (int32_t candidate = 0;
+                 candidate < instructions.entityCount(); ++candidate) {
+                if (!equalSpans(instructions.signature(candidate), element)) continue;
+                if (childEntity < 0) {
+                    childEntity = candidate;
+                    continue;
+                }
+
+                assert(equalSpans(instructions.category(childEntity),
+                                  instructions.category(candidate))
+                    && instructions.elemCount(childEntity)
+                        == instructions.elemCount(candidate)
+                    && "flattenOrLeaves: duplicate signature differs");
+                for (int32_t j = 0; j < instructions.elemCount(childEntity); ++j) {
+                    assert(equalSpans(instructions.elemAt(childEntity, j),
+                                      instructions.elemAt(candidate, j))
+                        && "flattenOrLeaves: duplicate signature differs");
+                }
+            }
+
+            if (childEntity >= 0
+                && equalSpans(instructions.category(childEntity), StrSpan("or", 2))) {
+                self(childEntity, self);
+            }
+            else {
+                assert(outCount < cap
+                    && "flattenOrLeaves: leaf count exceeds cap");
+                out[outCount++] = element;
+            }
+        }
+
+        --recursionDepth;
+    };
+
+    walk(rootEntity, walk);
+    assert(recursionDepth == 0);
+    assert(outCount >= 2);
+    return outCount;
+}
+
 void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
     const WorkInstruction& instructions,
     Memory& memoryBlock,
@@ -9092,6 +10185,141 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
                 keyCount, entElems[entElemN - 1])),
             StrSpan(validityName));
 
+        // D-237: a disjunction-shaped premise element also
+        // yields its per-leaf INTRO implications — `(>[bound](D_k)(orPremise))`,
+        // one per flattened leaf — so a single true disjunct can state the
+        // disjunction as a fact and fire this implication's rule. The K
+        // mutual-exclusion rules (D-211) are the elimination half of an OR's
+        // flat consumption; these are the introduction half. The leaf and the
+        // or head are fed in RAW element form — never u_-stripped — so u_
+        // arguments stay free and only the changeable arguments bind
+        // (reconstructImplicationFullBindScratch drops u_ args from the
+        // binder), preserving each argument's u_ status exactly as it appears
+        // in the or premise.
+        for (int32_t ki = 0; ki < keyCount; ++ki) {
+            const StrSpan orPremise = entElems[ki];
+            // The instruction graph carries no entities for an implication's
+            // elements (prepareIntegrationCore recurses only into
+            // existence/and/or), so the or premise resolves through the
+            // compiled-definition map: a defined nullptr / non-or miss means
+            // an atomic or non-or premise, not a failure.
+            if (orPremise.len < 1 || orPremise.ptr[0] != '(') continue;
+            const LogicalEntity* orLe =
+                compiledEntity(extractExpressionUniversalSpan(orPremise));
+            if (orLe == nullptr || orLe->category != "or") continue;
+
+            // Flatten the or premise's contiguous nested-or leaves with the
+            // premise's argument instantiation — the compiled-map twin of
+            // flattenOrLeaves. Each level substitutes its signature args by
+            // the instance args (fresh bytes on the string tier, cookbook
+            // §4), recursing into or-category elements only.
+            ScratchString leafHold[ExecutionParameters::MAX_INSTRUCTION_ELEMENTS];
+            StrSpan introLeaves[ExecutionParameters::MAX_INSTRUCTION_ELEMENTS];
+            int32_t introLeafN = 0;
+            const auto flattenCompiledOr = [&](const LogicalEntity& node,
+                                               StrSpan instance,
+                                               const auto& self) -> void {
+                StrSpan sigArgs[ExecutionParameters::MAX_ARITY];
+                const int32_t sigN = getArgsSpans(StrSpan(node.signature),
+                    sigArgs, ExecutionParameters::MAX_ARITY);
+                StrSpan instArgs[ExecutionParameters::MAX_ARITY];
+                const int32_t instN = getArgsSpans(instance, instArgs,
+                    ExecutionParameters::MAX_ARITY);
+                assert(sigN == instN
+                    && "or-intro: instance arity differs from compiled or");
+                StrReplacement pairs[ExecutionParameters::MAX_ARITY];
+                int32_t pairN = 0;
+                for (int32_t a = 0; a < sigN; ++a) {
+                    pairs[pairN].key = sigArgs[a];
+                    pairs[pairN].value = instArgs[a];
+                    ++pairN;
+                }
+                for (const std::string& rawElem : node.elements) {
+                    const ScratchString subst = replaceKeysScratch(
+                        sArena, StrSpan(rawElem), pairs, pairN);
+                    const StrSpan substSpan(subst);
+                    const LogicalEntity* childLe =
+                        (substSpan.len >= 1 && substSpan.ptr[0] == '(')
+                        ? compiledEntity(
+                              extractExpressionUniversalSpan(substSpan))
+                        : nullptr;
+                    if (childLe != nullptr && childLe->category == "or") {
+                        self(*childLe, substSpan, self);
+                    } else {
+                        assert(introLeafN
+                                < ExecutionParameters::MAX_INSTRUCTION_ELEMENTS
+                            && "or-intro: leaf count exceeds cap");
+                        leafHold[introLeafN] = subst;
+                        introLeaves[introLeafN] = StrSpan(leafHold[introLeafN]);
+                        ++introLeafN;
+                    }
+                }
+            };
+            flattenCompiledOr(*orLe, orPremise, flattenCompiledOr);
+            assert(introLeafN >= 2
+                && "or-intro: compiled or has fewer than two leaves");
+
+            // History dep, loop-invariant: the intro rule unfolds from the
+            // compact implication's compiled definition (its or premise's
+            // structure), so the dep is the compact statement itself — the
+            // same chapter-capable antecedent trackExpansionHistory cites for
+            // the main rule's expansion record.
+            const ScratchString introDepClean =
+                removeUPrefixScratch(sArena, StrSpan(expr));
+            const OriginDep introDeps[1] = {
+                { StrSpan(introDepClean), StrSpan(validityName) } };
+            const int introCap = parameters.compressor_mode
+                ? parameters.compressor_max_origins_per_expr
+                : parameters.max_origin_per_expr;
+
+            for (int32_t li = 0; li < introLeafN; ++li) {
+                // I-4 tripwire: every changeable (non-u_) argument of the or
+                // head must occur in the leaf premise, else the single-premise
+                // reconstruction would leave it unbound. The current or
+                // operator family repeats the element variable in every
+                // disjunct; a shape that does not is a new design to raise,
+                // never a silent emission.
+                {
+                    StrSpan headArgs[ExecutionParameters::MAX_ARITY];
+                    const int32_t headArgN = getArgsSpans(orPremise, headArgs,
+                        ExecutionParameters::MAX_ARITY);
+                    StrSpan leafArgs[ExecutionParameters::MAX_ARITY];
+                    const int32_t leafArgN = getArgsSpans(introLeaves[li],
+                        leafArgs, ExecutionParameters::MAX_ARITY);
+                    for (int32_t ha = 0; ha < headArgN; ++ha) {
+                        if (headArgs[ha].len >= 2 && headArgs[ha].ptr[0] == 'u'
+                            && headArgs[ha].ptr[1] == '_') {
+                            continue;
+                        }
+                        bool inLeaf = false;
+                        for (int32_t la = 0; la < leafArgN && !inLeaf; ++la) {
+                            inLeaf = equalSpans(leafArgs[la], headArgs[ha]);
+                        }
+                        assert(inLeaf
+                            && "or-intro: head variable absent from leaf premise");
+                        (void)inLeaf;
+                    }
+                }
+
+                const ScratchString introStr =
+                    reconstructImplicationFullBindScratch(
+                        sArena, &introLeaves[li], 1, orPremise);
+                collected.insertImpl(StrSpan(currentStatement),
+                    StrSpan(introStr), StrSpan(validityName));
+
+                if (parameters.trackHistory && trackHistoryLocal) {
+                    // KEY u_-stripped like every chapter-facing rule form; the
+                    // u_-prefixed form lives only in hash memory.
+                    const ScratchString introClean =
+                        removeUPrefixScratch(sArena, StrSpan(introStr));
+                    addOriginEncoded(memoryBlock.exprOriginMap,
+                        memoryBlock.originInterner, StrSpan(introClean),
+                        StrSpan(validityName), OriginTag::expansion,
+                        introDeps, 1, introCap);
+                }
+            }
+        }
+
         // Use Lambda (Children not tracked for implication in original code)
         trackExpansionHistory(entCategory, entSignature, entElems, entElemN, false);
     }
@@ -9273,10 +10501,14 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
         }
     }
     else if (equalSpans(entCategory, StrSpan("or", 2))) {
-        // OR disintegration: compiled validity name approach (LIFO stack).
-        // Branch validity = parentValidity_(orSignature)_(disjunct)
-        // Mutual exclusion implications go to parent validity (hash memory).
-        // Branch disjuncts go to orBranchStatements as ExpressionWithValidity.
+        // OR disintegration: flatten every contiguous nested OR now, in this
+        // call, then treat the ordered atomic leaves as one cohort. The outer
+        // signature remains the cohort/provenance identity; no intermediate
+        // OR-valued branch is created for a later hashburst.
+        StrSpan orLeaves[ExecutionParameters::MAX_INSTRUCTION_ELEMENTS];
+        const int32_t orLeafN = flattenOrLeaves(
+            instructions, hit, orLeaves,
+            ExecutionParameters::MAX_INSTRUCTION_ELEMENTS);
 
         // Check OR nesting depth — count existing "_(or" occurrences in validity name
         int currentOrDepth = 0;
@@ -9288,60 +10520,65 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
             }
         }
 
-        if (currentOrDepth < parameters.max_or_depth) {
-            // Compute the OR's expanded De-Morgan form once; used as the
-            // disintegration origin for the K mutual-exclusion implications
-            // below, mirroring the &/existence pattern in trackExpansionHistory.
-            // See D-55.
-            const ScratchString expandedOrSignature = expandSignature(
-                entCategory, entSignature, entElems, entElemN, sArena);
-            // L3 span-record door. expandedOrSignature is a stable local; the
-            // per-branch KEY is u_-stripped onto sArena in the loop. The
-            // antecedent is loop-invariant, so the OriginDep is built once.
-            const OriginDep orDisDeps[1] = {
-                { StrSpan(expandedOrSignature), StrSpan(validityName) } };
+        // The expansion record and the K mutual-exclusion implications are
+        // emitted at EVERY OR depth: they are flat hash rules — the
+        // disjunctive-syllogism consumption of the OR — and create no
+        // scopes. Only the per-branch case-split below is gated on
+        // max_or_depth (D-211).
+        //
+        // Compute the OR's expanded De-Morgan form once; used as the
+        // disintegration origin for the K mutual-exclusion implications
+        // below, mirroring the &/existence pattern in trackExpansionHistory.
+        // See D-55.
+        const ScratchString expandedOrSignature = expandSignature(
+            entCategory, entSignature, orLeaves, orLeafN, sArena);
+        // L3 span-record door. expandedOrSignature is a stable local; the
+        // per-branch KEY is u_-stripped onto sArena in the loop. The
+        // antecedent is loop-invariant, so the OriginDep is built once.
+        const OriginDep orDisDeps[1] = {
+            { StrSpan(expandedOrSignature), StrSpan(validityName) } };
 
-            // Hoisted from the orAdmitted block: the K mutual-exclusion
-            // implications below cite expandedOrSignature as their disintegration
-            // origin, which requires the matching expansion-origin record
-            // (expandedOrSignature -> compact OR name) to exist regardless of
-            // whether per-branch case-split fires. Pre-fix, trackExpansionHistory
-            // ran only when orAdmitted was true, leaving the K implications
-            // referenceable only by an expansion row that did not exist.
-            trackExpansionHistory(entCategory, entSignature, entElems, entElemN, false);
+        // The K mutual-exclusion implications cite expandedOrSignature as
+        // their disintegration origin, which requires the matching
+        // expansion-origin record (expandedOrSignature -> compact OR name)
+        // to exist regardless of whether the per-branch case-split fires.
+        trackExpansionHistory(entCategory, entSignature, orLeaves, orLeafN, false);
 
-            // 1. Generate N implications: for each d_i, (!d_0 & ... & !d_{i-1} & !d_{i+1} & ... & !d_{N-1}) -> d_i
-            //    These go to collected (parent validity) for normal hash memory insertion.
-            //    Each is also stamped with `disintegration` origin pointing at the
-            //    OR's expanded form so the proof graph can audit the K rules back
-            //    to the originating OR (verifier check_disintegration's `or` branch
-            //    rebuilds and verifies the exact shape).
-            for (int32_t i = 0; i < entElemN; ++i) {
-                StrSpan premiseSpans[64];
-                std::size_t premiseCount = 0;
-                for (int32_t j = 0; j < entElemN; ++j) {
-                    if (j != i) {
-                        assert(premiseCount < 64 && "or-branch premise chain exceeds 64");
-                        premiseSpans[premiseCount++] = prefixBang(entElems[j]);
-                    }
-                }
-                const ScratchString impStr = reconstructImplicationFullBindScratch(
-                    sArena, premiseSpans, static_cast<int>(premiseCount), entElems[i]);
-                collected.insertImpl(StrSpan(currentStatement), StrSpan(impStr), StrSpan(validityName));
-
-                if (parameters.trackHistory && trackHistoryLocal) {
-                    // KEY u_-stripped (matches the &/existence pattern in
-                    // trackExpansionHistory's section 2 — chapter rows
-                    // surface u_-stripped expressions; the u_-prefixed form
-                    // lives only in hash memory for unification).
-                    const ScratchString impClean = removeUPrefixScratch(sArena, StrSpan(impStr));
-                    int maxOrigins = parameters.compressor_mode
-                        ? parameters.compressor_max_origins_per_expr
-                        : parameters.max_origin_per_expr;
-                    addOriginEncoded(memoryBlock.exprOriginMap, memoryBlock.originInterner, StrSpan(impClean), StrSpan(validityName), OriginTag::disintegration, orDisDeps, 1, maxOrigins);
+        // 1. Generate N implications: for each d_i, (!d_0 & ... & !d_{i-1} & !d_{i+1} & ... & !d_{N-1}) -> d_i
+        //    These go to collected (parent validity) for normal hash memory insertion.
+        //    Each is also stamped with `disintegration` origin pointing at the
+        //    OR's expanded form so the proof graph can audit the K rules back
+        //    to the originating OR (verifier check_disintegration's `or` branch
+        //    rebuilds and verifies the exact shape).
+        for (int32_t i = 0; i < orLeafN; ++i) {
+            StrSpan premiseSpans[64];
+            std::size_t premiseCount = 0;
+            for (int32_t j = 0; j < orLeafN; ++j) {
+                if (j != i) {
+                    assert(premiseCount < 64 && "or-branch premise chain exceeds 64");
+                    premiseSpans[premiseCount++] = prefixBang(orLeaves[j]);
                 }
             }
+            const ScratchString impStr = reconstructImplicationFullBindScratch(
+                sArena, premiseSpans, static_cast<int>(premiseCount), orLeaves[i]);
+            collected.insertImpl(StrSpan(currentStatement), StrSpan(impStr), StrSpan(validityName));
 
+            if (parameters.trackHistory && trackHistoryLocal) {
+                // KEY u_-stripped (matches the &/existence pattern in
+                // trackExpansionHistory's section 2 — chapter rows
+                // surface u_-stripped expressions; the u_-prefixed form
+                // lives only in hash memory for unification).
+                const ScratchString impClean = removeUPrefixScratch(sArena, StrSpan(impStr));
+                int maxOrigins = parameters.compressor_mode
+                    ? parameters.compressor_max_origins_per_expr
+                    : parameters.max_origin_per_expr;
+                addOriginEncoded(memoryBlock.exprOriginMap, memoryBlock.originInterner, StrSpan(impClean), StrSpan(validityName), OriginTag::disintegration, orDisDeps, 1, maxOrigins);
+            }
+        }
+
+        // The per-branch case-split stays depth-gated: nested _ordis_
+        // scopes are the scope explosion max_or_depth exists to prevent.
+        if (currentOrDepth < parameters.max_or_depth) {
             // 2. Check OR admission. Two paths (D-32, supersedes D-31):
             //    (a) Sharper bypass — disintegrate when the caller asserts
             //        allowOrDisintegration. This flag is set by
@@ -9365,34 +10602,41 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
 
 
             if (orAdmitted) {
-                // 3. Build compiled OR signature and register disjunct count
+                // 3. Build compiled OR signature and register the disjunct
+                //    count for this exact (parent validity, OR signature)
+                //    cohort. Equal signatures under different parents are
+                //    independent case splits.
                 const ScratchString orSignature = removeUPrefixScratch(sArena, entSignature);  // e.g. "(or3[1,2,3])"
                 {
                     // Set-or-insert (the operator[] = overwrite the cold
-                    // set-once insert forbids): a re-registered signature keeps
+                    // set-once insert forbids): a re-registered cohort keeps
                     // its structural disjunct count.
+                    const int32_t orParentId =
+                        memoryBlock.lbStateInterner.encode(validityName);
                     const int32_t orSigId =
                         memoryBlock.lbStateInterner.encode(StrSpan(orSignature));
-                    const int orCnt = entElemN;
+                    const int32_t orCohortId = mintOrCohortId(
+                        memoryBlock.lbStateInterner, orParentId, orSigId);
+                    const int orCnt = orLeafN;
                     const int32_t orSigRow =
-                        memoryBlock.orDisjunctCount.lookup(orSigId);
+                        memoryBlock.orDisjunctCount.lookup(orCohortId);
                     if (orSigRow != 0)
                         memoryBlock.orDisjunctCount.setValueAt(orSigRow, orCnt);
                     else
-                        memoryBlock.orDisjunctCount.insert(orSigId, orCnt);
+                        memoryBlock.orDisjunctCount.insert(orCohortId, orCnt);
                 }
 
                 // (trackExpansionHistory hoisted above the orAdmitted gate —
                 //  see the K-implications block earlier in the OR case.)
 
                 // 4. Each disjunct becomes a statement with branch validity name
-                for (int32_t i = 0; i < entElemN; ++i) {
+                for (int32_t i = 0; i < orLeafN; ++i) {
                     // Per-disjunct string-tier scope: cleanExpr / orPayload /
                     // branchValidity are freed each iteration (mirroring the former
                     // heap std::strings). orSignature is built above the loop, so
                     // it survives every iteration's rewind.
                     ScratchScope oiScope(sArena);
-                    const ScratchString cleanExpr = removeUPrefixScratch(sArena, entElems[i]);
+                    const ScratchString cleanExpr = removeUPrefixScratch(sArena, orLeaves[i]);
                     // orPayload = "ordis_" + orSignature + "_(" + cleanExpr + ")"
                     // built explicit-length on the string tier.
                     const StrSpan orSigSpan(orSignature), cleanSpan(cleanExpr);
@@ -9407,8 +10651,8 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
                     assert(opAt == opLen);
                     const StrSpan orPayload(opBuf, opLen);
 
-                    int16_t orParentId = memoryBlock.nameMap.encode(validityName);
-                    int16_t orBranchId = memoryBlock.nameMap.encodePush(orParentId, orPayload);
+                    NameId orParentId = memoryBlock.nameMap.encode(validityName);
+                    NameId orBranchId = memoryBlock.nameMap.encodePush(orParentId, orPayload);
                     // copyFrom: the NEXT iteration's encode/encodePush mints NameMap,
                     // so a raw decodeView would dangle (I-3); the copy rides sArena.
                     const ScratchString branchValidity = ScratchString::copyFrom(sArena,
@@ -9431,7 +10675,7 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
             }
             // else: OR not admitted — implications already emitted above, branches skipped
         }
-        // else: max OR depth reached — expression already in collected, no branch processing
+        // else: max OR depth reached — K mutual-exclusion implications emitted above, no branch opening
     }
     else {
         // Default fallback
@@ -9731,7 +10975,7 @@ ExpressionAnalyzer::disintegrateExpr2(StrSpan expr,
                     else if ([&]() {
                         // Non-minting probe — a never-interned template was
                         // never registered in the admission set.
-                        int32_t setPk = 0;
+                        int64_t setPk = 0;
                         return lookupTemplateKey(memoryBlock.templateInterner,
                                    memoryBlock.nameMap, StrSpan(marked), validityName, setPk)
                             && memoryBlock.overallHashMemory.admissionSetIntegration.contains(setPk);
@@ -9902,6 +11146,21 @@ ExpressionAnalyzer::disintegrateExpr2(StrSpan expr,
                           removedUF,         // concreteConstituent (= removedU)
                           siblingsF, fail.sibCount, lvRunF, fail.levCount,
                           memoryBlock.overallHashMemory, memoryBlock, iteration, validityName);
+        // Park-demand rendezvous (D-243): the
+        // admission-marker side fires revisitRejected2 exactly once, at the
+        // moment the marker key is written. A cohort parked AFTER that
+        // one-shot probe would sleep forever — witness-generation pacing
+        // defers firing-fed parkings by a mail hop, so the demand can
+        // arrive first. Probe the admission map for this parked key's
+        // demand; if it is already live, fire the revival now — whichever
+        // side arrives second wakes the other. A consumed demand needs no
+        // wake: its constituent was admitted through another route.
+        int64_t parkedPk = 0;
+        if (lookupTemplateKey(memoryBlock.templateInterner, memoryBlock.nameMap,
+                              markedExprF, validityName, parkedPk)
+            && memoryBlock.overallHashMemory.admissionMap.lookup(parkedPk) != 0) {
+            revisitRejected2(markedExprF, memoryBlock, validityName);
+        }
     }
 
     // Integration-side commit — mirror of algebra block above. A pending
@@ -10103,6 +11362,16 @@ void ExpressionAnalyzer::prove(int numberIterations,
                   << "  swept=" << lastSweptCount
                   << "  skipped=" << lastSkippedCount << std::endl;
         std::cout.flush();
+
+        // Global deactivation sweep once per iteration, post-drain. The
+        // sweep used to run only from deactivateUnnecessary's tail — i.e.
+        // only when a theorem was emitted — so LBs whose last main-scope
+        // goal closed after the batch's final emission stayed active to
+        // batch end. Same I-48 predicate as before, evaluated every
+        // iteration on this single-threaded seam; reads only never-deloaded
+        // state (intToBeProved persistent I-108, isActive + tree edges on
+        // the LB slab I-109/I-110).
+        deactivateRecursively();
     }
 }
 
@@ -10298,7 +11567,13 @@ std::string ExpressionAnalyzer::headSwitchOne(const std::string& theorem) const 
 
     const std::string& negPrem = std::get<0>(chain[negIdx]);
     std::string newHead = negPrem.substr(1);
-    std::string newPrem = "!" + head;
+    // Negate the old head; an already-negated head loses its `!` instead
+    // (double-negation cancellation — GL has no universal `!!` normalizer,
+    // and a raw `!!(...)` premise breaks every downstream compiled-core
+    // consumer).
+    std::string newPrem = (!head.empty() && head[0] == '!')
+        ? head.substr(1)
+        : "!" + head;
 
     std::string rebuilt = newHead;
     for (int i = (int)chain.size() - 1; i >= 0; --i) {
@@ -10492,7 +11767,7 @@ void ExpressionAnalyzer::prefillIntegrationMapsRecursive(Memory* mb) {
                         && "prepareIntegration: unchangeable args exceed MAX_ARITY");
                     unchRun[unchN++] = StrSpan(a);
                 }
-                prepareIntegration(StrSpan(rplExpr2), unchRun, unchN, *mb, StrSpan("main", 4));
+                prepareIntegration(StrSpan(rplExpr2), unchRun, unchN, *mb, StrSpan("main", 4), StrSpan());
             }
         }
     }
@@ -10550,11 +11825,11 @@ void ExpressionAnalyzer::disintegrateExprHypothetically(StrSpan expr, Memory& me
     // cross-scope consumers (buildStack, Site A descendant iteration, proof-
     // graph rendering) exclude sentinel-scope orphans without pattern
     // guessing or substring heuristics on random tokens.
-    int16_t parentValId = memoryBlock.nameMap.encode(validityName);
+    NameId parentValId = memoryBlock.nameMap.encode(validityName);
     // Sentinel payload = "product_of_hypo_disintegration_of_integration_goal_"
     // + expr, built explicit-length on the string tier (freed after encodePush);
     // encodePush takes a span.
-    int16_t sentinelValId;
+    NameId sentinelValId;
     {
         ScratchScope spScope(hypoStrArena);
         static const char SENT_PREFIX[] =
@@ -10669,8 +11944,8 @@ void ExpressionAnalyzer::disintegrateExprHypothetically(StrSpan expr, Memory& me
     // "_hypo_" + expr, built explicit-length on the string tier (%d ==
     // std::to_string for non-negative i, freed after encodePush); encodePush
     // takes a span.
-    int16_t hypoParentId = memoryBlock.nameMap.encode(validityName);
-    int16_t hypoNewValidityId;
+    NameId hypoParentId = memoryBlock.nameMap.encode(validityName);
+    NameId hypoNewValidityId;
     {
         ScratchScope hpScope(hypoStrArena);
         int32_t hpLen = 0;
@@ -10747,12 +12022,12 @@ void ExpressionAnalyzer::disintegrateExprHypothetically(StrSpan expr, Memory& me
             // Check if equality exists in validityName (not "main")
             bool hasExistingEquality = false;
             {
-                const int16_t varId = memoryBlock.nameMap.lookup(var);
+                const NameId varId = memoryBlock.nameMap.lookup(var);
                 // Zero-copy view walk over the scope's class run — the former
                 // decodeClassesAt heap snapshot. The scan is a pure read consumed
                 // BEFORE the addExprToMemoryBlock mint below, so the peeked views
                 // stay valid. Bucket resolution mirrors decodeClassesAt.
-                const int16_t dupValId = memoryBlock.nameMap.lookup(validityName);
+                const NameId dupValId = memoryBlock.nameMap.lookup(validityName);
                 const int32_t bucketId = (dupValId == 0)
                     ? 0 : memoryBlock.equivalenceClassesMap.lookup(dupValId);
                 if (bucketId != 0) {
@@ -10975,6 +12250,15 @@ std::vector<std::string> ExpressionAnalyzer::runCeFilterOnly(
     std::vector<std::string> filteredConjectures = theorems;
 
     if (!parameters.skip_ce_filter) {
+        if (parameters.mirror_refutation) {
+            const auto mirrorPairsPath =
+                std::filesystem::path(__FILE__).parent_path().parent_path()
+                    .parent_path().parent_path() / "files" / "theorems"
+                    / "mirror_pairs.txt";
+            mirrorPartnerMap = loadMirrorPairs(mirrorPairsPath);
+            std::cout << "CE filter: " << mirrorPartnerMap.size()
+                      << " mirror-partner keys loaded." << std::endl;
+        }
         std::vector<std::vector<std::string>> simpleFactsLists = readSimpleFacts();
         std::cout << "CE filter: " << filteredConjectures.size() << " conjectures, "
                   << simpleFactsLists.size() << " fact files." << std::endl;
@@ -11255,6 +12539,7 @@ void ExpressionAnalyzer::analyzeExpressions(const std::vector<std::string>& theo
             this->prove(remainingIterations, permanentBodies);
         }
     }
+
 
     // Compression is invoked from run_modes.cpp post-analyzeExpressions,
     // gated by skipCompression (true under incubator_mode / ban_disintegration).

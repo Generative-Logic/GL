@@ -346,6 +346,7 @@ class configuration_reader(MappingABC):
         self.theorems_folder: Optional[str] = None
         self.background_theorems_folder: Optional[str] = None
         self.anchor_name: Optional[str] = None
+        self.raw_proof_graph_folder: str = "files/raw_proof_graph"
         self.anchor_id: str = ""
 
         # Auto-load if a valid path is supplied and exists; otherwise remain empty.
@@ -422,6 +423,11 @@ class configuration_reader(MappingABC):
         self.theorems_folder = obj.pop("theorems_folder", None)
         self.background_theorems_folder = obj.pop("background_theorems_folder", None)
         self.anchor_name = obj.pop("anchor_name", None)
+        # Top-level string setting: must be popped here — a plain `get` on the
+        # reader searches only the expression map, so an un-popped folder key
+        # would silently resolve to its caller-side default for every config.
+        self.raw_proof_graph_folder = obj.pop(
+            "raw_proof_graph_folder", "files/raw_proof_graph")
 
         # --- expressions ---
         new_map: Dict[str, ExpressionDescription] = {}

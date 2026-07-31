@@ -407,7 +407,6 @@
     "maxIterationNumberVariable": 1,
     "standardMaxSecondaryNumber": 1,
     "trackHistory": true,
-    "standardMaxAdmissionDepth": 0,
     "inductionMaxAdmissionDepth": 1,
     "inductionMaxSecondaryNumber": 2,
     "counterExampleBoundary": 6,
@@ -421,6 +420,7 @@
     "skip_ce_filter": true,
     "skip_eq_classes": false,
     "incubator_mode": true,
+    "lb_split": false,
     "allow_multiplication": true,
     "max_partition_size": 5,
     "max_or_depth": 1

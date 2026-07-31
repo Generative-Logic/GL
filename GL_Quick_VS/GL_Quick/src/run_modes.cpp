@@ -242,6 +242,30 @@ namespace run_modes {
         // skipCompression is true, so the proof-graph generator below can use
         // it (run_modes.cpp:303-305 falls back to globalTheoremList only when
         // fullTheoremList is empty).
+        // Post-prove vacuity classification (maintainer-directed): the
+        // premise-contradiction pair certificate retires vacuous truths
+        // BEFORE compression and before every proved-theorem save, so they
+        // never reach theorems.txt / compiled_theorems.txt, never feed a
+        // later batch, and never receive a chapter. The batch's two seed
+        // sets — pair-certified here, producer-retracted during the prove
+        // pass — land in the vacuous_theorems.txt artifact for the
+        // post-batch taint-closure filter (THEOREMS_FOLDER is config-mutable,
+        // so the path resolves at use time).
+        {
+            const std::vector<std::string> vacuousPairs =
+                expressionAnalyzer.classifyVacuousPremisePairs();
+            if (!vacuousPairs.empty()
+                || !expressionAnalyzer.retractedVacuousTheorems.empty()) {
+                std::ofstream vout(THEOREMS_FOLDER / "vacuous_theorems.txt",
+                                   std::ios::app);
+                for (const auto& thm :
+                         expressionAnalyzer.retractedVacuousTheorems)
+                    vout << thm << "\tretracted producer\n";
+                for (const auto& thm : vacuousPairs)
+                    vout << thm << "\tpremise contradiction\n";
+            }
+        }
+
         const auto compressorStarted = FrameClock::now();
         if (!skipCompression) {
             std::vector<std::string> theoremsForCompressor;
@@ -419,7 +443,7 @@ namespace run_modes {
                     std::string orThm = expressionAnalyzer.constructOrTheorem(exist, comp);
                     if (orThm.empty()) continue;
 
-                    expressionAnalyzer.globalTheoremList.emplace_back(orThm, "or theorem", exist, comp);
+                    expressionAnalyzer.appendGlobalTheorem(orThm, "or theorem", exist, comp);
                     expressionAnalyzer.fullTheoremList.emplace_back(orThm, "or theorem", exist, comp);
                     orTheorems.push_back(orThm);
                     consumedParents.insert(exist);

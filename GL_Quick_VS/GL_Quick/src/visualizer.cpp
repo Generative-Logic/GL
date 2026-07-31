@@ -123,10 +123,16 @@ static ExpressionWithValidity liftToShallowestOriginAncestor(
         if (payloadStart >= ancestors[i].size()) continue;
         const std::string& child = ancestors[i];
         const std::size_t payloadLen = child.size() - payloadStart;
-        if ((payloadLen >= kOrint.size()
-             && child.compare(payloadStart, kOrint.size(), kOrint) == 0)
-            || (payloadLen >= kOrdis.size()
-                && child.compare(payloadStart, kOrdis.size(), kOrdis) == 0)) {
+        // A goal-carrying payload (`<goal>_subproof_orint_...`) is still an
+        // OR-branch barrier — classify by the bare half via the single
+        // payload-parsing choke point (I-170).
+        const StrSpan bare = ExpressionAnalyzer::stripSubproofPrefixView(
+            StrSpan(child.data() + payloadStart,
+                    static_cast<int32_t>(payloadLen)));
+        if ((bare.len >= static_cast<int32_t>(kOrint.size())
+             && std::memcmp(bare.ptr, kOrint.data(), kOrint.size()) == 0)
+            || (bare.len >= static_cast<int32_t>(kOrdis.size())
+                && std::memcmp(bare.ptr, kOrdis.data(), kOrdis.size()) == 0)) {
             minLift = i;
         }
     }
@@ -207,13 +213,18 @@ bool ExpressionAnalyzer::buildStack(Memory& memoryBlock,
         if (proved.original.find("_integration_goal") != std::string::npos) {
             return true;
         }
-        // D-51: contradiction-LB fallback. When `proved` is a negation !(X)
-        // and has no direct origin in this LB (or any of its ancestors with
-        // an origin entry), search the LB chain for "__contradiction__(X)"
-        // and resolve locally there.
-        if (proved.original.size() > 1 && proved.original[0] == '!') {
-            std::string positive = proved.original.substr(1);
-            std::string contraKey = "__contradiction__" + positive;
+        // D-51: contradiction-LB fallback. When `proved` has no direct origin
+        // in this LB (or any of its ancestors with an origin entry), search
+        // the LB chain for the contradiction LB that ASSUMED its negation —
+        // "__contradiction__" + negate(proved) — and resolve locally there.
+        // Either polarity: a negated head proved by a verbatim positive-seed
+        // LB, or a positive head proved by a complement LB
+        // (I-165).
+        if (!proved.original.empty()) {
+            const std::string negated = (proved.original[0] == '!')
+                ? proved.original.substr(1)
+                : "!" + proved.original;
+            std::string contraKey = "__contradiction__" + negated;
             Memory* contraLB = nullptr;
             for (Memory* anc = &memoryBlock; anc != nullptr; anc = anc->parentMemory) {
                 Memory* sc = simpleMapStore.findChild(anc, contraKey);
@@ -321,13 +332,16 @@ bool ExpressionAnalyzer::buildStack(Memory& memoryBlock,
         covered = coveredSnap;
     }
 
-    // D-51: no acyclic direct origin worked. For a negated head, try the
-    // contradiction-LB fallback before falling back to the degraded
-    // front()-emit. Walk the LB chain for "__contradiction__(positive)";
-    // if found, switch in and resolve there.
-    if (proved.original.size() > 1 && proved.original[0] == '!') {
-        std::string positive = proved.original.substr(1);
-        std::string contraKey = "__contradiction__" + positive;
+    // D-51: no acyclic direct origin worked. Try the contradiction-LB
+    // fallback before falling back to the degraded front()-emit. Walk the
+    // LB chain for "__contradiction__" + negate(proved) — either head
+    // polarity (I-165); if found,
+    // switch in and resolve there.
+    if (!proved.original.empty()) {
+        const std::string negated = (proved.original[0] == '!')
+            ? proved.original.substr(1)
+            : "!" + proved.original;
+        std::string contraKey = "__contradiction__" + negated;
         Memory* contraLB = nullptr;
         for (Memory* anc = &memoryBlock; anc != nullptr; anc = anc->parentMemory) {
             Memory* sc = simpleMapStore.findChild(anc, contraKey);
@@ -448,8 +462,11 @@ void gl::ExpressionAnalyzer::findEnds(const std::vector<std::string>& path, cons
     // ---- order ends by size (desc) ----
     std::vector<ExpressionWithValidity> endsOrdered = this->sortByValuesDesc(endsVec, stackSizes);
 
-    // ---- rebuild globalTheoremList ----
+    // ---- rebuild globalTheoremList (companion dedup set + producer
+    // attribution cleared with it; the re-appends below record no producer) ----
     this->globalTheoremList.clear();
+    this->globalTheoremStrings.clear();
+    this->globalTheoremProducers.clear();
     std::string joinedPath;
     for (std::size_t i = 0; i < path.size(); ++i) {
         if (i > 0) joinedPath.push_back(';');
@@ -464,7 +481,7 @@ void gl::ExpressionAnalyzer::findEnds(const std::vector<std::string>& path, cons
         else {
             theoremStr = "+" + endsOrdered[i].validityName + "+" + endsOrdered[i].original;
         }
-        this->globalTheoremList.push_back(std::make_tuple(theoremStr, std::string("debug"), std::string("-1"), std::string("-1")));
+        this->appendGlobalTheorem(theoremStr, "debug", "-1", "-1");
     }
 
     // MODIFIED: Scan for highest existing index to append
@@ -889,7 +906,7 @@ void ExpressionAnalyzer::generateRawProofGraph(
         // Stored rows are canonical-pipeline encodings, so full struct
         // equality collapses to the (originalId, validityId) pair. lookup is
         // non-minting: a never-interned needle cannot be a stored statement.
-        const int16_t origId = nm.lookup(expr);
+        const NameId origId = nm.lookup(expr);
         if (origId == 0) return false;
         for (int32_t i = 0; i < static_cast<int32_t>(vec.size()); ++i) {
             if (vec[i].originalId == origId
@@ -1029,7 +1046,7 @@ void ExpressionAnalyzer::generateRawProofGraph(
                     // (no-op if resident; sanctioned on discharged LBs,
                     // D-158). The registry stays empty.
                     eqNode->ensureLoadedForRead(lbdeload::kDeloadDirectory);
-                    const int16_t origId = eqNode->nameMap.lookup(head);
+                    const NameId origId = eqNode->nameMap.lookup(head);
                     inRegistry = origId != 0
                         && eqNode->dischargedRegistryKeys.count(
                                packStatementKey(origId,
@@ -1108,7 +1125,7 @@ void ExpressionAnalyzer::generateRawProofGraph(
                 // discharged LBs, D-158). buildStack below
                 // reads only RAM state (exprOriginMap, Rule 16).
                 node->ensureLoadedForRead(lbdeload::kDeloadDirectory);
-                const int16_t locOrigId = node->nameMap.lookup(head);
+                const NameId locOrigId = node->nameMap.lookup(head);
                 if (locOrigId == 0) continue;
                 if (!node->intLocalEncodedStatementsSet.contains(
                         packStatementKey(locOrigId, NameMap::MAIN_ID))) continue;

@@ -1,0 +1,73 @@
+!(interval[N,+,i0,i1,V1])	main	contradiction	(in2[i0,i1,s])	main	!(in2[i0,i1,s])	main	(interval[N,+,i0,i1,V1])	main
+(in2[i0,i1,s])	main	disintegration	(&(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))(in2[i2,i3,s]))	main
+(&(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))(in2[i2,i3,s]))	main	expansion	(AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])	main
+(AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])	main	task formulation
+!(in2[i0,i1,s])	main	equality1	!(in2[i0,i2,s])	main	(=[i2,i1])	main
+!(in2[i0,i2,s])	main	implication	(>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])!(in2[i0,i2,s]))	main	(AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])	main
+(=[i2,i1])	main	equality2	(=[i2,v1])	main	(=[v1,i1])	main
+(=[i2,v1])	main	implication	(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[w1,w2](preorder[N,+,w1,w2])(>[](preorder[N,+,w2,w1])(=[w1,w2]))))	main	(AnchorPeano[N,i0,s,+,*,i1])	main	(preorder[N,+,i2,v1])	main	(preorder[N,+,v1,i2])	main
+(AnchorPeano[N,i0,s,+,*,i1])	main	implication	(>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])(AnchorPeano[N,i0,s,+,*,i1]))	main	(AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])	main
+(preorder[N,+,i2,v1])	main	or convergence	(or2[i0,v2,i1,i2])	main	(preorder[N,+,i2,v1])	main_boundary_ordis_(or2[i0,v2,i1,i2])_((=[i2,v2]))	!(=[i0,v2])	main	!(=[i1,v2])	main
+(or2[i0,v2,i1,i2])	main	implication	(>[w1](in[w1,V1])(or2[i0,w1,i1,i2]))	main	(in[v2,V1])	main
+(>[w1](in[w1,V1])(or2[i0,w1,i1,i2]))	main	expansion	(implication1370[V1,i0,i1,i2])	main
+(implication1370[V1,i0,i1,i2])	main	disintegration	(&(implication1370[V1,i0,i1,i2])(implication1371[i1,i0,i2,V1]))	main
+(&(implication1370[V1,i0,i1,i2])(implication1371[i1,i0,i2,V1]))	main	expansion	(EnumerationSet3[i0,i1,i2,V1])	main
+(EnumerationSet3[i0,i1,i2,V1])	main	task formulation
+(in[v2,V1])	main	implication	(>[w1](or3[i1,w1,i0,i2])(in[w1,V1]))	main	(or3[i1,v2,i0,i2])	main
+(>[w1](or3[i1,w1,i0,i2])(in[w1,V1]))	main	expansion	(implication1371[i1,i0,i2,V1])	main
+(implication1371[i1,i0,i2,V1])	main	disintegration	(&(implication1370[V1,i0,i1,i2])(implication1371[i1,i0,i2,V1]))	main
+(or3[i1,v2,i0,i2])	main	implication	(>[w1](=[i2,w1])(or3[i1,w1,i0,i2]))	main	(=[i2,v2])	main
+(>[w1](=[i2,w1])(or3[i1,w1,i0,i2]))	main	expansion	(implication1371[i1,i0,i2,V1])	main
+(=[i2,v2])	main	implication	(>[w1](in[w1,N])(>[w2](in3[w1,i0,w2,+])(=[w1,w2])))	main	(in3[i2,i0,v2,+])	main	(in[i2,N])	main
+(>[w1](in[w1,N])(>[w2](in3[w1,i0,w2,+])(=[w1,w2])))	main	expansion	(implication11[N,i0,+])	main
+(implication11[N,i0,+])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication4[N,i0,s]))(implication5[N,s]))(fXYZ[+,N,N,N]))(implication11[N,i0,+]))(implication12[N,i0,+]))(implication13[N,s,+]))(implication14[N,s,+]))(fXYZ[*,N,N,N]))(implication15[N,i0,*]))(implication16[N,s,*,+]))(implication17[N,s,*,+]))	main
+(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication4[N,i0,s]))(implication5[N,s]))(fXYZ[+,N,N,N]))(implication11[N,i0,+]))(implication12[N,i0,+]))(implication13[N,s,+]))(implication14[N,s,+]))(fXYZ[*,N,N,N]))(implication15[N,i0,*]))(implication16[N,s,*,+]))(implication17[N,s,*,+]))	main	expansion	(NaturalNumbers[N,i0,s,+,*])	main
+(NaturalNumbers[N,i0,s,+,*])	main	disintegration	(&(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))(in2[i2,i3,s]))	main
+(in3[i2,i0,v2,+])	main	disintegration	!(>[v2](in[v2,N])!(in3[i2,i0,v2,+]))	main
+!(>[v2](in[v2,N])!(in3[i2,i0,v2,+]))	main	expansion	(existence1[N,i2,i0,+])	main
+(existence1[N,i2,i0,+])	main	implication	(>[w1](in[w1,N])(>[w2](in[w2,N])(existence1[N,w1,w2,+])))	main	(in[i0,N])	main	(in[i2,N])	main
+(>[w1](in[w1,N])(>[w2](in[w2,N])(existence1[N,w1,w2,+])))	main	expansion	(implication9[N,N,N,+])	main
+(implication9[N,N,N,+])	main	disintegration	(&(&(&(&(implication6[+,N])(implication7[+,N]))(implication8[+,N]))(implication9[N,N,N,+]))(implication10[N,N,+]))	main
+(&(&(&(&(implication6[+,N])(implication7[+,N]))(implication8[+,N]))(implication9[N,N,N,+]))(implication10[N,N,+]))	main	expansion	(fXYZ[+,N,N,N])	main
+(fXYZ[+,N,N,N])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication4[N,i0,s]))(implication5[N,s]))(fXYZ[+,N,N,N]))(implication11[N,i0,+]))(implication12[N,i0,+]))(implication13[N,s,+]))(implication14[N,s,+]))(fXYZ[*,N,N,N]))(implication15[N,i0,*]))(implication16[N,s,*,+]))(implication17[N,s,*,+]))	main
+(in[i0,N])	main	disintegration	(&(&(&(&(implication20[V1,N,+,i0])(implication21[V1,N,+,i1]))(implication22[N,+,i0,i1,V1]))(in[i0,N]))(in[i1,N]))	main
+(&(&(&(&(implication20[V1,N,+,i0])(implication21[V1,N,+,i1]))(implication22[N,+,i0,i1,V1]))(in[i0,N]))(in[i1,N]))	main	expansion	(interval[N,+,i0,i1,V1])	main
+(interval[N,+,i0,i1,V1])	main	task formulation
+(in[i2,N])	main	implication	(>[w1,w2](in2[w1,w2,s])(in[w1,N]))	main	(in2[i2,i3,s])	main
+(>[w1,w2](in2[w1,w2,s])(in[w1,N]))	main	expansion	(implication0[s,N])	main
+(implication0[s,N])	main	disintegration	(&(&(&(implication0[s,N])(implication1[s,N]))(implication2[N,N,s]))(implication3[N,s]))	main
+(&(&(&(implication0[s,N])(implication1[s,N]))(implication2[N,N,s]))(implication3[N,s]))	main	expansion	(fXY[s,N,N])	main
+(fXY[s,N,N])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication4[N,i0,s]))(implication5[N,s]))(fXYZ[+,N,N,N]))(implication11[N,i0,+]))(implication12[N,i0,+]))(implication13[N,s,+]))(implication14[N,s,+]))(fXYZ[*,N,N,N]))(implication15[N,i0,*]))(implication16[N,s,*,+]))(implication17[N,s,*,+]))	main
+(in2[i2,i3,s])	main	disintegration	(&(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))(in2[i2,i3,s]))	main
+(preorder[N,+,i2,v1])	main_boundary_ordis_(or2[i0,v2,i1,i2])_((=[i2,v2]))	equality1	(preorder[N,+,v2,v1])	main	(=[v2,i2])	main_boundary_ordis_(or2[i0,v2,i1,i2])_((=[i2,v2]))
+(preorder[N,+,v2,v1])	main	equality1	(preorder[N,+,v2,i1])	main	(=[i1,v1])	main
+(preorder[N,+,v2,i1])	main	implication	(>[w1](in[w1,V1])(preorder[N,+,w1,i1]))	main	(in[v2,V1])	main
+(>[w1](in[w1,V1])(preorder[N,+,w1,i1]))	main	expansion	(implication21[V1,N,+,i1])	main
+(implication21[V1,N,+,i1])	main	disintegration	(&(&(&(&(implication20[V1,N,+,i0])(implication21[V1,N,+,i1]))(implication22[N,+,i0,i1,V1]))(in[i0,N]))(in[i1,N]))	main
+(=[i1,v1])	main	implication	(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[w1,w2,w3](in3[w1,w2,w3,+])(>[w4](in3[w1,w4,w3,+])(=[w2,w4]))))	main	(AnchorPeano[N,0_copy,s,+,*,1_copy])	main	(in3[i2,i1,i3,+])	main	(in3[i2,v1,i3,+])	main
+(AnchorPeano[N,0_copy,s,+,*,1_copy])	main	implication	(>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])(AnchorPeano[N,i0,s,+,*,i1]))	main	(AnchorIncubator3[N,0_copy,s,+,*,1_copy,2_copy,id,i3])	main
+(AnchorIncubator3[N,0_copy,s,+,*,1_copy,2_copy,id,i3])	main	anchor handling	(AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])	main
+(in3[i2,i1,i3,+])	main	implication	(>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])(in3[i2,i1,i3,+]))	main	(AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])	main
+(in3[i2,v1,i3,+])	main	implication	(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[w1,w2,w3](in3[w1,w2,w3,+])(>[w4](in2[w2,w4,s])(>[w5](in2[w5,w1,s])(in3[w4,w5,w3,+])))))	main	(AnchorPeano[N,0_copy,s,+,*,1_copy])	main	(in2[i1,i2,s])	main	(in2[v1,v2,s])	main	(in3[v2,i1,i3,+])	main
+(in2[i1,i2,s])	main	disintegration	(&(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))(in2[i2,i3,s]))	main
+(in2[v1,v2,s])	main	disintegration	!(>[v1](in[v1,N])!(in2[v1,v2,s]))	main
+!(>[v1](in[v1,N])!(in2[v1,v2,s]))	main	expansion	(existence3[N,v2,s])	main
+(existence3[N,v2,s])	main	implication	(>[]!(=[v2,i0])(existence3[N,v2,s]))	main	!(=[v2,i0])	main
+(>[]!(=[v2,i0])(existence3[N,v2,s]))	main	disintegration	!(&!(existence3[N,v2,s])!(=[v2,i0]))	main
+!(&!(existence3[N,v2,s])!(=[v2,i0]))	main	expansion	(or0[N,v2,s,i0])	main
+(or0[N,v2,s,i0])	main	implication	(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[w1](in[w1,N])(or0[N,w1,s,i0])))	main	(AnchorPeano[N,i0,s,+,*,i1])	main	(in[v2,N])	main
+(in[v2,N])	main	disintegration	!(>[v2](in[v2,N])!(in3[i2,i0,v2,+]))	main
+!(=[v2,i0])	main	symmetry of inequality	!(=[i0,v2])	main
+!(=[i0,v2])	main	equality1	!(=[i0,i2])	main	(=[i2,v2])	main
+!(=[i0,i2])	main	implication	(>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])!(=[i0,i2]))	main	(AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])	main
+(in3[v2,i1,i3,+])	main	implication	(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[w1,w2](in2[w1,w2,s])(in3[w1,i1,w2,+])))	main	(AnchorPeano[N,i0,s,+,*,i1])	main	(in2[v2,i3,s])	main
+(in2[v2,i3,s])	main	implication	(>[w1](in[w1,N])(>[w2](in2[w1,w2,s])(>[w3,w4](in3[w3,w1,w4,+])(>[w5](in3[w3,w2,w5,+])(in2[w4,w5,s])))))	main	(in2[i0,i1,s])	main	(in3[i2,i0,v2,+])	main	(in3[i2,i1,i3,+])	main	(in[i0,N])	main
+(>[w1](in[w1,N])(>[w2](in2[w1,w2,s])(>[w3,w4](in3[w3,w1,w4,+])(>[w5](in3[w3,w2,w5,+])(in2[w4,w5,s])))))	main	expansion	(implication13[N,s,+])	main
+(implication13[N,s,+])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication4[N,i0,s]))(implication5[N,s]))(fXYZ[+,N,N,N]))(implication11[N,i0,+]))(implication12[N,i0,+]))(implication13[N,s,+]))(implication14[N,s,+]))(fXYZ[*,N,N,N]))(implication15[N,i0,*]))(implication16[N,s,*,+]))(implication17[N,s,*,+]))	main
+(=[v2,i2])	main_boundary_ordis_(or2[i0,v2,i1,i2])_((=[i2,v2]))	symmetry of equality	(=[i2,v2])	main_boundary_ordis_(or2[i0,v2,i1,i2])_((=[i2,v2]))
+(=[i2,v2])	main_boundary_ordis_(or2[i0,v2,i1,i2])_((=[i2,v2]))	or disintegration	(or2[i0,v2,i1,i2])	main
+!(=[i1,v2])	main	equality1	!(=[i1,i2])	main	(=[i2,v2])	main
+!(=[i1,i2])	main	implication	(>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])!(=[i1,i2]))	main	(AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])	main
+(preorder[N,+,v1,i2])	main	equality1	(preorder[N,+,i1,i2])	main	(=[i1,v1])	main
+(preorder[N,+,i1,i2])	main	implication	(>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])(preorder[N,+,i1,i2]))	main	(AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])	main
+(=[v1,i1])	main	implication	(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[w1,w2,w3](in3[w1,w2,w3,+])(>[w4](in3[w1,w4,w3,+])(=[w2,w4]))))	main	(AnchorPeano[N,0_copy,s,+,*,1_copy])	main	(in3[i2,i1,i3,+])	main	(in3[i2,v1,i3,+])	main

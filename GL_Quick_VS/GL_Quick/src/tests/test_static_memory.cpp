@@ -433,8 +433,8 @@ TEST(static_memory, manager_release_then_reacquire_recycles) {
 // pool block, entries past that spill to 8 KiB-block-backed pages (1024 entries
 // each). The grant-accounting cross-check (g.blocksInUse() == the directory's
 // spilled blocks) is the legitimate-assert pairing surfaced as a test. The
-// ceiling assert (a 17th spilled block) aborts and so is validated by the
-// GL_ARENA_PARANOID run, not a death test.
+// ceiling assert (a spill block past kArenaDirRootCap, 128) aborts and so is
+// validated by the GL_ARENA_PARANOID run, not a death test.
 
 namespace {
     // 1 MiB pool / 8 KiB block / 8 KiB page — 128 blocks; 1024 entries per
@@ -598,5 +598,40 @@ TEST(ptr_directory, destructor_returns_blocks) {
             d.push_back(fakePtr(i));
         ASSERT_EQ(g.blocksInUse(), static_cast<int64_t>(1));
     }                                                // ~PtrDirectory -> clear()
+    ASSERT_EQ(g.blocksInUse(), static_cast<int64_t>(0));
+}
+
+// The raised root cap (kArenaDirRootCap 16 -> 128) must keep every entry
+// addressable deep into the spilled region: a directory pushed past the OLD
+// 16-spill-block ceiling (where the vid-ratcheted rung-2 pageTable_ formerly
+// asserted) resolves entries exactly at and beyond that boundary, including
+// interior null holes (the freed-vid shape that drives the ratchet).
+TEST(ptr_directory, spilled_region_past_old_sixteen_block_cap) {
+    gl::GlobalMemoryManager g;
+    g.init(kPtrDirCfg);
+    PtrDir d(&g);
+    const int32_t kOldCapEntries = kPtrDirInline + 16 * kSpilledPerBlock;
+    const int32_t n = kPtrDirInline + 20 * kSpilledPerBlock;   // 20 spill blocks
+    for (int32_t i = 0; i < n; ++i) {
+        // Interior null holes every 7th entry — the freed-vid pattern.
+        d.push_back((i % 7 == 3) ? nullptr : fakePtr(i));
+    }
+    d.assertInvariants();
+    ASSERT_EQ(d.size(), n);
+    ASSERT_EQ(d.blocksHeld(), 20);
+    ASSERT_EQ(g.blocksInUse(), static_cast<int64_t>(20));
+    // Entries either side of the old 16-block ceiling and at the far tail.
+    for (const int32_t i : { 0, kPtrDirInline - 1, kPtrDirInline,
+                             kOldCapEntries - 1, kOldCapEntries,
+                             kOldCapEntries + 1, n - 1 }) {
+        if (i % 7 == 3) ASSERT_TRUE(d[i] == nullptr);
+        else            ASSERT_EQ(d[i], fakePtr(i));
+    }
+    // Sampled sweep across every spill block.
+    for (int32_t i = 0; i < n; i += 997) {
+        if (i % 7 == 3) ASSERT_TRUE(d[i] == nullptr);
+        else            ASSERT_EQ(d[i], fakePtr(i));
+    }
+    d.clear();
     ASSERT_EQ(g.blocksInUse(), static_cast<int64_t>(0));
 }

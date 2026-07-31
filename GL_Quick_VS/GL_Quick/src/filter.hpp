@@ -24,7 +24,10 @@
 
 #pragma once
 
+#include <filesystem>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 /// @file
 /// @brief Counterexample (CE) filter — declarations shared with the prover
@@ -40,10 +43,11 @@
 /// candidate conjecture is loaded into a synthetic LB seeded with the simple
 /// facts (`files/simple_facts/simple_facts_<anchor>_<n>.txt`), and the prover
 /// is run for a small budget (`numberIterationsConjectureFiltering`) to see
-/// whether the conjecture's negation produces a contradiction against any of
-/// the simple-fact j-copies. A confirmed contradiction marks the conjecture
-/// `successful` in `contradictionTable[i]`; the filter then survives the
-/// conjecture into `filtered_conjectures.txt` for the main prover stage.
+/// whether the conjecture contradicts the fact base. A confirmed
+/// contradiction marks the conjecture `successful` (i.e. *refuted*) in
+/// `contradictionTable[i]`; the filter then DROPS it — only rows with
+/// `successful == false` survive into `filtered_conjectures.txt` for the
+/// main prover stage.
 ///
 /// @see [`docs/agentic_swdd/10_pipeline/03_ce_filter.md`](../../docs/agentic_swdd/10_pipeline/03_ce_filter.md)
 ///      for the full pipeline-stage chapter.
@@ -56,8 +60,9 @@ namespace gl {
     /// `ExpressionAnalyzer` holds a `std::vector<ContradictionItem>`
     /// (`contradictionTable`) keyed by conjecture index. Per-row `successful`
     /// is set `true` when the prover detects that the conjecture contradicts
-    /// the simple-fact base. CE-only — referenced from `filter.cpp` and from
-    /// the contradiction-handler touch-point in `prover.cpp`.
+    /// the simple-fact base — `successful == true` means REFUTED; the filter
+    /// keeps only `!successful` rows. CE-only — referenced from `filter.cpp`
+    /// and from the contradiction-handler touch-point in `prover.cpp`.
     ///
     /// @see `prover.hpp::contradictionTable`.
     struct ContradictionItem {
@@ -73,5 +78,63 @@ namespace gl {
             successful(successful_) {
         }
     };
+
+    /// @brief Symmetric mirror-partner index: pool conjecture string → its
+    ///        mirror partner strings, both directions inserted.
+    using MirrorPartnerMap =
+        std::unordered_map<std::string, std::vector<std::string>>;
+
+    /// @brief Load `mirror_pairs.txt` into a symmetric partner map.
+    ///
+    /// @details
+    /// Reads the conjecturer-written pairs artifact (one
+    /// `source<TAB>mirror` row per operator-only conjecture whose mirror
+    /// entered the pool; both columns byte-identical to `conjectures.txt`
+    /// lines) and inserts BOTH directions — `source → mirror` and
+    /// `mirror → source` — with per-key duplicate suppression, so the CE
+    /// filter's flip pass can follow the relation from whichever member a
+    /// counterexample refutes. Rows are read in file order (source-sorted by
+    /// the writer), keeping each key's partner vector deterministic.
+    /// Trailing `\r` is stripped; empty lines are skipped (an empty file is
+    /// a defined result: no pairs, no flips).
+    ///
+    /// The file's existence is part of the pipeline contract: the
+    /// conjecturer writes it unconditionally whenever `conjectures.txt` is
+    /// written, so absence means the pipeline was invoked out of order —
+    /// asserted, not tolerated.
+    ///
+    /// @param path Full path to `files/theorems/mirror_pairs.txt`.
+    /// @return Symmetric partner map; empty when the file has no rows.
+    /// @see [D-229](../../docs/agentic_swdd/40_decisions.md#d-229)
+    MirrorPartnerMap loadMirrorPairs(const std::filesystem::path& path);
+
+    /// @brief Flip the mirror partners of CE-refuted conjectures to refuted.
+    ///
+    /// @details
+    /// The mirror-refutation heuristic's flip pass. Snapshots which slots the
+    /// CE bursts refuted (`table[i].successful` seeds), then sweeps them in
+    /// ascending index order: for every seeded conjecture, each partner from
+    /// `partners` that is present in this batch has its slot's `successful`
+    /// set `true`. Only CE-confirmed refutations seed — a flipped slot never
+    /// seeds further flips (no cascading) — so the outcome is a pure function
+    /// of the CE verdicts plus the pairs file, independent of sweep order. A
+    /// partner absent from `conjectures` is a defined case (refuted or
+    /// flipped in an earlier fact-file pass, or deduplicated at generation),
+    /// not a failure.
+    ///
+    /// Refutation-side only: this marks conjectures as dropped pre-prover; no
+    /// mirror ever re-enters as a proof step
+    /// ([I-81](../../docs/agentic_swdd/30_invariants.md#i-81) / D-112).
+    ///
+    /// @param table       The CE contradiction table, one slot per
+    ///                    conjecture; flipped in place.
+    /// @param conjectures The batch's conjecture strings, index-aligned with
+    ///                    `table`.
+    /// @param partners    Symmetric partner map from `loadMirrorPairs`.
+    /// @return Number of slots flipped by this pass.
+    /// @see loadMirrorPairs — builds `partners`.
+    int applyMirrorRefutations(std::vector<ContradictionItem>& table,
+        const std::vector<std::string>& conjectures,
+        const MirrorPartnerMap& partners);
 
 } // namespace gl

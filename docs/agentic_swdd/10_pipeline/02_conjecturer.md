@@ -26,9 +26,10 @@ The conjecturer enumerates candidate theorems by combinatorial assembly. Given t
 2. Attaches an anchor at the outermost position (`AnchorPeano[...]`, `AnchorGauss[...]`, …).
 3. Applies a cascade of structural filters (type-set consistency, complexity limits, tautology detection, operator-placement rules, forbidden patterns).
 4. Reshuffles arguments to canonical form.
-5. Generates the reverse-direction mirror of each conjecture and folds it into the prove pool (`conjectures.txt`) so it is proved for real — see step 9.
-6. (Optionally) generates OR conjectures from per-expression `allow_to_constitute_existence` config flags via `generateOrConjectures`; writes the emitted pairs to `or_pairs.txt` as an OUTPUT artefact.
-7. Writes the survivors to `files/theorems/conjectures.txt`.
+5. Generates the reverse-direction mirror of each conjecture and folds it into the prove pool (`conjectures.txt`) so it is proved for real — see step 10.
+6. Folds in the template addon — for every single-input single-output operator usable in the batch (and only when `=` is usable too), an injectivity-contrapositive stump is coupled to the anchor through the standard machinery and added to the pool. See the [dedicated section](#template-addon--injectivity-contrapositive-stumps) and [D-215](../40_decisions.md#d-215).
+7. (Optionally) generates OR conjectures from per-expression `allow_to_constitute_existence` config flags via `generateOrConjectures`; writes the emitted pairs to `or_pairs.txt` as an OUTPUT artefact.
+8. Writes the survivors to `files/theorems/conjectures.txt`.
 
 The prover then picks up `conjectures.txt` (via the CE filter, stage 3→4) and tries to prove or refute each entry.
 
@@ -91,7 +92,7 @@ And per-expression (inside `"in"`, `"=`", `"in2"`, `"in3"`, …):
 | Field | Effect |
 |---|---|
 | `max_count_per_conjecture` | Cap on copies of this predicate in one conjecture. |
-| `allow_negation` | May this predicate appear as `!(...)`? (`=` yes; most others implicitly yes.) |
+| `allow_negation` | May this predicate appear as `!(...)`? (`=` yes; most others implicitly yes.) Negated-premise variants are generated from each *surviving* positive row AFTER the filter cascade — `patterns_to_exclude` never sees them, so a pattern meant to bar a shape must bar its positive base form. |
 | `allow_to_constitute_existence` | Can this predicate head an existence? |
 | `existence_variable_position` | Which arg position carries the bound variable in an existence node. |
 
@@ -118,14 +119,15 @@ The entry is `Conjecturer::run` at [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quic
 7. **String-path filters** (for survivors escalated from int-path or directly constructed in string-path):
  - `checkInputVariablesOrder` ([`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp)) — input-variable-ordering invariant.
  - `checkInputVariablesTheoremOperatorHead` ([`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp)) — operator-head-specific invariant (nse≥2).
- - `evaluateOperatorExprs2` ([`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp)) — operator-expression structural check (nse≥2).
+ - `evaluateOperatorExprs2` ([`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp)) — operator-expression structural check (nse≥2). Its end-operator dichotomy block (≥2 unconsumed operator outputs) demands every relation argument be classifiable from operator/property/anchor membership; a relation argument found in none of those (possible once a relation's count cap admits two relation atoms sharing an argument, e.g. `=` at cap 2) carries no input/output evidence and the candidate is rejected — this replaced a precondition assert whose one-relation-atom-per-conjecture universe assumption the Peano `=` cap raise invalidated.
  - `patternInConjecture` ([`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp)) — forbidden-pattern rejection.
  - `controlEquality` ([`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp)) — equality-related guards, including [I-8](../30_invariants.md#i-8).
  - `passesInPremiseFilter` ([`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp)) — in[]-premise shape filter; see the [dedicated section](#passesinpremisefilter) for the three allow-rules (cnt==1 existence, cnt==2 negated, cnt==2 nse=3 neutralisation).
 8. **Reshuffle** — `reshuffle(expr, deep)` at [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp). See [Reshuffle pipeline](#reshuffle-pipeline) below for the canonicalisation stages on the `rt_conjecturer` / `rt_conjecturer2` branches (flat-walk rename, existence-head pinning, contiguous-arg renumber, anchor position-0 pin).
-9. **Mirror generation** — `createReshuffledMirrored(expr, anchorFirst)` at [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp) computes the reverse direction (head swapped with the premise sharing its output variable). `mergeMirrorConjecturesIntoPool` then folds those mirrors into `conjectures.txt` (de-duplicated), so each reverse direction passes through the CE filter and is **genuinely proved** by the prover. The prover no longer fabricates an unproved `mirrored statement` row (D-112).
-10. **OR conjectures** — `generateOrConjectures` at [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp), config-derived from per-expression `allow_to_constitute_existence` flags. The emitted `(existence, companion)` pairs are written to `or_pairs.txt` as an OUTPUT artefact (overwritten each run).
-11. **Write output** — `conjectures.txt` (now including the mirror conjectures from step 9), `reshuffled_conjectures.txt`, and the archival `reshuffled_mirrored_conjectures.txt` (the same mirror strings, retained for inspection only).
+9. **Mirror generation** — `createReshuffledMirrored(expr, anchorFirst)` at [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp) computes the reverse direction (head swapped with the premise sharing its output variable). `mergeMirrorConjecturesIntoPool` then folds those mirrors into `conjectures.txt` (de-duplicated), so each reverse direction passes through the CE filter and is **genuinely proved** by the prover. The prover no longer fabricates an unproved `mirrored statement` row (D-112). Additionally, `run` captures each admitted `(source, mirror)` couple at the three pool-admission sites (preliminary pass, main-loop merge, template addon), where both strings are byte-identical to their future `conjectures.txt` lines, and writes the operator-only subset (`consistsOnlyOfOperators` gate, `buildMirrorPairRows`) to `mirror_pairs.txt` — the CE filter's mirror-refutation input ([D-229](../40_decisions.md#d-229)).
+10. **Template addon** — `generateTemplateConjectures` at [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp) routes each qualifying operator's injectivity-contrapositive stump through `singleExprAnchorConnection`; the survivors fold into the result sets before sorting with the preliminary-pass dedup. See the [dedicated section](#template-addon--injectivity-contrapositive-stumps).
+11. **OR conjectures** — `generateOrConjectures` at [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp), config-derived from per-expression `allow_to_constitute_existence` flags. The emitted `(existence, companion)` pairs are written to `or_pairs.txt` as an OUTPUT artefact (overwritten each run).
+12. **Write output** — `conjectures.txt` (now including the mirror conjectures from step 9), `reshuffled_conjectures.txt`, the archival `reshuffled_mirrored_conjectures.txt` (the same mirror strings, retained for inspection only), and `mirror_pairs.txt` (one `source<TAB>mirror` row per operator-only conjecture whose mirror entered the pool; written unconditionally — empty in incubator mode, where `reformulateOperatorHead` rewrites every pool line after capture and the CE filter is skipped anyway).
 
 Two execution lanes exist:
 
@@ -145,6 +147,23 @@ Expression definitions split into two categories for the conjecturer:
 - **Relation.** `output_args` empty. Examples: `=`, `in`. No output binding; any placement is valid.
 
 The `nse = 1` path (`singleExprAnchorConnection`) skips the operator-head checks entirely — because with only one expression besides the anchor, there is nothing to connect the operator's output to. This used to produce malformed conjectures; the current code gates the operator-head checks on `nse ≥ 2`, but only operators with `output_args.size > 0` need this gating and the list is implicit in the config — see [Weaknesses](#weaknesses) below.
+
+---
+
+## Template addon — injectivity-contrapositive stumps
+
+The first case of a template-conjecture technique intended to grow ([D-215](../40_decisions.md#d-215)). The main enumeration can never assemble `op(a)=b and op(c)=d and b!=d implies a!=c` — the 4-atom shape exceeds `=`'s `max_size_expression_after_existence` cap of 3, and at D-215 time the `=` per-conjecture count cap of 1 also barred any two-`=` chain — so the addon builds it directly and hands it to the standard anchor-coupling machinery. (Peano main has since raised the `=` count cap to 2 for the rung-2.1 cancellation family; the addon remains necessary for this 4-atom shape regardless.)
+
+- **Gate** — `templateQualifyingOperators` at [`conjecturer.cpp`](../../GL_Quick_VS/GL_Quick/src/conjecturer.cpp): operators with exactly one input argument, one output argument, and `max_count_per_conjecture > 0`, emitted only when `=` also has `max_count_per_conjecture > 0` in the batch config (its negated equalities would otherwise cite an expression the batch does not use). No new config fields. Peano main and IncubatorPeano1/2 qualify with `in2`; every Gauss batch is disabled by its `=` count cap of 0.
+- **Stump** — `buildTemplateStump`: digit variables, element variables bound inside the stump, one fresh shared variable per remaining operator slot left free. For `in2`: `(>[1,2](in2[1,2,5])(>[3,4](in2[3,4,5])(>[]!(=[2,4])!(=[1,3]))))`. Because the stump binds `1..4` itself, `findArgMap` returns only the operator slot (`5`, type `P(x(1)(1))`), which is exactly what the coupling enumeration needs.
+- **Coupling** — `generateTemplateConjectures` passes the stump to `singleExprAnchorConnection`, the same string-path worker the `nse = 1` preliminary pass uses: every coupling of the free slots to type-matching anchor slots via `makeAllConnectionMaps` / `connectExpressions`, the standard filter tail, reshuffle, and the mirror lane (which stays empty — the head `!(=[..])` is not an operator). The **string** path is mandatory: `encodeExpr` parses only positive leaf chains and cannot represent `!(` premises, so the stump must never reach the int lane.
+- **Fold-in** — `run` inserts the survivors into the result sets immediately before sorting with the preliminary-pass dedup (`exprGood` + `controlSet`), and prints `Template addon: N conjectures`. Peano emission after coupling (`5 → 3`, the successor slot):
+
+```text
+(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in2[7,8,3])(>[9,10](in2[9,10,3])(>[]!(=[8,10])!(=[7,9])))))
+```
+
+Motivation: rung 2's reverse interval clause needs a *derived* variable-level negated equality (`q!=0`) for its second predecessor split; the contrapositive of successor injectivity, proved in Peano main, propagates to later batches as an external and supplies it.
 
 ---
 
@@ -283,7 +302,7 @@ Per-tag config rationale captured body: caps were chosen to match per-type maxes
 
 ## `createMapAnchor` — the memory sensitive step
 
-Precomputes anchor-to-expression argument permutation tables. For AnchorIncubator with its 7 `(1)`-typed slots, `leftMax = 7`. The `rightMax` parameter = max over def-sets of `(uncomb + comb)` values.
+Precomputes anchor-to-expression argument permutation tables. `leftMax = determineLeftSideBoundary` is the largest number of anchor slots sharing one definition-set type; for `AnchorIncubator3` (`[N,i0,s,+,*,i1,i2,id,i3]`, whose four `(1)`-typed slots `i0,i1,i2,i3` are the largest same-type group) `leftMax = 4`. The `rightMax` parameter = `determineRightSideBoundary` = max over def-sets of `(uncomb + comb)` values.
 
 **Critical invariant (observational, not code-enforced):** `rightMax > 3` causes RAM explosion — millions of permutation dicts are materialised. Controlled by `max_values_for_uncomb_def_sets + max_values_for_def_sets` in the config.
 
@@ -296,7 +315,7 @@ Precomputes anchor-to-expression argument permutation tables. For AnchorIncubato
 ### Known & tracked
 
 - **`createMapAnchor` RAM explosion.** Mentioned in the project conventions "Key conjecture generator internals". Fix path: keep `max_values_*` config fields small (≤ 3 per arg). Not protected by an assert.
-- **Operator-head check gating is `nse`-based.** `checkInputVariablesTheoremOperatorHead` and `evaluateOperatorExprs2` assume `nse ≥ 2` and are skipped on the `nse = 1` path. This is correct for the current operator set (`in2`, `in3`, `fold`, `residual`, `interval`, `preorder`), but adding a new operator that *also* behaves well as a single-expression head would require revisiting — the skip is structural, not operator-specific.
+- **Operator-head check gating is `nse`-based.** `checkInputVariablesTheoremOperatorHead` and `evaluateOperatorExprs2` assume `nse ≥ 2` and are skipped on the `nse = 1` path. This is correct for the current operator set (`in2`, `in3`, `fold`, `residual`, `interval` — `preorder` is a relation, not an operator: empty `output_args`), but adding a new operator that *also* behaves well as a single-expression head would require revisiting — the skip is structural, not operator-specific.
 
 ### Suspected fragility
 

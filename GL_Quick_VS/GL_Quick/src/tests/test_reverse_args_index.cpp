@@ -53,10 +53,10 @@ namespace {
 
     using Forward = gl::TypedColdBlobMap<gl::Int16SetKey, gl::NormKey>;
 
-    inline gl::NormKey nk(int16_t ne, const std::vector<int16_t>& data) {
+    inline gl::NormKey nk(gl::NameId ne, const std::vector<gl::NameId>& data) {
         return gl::NormKey{ ne, data };
     }
-    inline gl::Int16SetKey ik(const std::vector<int16_t>& ids) {
+    inline gl::Int16SetKey ik(const std::vector<gl::NameId>& ids) {
         return gl::Int16SetKey{ ids };
     }
 

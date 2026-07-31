@@ -109,7 +109,7 @@
   "interval": {
     "arity": 5,
     "definition_sets": {
-      "1": ["P(1)", false], "2": ["P(x(1)(x(1)(1)))", false], "3": ["(1)", false], "4": ["(1)", true], "5": ["P(1)", true]
+      "1": ["P(1)", false], "2": ["P(x(1)(x(1)(1)))", false], "3": ["(1)", true], "4": ["(1)", true], "5": ["P(1)", true]
     },
     "full_mpl": "interval.mpl",
     "short_mpl": "(interval[N,+,n,m,M])",
@@ -120,7 +120,7 @@
   },
   "EnumerationSet2": {
     "arity": 3,
-    "definition_sets": { "1": ["(1)", false], "2": ["(1)", true], "3": ["P(1)", true] },
+    "definition_sets": { "1": ["(1)", true], "2": ["(1)", true], "3": ["P(1)", true] },
     "full_mpl": "EnumerationSet2.mpl",
     "short_mpl": "(EnumerationSet2[a,b,M])",
     "max_count_per_conjecture": 1,
@@ -283,7 +283,7 @@
     },
     "full_mpl": "EnumerationSet3.mpl",
     "short_mpl": "(EnumerationSet3[a,b,c,M])",
-    "max_count_per_conjecture": 0,
+    "max_count_per_conjecture": 1,
     "input_args": [],
     "output_args": [],
     "max_size_expression": 5
@@ -348,34 +348,37 @@
   "patterns_to_exclude": [
     "\\(EnumerationSet2\\[(?!2,)\\d+,\\d+,\\d+\\]\\)",
     "\\(EnumerationSet2\\[\\d+,(?!6,)\\d+,\\d+\\]\\)",
+    "\\(EnumerationSet3\\[(?!2,)\\d+,\\d+,\\d+,\\d+\\]\\)",
+    "\\(EnumerationSet3\\[\\d+,(?!6,)\\d+,\\d+,\\d+\\]\\)",
+    "\\(EnumerationSet3\\[\\d+,\\d+,(?!7,)\\d+,\\d+\\]\\)",
     "\\(interval\\[(?!1,)\\d+,\\d+,\\d+,\\d+,\\d+\\]\\)",
     "\\(interval\\[\\d+,(?!4,)\\d+,\\d+,\\d+,\\d+\\]\\)",
     "\\(interval\\[\\d+,\\d+,(?!2,)\\d+,\\d+,\\d+\\]\\)",
-    "\\(interval\\[\\d+,\\d+,\\d+,(?!6,)\\d+,\\d+\\]\\)"
+    "\\(interval\\[\\d+,\\d+,\\d+,(?!6,)(?!7,)\\d+,\\d+\\]\\)"
   ],
   "only_in_head": [
     "(=["
   ],
-  "prohibited_combinations": [],
+  "prohibited_combinations": [["EnumerationSet2", "EnumerationSet3"]],
   "prohibited_heads": [
     "in", "in2", "in3", "fXY", "fXYZ", "NaturalNumbers",
-    "identity", "preorder", "EnumerationSet2",
+    "identity", "preorder", "EnumerationSet2", "EnumerationSet3",
     "AnchorPeano", "AnchorGauss", "AnchorIncubator8", "AnchorIncubator3"
   ],
   "parameters": {
     "min_number_simple_expressions": 2,
     "max_number_simple_expressions": 2,
     "max_size_mapping_def_set": 7,
-    "max_number_args_expr": 1,
+    "max_number_args_expr": 3,
     "operator_threshold": 5,
     "max_values_for_def_sets": {
-      "(1)": 1,
+      "(1)": 3,
       "P(x(1)(1))": 0,
       "P(x(1)(x(1)(1)))": 0,
       "P(1)": 1
     },
     "max_values_for_uncomb_def_sets": {
-      "(1)": 2,
+      "(1)": 0,
       "P(x(1)(1))": 3,
       "P(x(1)(x(1)(1)))": 3,
       "P(1)": 2
@@ -405,18 +408,18 @@
   },
   "prover_parameters": {
     "sizeAllBinariesAna": 14,
-    "maxIterationNumberProof": 50,
+    "maxIterationNumberProof": 17,
     "numberIterationsConjectureFiltering": 1,
     "maxSizeDefSetMapping": 5,
     "maxSizeTargetSetMapping": 16,
     "maxNumberSecondaryVariables": 2,
+    "maxNumberSecondaryVariablesOrint": 3,
     "sizeAllPermutationsAna": 7,
     "minNumOperatorsKey": 2,
     "minNumOperatorsKeyCE": 4,
-    "maxIterationNumberVariable": 1,
+    "maxIterationNumberVariable": 2,
     "standardMaxSecondaryNumber": 1,
     "trackHistory": true,
-    "standardMaxAdmissionDepth": 0,
     "inductionMaxAdmissionDepth": 1,
     "inductionMaxSecondaryNumber": 2,
     "counterExampleBoundary": 6,
@@ -426,10 +429,12 @@
     "max_origin_per_expr": 30,
     "compressor_max_origins_per_expr": 30,
     "try_contradiction": true,
+    "axed_anchor_exception": true,
     "ban_disintegration": false,
     "skip_ce_filter": true,
     "skip_eq_classes": false,
     "incubator_mode": true,
+    "lb_split": true,
     "allow_multiplication": false,
     "max_partition_size": 5,
     "max_or_depth": 1

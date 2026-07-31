@@ -458,7 +458,6 @@
     "maxIterationNumberVariable": 1,
     "standardMaxSecondaryNumber": 1,
     "trackHistory": true,
-    "standardMaxAdmissionDepth": 0,
     "inductionMaxAdmissionDepth": 1,
     "inductionMaxSecondaryNumber": 2,
     "counterExampleBoundary": 6,
@@ -476,6 +475,7 @@
     "max_partition_size": 5,
     "max_or_depth": 1,
     "disable_lb_split": false,
+    "lb_split": false,
     "split_growth_factor": 4,
     "split_fallback_ratio": 0.10
   },

@@ -199,16 +199,28 @@ namespace gl {
     /// @brief Allocate one page and return its virtual id (vid).
     ///
     /// @details
-    /// Binds the next vid to a physical page from `takePage` (free-list reuse
-    /// or a fresh carve). Asserts residency.
+    /// Pops the free-vid LIFO when a freed vid is available
+    /// (D-228) — the dead slot itself stores the chain link —
+    /// and binds it to a physical page from `takePage` (free-list reuse or a
+    /// fresh carve); otherwise binds the next tail vid. The vid space is
+    /// therefore bounded by the live-page high water, and reuse is
+    /// deterministic (same allocation/free sequence, same vids). Asserts
+    /// residency.
     ///
-    /// @return The new page's vid.
+    /// @return The page's vid.
     int32_t LbArena::allocPage() {
         assert(resident_ && "LbArena::allocPage on a deloaded arena");
         ensureGeometry();
-        pageTable_.push_back(takePage());
+        int32_t vid;
+        if (freeVidHead_ != -1) {
+            vid = freeVidHead_;
+            freeVidHead_ = deadSlotNextVid(pageTable_[vid]);
+            pageTable_.set(vid, takePage());
+        } else {
+            pageTable_.push_back(takePage());
+            vid = pageTable_.size() - 1;
+        }
         ++livePages_;
-        const int32_t vid = pageTable_.size() - 1;
 #if GL_ARENA_PARANOID
         assertInvariants();
 #endif
@@ -218,11 +230,11 @@ namespace gl {
     /// @brief Free the page at `vid`, returning it to the free-list.
     ///
     /// @details
-    /// Poisons the page so a stale read announces itself, parks it on the
-    /// free-list, and marks the vid dead. Freeing the tail vid (and any freed
-    /// vids exposed beneath it) rolls the page cursor back — the page-level
-    /// bump-back the scratch per-scope windows rely on; an interior free leaves a
-    /// hole the free-list fills later. Asserts residency and vid liveness.
+    /// Poisons the page so a stale read announces itself, parks the physical
+    /// page on the free-list, and pushes the vid onto the free-vid LIFO — the
+    /// dead slot stores the tagged chain link (D-228), so the
+    /// next `allocPage` reuses the vid instead of ratcheting the table.
+    /// Asserts residency and vid liveness.
     ///
     /// @param vid A vid returned by `allocPage` and not yet freed.
     void LbArena::freePage(int32_t vid) {
@@ -230,7 +242,7 @@ namespace gl {
         assert(vid >= 0 && vid < pageTable_.size()
             && "LbArena::freePage on an out-of-range vid");
         char* page = pageTable_[vid];
-        assert(page != nullptr
+        assert(isLivePageSlot(page)
             && "LbArena::freePage on an already-freed vid");
         const int32_t pb = global_->pageBytes();
         std::memset(page, kArenaPoisonByte, static_cast<std::size_t>(pb));
@@ -239,12 +251,10 @@ namespace gl {
         *reinterpret_cast<char**>(page + pb - sizeof(char*)) = freeHead_;
         freeHead_ = page;
         ++freePageCount_;
-        pageTable_.set(vid, nullptr);
+        // Push the vid onto the free-vid LIFO: the dead slot IS the chain node.
+        pageTable_.set(vid, deadSlotEncode(freeVidHead_));
+        freeVidHead_ = vid;
         --livePages_;
-        // Tail bump-back: drop trailing freed vids so the page cursor rolls
-        // back (the scratch per-scope reclaim shrinks the id space LIFO).
-        while (!pageTable_.empty() && pageTable_.back() == nullptr)
-            pageTable_.pop_back();
 #if GL_ARENA_PARANOID
         assertInvariants();
 #endif
@@ -288,7 +298,7 @@ namespace gl {
         // Live vids ascending; their target slots are their ranks.
         PagedVector<int32_t> liveVids(&scr, &scrDirty);
         for (int32_t vid = 0; vid < pageTable_.size(); ++vid)
-            if (pageTable_[vid] != nullptr)
+            if (isLivePageSlot(pageTable_[vid]))
                 liveVids.push_back(vid);
         const int32_t live = liveVids.size();
         assert(live == livePages_);
@@ -502,7 +512,7 @@ namespace gl {
             && "fillLiveBitmapRange: chunk exceeds the vid high-water");
         std::memset(bitmap, 0, static_cast<std::size_t>((vidSpan + 7) / 8));
         for (int32_t i = 0; i < vidSpan; ++i)
-            if (pageTable_.peek(startVid + i) != nullptr)
+            if (isLivePageSlot(pageTable_.peek(startVid + i)))
                 bitmap[i >> 3] |=
                     static_cast<unsigned char>(1u << (i & 7));
     }
@@ -540,6 +550,7 @@ namespace gl {
         // ever the FIRST population of a freshly-marked-resident arena.
         assert(blocks_.empty() && pageBlocks_.empty() && pageTable_.empty()
             && freeHead_ == nullptr && freePageCount_ == 0
+            && freeVidHead_ == -1
             && livePages_ == 0 && cursor_ == 0
             && "restoreForRawLoadBegin on a non-empty arena");
         assert(vidCount >= 0 && liveCount >= 0 && liveCount <= vidCount);
@@ -595,7 +606,9 @@ namespace gl {
                 pageTable_.push_back(page);
                 ++slot;
             } else {
-                pageTable_.push_back(nullptr);
+                // Dead vid: a chain-node placeholder; restoreForRawLoadEnd
+                // rebuilds the canonical free-vid chain over all dead slots.
+                pageTable_.push_back(deadSlotEncode(-1));
             }
         }
         return slot;
@@ -613,10 +626,19 @@ namespace gl {
                "vids");
         assert(slot == livePages_
             && "restoreForRawLoadEnd: bitmap set-bit count != liveCount");
-        // Dump-time invariant: the page-table tail is never a freed vid
-        // (freePage pops trailing nulls), so the last vid must be live.
-        assert((vidCount == 0 || pageTable_.peek(vidCount - 1) != nullptr)
-            && "restoreForRawLoadEnd: last vid not live — corrupt liveBitmap");
+        // Rebuild the free-vid chain canonically from the bitmap-derived dead
+        // set: walk vids DESCENDING pushing each dead vid, so the LIFO head is
+        // the LOWEST dead vid and pops ascend — a pure function of the live
+        // bitmap (deterministic; the pre-dump LIFO history is not serialized,
+        // deliberately: vid values never reach the canonical proof bytes, and
+        // the canonical rebuild keeps reload behavior a function of content).
+        freeVidHead_ = -1;
+        for (int32_t v = vidCount; v-- > 0; ) {
+            if (!isLivePageSlot(pageTable_.peek(v))) {
+                pageTable_.set(v, deadSlotEncode(freeVidHead_));
+                freeVidHead_ = v;
+            }
+        }
         const int32_t pb = global_->pageBytes();
         const int32_t ppb = blockBytes_ / pb;
         const int32_t keptBlocks = (livePages_ + ppb - 1) / ppb;
@@ -644,6 +666,7 @@ namespace gl {
         assert(resident_ && "markDeloaded on an already deloaded arena");
         assert(blocks_.empty() && pageBlocks_.empty()
             && pageTable_.empty() && freeHead_ == nullptr
+            && freeVidHead_ == -1
             && "markDeloaded before releaseAll returned the blocks");
         resident_ = false;
     }
@@ -672,6 +695,7 @@ namespace gl {
         pageTable_.clear();
         freeHead_ = nullptr;     // the free pages lived in pageBlocks_ (returned)
         freePageCount_ = 0;
+        freeVidHead_ = -1;       // the chain nodes lived in pageTable_ (cleared)
         livePages_ = 0;
         cursor_ = 0;
         ++generation_;
@@ -758,17 +782,38 @@ namespace gl {
         } else {
             assert(blocks_.size() == 0 && cursor_ == 0);
         }
-        // livePages_ equals the non-null page-table entries; the tail is never a
-        // freed vid (freePage pops trailing nulls).
+        // livePages_ equals the live page-table entries; every slot is either
+        // a live page or a tagged free-vid chain node (never plain null); the
+        // free-vid chain visits exactly the dead slots and terminates.
         const int32_t hw = pageTable_.size();
         int32_t live = 0;
-        for (int32_t v = 0; v < hw; ++v)
-            if (pageTable_[v] != nullptr) ++live;
+        for (int32_t v = 0; v < hw; ++v) {
+            assert(pageTable_[v] != nullptr
+                && "LbArena::assertInvariants: null page-table slot — dead "
+                   "vids must be free-vid chain nodes");
+            if (isLivePageSlot(pageTable_[v])) ++live;
+        }
         assert(live == livePages_
-            && "LbArena::assertInvariants: livePages_ != non-null page count");
-        if (hw > 0)
-            assert(pageTable_[hw - 1] != nullptr
-                && "LbArena::assertInvariants: page-table tail is a freed vid");
+            && "LbArena::assertInvariants: livePages_ != live page count");
+        {
+            // Walk the free-vid chain exactly (hw - live) steps: each node is
+            // an in-range dead slot; the walk must end at -1 precisely then —
+            // proves length, termination, and no cycle.
+            const int32_t deadCount = hw - live;
+            int32_t v = freeVidHead_;
+            for (int32_t step = 0; step < deadCount; ++step) {
+                assert(v >= 0 && v < hw
+                    && "LbArena::assertInvariants: free-vid chain node out of "
+                       "range");
+                assert(!isLivePageSlot(pageTable_[v])
+                    && "LbArena::assertInvariants: free-vid chain node is a "
+                       "live vid");
+                v = deadSlotNextVid(pageTable_[v]);
+            }
+            assert(v == -1
+                && "LbArena::assertInvariants: free-vid chain length != dead "
+                   "slot count");
+        }
         // The intrusive free-list length matches the counter (the next-free link
         // lives in each free page's last sizeof(char*) bytes).
         const int32_t pb = (global_ != nullptr) ? global_->pageBytes() : 0;
@@ -803,7 +848,7 @@ namespace gl {
         };
         for (int32_t v = 0; v < hw; ++v) {
             char* page = pageTable_[v];
-            if (page == nullptr) continue;
+            if (!isLivePageSlot(page)) continue;
             assert(inCarvedBlock(page)
                 && "LbArena::assertInvariants: live page outside a carved block");
             for (int32_t w = v + 1; w < hw; ++w)

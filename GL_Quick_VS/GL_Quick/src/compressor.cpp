@@ -154,7 +154,7 @@ namespace gl {
                 }
                 analyzer.addToHashMemory(
                     chainRun, chainRunN, StrSpan(head), nullptr, 0, *lb, lb->overallHashMemory, lvl0Run, 1, StrSpan(rule),
-                    analyzer.parameters.standardMaxAdmissionDepth,
+                    analyzer.parameters.maxIterationNumberVariable,
                     analyzer.parameters.standardMaxSecondaryNumber,
                     false, analyzer.parameters.minNumOperatorsKey,
                     StrSpan("implication", 11), false, StrSpan(rule));

@@ -1,8 +1,7 @@
-(preorder[1,4,7,10])	main	implication	(>[](in[u_7,u_1])(>[](in3[u_7,u_7,u_10,u_4])(preorder[u_1,u_4,u_7,u_10])))	main	(in3[7,7,10,4])	main	(in[7,1])	main
-(>[](in[u_7,u_1])(>[](in3[u_7,u_7,u_10,u_4])(preorder[u_1,u_4,u_7,u_10])))	main	multiplied from	(>[pi_lev_0_73](in[pi_lev_0_73,1])(>[](in3[7,pi_lev_0_73,10,4])(preorder[1,4,7,10])))	main
-(>[pi_lev_0_73](in[pi_lev_0_73,1])(>[](in3[7,pi_lev_0_73,10,4])(preorder[1,4,7,10])))	main	reformulation for integration >[bound]	!(>[pi_lev_0_73](in[pi_lev_0_73,1])!(in3[7,pi_lev_0_73,10,4]))_integration_goal	main
-!(>[pi_lev_0_73](in[pi_lev_0_73,1])!(in3[7,pi_lev_0_73,10,4]))_integration_goal	main	expansion for integration	(preorder[1,4,7,10])_integration_goal	main
-(in3[7,7,10,4])	main	implication	(>[1,2,3,4,5,6,7,8,9,10,11,12,13,14](AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])(in3[7,7,10,4]))	main	(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])	main
+(preorder[1,4,10,12])	main	implication	(>[pi_lev_0_12](in[pi_lev_0_12,u_1])(>[](in3[u_10,pi_lev_0_12,u_12,u_4])(preorder[u_1,u_4,u_10,u_12])))	main	(in3[10,7,12,4])	main	(in[7,1])	main
+(>[pi_lev_0_12](in[pi_lev_0_12,u_1])(>[](in3[u_10,pi_lev_0_12,u_12,u_4])(preorder[u_1,u_4,u_10,u_12])))	main	reformulation for integration >[bound]	!(>[pi_lev_0_12](in[pi_lev_0_12,1])!(in3[10,pi_lev_0_12,12,4]))_integration_goal	main
+!(>[pi_lev_0_12](in[pi_lev_0_12,1])!(in3[10,pi_lev_0_12,12,4]))_integration_goal	main	expansion for integration	(preorder[1,4,10,12])_integration_goal	main
+(in3[10,7,12,4])	main	implication	(>[1,2,3,4,5,6,7,8,9,10,11,12,13,14](AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])(in3[10,7,12,4]))	main	(AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])	main
 (AnchorIncubator8[1,2,3,4,5,6,7,8,9,10,11,12,13,14])	main	task formulation
 (in[7,1])	main	implication	(>[1,2](in2[1,2,u_3])(in[1,u_1]))	main	(in2[7,9,3])	main
 (>[1,2](in2[1,2,u_3])(in[1,u_1]))	main	expansion	(implication0[3,1])	main

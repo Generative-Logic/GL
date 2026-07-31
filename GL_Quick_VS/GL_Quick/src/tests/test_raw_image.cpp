@@ -232,6 +232,62 @@ TEST(raw_image, arena_roundtrip_fragmented_multiblock) {
     }
 }
 
+// Round trip with a dead TAIL vid (legal now that freed vids park on the
+// free-vid LIFO instead of tail-popping) plus interior holes: vid bindings
+// and live bytes survive, and post-reload allocation reuses the dead vids in
+// the CANONICAL ascending order derived from the live bitmap
+// (D-228) before minting any fresh tail vid.
+TEST(raw_image, arena_roundtrip_dead_tail_and_vid_reuse_after_reload) {
+    gl::GlobalMemoryManager m;
+    m.init(kRawCfg16);
+    gl::LbArena a(&m);
+    const int32_t pb = m.pageBytes();
+
+    const int32_t kPages = 12;
+    for (int32_t v = 0; v < kPages; ++v) {
+        ASSERT_EQ(a.allocPage(), v);
+        std::memset(a.pageAt(v), vidByte(v), static_cast<std::size_t>(pb));
+    }
+    // Interior holes AND the tail vid.
+    a.freePage(3);
+    a.freePage(7);
+    a.freePage(11);                       // dead TAIL vid
+    ASSERT_EQ(a.livePages(), 9);
+    ASSERT_EQ(a.pageHighWater(), 12);     // live high water — no tail pop
+    a.assertInvariants();
+
+    const gl::LbArena::RawShape shape = a.rawShape();
+    ASSERT_EQ(shape.vidCount, 12);
+    ASSERT_EQ(shape.livePages, 9);
+    const int32_t bmBytes = (shape.vidCount + 7) / 8;
+    std::vector<unsigned char> bm(static_cast<std::size_t>(bmBytes), 0xFF);
+    a.fillLiveBitmap(bm.data(), bmBytes);
+    const std::vector<char> file = emitToBuffer(a);
+    ASSERT_EQ(static_cast<int64_t>(file.size()),
+              static_cast<int64_t>(9) * pb);
+
+    gl::LbArena b(&m);
+    b.restoreForRawLoad(shape.vidCount, bm.data(), shape.livePages,
+                        shape.byteBumpCursor);
+    fillFromBuffer(b, file);
+    ASSERT_EQ(b.livePages(), 9);
+    ASSERT_EQ(b.pageHighWater(), 12);
+    b.assertInvariants();
+    for (int32_t v = 0; v < kPages; ++v) {
+        const bool live = (v != 3 && v != 7 && v != 11);
+        if (!live) continue;
+        ASSERT_TRUE(std::memcmp(a.pageAt(v), b.pageAt(v),
+                                static_cast<std::size_t>(pb)) == 0);
+    }
+    // Canonical reload chain: dead vids pop ASCENDING (3, 7, 11), then fresh.
+    ASSERT_EQ(b.allocPage(), 3);
+    ASSERT_EQ(b.allocPage(), 7);
+    ASSERT_EQ(b.allocPage(), 11);
+    ASSERT_EQ(b.allocPage(), 12);         // list dry: fresh tail vid
+    ASSERT_EQ(b.pageHighWater(), 13);
+    b.assertInvariants();
+}
+
 TEST(raw_image, arena_roundtrip_empty_header_only) {
     gl::GlobalMemoryManager m;
     m.init(kRawCfg16);

@@ -22,8 +22,10 @@ The ladder exists because FTA is too large a step from Peano + Gauss in a single
 | Rung | Theorem (human) | Forward direction | Reverse direction | Folder |
 |---|---|---|---|---|
 | 1 | `{0, 1} = [0, 1]` (set-equality of enumerated and interval forms) | ✓ closed (D-34) | ⏳ open — next rung-1 frontier | [`rung1/`](rung1/) |
+| 2 | `{0, 1, 2} = [0, 2]` (three-way set equality) | ✓ closed — flat atomic `_ordis_` | ✓ closed 2026-07-25 — `_orint_`-scoped secondary budget | [`rung2/`](rung2/) |
+| 2.1 | `{0, 1, 2} ≠ [0, 1]` (disproof of the false cross-pair) | ⏳ open — reductio, not started | — (single negation theorem) | [`rung2_1/`](rung2_1/) |
 
-Counts: **1 rung in progress** (one direction closed, one open), **0 rungs fully closed**, FTA not yet reached.
+Counts: **2 rungs in progress** (1, 2.1), **1 rung fully closed** (2), FTA not yet reached.
 
 ---
 
@@ -77,6 +79,81 @@ Both directed conjectures live in `files/theorems/theorems.txt` (lines 340 and 3
 ### State
 
 - **Forward direction closed** — saved in incubator's `proved_theorems.txt`. End-to-end closure required D-29 (disintegration gate), D-30 (OR-integration emit scope), D-32 (sharper OR-disint admission), D-33 (bidirectional eq-class application + single-channel discharge), and D-34 (kernel-level `ordisMerge` + mailOut main-only gate). See [`rung1/current_proof_state.md`](rung1/current_proof_state.md) Steps 1–10 for the layered investigation trail.
+
+---
+
+## Rung 2 — `{0, 1, 2} = [0, 2]`
+
+### Human formulation
+
+The second rung extends the enumerated set by one successor and requires one
+additional predecessor split in the reverse proof:
+
+```text
+{0, 1, 2}  =  [0, 2]
+```
+
+The full proof is in
+[`rung2/proof_02_set_eq_interval.md`](rung2/proof_02_set_eq_interval.md).
+
+### MPL formulation
+
+With `AnchorIncubator3` binding
+`1=N, 2=0, 3=s, 4=+, 5=*, 6=1, 7=2, 8=id, 9=3`, the active positive
+conjecture is:
+
+```text
+(>[1,2,3,4,5,6,7,8,9]
+  (AnchorIncubator3[1,2,3,4,5,6,7,8,9])
+  (>[10](EnumerationSet3[2,6,7,10])(interval[1,4,2,7,10])))
+```
+
+### State
+
+- **CLOSED 2026-07-25** — the theorem proved end-to-end (both containments
+ of the set equality ride the one `interval` conjecture). The forward
+ clauses close through flat atomic `_ordis_` cohorts; the reverse clause
+ closes through flat `_orint_` integration, the restored predecessor OR
+ theorem, the injectivity contrapositive, K mutual-exclusion implications
+ emitted at every OR depth, and the `_orint_`-scoped distinct-secondary
+ budget (`maxNumberSecondaryVariablesOrint`). Verifier airtight
+ (133,523 checks, zero failures), runtime under the pre-campaign baseline.
+
+The complete chronological evidence is in
+[`rung2/current_proof_state.md`](rung2/current_proof_state.md).
+
+---
+
+## Rung 2.1 — `{0, 1, 2} ≠ [0, 1]`
+
+### Human formulation
+
+The disproof rung split out of rung 2 at its closure: the IncubatorGauss3
+batch's last unsettled conjecture is the false cross-pair asserting that
+the three-element enumerated set equals the two-element interval. GL must
+prove the negation by reductio: assuming the interval description forces
+`2 ≤ 1`, and two rounds of successor-addition descent turn the witnessed
+sum `2 + k = 1` into a successor with value `0`. Full disproof in
+[`rung2_1/proof_02_1_es3_not_interval_0_1.md`](rung2_1/proof_02_1_es3_not_interval_0_1.md).
+
+### MPL formulation
+
+With the `AnchorIncubator3` binding `1=N, 2=0, 3=s, 4=+, 5=*, 6=1, 7=2,
+8=id, 9=3`, the target negation theorem is:
+
+```text
+(>[1,2,3,4,5,6,7,8,9]
+  (AnchorIncubator3[1,2,3,4,5,6,7,8,9])
+  (>[10](EnumerationSet3[2,6,7,10])!(interval[1,4,2,6,10])))
+```
+
+### State
+
+- **Not started** — created at the rung-2 closure; prover work begins in a
+ new session. Anticipated first boundary: the reductio's descent runs at
+ the contradiction LB's `main` scope, outside the `_orint_` widening's
+ scope condition. See
+ [`rung2_1/current_proof_state.md`](rung2_1/current_proof_state.md).
 
 ---
 

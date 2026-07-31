@@ -52,7 +52,7 @@ from verifier import (  # noqa: E402
     check_anchor_handling,
     check_variable_copy, check_externally_provided_theorem,
     check_incubator_back_reformulation, check_equalize_variable,
-    check_contradiction, check_or_disintegration,
+    check_contradiction, check_or_disintegration, check_or_convergence,
     check_or_branch_proven, check_or_branch_assumption,
     check_vacuous_truth, check_or_theorem,
     check_expansion_for_integration,
@@ -238,6 +238,34 @@ def test_pos_contradiction_shape():
 
 
 @register
+def test_pos_contradiction_complement_polarity():
+    """Complement (reductio) LB: positive row expression, negated seed —
+    clean_op == '!' + line.expression (try_contradiction_negated_head)."""
+    state = make_state_with_binaries(("Peano",))
+    contr = make_proof_line(
+        "(in[a,N])", "main", "contradiction",
+        "(in[a,N])", "main",
+        "!(in[a,N])", "main",
+        "!(in[a,N])", "main",
+    )
+    seed = make_proof_line("!(in[a,N])", "main", "task formulation")
+    chapter = [contr, seed]
+    assert_pass(check_contradiction, contr, chapter, state)
+
+
+@register
+def test_pos_task_formulation_reductio_seed():
+    """Positive-headed theorem proved by reductio: the head's negation is
+    a valid task-formulation row (the complement LB's assumed hypothesis)."""
+    state = make_state_with_binaries(("Peano",))
+    set_chapter_context(state,
+                        thm=("(>[v1](in[v1,N])(in[(s[v1]),N]))",
+                             "direct", "ref"))
+    line = make_proof_line("!(in[(s[v1]),N])", "main", "task formulation")
+    assert_pass(check_task_formulation, line, [line], state)
+
+
+@register
 def test_pos_vacuous_truth_shape():
     state = make_state_with_binaries(("Peano",))
     line = make_proof_line(
@@ -317,6 +345,27 @@ def _state_with_or3() -> object:
     return state
 
 
+def _state_with_nested_or() -> object:
+    """Install ``or91`` whose first child is the compiled ``or90``."""
+    state = make_state_with_binaries(("Peano",))
+    state.gl_binaries = dict(state.gl_binaries)
+    state.gl_binaries["Peano"] = dict(state.gl_binaries["Peano"])
+    state.gl_binaries["Peano"]["or90"] = {
+        "category": "or",
+        "signature": "(or90[u_1,u_2])",
+        "arity": 2,
+        "elements": ["(=[u_1,X])", "(=[u_2,X])"],
+    }
+    state.gl_binaries["Peano"]["or91"] = {
+        "category": "or",
+        "signature": "(or91[u_1,u_2,u_3])",
+        "arity": 3,
+        "elements": ["(or90[u_1,u_2])", "(=[u_3,X])"],
+    }
+    state.current_gl_binary = state.gl_binaries["Peano"]
+    return state
+
+
 @register
 def test_pos_or_disintegration_well_formed():
     state = _state_with_or3()
@@ -329,6 +378,57 @@ def test_pos_or_disintegration_well_formed():
     origin = make_proof_line("(or3[a,b,c])", "main", "task formulation")
     chapter = [line, origin]
     assert_pass(check_or_disintegration, line, chapter, state)
+
+
+@register
+def test_pos_nested_or_disintegration_is_one_flat_cohort():
+    state = _state_with_nested_or()
+    line = make_proof_line(
+        "(=[b,X])",
+        "main_boundary_ordis_(or91[a,b,c])_((=[b,X]))",
+        "or disintegration",
+        "(or91[a,b,c])", "main",
+    )
+    origin = make_proof_line("(or91[a,b,c])", "main", "task formulation")
+    assert_pass(check_or_disintegration, line, [line, origin], state)
+
+
+@register
+def test_pos_nested_or_convergence_requires_all_flat_leaves():
+    state = _state_with_nested_or()
+    branches = [
+        "main_boundary_ordis_(or91[a,b,c])_((=[a,X]))",
+        "main_boundary_ordis_(or91[a,b,c])_((=[b,X]))",
+        "main_boundary_ordis_(or91[a,b,c])_((=[c,X]))",
+    ]
+    convergence = make_proof_line(
+        "(conclusion)", "main", "or convergence",
+        "(or91[a,b,c])", "main",
+        "(conclusion)", branches[0],
+        "(conclusion)", branches[1],
+        "(conclusion)", branches[2],
+    )
+    derivations = [
+        make_proof_line("(conclusion)", branch, "task formulation")
+        for branch in branches
+    ]
+    assert_pass(check_or_convergence, convergence,
+                [convergence] + derivations, state)
+
+
+@register
+def test_pos_nested_or_expansion_and_mutual_implication_use_flat_leaves():
+    state = _state_with_nested_or()
+    expanded = "!(&!(&!(=[a,X])!(=[b,X]))!(=[c,X]))"
+    origin = make_proof_line("(or91[a,b,c])", "main", "task formulation")
+    expansion = make_proof_line(
+        expanded, "main", "expansion", "(or91[a,b,c])", "main")
+    implication = make_proof_line(
+        "(>[X]!(=[b,X])(>[]!(=[c,X])(=[a,X])))", "main", "disintegration",
+        expanded, "main")
+    chapter = [origin, expansion, implication]
+    assert_pass(check_expansion, expansion, chapter, state)
+    assert_pass(check_disintegration, implication, chapter, state)
 
 
 @register
@@ -409,6 +509,56 @@ def test_pos_expansion_and_well_formed():
     )
     chapter = [compact_origin, expansion]
     assert_pass(check_expansion, expansion, chapter, state)
+
+
+@register
+def test_pos_expansion_or_intro_implication_premise():
+    """D-237: an `expansion` row whose left side is a
+    per-leaf OR-INTRO rule `(>[bv](D_k)(orPremise))` of an implication
+    compact with an or-shaped premise element is accepted.
+
+    Synthetic impltest_or := premise (or92[u_1,1,u_2]), head (in[1,u_3]);
+    or92 := (=[u_1,u_2]) v (=[u_3,u_2]). Compact (impltest_or[a,b,M]) ->
+    substituted premise (or92[a,1,b]) -> flattened disjuncts (=[a,1]) /
+    (=[b,1]) -> intro candidates (>[1](=[a,1])(or92[a,1,b])) etc. The row
+    carries the chapter-renamed bound variable w1; the
+    normalize-with-unchangeables comparison equates it with the compiled
+    bound variable. The full-implication primary path stays intact (the
+    main rule row also passes, asserted alongside)."""
+    state = make_state_with_binaries(("Peano",))
+    state.gl_binaries = dict(state.gl_binaries)
+    state.gl_binaries["Peano"] = dict(state.gl_binaries["Peano"])
+    state.gl_binaries["Peano"]["or92"] = {
+        "category": "or",
+        "signature": "(or92[u_1,u_2,u_3])",
+        "arity": 3,
+        "elements": ["(=[u_1,u_2])", "(=[u_3,u_2])"],
+    }
+    state.gl_binaries["Peano"]["impltest_or"] = {
+        "category": "implication",
+        "signature": "(impltest_or[u_1,u_2,u_3])",
+        "elements": ["(or92[u_1,1,u_2])", "(in[1,u_3])"],
+    }
+    state.current_gl_binary = state.gl_binaries["Peano"]
+    compact_origin = make_proof_line(
+        "(impltest_or[a,b,M])", "main", "task formulation",
+    )
+    intro_first = make_proof_line(
+        "(>[w1](=[a,w1])(or92[a,w1,b]))", "main", "expansion",
+        "(impltest_or[a,b,M])", "main",
+    )
+    intro_second = make_proof_line(
+        "(>[w1](=[b,w1])(or92[a,w1,b]))", "main", "expansion",
+        "(impltest_or[a,b,M])", "main",
+    )
+    main_rule = make_proof_line(
+        "(>[w1](or92[a,w1,b])(in[w1,M]))", "main", "expansion",
+        "(impltest_or[a,b,M])", "main",
+    )
+    chapter = [compact_origin, intro_first, intro_second, main_rule]
+    assert_pass(check_expansion, intro_first, chapter, state)
+    assert_pass(check_expansion, intro_second, chapter, state)
+    assert_pass(check_expansion, main_rule, chapter, state)
 
 
 @register

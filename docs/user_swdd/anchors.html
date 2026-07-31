@@ -235,7 +235,7 @@ mathematics they commit to.
 <tr><td><code>AnchorPeano</code></td><td>6 — <code>[N, i0, s, +, *, i1]</code></td><td>(N, i0, s, +, *) satisfy the Peano axioms; i1 is the successor of i0. Drives the first batch.</td></tr>
 <tr><td><code>AnchorGauss</code></td><td>8 — <code>[N, i0, s, +, *, i1, i2, id]</code></td><td>Extends Peano with two more constants (i2, id). Drives the Gauss summation theorem and intermediate algebra.</td></tr>
 <tr><td><code>AnchorIncubator8</code></td><td>14 — <code>[N, i0, s, +, *, i1, i2, id, i3, i4, i5, i6, i7, i8]</code></td><td>The widest anchor (the original <code>AnchorIncubator</code>, renamed when the incubator anchor was split). Used by the wide incubator batches to produce ground-level facts. Many slots are unused in any individual theorem but available to the conjecturer's enumeration.</td></tr>
-<tr><td><code>AnchorIncubator3</code></td><td>9 — <code>[N, i0, s, +, *, i1, i2, id, i3]</code></td><td>The narrow incubator anchor (Gauss plus <code>i3</code>). Used by the AI3 incubator batches and the FTA-rung-1 batch, whose shorter successor chain generates only the i0–i3 facts it needs and so avoids saturating the int16 name-id cap.</td></tr>
+<tr><td><code>AnchorIncubator3</code></td><td>9 — <code>[N, i0, s, +, *, i1, i2, id, i3]</code></td><td>The narrow incubator anchor (Gauss plus <code>i3</code>). Used by the AI3 incubator batches and the FTA-rung-1 batch, whose shorter successor chain generates only the i0–i3 facts it needs and so keeps the name-id count well within the mint ceiling.</td></tr>
 </table>
 
 <figure>
@@ -436,6 +436,24 @@ single <code>addOriginEncoded</code> to the local map on the producing LB. The
 standard cycle-boundary mail propagation carries that history line into
 descendants — including the recursion stub — so the recursion stub ends up with
 the origin recorded but the statement never installed.
+</p>
+
+<h3>9.4.3 &nbsp;Containment, and the copied external anchor</h3>
+<p>
+The <code>x</code>-names are contained at the deposit door: any derived
+expression carrying an axed name in an argument slot is dropped before
+registration, so the copies serve as anchor-premise completions without
+breeding derived <code>x</code>-facts. One deliberate exception: a
+<i>positive anchor-category</i> statement passes. That is how the copied
+anchor extends beyond the batch anchor — an anchor-bridge rule (batch anchor
+⟹ external anchor) firing on the axed batch anchor derives the
+<i>external</i> anchor's axed form (in the incubator batches,
+<code>(AnchorPeano[1,x2,3,4,5,x6])</code> out of the axed
+<code>AnchorIncubator3</code>) as a live statement. Rules whose anchor
+premise is the external anchor can then bind element arguments at anchor
+slot values — without the copy, such an instance can never match the rule's
+request key, because the anchor slots and the element variables are
+positions of one shared key. Negated anchor forms stay filtered.
 </p>
 
 <!-- ===================== 9.5 ===================== -->
