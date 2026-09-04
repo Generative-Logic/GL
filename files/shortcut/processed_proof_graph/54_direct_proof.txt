@@ -1,0 +1,12 @@
+(preorder[N,+,v1,v2])	main	implication	(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[w1](preorder[N,+,i1,w1])(>[w2,w3](in3[w2,w1,w3,*])(preorder[N,+,w2,w3]))))	main	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	(in3[v1,v3,v2,*])	main	(preorder[N,+,i1,v3])	main
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](preorder[N,+,i1,v1])(>[v2,v3](in3[v2,v1,v3,*])(preorder[N,+,v2,v3]))))	main	theorem
+(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	task formulation
+(in3[v1,v3,v2,*])	main	disintegration	!(>[v3](in[v3,N])!(in3[v1,v3,v2,*]))	main
+!(>[v3](in[v3,N])!(in3[v1,v3,v2,*]))	main	expansion	(preorder[N,*,v1,v2])	main
+(preorder[N,*,v1,v2])	main	task formulation
+(preorder[N,+,i1,v3])	main	implication	(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[w1,w2](preorder[N,*,w1,w2])(>[](preorder[N,+,i1,w2])(preorder[N,+,i1,w1]))))	main	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	(preorder[N,+,i1,v2])	main	(preorder[N,*,v3,v2])	main
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](preorder[N,*,v1,v2])(>[](preorder[N,+,i1,v2])(preorder[N,+,i1,v1]))))	main	theorem
+(preorder[N,+,i1,v2])	main	task formulation
+(preorder[N,*,v3,v2])	main	implication	(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[w1,w2,w3](in3[w1,w2,w3,*])(preorder[N,*,w2,w3])))	main	(AnchorFTA[N,i0,s,+,*,1_copy,i2,id])	main	(in3[v1,v3,v2,*])	main
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2,v3](in3[v1,v2,v3,*])(preorder[N,*,v2,v3])))	main	theorem
+(AnchorFTA[N,i0,s,+,*,1_copy,i2,id])	main	anchor handling	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main

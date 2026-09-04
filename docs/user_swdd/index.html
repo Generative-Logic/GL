@@ -38,6 +38,7 @@ User-oriented SwDD — Chapter 1: Overview.
       <ul>
         <li><a href="prover.html#life">Life of a run</a></li>
         <li><a href="prover.html#cycles">Cycles</a></li>
+        <li><a href="prover.html#cuda-filter-classes">CUDA filter classes</a></li>
         <li><a href="prover.html#enter">How a theorem enters</a></li>
         <li><a href="prover.html#status">Status modes</a></li>
         <li><a href="prover.html#deactivate">Deactivation cascade</a></li>
@@ -62,7 +63,7 @@ User-oriented SwDD — Chapter 1: Overview.
         <li><a href="mechanisms.html#integ">Integration</a></li>
         <li><a href="mechanisms.html#branch">Branching &amp; contradiction</a></li>
         <li><a href="mechanisms.html#induct">Induction</a></li>
-        <li><a href="mechanisms.html#fan5">5-batch fan-out</a></li>
+        <li><a href="mechanisms.html#fan5">Request-generation fan-out</a></li>
         <li><a href="mechanisms.html#cascade">Pending-rejection cascade</a></li>
       </ul>
     </li>
@@ -85,6 +86,7 @@ User-oriented SwDD — Chapter 1: Overview.
         <li><a href="memory.html#aggregate">LbMemory — the aggregate</a></li>
         <li><a href="memory.html#deload">Deload / reload</a></li>
         <li><a href="memory.html#scope">Scope</a></li>
+        <li><a href="memory.html#strings">String statification</a></li>
       </ul>
     </li>
     <li><a href="provenance.html">Provenance</a>
@@ -291,8 +293,8 @@ Each stage's on-disk artefact is named so a claim can be checked at the file lev
     <g>
       <rect x="232" y="436" width="296" height="38" rx="8" fill="#262938" stroke="#B084EB"/>
       <text x="248" y="460" fill="#B084EB" font-weight="bold">7</text>
-      <text x="380" y="460" fill="#F0E8DC" text-anchor="middle">HTML export</text>
-      <text x="700" y="460" fill="#8B8FA5" font-size="10.5" text-anchor="end">full_proof_graph/*.html</text>
+      <text x="380" y="460" fill="#F0E8DC" text-anchor="middle">Lean export + HTML export</text>
+      <text x="700" y="460" fill="#8B8FA5" font-size="10.5" text-anchor="end">full_proof_graph/lean_export/ · *.html · *_lean.html</text>
     </g>
     <path d="M380 474 L380 492" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ar)"/>
     <g>
@@ -389,7 +391,7 @@ still need). The resulting six-stage shape is below.
     <g>
       <rect x="232" y="320" width="296" height="38" rx="8" fill="#262938" stroke="#B084EB"/>
       <text x="248" y="344" fill="#B084EB" font-weight="bold">5</text>
-      <text x="380" y="344" fill="#F0E8DC" text-anchor="middle">HTML export</text>
+      <text x="380" y="344" fill="#F0E8DC" text-anchor="middle">HTML export (no Lean export)</text>
       <text x="700" y="344" fill="#8B8FA5" font-size="10.5" text-anchor="end">full_proof_graph/*.html</text>
     </g>
     <path d="M380 358 L380 376" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#inc-ar)"/>
@@ -472,6 +474,36 @@ still need). The resulting six-stage shape is below.
 </svg>
 <figcaption><b>Overall orchestration.</b> Two parallel tracks (incubator + main) run interleaved by <code>run_modes.full_run()</code> in Python (the entry point <code>main.py</code> is a thin wrapper around it). Within each track, the next batch consumes the previous one's proved theorems directly. Across tracks: main delivers its theorems directly to the next incubator batch, where they are loaded as <i>external</i> rules; incubators deliver only their <code>simple_facts/*.txt</code> to the next main batch — indirectly, via the CE filter, never to the prover. "External" is specifically the term the incubator uses for main-track theorems it loads; within-track inputs are simply proved theorems. Incubator-proved theorems stay inside the incubator track.</figcaption>
 </figure>
+
+<p>
+A third run mode sits beside the full pipeline: the <b>shortcut mode</b>
+(<code>python main.py --shortcut</code> &rarr; <code>run_modes.shortcut_run()</code>).
+Instead of enumerating conjectures, it proves a <i>hand-maintained</i> list of
+true conjectures (<code>files/shortcut/theorems/conjectures.txt</code>) with the
+whole previously proved corpus loaded as external rules — a snapshot of the
+main pipeline's theorem pool in expanded base form, kept in
+<code>files/shortcut/theorems/externally_provided_theorems.txt</code> and
+refreshed manually after a full run. Base form is deliberate: compact operator
+names are private to a run's registry, so a corpus that crosses runs must
+carry only plain structure, which the prover re-compiles at load. Both run
+modes start from a clean slate — the operator registry and the fact tables
+are wiped at run start, so every run is a pure function of the tracked
+inputs. Counterexample filtering, including mirror refutation, is disabled for
+this hand-maintained list: there are no fact-table passes and no
+conjecturer-written mirror-pairs artifact. The
+conjecturer never runs; the prover is pointed at the two files directly
+(<code>gl_quick.exe FTA --conjectures-file &hellip; --externals-file &hellip;</code>),
+the post-proof compressor is skipped so every granular lemma stays in the pool,
+and the processed graph, the HTML proof graph, and the verifier report all land
+under <code>files/shortcut/</code> — the main pipeline's folders are never
+written. The batch runs under its own anchor, <code>AnchorFTA</code> (a
+byte-copy of <code>AnchorGauss</code>); the corpus keeps its original Gauss and
+Peano anchors and is activated by two cross-anchor connection theorems at the
+top of the conjecture list, which the prover proves itself before anything
+else can fire. This is the vehicle for the FTA lemma shortlist: lemmas are
+added to the conjecture list one by one and each run re-proves the growing
+list against the fixed corpus.
+</p>
 
 <h2 id="deductive">1.3 &nbsp;The deductive neighbourhood — what a batch explores</h2>
 <p>
@@ -568,6 +600,8 @@ inside one stage are deferred to the owning chapter.
 <tr><td><code>files/processed_proof_graph/*.txt</code></td><td>6</td><td>Renamed chapters with <code>v&lt;k&gt;</code> bound vars and <code>_copy</code> anchor copies (Python pipeline).</td><td>HTML export + verifier</td></tr>
 <tr><td><code>files/processed_proof_graph/global_theorem_list.txt</code></td><td>6</td><td>Per-theorem index — method tag (<code>direct</code> / <code>induction</code> / …), chapter file, validity. <b>Derived</b> — not authoritative for theorem set.</td><td>verifier + HTML export</td></tr>
 <tr><td><code>files/full_proof_graph/*.html</code></td><td>7</td><td>Human-readable per-theorem rendering.</td><td>maintainer; verifier ignores</td></tr>
+<tr><td><code>files/full_proof_graph/lean_export/</code></td><td>7</td><td>Lean 4 export of the run (with a Lean toolchain installed): selection, certificates, a complete Lake project with the generated modules and manifests, and the kernel-check log. The shortcut writes its own under <code>files/shortcut/full_proof_graph/lean_export/</code>, depending on nothing but its externals snapshot.</td><td>Lean kernel (<code>lake build</code>); HTML twin pages</td></tr>
+<tr><td><code>files/full_proof_graph/chapter&lt;N&gt;_lean.html</code></td><td>7</td><td>The chapter's Lean twin: the theorem's declarations sliced from the generated module, one named fact per proof row, links to module, certificate, manifest and kernel log.</td><td>maintainer; website copy</td></tr>
 <tr><td><code>.debug/hashburst_trace.txt</code></td><td>3 (when armed)</td><td>Per-iteration dump of one targeted LB's full state. Manually armed by the user; off by default.</td><td>maintainer during debug</td></tr>
 </table>
 

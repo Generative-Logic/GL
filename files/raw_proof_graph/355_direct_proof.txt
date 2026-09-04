@@ -1,0 +1,8 @@
+(in[6,9])	main	equality1	(in[6_copy,9])	main	(=[6_copy,6])	main
+(in[6_copy,9])	main	implication	(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](interval[1,4,2,9,10])(>[](interval[1,4,2,6,10])(in[9,10]))))	main	(AnchorGauss[1,2,3,4,5,6,7,8])	main	(interval[1,4,2,6,9])	main	(interval[1,4,2,6_copy,9])	main
+(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](interval[1,4,2,9,10])(>[](interval[1,4,2,6,10])(in[9,10]))))	main	theorem
+(AnchorGauss[1,2,3,4,5,6,7,8])	main	task formulation
+(interval[1,4,2,6,9])	main	task formulation
+(interval[1,4,2,6_copy,9])	main	equality1	(interval[1,4,2,6,9])	main	(=[6,6_copy])	main
+(=[6,6_copy])	main	variable copy
+(=[6_copy,6])	main	symmetry of equality	(=[6,6_copy])	main

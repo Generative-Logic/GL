@@ -23,6 +23,7 @@
  Contributor License Agreement(CLA).See the project's CONTRIBUTING.md file.*/
 #include "run_modes.hpp"
 #include "prover.hpp"
+#include "infra/diagnostics_log.hpp"
 #include <string>
 #include <vector>
 #include <filesystem>
@@ -81,7 +82,10 @@ namespace run_modes {
     }
 
 
-    void fullRun(const std::string& anchor_id) {
+    void fullRun(const std::string& anchor_id,
+                 const std::string& conjecturesFileOverride,
+                 const std::string& externalsFileOverride,
+                 const std::string& phase2Backend) {
         using namespace std;
         namespace fs = std::filesystem;
         using FrameClock = std::chrono::steady_clock;
@@ -163,13 +167,48 @@ namespace run_modes {
                         if (pp.contains("incubator_mode") && pp["incubator_mode"].get<bool>()) {
                             skipCompression = true;
                         }
+                        // Shortcut mode: skip the compressor without the
+                        // prover-semantics changes incubator_mode /
+                        // ban_disintegration imply. Proved theorems are then
+                        // appended to the configured theorems folder by the
+                        // skipCompression branch below, keeping
+                        // saveProvedTheoremsFiltered's canonical
+                        // files/theorems/ write path untouched.
+                        if (pp.contains("skip_compression") && pp["skip_compression"].get<bool>()) {
+                            skipCompression = true;
+                        }
                     }
                 } catch (...) {}
             }
         }
 
+        // Command-line file overrides (shortcut mode). Applied after the
+        // config sniff so an explicit path wins over the
+        // theorems_folder-derived defaults. Relative paths resolve against
+        // the project root.
+        if (!conjecturesFileOverride.empty()) {
+            fs::path p = conjecturesFileOverride;
+            if (p.is_relative()) p = PROJECT_ROOT / p;
+            THEOREMS_FILE = p.lexically_normal();
+        }
+        if (!externalsFileOverride.empty()) {
+            fs::path p = externalsFileOverride;
+            if (p.is_relative()) p = PROJECT_ROOT / p;
+            COMPRESSED_EXTERNAL_THEOREMS_FILE = p.lexically_normal();
+        }
+
+        assert((phase2Backend.empty() || phase2Backend == "cpu"
+                || phase2Backend == "cuda")
+               && "phase2 backend override must be empty, cpu, or cuda");
+        std::optional<gl::Phase2Backend> selectedPhase2Backend;
+        if (!phase2Backend.empty()) {
+            selectedPhase2Backend = phase2Backend == "cuda"
+                ? gl::Phase2Backend::cuda : gl::Phase2Backend::cpu;
+        }
+
         // ====== PHASE 1: FULL PROVE ======
-        gl::ExpressionAnalyzer expressionAnalyzer(anchor_id);
+        gl::ExpressionAnalyzer expressionAnalyzer(
+            anchor_id, selectedPhase2Backend);
 
         std::cout << "Loading proved theorems..." << std::endl;
         std::unordered_set<std::string> proved_set = loadLinesFromFile(PROVED_THEOREMS_FILE);
@@ -227,6 +266,21 @@ namespace run_modes {
         recordFrameTiming(
             "native.prover", frameSecondsSince(proverStarted), true);
 
+        // Export the load-time compiled twins of the external theorems.
+        // Base-form externals are registry-independent on the wire; the
+        // chapter citations carry these compiled forms, so the processed
+        // graph's external registry needs both (the processor unions this
+        // file into external_theorems.txt).
+        if (!expressionAnalyzer.precompiledExternalsExport.empty()) {
+            std::ofstream pex(THEOREMS_FOLDER / "precompiled_external_theorems.txt");
+            for (const std::string& row :
+                 expressionAnalyzer.precompiledExternalsExport) {
+                pex << row << "\n";
+            }
+            pex.flush();
+            assert(pex.good());
+        }
+
         // Sort globalTheoremList for deterministic downstream processing
         // (OR construction deferred to after compression)
         std::sort(expressionAnalyzer.globalTheoremList.begin(),
@@ -266,6 +320,18 @@ namespace run_modes {
             }
         }
 
+        // Pre-split family collapse (maintainer-directed): a merged
+        // theorem's guard variants are graph support, not pool content —
+        // the compressor judges the merged representative alone, and the
+        // variants leave every proved-theorems artifact while keeping
+        // their list rows and chapters.
+        std::set<std::string> mergeVariantRows;
+        for (const auto& tpl : expressionAnalyzer.globalTheoremList) {
+            if (std::get<1>(tpl) != "or elimination") continue;
+            mergeVariantRows.insert(std::get<2>(tpl));
+            mergeVariantRows.insert(std::get<3>(tpl));
+        }
+
         const auto compressorStarted = FrameClock::now();
         if (!skipCompression) {
             std::vector<std::string> theoremsForCompressor;
@@ -283,6 +349,22 @@ namespace run_modes {
             // in-flight through the compiled pipeline).
             for (const auto& tpl : expressionAnalyzer.globalTheoremList) {
                 const std::string& thm = std::get<0>(tpl);
+                // The proved-not-broadcast tier never enters the redundancy
+                // probe: an unbroadcast row must not subsume (and thereby
+                // eliminate) a first-class theorem, and the tier itself is
+                // not compressible pool content. It still mirrors into
+                // fullTheoremList so the proof graph renders its chapter.
+                if (std::get<1>(tpl) == "proved not broadcast"
+                    || mergeVariantRows.count(thm)) {
+                    // Tier rows and pre-split guard variants are graph
+                    // support: never redundancy-probe content, never
+                    // redundancy witnesses. They still mirror into
+                    // fullTheoremList so the proof graph renders them.
+                    if (alreadyInFull.insert(thm).second) {
+                        expressionAnalyzer.fullTheoremList.push_back(tpl);
+                    }
+                    continue;
+                }
                 if (seen.insert(thm).second) {
                     theoremsForCompressor.push_back(thm);
                 }
@@ -309,6 +391,11 @@ namespace run_modes {
                 auto& gtl = expressionAnalyzer.globalTheoremList;
                 gtl.erase(std::remove_if(gtl.begin(), gtl.end(),
                     [&](const std::tuple<std::string, std::string, std::string, std::string>& t) {
+                        // Tier rows and merge variants never entered the
+                        // probe, so absence from the survivor set says
+                        // nothing about them — keep (graph support).
+                        if (std::get<1>(t) == "proved not broadcast") return false;
+                        if (mergeVariantRows.count(std::get<0>(t))) return false;
                         return survivorSet.find(std::get<0>(t)) == survivorSet.end();
                     }), gtl.end());
                 std::cout << "After compression: " << survivors.size() << " essential theorems." << std::endl;
@@ -325,14 +412,45 @@ namespace run_modes {
             // ====== INCUBATOR MODE: Save directly, no compression, no proof graph ======
             std::cout << "\nSkipping compression (incubator mode)." << std::endl;
 
-            // Save proved theorems directly
+            // OR construction on the raw batch output — this mode has no
+            // compression survivors, so the current globalTheoremList IS
+            // the proved pool. Constructed ORs join globalTheoremList and
+            // therefore ride into both the save below and the raw proof
+            // graph (the writer synthesizes the or_theorem chapter).
+            std::set<std::string> orConsumedParents;
+            expressionAnalyzer.constructOrTheoremsFromPairs(orConsumedParents);
+
+            // Save proved theorems directly. Parents subsumed by an OR are
+            // dropped from the file (they stay in globalTheoremList so
+            // their chapters still render); "or theorem" rows are written
+            // in expanded base form for inter-batch communication, like
+            // the compression path's theorems.txt append.
+            std::size_t savedCount = 0;
             {
                 std::ofstream ofs(PROVED_THEOREMS_FILE, std::ios::app);
                 for (const auto& tpl : expressionAnalyzer.globalTheoremList) {
-                    ofs << std::get<0>(tpl) << "\n";
+                    const std::string& thm = std::get<0>(tpl);
+                    if (orConsumedParents.count(thm)) continue;
+                    // The proved-not-broadcast tier AND pre-split guard
+                    // variants stay out of theorems.txt — the
+                    // proved-theorems artifact carries first-class rows
+                    // only; graph-support rows exist for the proof graph
+                    // and the merge, never for inter-batch consumption.
+                    if (std::get<1>(tpl) == "proved not broadcast") continue;
+                    if (mergeVariantRows.count(thm)) continue;
+                    // Derived rows (or theorems, pre-split merges) go out in
+                    // expanded base form — registry-independent, consumable
+                    // as externals by later batches.
+                    if (std::get<1>(tpl) == "or theorem"
+                        || std::get<1>(tpl) == "or elimination") {
+                        ofs << expressionAnalyzer.expandToBaseForm(thm) << "\n";
+                    } else {
+                        ofs << thm << "\n";
+                    }
+                    ++savedCount;
                 }
             }
-            std::cout << "Saved " << expressionAnalyzer.globalTheoremList.size()
+            std::cout << "Saved " << savedCount
                       << " theorems to " << PROVED_THEOREMS_FILE << std::endl;
 
             // Generate proof graph in incubator mode too
@@ -416,43 +534,14 @@ namespace run_modes {
             //      done manually here at OR-construction time so it lands in
             //      the same emit pass rather than racing the compressor.
             //
-            // Per D-55.
-            std::vector<std::string> orTheorems;
+            // Per D-55, amended by the single-direction sufficiency
+            // decision: one proved straightened form licenses the OR;
+            // walk + registration live in constructOrTheoremsFromPairs
+            // (shared with the skip-compression path, which runs it on
+            // the raw batch output instead of the compression survivors).
             std::set<std::string> consumedParents;
-            {
-                std::unordered_set<std::string> provedSet;
-                for (const auto& t : expressionAnalyzer.globalTheoremList)
-                    provedSet.insert(std::get<0>(t));
-
-                std::set<std::pair<std::string, std::string>> seenDisjunctSets;
-
-                for (const auto& [exist, comp] : expressionAnalyzer.orPairsFromHeadSwitch) {
-                    if (!provedSet.count(exist) || !provedSet.count(comp)) continue;
-
-                    // (exist, comp) and (comp, exist) describe the same OR
-                    // (mirror reformulations of one another).  Canonicalize
-                    // by lexicographically sorting the pair and skip duplicates.
-                    auto a = std::min(exist, comp);
-                    auto b = std::max(exist, comp);
-                    if (!seenDisjunctSets.insert({a, b}).second) {
-                        std::cout << "OR variant skipped (duplicate disjunct-set already constructed)"
-                                  << std::endl;
-                        continue;
-                    }
-
-                    std::string orThm = expressionAnalyzer.constructOrTheorem(exist, comp);
-                    if (orThm.empty()) continue;
-
-                    expressionAnalyzer.appendGlobalTheorem(orThm, "or theorem", exist, comp);
-                    expressionAnalyzer.fullTheoremList.emplace_back(orThm, "or theorem", exist, comp);
-                    orTheorems.push_back(orThm);
-                    consumedParents.insert(exist);
-                    consumedParents.insert(comp);
-                    std::cout << "OR theorem constructed: " << orThm << std::endl;
-                    std::cout << "  parent removed (subsumed by OR): " << exist << std::endl;
-                    std::cout << "  parent removed (subsumed by OR): " << comp << std::endl;
-                }
-            }
+            const std::vector<std::string> orTheorems =
+                expressionAnalyzer.constructOrTheoremsFromPairs(consumedParents);
 
             // Drop OR-consumed parents from the survivors list before saving.
             if (!consumedParents.empty()) {
@@ -542,7 +631,7 @@ namespace run_modes {
         assert(mailEndBlocks >= mailLogPeakBlocks + mailInternerPeakBlocks);
         const int64_t mailEndUnattributedBlocks =
             mailEndBlocks - mailLogPeakBlocks - mailInternerPeakBlocks;
-        std::cout << "[mail-memory] dormant_lbs="
+        gl::diagnosticsLog() << "[mail-memory] dormant_lbs="
                   << expressionAnalyzer.dormantLogicBlocksAtGridBuild
                   << " mode="
                   << (expressionAnalyzer.rollingMailHistoryEnabled
@@ -583,7 +672,7 @@ namespace run_modes {
             gl::persistentMemory().blockBytes();
         const int64_t lbPeakBlocks = gl::lbMemory().peakBlocksInUse();
         const int64_t lbBlockBytes = gl::lbMemory().blockBytes();
-        std::cout << "[pool-memory]"
+        gl::diagnosticsLog() << "[pool-memory]"
                   << " main_peak_blocks=" << mainPeakBlocks
                   << " main_block_bytes=" << mainBlockBytes
                   << " main_peak_bytes=" << mainPeakBlocks * mainBlockBytes

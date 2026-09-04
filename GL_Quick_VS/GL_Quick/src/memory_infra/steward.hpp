@@ -466,7 +466,18 @@ namespace gl {
     ///      wake source), D-159.
     class MemorySteward {
     public:
-        MemorySteward() = default;
+        /// @brief Construct a working-set steward with an explicit SSD policy.
+        ///
+        /// @details
+        /// When `allowSsdDeload` is true, `start` launches the planner and I/O
+        /// executors and the existing working-set paging contract applies. When
+        /// false, the steward retains only the claim/release synchronization
+        /// door: every LB must remain resident, no planner or executor thread is
+        /// launched, and every disk-producing entry point is prohibited.
+        ///
+        /// @param allowSsdDeload Whether LB images may be written to SSD.
+        /// @invariant Resident-only mode never produces a deload image.
+        explicit MemorySteward(bool allowSsdDeload = true);
 
         /// @brief Stops the thread if still running (defined teardown
         ///        path for scope guards); asserts the quiesce contract
@@ -1177,6 +1188,7 @@ namespace gl {
         bool stopRequested_ = false;
         bool drainedSinceInstall_ = false;
         bool running_ = false;
+        const bool allowSsdDeload_;
     };
 
     /// @brief Print the one-shot `[EXHAUSTION]` block census to stderr — the

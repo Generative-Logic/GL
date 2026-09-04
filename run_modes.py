@@ -36,6 +36,7 @@ from pathlib import Path
 import subprocess
 import process_proof_graphs
 import verifier
+from proof_export import live as lean_live
 from incubator_to_simple_facts import convert_incubator_theorems
 from frame_timing import StageTimer
 
@@ -63,11 +64,20 @@ def _find_gl_quick_exe() -> Path:
     )
 
 
-def run_gl_quick(anchor_id: str = ""):
+def run_gl_quick(
+        anchor_id: str = "", extra_args=None, phase2_backend: str = None):
+    assert phase2_backend is None or phase2_backend in ("cpu", "cuda"), \
+        "phase2 backend override must be None, cpu, or cuda"
     exe_path = _find_gl_quick_exe()
     cmd = [str(exe_path)]
     if anchor_id:
         cmd.append(anchor_id)
+    # Optional batch-path flags after the tag (shortcut mode:
+    # --conjectures-file / --externals-file, see run_modes.cpp::fullRun).
+    if extra_args:
+        cmd.extend(str(arg) for arg in extra_args)
+    if phase2_backend is not None:
+        cmd.extend(["--phase2-backend", phase2_backend])
 
     # Inherit parent's stdout/stderr -> prints live instead of at the end
     subprocess.run(cmd, cwd=PROJECT_ROOT, check=True)
@@ -408,7 +418,8 @@ def _filter_vacuous_tainted(theorems_dir: Path, raw_dir: Path) -> None:
 
 
 def _run_batch(tag: str, prev_tags: list, theorems_dir: Path = None,
-               simple_facts_fn=None, add_cross_anchor: bool = True):
+               simple_facts_fn=None, add_cross_anchor: bool = True,
+               phase2_backend: str = None):
     """Run a single batch: conjecture generation + anchor connections + prover.
 
     `add_cross_anchor` defaults True for the historic single-batch-per-tag
@@ -416,6 +427,10 @@ def _run_batch(tag: str, prev_tags: list, theorems_dir: Path = None,
     of the same tag — the cross-anchor implication only needs to be added
     once per tag (it's identical across that tag's batches), and
     re-emitting it pollutes the next batch's conjectures.txt.
+
+    ``phase2_backend`` is an optional whole-run oracle override. ``None``
+    leaves ownership to the batch's ``use_gpu`` parameter; ``cpu`` or ``cuda``
+    explicitly selects that backend for comparison runs.
     """
     config_path = PROJECT_ROOT / "files" / "config" / f"Config{tag}.json"
     if not config_path.exists():
@@ -467,7 +482,7 @@ def _run_batch(tag: str, prev_tags: list, theorems_dir: Path = None,
         _seed_per_batch_binary(tag)
     os.environ["GL_FRAME_BATCH"] = tag
     with StageTimer(f"native.{tag}", parent="python.pipeline", batch=tag):
-        run_gl_quick(tag)
+        run_gl_quick(tag, phase2_backend=phase2_backend)
     # Fold any newly-allocated spontaneous entries from this batch back into
     # the shared registry so the next batch starts with them.
     with StageTimer("python.binary_merge", parent="python.pipeline", batch=tag):
@@ -495,13 +510,17 @@ RUN_MAIN_PATH = True  # full pipeline: incubator + main (determinism study compl
 SIMPLE_FACTS_MAP = {}
 
 
-def full_run():
+def full_run(phase2_backend: str = None):
     
     """
     Unified pipeline. For each tag: Incubator{Tag} -> {Tag}.
     Incubator produces ground-level facts for CE filtering.
     Main path produces proof graph theorems.
     Use --no-clean to keep previous results (e.g. run only Gauss after Peano).
+
+    ``phase2_backend`` is ``None`` for per-batch ``use_gpu`` selection (the
+    processor route unless a config pins CUDA), or an explicit ``cpu``/``cuda``
+    override for the whole run (``main.py --GPU`` passes ``cuda``).
     """
     tags = ["Peano", "Gauss"]  # full pipeline
 
@@ -595,7 +614,8 @@ def full_run():
                 print(f"\n=== Incubator {tag}: {incub_tag} ===")
                 _run_batch(incub_tag, prev_tags=prev_tags,
                            theorems_dir=incubator_theorems_dir,
-                           add_cross_anchor=needs_bridge)
+                           add_cross_anchor=needs_bridge,
+                           phase2_backend=phase2_backend)
 
         else:
             print(f"\n=== Skipping Incubator {tag} ===")
@@ -631,7 +651,8 @@ def full_run():
             print(f"\n=== {main_tag} ===")
             _run_batch(main_tag, prev_tags=prev_tags,
                        simple_facts_fn=SIMPLE_FACTS_MAP.get(tag),
-                       add_cross_anchor=(j == 0))
+                       add_cross_anchor=(j == 0),
+                       phase2_backend=phase2_backend)
 
     # 3. Finalization
     visu_config_path = PROJECT_ROOT / "files" / "config" / "ConfigVisu.json"
@@ -664,6 +685,17 @@ def full_run():
             "python.processed_graph.main", parent="python.pipeline", batch="main"
         ):
             process_proof_graphs.create_processed_proof_graph(configuration_visu)
+        # Lean export of the Peano + Gauss theorems into
+        # files/full_proof_graph/lean_export/ (skipped with one notice when
+        # no Lean toolchain is installed); runs before the HTML so the
+        # chapter pages can link their Lean twins.
+        with StageTimer(
+            "python.lean_export.main", parent="python.pipeline", batch="main"
+        ):
+            lean_live.export_main_graph(
+                main_proc_dir, main_full_dir,
+                PROJECT_ROOT / "files" / "config",
+                PROJECT_ROOT / "files" / "GL_binaries")
         with StageTimer(
             "python.html.main", parent="python.pipeline", batch="main"
         ):
@@ -726,3 +758,152 @@ def full_run():
             f"        {all_success} checks, 0 failures — airtight.\n"
         )
         print(art)
+
+
+def shortcut_run(phase2_backend: str = "cpu"):
+    """@brief FTA-shortcut pipeline (``main.py --shortcut``): prove the
+    hand-maintained conjecture list against the corpus supplied as external
+    theorems, entirely inside ``files/shortcut/``.
+
+    @details
+    Implements D-248 (see ``docs/agentic_swdd/40_decisions.md``
+    and ``docs/fta_ladder/fta_shortlist.md``): the prover receives the
+    previously proved Peano + Gauss corpus externally plus a list of true
+    conjectures, and assembles the proofs autonomously. Stages, mirroring
+    ``full_run`` / ``_run_batch`` for the single ``Shortcut`` batch:
+
+    1. Preconditions (assert, never fall back): the externals snapshot
+       ``files/shortcut/theorems/externally_provided_theorems.txt`` in
+       EXPANDED BASE FORM (rows of the main ``theorems.txt``, refreshed
+       manually after a full run — base form is registry-independent, so
+       the run needs no prior spontaneous registry) and the
+       hand-maintained ``conjectures.txt``.
+    2. Clean start: under ``CLEAN_RUN``, wipe ``files/GL_binaries`` and
+       ``files/simple_facts`` (every big run starts clean/empty), then
+       clean the shortcut tree: wipe ``raw_proof_graph``, truncate the
+       theorems-folder run products, keep the two durable inputs,
+       re-mirror the externals
+       (``_setup_theorem_folder`` -> ``--mirror-externals``).
+    3. Run the prover: seed ``GL_binary_FTA.json`` from shared (an empty
+       object on the clean start), invoke
+       ``gl_quick.exe Shortcut --conjectures-file ... --externals-file ...``
+       (``ConfigFTA.json`` routes all outputs into ``files/shortcut/``
+       and sets ``skip_compression``), merge new spontaneous names back into
+       shared. No conjecturer step — ``conjectures.txt`` is the input.
+    4. Vacuity taint closure over the shortcut pool.
+    5. Processed proof graph + HTML export + verifier report, all under
+       ``files/shortcut/``.
+
+    ``full_run`` is untouched by this mode; the main ``files/theorems/``
+    pool is never written.
+
+    @param phase2_backend Explicit ``cpu`` or ``cuda`` Phase 2 implementation
+        (default ``cpu`` — the processor route is the default of every run;
+        ``main.py --GPU`` passes ``cuda``).
+    @return None. Raises on any precondition or subprocess failure.
+    """
+    assert phase2_backend in ("cpu", "cuda"), \
+        "phase2 backend must be exactly cpu or cuda"
+    tag = "FTA"
+    shortcut_dir = PROJECT_ROOT / "files" / "shortcut"
+    shortcut_theorems_dir = shortcut_dir / "theorems"
+    shortcut_raw_dir = shortcut_dir / "raw_proof_graph"
+    shortcut_proc_dir = shortcut_dir / "processed_proof_graph"
+    shortcut_full_dir = shortcut_dir / "full_proof_graph"
+
+    # 1. Preconditions — every input the mode cannot regenerate itself. The
+    # externals snapshot is a tracked input in its own right: the shortcut is
+    # independent of the main path and never reads its theorem pool.
+    externals_path = shortcut_theorems_dir / "externally_provided_theorems.txt"
+    assert externals_path.exists() and externals_path.read_text(
+        encoding="utf-8").strip(), (
+        f"{externals_path} missing or empty — snapshot it from a full run: "
+        "copy files/theorems/theorems.txt (base form) there.")
+    conjectures_path = shortcut_theorems_dir / "conjectures.txt"
+    assert conjectures_path.exists() and conjectures_path.read_text(
+        encoding="utf-8").strip(), (
+        f"{conjectures_path} missing or empty — it is the hand-maintained "
+        "conjecture list (docs/fta_ladder/fta_shortlist.md).")
+    # 2. Clean start. The corpus is BASE FORM (registry-independent), so the
+    # run needs no pre-existing spontaneous registry and no CE fact tables —
+    # like full_run, every big run starts from a clean/empty position: wipe
+    # files/GL_binaries and files/simple_facts, then clean the shortcut tree
+    # (keeping the two durable inputs conjectures.txt and
+    # externally_provided_theorems.txt) and rebuild
+    # compressed_external_theorems.txt via --mirror-externals.
+    with StageTimer("python.global_setup", parent="python.pipeline", batch=tag):
+        if CLEAN_RUN:
+            empty_simple_facts()
+            gl_binaries_dir = PROJECT_ROOT / "files" / "GL_binaries"
+            if gl_binaries_dir.exists():
+                shutil.rmtree(gl_binaries_dir)
+            gl_binaries_dir.mkdir(parents=True, exist_ok=True)
+        empty_raw_proof_graph(str(shortcut_raw_dir.relative_to(PROJECT_ROOT)))
+        _setup_theorem_folder(shortcut_theorems_dir)
+
+    # 3. Prover run (no conjecturer — conjectures.txt is the input).
+    with StageTimer("python.binary_seed", parent="python.pipeline", batch=tag):
+        _seed_per_batch_binary(tag)
+    os.environ["GL_FRAME_BATCH"] = tag
+    with StageTimer(f"native.{tag}", parent="python.pipeline", batch=tag):
+        run_gl_quick(tag, extra_args=[
+            "--conjectures-file",
+            "files/shortcut/theorems/conjectures.txt",
+            "--externals-file",
+            "files/shortcut/theorems/compressed_external_theorems.txt",
+        ], phase2_backend=phase2_backend)
+    with StageTimer("python.binary_merge", parent="python.pipeline", batch=tag):
+        _merge_into_shared(tag)
+
+    # 4. Vacuity taint closure over the shortcut pool.
+    with StageTimer("python.vacuity_filter", parent="python.pipeline", batch=tag):
+        _filter_vacuous_tainted(shortcut_theorems_dir, shortcut_raw_dir)
+
+    # 5. Processed proof graph + HTML + verifier, all inside files/shortcut/.
+    visu_config_path = PROJECT_ROOT / "files" / "config" / "ConfigVisu.json"
+    configuration_visu = configuration_reader(visu_config_path)
+    print("\n--- Generating Shortcut Proof Graph ---")
+    with StageTimer(
+        "python.processed_graph.shortcut", parent="python.pipeline", batch=tag
+    ):
+        process_proof_graphs.create_processed_proof_graph(
+            configuration_visu, raw_dir=shortcut_raw_dir,
+            proc_dir=shortcut_proc_dir,
+            theorems_dir=shortcut_theorems_dir)
+    # Lean export of the FTA theorems into files/shortcut/full_proof_graph/
+    # lean_export/: independent of the main path — its only dependency is the
+    # externals snapshot (skipped with one notice without a Lean toolchain).
+    with StageTimer("python.lean_export.shortcut", parent="python.pipeline", batch=tag):
+        lean_live.export_shortcut_graph(
+            shortcut_proc_dir, shortcut_full_dir, externals_path,
+            PROJECT_ROOT / "files" / "config",
+            PROJECT_ROOT / "files" / "GL_binaries")
+    with StageTimer("python.html.shortcut", parent="python.pipeline", batch=tag):
+        generate_full_proof_graph.generate_proof_graph_pages(
+            configuration_visu, proc_dir=shortcut_proc_dir,
+            out_dir=shortcut_full_dir)
+
+    print("\n--- Running Shortcut Proof Graph Verifier ---")
+    with StageTimer("python.verifier.shortcut", parent="python.pipeline", batch=tag):
+        shortcut_state = verifier.run_verifier(str(shortcut_proc_dir))
+        verifier.print_report(shortcut_state)
+        success_count, failure_count = verifier.get_totals(shortcut_state)
+
+    if failure_count == 0:
+        art = (
+            "\n"
+            "                    *  .  *\n"
+            "                   . *\\|/* .\n"
+            "                *   * \\|/ *   *\n"
+            "                 .  */|\\*  .\n"
+            "                *  . /|\\ .  *\n"
+            "                   . *|* .\n"
+            "                     |||\n"
+            "                     |||\n"
+            "            All proof graphs verified.\n"
+            f"        {success_count} checks, 0 failures — airtight.\n"
+        )
+        print(art)
+    else:
+        print(f"\nShortcut verification: {success_count} checks, "
+              f"{failure_count} failures.")

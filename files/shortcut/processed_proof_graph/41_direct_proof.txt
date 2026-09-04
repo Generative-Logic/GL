@@ -1,0 +1,5 @@
+(strictOrder[N,+,v1,v2])	main	implication	(>[](preorder[N,+,v1,v2])(>[]!(=[v1,v2])(strictOrder[N,+,v1,v2])))	main	!(=[v1,v2])	main	(preorder[N,+,v1,v2])	main
+(>[](preorder[N,+,v1,v2])(>[]!(=[v1,v2])(strictOrder[N,+,v1,v2])))	main	reformulation for integration and	(&(preorder[N,+,v1,v2])!(=[v1,v2]))_integration_goal	main
+(&(preorder[N,+,v1,v2])!(=[v1,v2]))_integration_goal	main	expansion for integration	(strictOrder[N,+,v1,v2])_integration_goal	main
+!(=[v1,v2])	main	task formulation
+(preorder[N,+,v1,v2])	main	task formulation

@@ -1,0 +1,2754 @@
+{
+  "schema": "gl-external-theorem-list",
+  "schema_version": 2,
+  "source": {
+    "theorem_list": "files/shortcut/theorems/externally_provided_theorems.txt",
+    "theorem_list_sha256": "8DE5BCC3F9FAA7CCF13307942ECA5C05AFFAFE6CA250AF2F19E87F7FF068C3C9"
+  },
+  "corpus": {
+    "id": "peano_externals_36",
+    "coverage": {
+      "theorems": 36
+    },
+    "dependency_edges": []
+  },
+  "types": {},
+  "binary_definitions": {},
+  "theorems": [
+    {
+      "id": "peano_external_000",
+      "name": "peano external 0",
+      "method": "external",
+      "source_index": 0,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7",
+            "8",
+            "9"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "7",
+              "8",
+              "9",
+              "4"
+            ],
+            "mpl": "(in3[7,8,9,4])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "10",
+              "11",
+              "12"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "in3",
+              "arguments": [
+                "10",
+                "11",
+                "12",
+                "4"
+              ],
+              "mpl": "(in3[10,11,12,4])"
+            },
+            "conclusion": {
+              "kind": "implication",
+              "bound_variables": [
+                "13"
+              ],
+              "premise": {
+                "kind": "atom",
+                "head": "in3",
+                "arguments": [
+                  "13",
+                  "10",
+                  "7",
+                  "5"
+                ],
+                "mpl": "(in3[13,10,7,5])"
+              },
+              "conclusion": {
+                "kind": "implication",
+                "bound_variables": [],
+                "premise": {
+                  "kind": "atom",
+                  "head": "in3",
+                  "arguments": [
+                    "13",
+                    "11",
+                    "8",
+                    "5"
+                  ],
+                  "mpl": "(in3[13,11,8,5])"
+                },
+                "conclusion": {
+                  "kind": "atom",
+                  "head": "in3",
+                  "arguments": [
+                    "13",
+                    "12",
+                    "9",
+                    "5"
+                  ],
+                  "mpl": "(in3[13,12,9,5])"
+                },
+                "mpl": "(>[](in3[13,11,8,5])(in3[13,12,9,5]))"
+              },
+              "mpl": "(>[13](in3[13,10,7,5])(>[](in3[13,11,8,5])(in3[13,12,9,5])))"
+            },
+            "mpl": "(>[10,11,12](in3[10,11,12,4])(>[13](in3[13,10,7,5])(>[](in3[13,11,8,5])(in3[13,12,9,5]))))"
+          },
+          "mpl": "(>[7,8,9](in3[7,8,9,4])(>[10,11,12](in3[10,11,12,4])(>[13](in3[13,10,7,5])(>[](in3[13,11,8,5])(in3[13,12,9,5])))))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11,12](in3[10,11,12,4])(>[13](in3[13,10,7,5])(>[](in3[13,11,8,5])(in3[13,12,9,5]))))))"
+      }
+    },
+    {
+      "id": "peano_external_001",
+      "name": "peano external 1",
+      "method": "external",
+      "source_index": 1,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7",
+            "8",
+            "9"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "7",
+              "8",
+              "9",
+              "4"
+            ],
+            "mpl": "(in3[7,8,9,4])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "10",
+              "11",
+              "12"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "in3",
+              "arguments": [
+                "10",
+                "11",
+                "12",
+                "4"
+              ],
+              "mpl": "(in3[10,11,12,4])"
+            },
+            "conclusion": {
+              "kind": "implication",
+              "bound_variables": [],
+              "premise": {
+                "kind": "atom",
+                "head": "in3",
+                "arguments": [
+                  "8",
+                  "7",
+                  "11",
+                  "4"
+                ],
+                "mpl": "(in3[8,7,11,4])"
+              },
+              "conclusion": {
+                "kind": "atom",
+                "head": "in3",
+                "arguments": [
+                  "10",
+                  "9",
+                  "12",
+                  "4"
+                ],
+                "mpl": "(in3[10,9,12,4])"
+              },
+              "mpl": "(>[](in3[8,7,11,4])(in3[10,9,12,4]))"
+            },
+            "mpl": "(>[10,11,12](in3[10,11,12,4])(>[](in3[8,7,11,4])(in3[10,9,12,4])))"
+          },
+          "mpl": "(>[7,8,9](in3[7,8,9,4])(>[10,11,12](in3[10,11,12,4])(>[](in3[8,7,11,4])(in3[10,9,12,4]))))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11,12](in3[10,11,12,4])(>[](in3[8,7,11,4])(in3[10,9,12,4])))))"
+      }
+    },
+    {
+      "id": "peano_external_002",
+      "name": "peano external 2",
+      "method": "external",
+      "source_index": 2,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7",
+            "8",
+            "9"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "7",
+              "8",
+              "9",
+              "4"
+            ],
+            "mpl": "(in3[7,8,9,4])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "10",
+              "11"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "in3",
+              "arguments": [
+                "8",
+                "10",
+                "11",
+                "4"
+              ],
+              "mpl": "(in3[8,10,11,4])"
+            },
+            "conclusion": {
+              "kind": "implication",
+              "bound_variables": [
+                "12"
+              ],
+              "premise": {
+                "kind": "atom",
+                "head": "in3",
+                "arguments": [
+                  "12",
+                  "10",
+                  "7",
+                  "4"
+                ],
+                "mpl": "(in3[12,10,7,4])"
+              },
+              "conclusion": {
+                "kind": "atom",
+                "head": "in3",
+                "arguments": [
+                  "11",
+                  "12",
+                  "9",
+                  "4"
+                ],
+                "mpl": "(in3[11,12,9,4])"
+              },
+              "mpl": "(>[12](in3[12,10,7,4])(in3[11,12,9,4]))"
+            },
+            "mpl": "(>[10,11](in3[8,10,11,4])(>[12](in3[12,10,7,4])(in3[11,12,9,4])))"
+          },
+          "mpl": "(>[7,8,9](in3[7,8,9,4])(>[10,11](in3[8,10,11,4])(>[12](in3[12,10,7,4])(in3[11,12,9,4]))))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10,11](in3[8,10,11,4])(>[12](in3[12,10,7,4])(in3[11,12,9,4])))))"
+      }
+    },
+    {
+      "id": "peano_external_003",
+      "name": "peano external 3",
+      "method": "external",
+      "source_index": 3,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7",
+            "8",
+            "9"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "7",
+              "8",
+              "9",
+              "4"
+            ],
+            "mpl": "(in3[7,8,9,4])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "10"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "in2",
+              "arguments": [
+                "8",
+                "10",
+                "3"
+              ],
+              "mpl": "(in2[8,10,3])"
+            },
+            "conclusion": {
+              "kind": "implication",
+              "bound_variables": [
+                "11"
+              ],
+              "premise": {
+                "kind": "atom",
+                "head": "in2",
+                "arguments": [
+                  "11",
+                  "7",
+                  "3"
+                ],
+                "mpl": "(in2[11,7,3])"
+              },
+              "conclusion": {
+                "kind": "atom",
+                "head": "in3",
+                "arguments": [
+                  "10",
+                  "11",
+                  "9",
+                  "4"
+                ],
+                "mpl": "(in3[10,11,9,4])"
+              },
+              "mpl": "(>[11](in2[11,7,3])(in3[10,11,9,4]))"
+            },
+            "mpl": "(>[10](in2[8,10,3])(>[11](in2[11,7,3])(in3[10,11,9,4])))"
+          },
+          "mpl": "(>[7,8,9](in3[7,8,9,4])(>[10](in2[8,10,3])(>[11](in2[11,7,3])(in3[10,11,9,4]))))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10](in2[8,10,3])(>[11](in2[11,7,3])(in3[10,11,9,4])))))"
+      }
+    },
+    {
+      "id": "peano_external_004",
+      "name": "peano external 4",
+      "method": "external",
+      "source_index": 4,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7",
+            "8",
+            "9"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "7",
+              "8",
+              "9",
+              "4"
+            ],
+            "mpl": "(in3[7,8,9,4])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "10"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "in3",
+              "arguments": [
+                "7",
+                "10",
+                "9",
+                "4"
+              ],
+              "mpl": "(in3[7,10,9,4])"
+            },
+            "conclusion": {
+              "kind": "atom",
+              "head": "=",
+              "arguments": [
+                "8",
+                "10"
+              ],
+              "mpl": "(=[8,10])"
+            },
+            "mpl": "(>[10](in3[7,10,9,4])(=[8,10]))"
+          },
+          "mpl": "(>[7,8,9](in3[7,8,9,4])(>[10](in3[7,10,9,4])(=[8,10])))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[10](in3[7,10,9,4])(=[8,10]))))"
+      }
+    },
+    {
+      "id": "peano_external_005",
+      "name": "peano external 5",
+      "method": "external",
+      "source_index": 5,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7",
+            "8",
+            "9"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "7",
+              "8",
+              "9",
+              "4"
+            ],
+            "mpl": "(in3[7,8,9,4])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [],
+            "premise": {
+              "kind": "atom",
+              "head": "=",
+              "arguments": [
+                "8",
+                "9"
+              ],
+              "mpl": "(=[8,9])"
+            },
+            "conclusion": {
+              "kind": "atom",
+              "head": "=",
+              "arguments": [
+                "2",
+                "7"
+              ],
+              "mpl": "(=[2,7])"
+            },
+            "mpl": "(>[](=[8,9])(=[2,7]))"
+          },
+          "mpl": "(>[7,8,9](in3[7,8,9,4])(>[](=[8,9])(=[2,7])))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(>[](=[8,9])(=[2,7]))))"
+      }
+    },
+    {
+      "id": "peano_external_006",
+      "name": "peano external 6",
+      "method": "external",
+      "source_index": 6,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7",
+            "8",
+            "9"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "7",
+              "8",
+              "9",
+              "4"
+            ],
+            "mpl": "(in3[7,8,9,4])"
+          },
+          "conclusion": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "8",
+              "7",
+              "9",
+              "4"
+            ],
+            "mpl": "(in3[8,7,9,4])"
+          },
+          "mpl": "(>[7,8,9](in3[7,8,9,4])(in3[8,7,9,4]))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,4])(in3[8,7,9,4])))"
+      }
+    },
+    {
+      "id": "peano_external_007",
+      "name": "peano external 7",
+      "method": "external",
+      "source_index": 7,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7",
+            "8",
+            "9"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "7",
+              "8",
+              "9",
+              "5"
+            ],
+            "mpl": "(in3[7,8,9,5])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "10",
+              "11",
+              "12"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "in3",
+              "arguments": [
+                "10",
+                "11",
+                "12",
+                "5"
+              ],
+              "mpl": "(in3[10,11,12,5])"
+            },
+            "conclusion": {
+              "kind": "implication",
+              "bound_variables": [],
+              "premise": {
+                "kind": "atom",
+                "head": "in3",
+                "arguments": [
+                  "8",
+                  "7",
+                  "11",
+                  "5"
+                ],
+                "mpl": "(in3[8,7,11,5])"
+              },
+              "conclusion": {
+                "kind": "atom",
+                "head": "in3",
+                "arguments": [
+                  "10",
+                  "9",
+                  "12",
+                  "5"
+                ],
+                "mpl": "(in3[10,9,12,5])"
+              },
+              "mpl": "(>[](in3[8,7,11,5])(in3[10,9,12,5]))"
+            },
+            "mpl": "(>[10,11,12](in3[10,11,12,5])(>[](in3[8,7,11,5])(in3[10,9,12,5])))"
+          },
+          "mpl": "(>[7,8,9](in3[7,8,9,5])(>[10,11,12](in3[10,11,12,5])(>[](in3[8,7,11,5])(in3[10,9,12,5]))))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11,12](in3[10,11,12,5])(>[](in3[8,7,11,5])(in3[10,9,12,5])))))"
+      }
+    },
+    {
+      "id": "peano_external_008",
+      "name": "peano external 8",
+      "method": "external",
+      "source_index": 8,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7",
+            "8",
+            "9"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "7",
+              "8",
+              "9",
+              "5"
+            ],
+            "mpl": "(in3[7,8,9,5])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "10",
+              "11"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "in3",
+              "arguments": [
+                "7",
+                "10",
+                "11",
+                "5"
+              ],
+              "mpl": "(in3[7,10,11,5])"
+            },
+            "conclusion": {
+              "kind": "implication",
+              "bound_variables": [
+                "12",
+                "13"
+              ],
+              "premise": {
+                "kind": "atom",
+                "head": "in3",
+                "arguments": [
+                  "7",
+                  "12",
+                  "13",
+                  "5"
+                ],
+                "mpl": "(in3[7,12,13,5])"
+              },
+              "conclusion": {
+                "kind": "implication",
+                "bound_variables": [],
+                "premise": {
+                  "kind": "atom",
+                  "head": "in3",
+                  "arguments": [
+                    "8",
+                    "10",
+                    "12",
+                    "4"
+                  ],
+                  "mpl": "(in3[8,10,12,4])"
+                },
+                "conclusion": {
+                  "kind": "atom",
+                  "head": "in3",
+                  "arguments": [
+                    "9",
+                    "11",
+                    "13",
+                    "4"
+                  ],
+                  "mpl": "(in3[9,11,13,4])"
+                },
+                "mpl": "(>[](in3[8,10,12,4])(in3[9,11,13,4]))"
+              },
+              "mpl": "(>[12,13](in3[7,12,13,5])(>[](in3[8,10,12,4])(in3[9,11,13,4])))"
+            },
+            "mpl": "(>[10,11](in3[7,10,11,5])(>[12,13](in3[7,12,13,5])(>[](in3[8,10,12,4])(in3[9,11,13,4]))))"
+          },
+          "mpl": "(>[7,8,9](in3[7,8,9,5])(>[10,11](in3[7,10,11,5])(>[12,13](in3[7,12,13,5])(>[](in3[8,10,12,4])(in3[9,11,13,4])))))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11](in3[7,10,11,5])(>[12,13](in3[7,12,13,5])(>[](in3[8,10,12,4])(in3[9,11,13,4]))))))"
+      }
+    },
+    {
+      "id": "peano_external_009",
+      "name": "peano external 9",
+      "method": "external",
+      "source_index": 9,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7",
+            "8",
+            "9"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "7",
+              "8",
+              "9",
+              "5"
+            ],
+            "mpl": "(in3[7,8,9,5])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "10",
+              "11"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "in3",
+              "arguments": [
+                "8",
+                "10",
+                "11",
+                "5"
+              ],
+              "mpl": "(in3[8,10,11,5])"
+            },
+            "conclusion": {
+              "kind": "implication",
+              "bound_variables": [
+                "12"
+              ],
+              "premise": {
+                "kind": "atom",
+                "head": "in3",
+                "arguments": [
+                  "12",
+                  "10",
+                  "7",
+                  "5"
+                ],
+                "mpl": "(in3[12,10,7,5])"
+              },
+              "conclusion": {
+                "kind": "atom",
+                "head": "in3",
+                "arguments": [
+                  "11",
+                  "12",
+                  "9",
+                  "5"
+                ],
+                "mpl": "(in3[11,12,9,5])"
+              },
+              "mpl": "(>[12](in3[12,10,7,5])(in3[11,12,9,5]))"
+            },
+            "mpl": "(>[10,11](in3[8,10,11,5])(>[12](in3[12,10,7,5])(in3[11,12,9,5])))"
+          },
+          "mpl": "(>[7,8,9](in3[7,8,9,5])(>[10,11](in3[8,10,11,5])(>[12](in3[12,10,7,5])(in3[11,12,9,5]))))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11](in3[8,10,11,5])(>[12](in3[12,10,7,5])(in3[11,12,9,5])))))"
+      }
+    },
+    {
+      "id": "peano_external_010",
+      "name": "peano external 10",
+      "method": "external",
+      "source_index": 10,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7",
+            "8",
+            "9"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "7",
+              "8",
+              "9",
+              "5"
+            ],
+            "mpl": "(in3[7,8,9,5])"
+          },
+          "conclusion": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "8",
+              "7",
+              "9",
+              "5"
+            ],
+            "mpl": "(in3[8,7,9,5])"
+          },
+          "mpl": "(>[7,8,9](in3[7,8,9,5])(in3[8,7,9,5]))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(in3[8,7,9,5])))"
+      }
+    },
+    {
+      "id": "peano_external_011",
+      "name": "peano external 11",
+      "method": "external",
+      "source_index": 11,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7",
+            "8"
+          ],
+          "premise": {
+            "kind": "negation",
+            "inner": {
+              "kind": "atom",
+              "head": "=",
+              "arguments": [
+                "7",
+                "8"
+              ],
+              "mpl": "(=[7,8])"
+            },
+            "mpl": "!(=[7,8])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [],
+            "premise": {
+              "kind": "atom",
+              "head": "in3",
+              "arguments": [
+                "8",
+                "7",
+                "2",
+                "4"
+              ],
+              "mpl": "(in3[8,7,2,4])"
+            },
+            "conclusion": {
+              "kind": "negation",
+              "inner": {
+                "kind": "atom",
+                "head": "=",
+                "arguments": [
+                  "2",
+                  "7"
+                ],
+                "mpl": "(=[2,7])"
+              },
+              "mpl": "!(=[2,7])"
+            },
+            "mpl": "(>[](in3[8,7,2,4])!(=[2,7]))"
+          },
+          "mpl": "(>[7,8]!(=[7,8])(>[](in3[8,7,2,4])!(=[2,7])))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8]!(=[7,8])(>[](in3[8,7,2,4])!(=[2,7]))))"
+      }
+    },
+    {
+      "id": "peano_external_012",
+      "name": "peano external 12",
+      "method": "external",
+      "source_index": 12,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7",
+            "8"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "=",
+            "arguments": [
+              "7",
+              "8"
+            ],
+            "mpl": "(=[7,8])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [],
+            "premise": {
+              "kind": "atom",
+              "head": "in3",
+              "arguments": [
+                "8",
+                "7",
+                "2",
+                "5"
+              ],
+              "mpl": "(in3[8,7,2,5])"
+            },
+            "conclusion": {
+              "kind": "atom",
+              "head": "=",
+              "arguments": [
+                "2",
+                "8"
+              ],
+              "mpl": "(=[2,8])"
+            },
+            "mpl": "(>[](in3[8,7,2,5])(=[2,8]))"
+          },
+          "mpl": "(>[7,8](=[7,8])(>[](in3[8,7,2,5])(=[2,8])))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](=[7,8])(>[](in3[8,7,2,5])(=[2,8]))))"
+      }
+    },
+    {
+      "id": "peano_external_013",
+      "name": "peano external 13",
+      "method": "external",
+      "source_index": 13,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7",
+            "8"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in2",
+            "arguments": [
+              "7",
+              "8",
+              "3"
+            ],
+            "mpl": "(in2[7,8,3])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "9",
+              "10"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "in2",
+              "arguments": [
+                "9",
+                "10",
+                "3"
+              ],
+              "mpl": "(in2[9,10,3])"
+            },
+            "conclusion": {
+              "kind": "negation",
+              "inner": {
+                "kind": "conjunction",
+                "parts": [
+                  {
+                    "kind": "negation",
+                    "inner": {
+                      "kind": "atom",
+                      "head": "=",
+                      "arguments": [
+                        "8",
+                        "10"
+                      ],
+                      "mpl": "(=[8,10])"
+                    },
+                    "mpl": "!(=[8,10])"
+                  },
+                  {
+                    "kind": "atom",
+                    "head": "=",
+                    "arguments": [
+                      "7",
+                      "9"
+                    ],
+                    "mpl": "(=[7,9])"
+                  }
+                ],
+                "mpl": "(&!(=[8,10])(=[7,9]))"
+              },
+              "mpl": "!(&!(=[8,10])(=[7,9]))"
+            },
+            "mpl": "(>[9,10](in2[9,10,3])!(&!(=[8,10])(=[7,9])))"
+          },
+          "mpl": "(>[7,8](in2[7,8,3])(>[9,10](in2[9,10,3])!(&!(=[8,10])(=[7,9]))))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in2[7,8,3])(>[9,10](in2[9,10,3])!(&!(=[8,10])(=[7,9])))))"
+      }
+    },
+    {
+      "id": "peano_external_014",
+      "name": "peano external 14",
+      "method": "external",
+      "source_index": 14,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7",
+            "8"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in2",
+            "arguments": [
+              "7",
+              "8",
+              "3"
+            ],
+            "mpl": "(in2[7,8,3])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [],
+            "premise": {
+              "kind": "atom",
+              "head": "in2",
+              "arguments": [
+                "8",
+                "6",
+                "3"
+              ],
+              "mpl": "(in2[8,6,3])"
+            },
+            "conclusion": {
+              "kind": "negation",
+              "inner": {
+                "kind": "atom",
+                "head": "=",
+                "arguments": [
+                  "6",
+                  "7"
+                ],
+                "mpl": "(=[6,7])"
+              },
+              "mpl": "!(=[6,7])"
+            },
+            "mpl": "(>[](in2[8,6,3])!(=[6,7]))"
+          },
+          "mpl": "(>[7,8](in2[7,8,3])(>[](in2[8,6,3])!(=[6,7])))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in2[7,8,3])(>[](in2[8,6,3])!(=[6,7]))))"
+      }
+    },
+    {
+      "id": "peano_external_015",
+      "name": "peano external 15",
+      "method": "external",
+      "source_index": 15,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7",
+            "8"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in2",
+            "arguments": [
+              "7",
+              "8",
+              "3"
+            ],
+            "mpl": "(in2[7,8,3])"
+          },
+          "conclusion": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "7",
+              "6",
+              "8",
+              "4"
+            ],
+            "mpl": "(in3[7,6,8,4])"
+          },
+          "mpl": "(>[7,8](in2[7,8,3])(in3[7,6,8,4]))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in2[7,8,3])(in3[7,6,8,4])))"
+      }
+    },
+    {
+      "id": "peano_external_016",
+      "name": "peano external 16",
+      "method": "external",
+      "source_index": 16,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7",
+            "8"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "2",
+              "7",
+              "8",
+              "5"
+            ],
+            "mpl": "(in3[2,7,8,5])"
+          },
+          "conclusion": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "7",
+              "2",
+              "8",
+              "5"
+            ],
+            "mpl": "(in3[7,2,8,5])"
+          },
+          "mpl": "(>[7,8](in3[2,7,8,5])(in3[7,2,8,5]))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[2,7,8,5])(in3[7,2,8,5])))"
+      }
+    },
+    {
+      "id": "peano_external_017",
+      "name": "peano external 17",
+      "method": "external",
+      "source_index": 17,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7",
+            "8"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "6",
+              "7",
+              "8",
+              "4"
+            ],
+            "mpl": "(in3[6,7,8,4])"
+          },
+          "conclusion": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "7",
+              "6",
+              "8",
+              "4"
+            ],
+            "mpl": "(in3[7,6,8,4])"
+          },
+          "mpl": "(>[7,8](in3[6,7,8,4])(in3[7,6,8,4]))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[6,7,8,4])(in3[7,6,8,4])))"
+      }
+    },
+    {
+      "id": "peano_external_018",
+      "name": "peano external 18",
+      "method": "external",
+      "source_index": 18,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7",
+            "8"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "6",
+              "7",
+              "8",
+              "5"
+            ],
+            "mpl": "(in3[6,7,8,5])"
+          },
+          "conclusion": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "7",
+              "6",
+              "8",
+              "5"
+            ],
+            "mpl": "(in3[7,6,8,5])"
+          },
+          "mpl": "(>[7,8](in3[6,7,8,5])(in3[7,6,8,5]))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[6,7,8,5])(in3[7,6,8,5])))"
+      }
+    },
+    {
+      "id": "peano_external_019",
+      "name": "peano external 19",
+      "method": "external",
+      "source_index": 19,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7",
+            "8"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "7",
+              "2",
+              "8",
+              "4"
+            ],
+            "mpl": "(in3[7,2,8,4])"
+          },
+          "conclusion": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "2",
+              "7",
+              "8",
+              "4"
+            ],
+            "mpl": "(in3[2,7,8,4])"
+          },
+          "mpl": "(>[7,8](in3[7,2,8,4])(in3[2,7,8,4]))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[7,2,8,4])(in3[2,7,8,4])))"
+      }
+    },
+    {
+      "id": "peano_external_020",
+      "name": "peano external 20",
+      "method": "external",
+      "source_index": 20,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7",
+            "8"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "7",
+              "2",
+              "8",
+              "5"
+            ],
+            "mpl": "(in3[7,2,8,5])"
+          },
+          "conclusion": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "2",
+              "7",
+              "8",
+              "5"
+            ],
+            "mpl": "(in3[2,7,8,5])"
+          },
+          "mpl": "(>[7,8](in3[7,2,8,5])(in3[2,7,8,5]))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[7,2,8,5])(in3[2,7,8,5])))"
+      }
+    },
+    {
+      "id": "peano_external_021",
+      "name": "peano external 21",
+      "method": "external",
+      "source_index": 21,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7",
+            "8"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "7",
+              "6",
+              "8",
+              "4"
+            ],
+            "mpl": "(in3[7,6,8,4])"
+          },
+          "conclusion": {
+            "kind": "atom",
+            "head": "in2",
+            "arguments": [
+              "7",
+              "8",
+              "3"
+            ],
+            "mpl": "(in2[7,8,3])"
+          },
+          "mpl": "(>[7,8](in3[7,6,8,4])(in2[7,8,3]))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[7,6,8,4])(in2[7,8,3])))"
+      }
+    },
+    {
+      "id": "peano_external_022",
+      "name": "peano external 22",
+      "method": "external",
+      "source_index": 22,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7",
+            "8"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "7",
+              "6",
+              "8",
+              "4"
+            ],
+            "mpl": "(in3[7,6,8,4])"
+          },
+          "conclusion": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "6",
+              "7",
+              "8",
+              "4"
+            ],
+            "mpl": "(in3[6,7,8,4])"
+          },
+          "mpl": "(>[7,8](in3[7,6,8,4])(in3[6,7,8,4]))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[7,6,8,4])(in3[6,7,8,4])))"
+      }
+    },
+    {
+      "id": "peano_external_023",
+      "name": "peano external 23",
+      "method": "external",
+      "source_index": 23,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7",
+            "8"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "7",
+              "6",
+              "8",
+              "5"
+            ],
+            "mpl": "(in3[7,6,8,5])"
+          },
+          "conclusion": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "6",
+              "7",
+              "8",
+              "5"
+            ],
+            "mpl": "(in3[6,7,8,5])"
+          },
+          "mpl": "(>[7,8](in3[7,6,8,5])(in3[6,7,8,5]))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[7,6,8,5])(in3[6,7,8,5])))"
+      }
+    },
+    {
+      "id": "peano_external_024",
+      "name": "peano external 24",
+      "method": "external",
+      "source_index": 24,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7",
+            "8"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "7",
+              "8",
+              "2",
+              "4"
+            ],
+            "mpl": "(in3[7,8,2,4])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [],
+            "premise": {
+              "kind": "atom",
+              "head": "in",
+              "arguments": [
+                "8",
+                "1"
+              ],
+              "mpl": "(in[8,1])"
+            },
+            "conclusion": {
+              "kind": "atom",
+              "head": "=",
+              "arguments": [
+                "2",
+                "7"
+              ],
+              "mpl": "(=[2,7])"
+            },
+            "mpl": "(>[](in[8,1])(=[2,7]))"
+          },
+          "mpl": "(>[7,8](in3[7,8,2,4])(>[](in[8,1])(=[2,7])))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[7,8,2,4])(>[](in[8,1])(=[2,7]))))"
+      }
+    },
+    {
+      "id": "peano_external_025",
+      "name": "peano external 25",
+      "method": "external",
+      "source_index": 25,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7",
+            "8"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "7",
+              "8",
+              "2",
+              "4"
+            ],
+            "mpl": "(in3[7,8,2,4])"
+          },
+          "conclusion": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "8",
+              "7",
+              "2",
+              "4"
+            ],
+            "mpl": "(in3[8,7,2,4])"
+          },
+          "mpl": "(>[7,8](in3[7,8,2,4])(in3[8,7,2,4]))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[7,8,2,4])(in3[8,7,2,4])))"
+      }
+    },
+    {
+      "id": "peano_external_026",
+      "name": "peano external 26",
+      "method": "external",
+      "source_index": 26,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7",
+            "8"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "7",
+              "8",
+              "2",
+              "5"
+            ],
+            "mpl": "(in3[7,8,2,5])"
+          },
+          "conclusion": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "8",
+              "7",
+              "2",
+              "5"
+            ],
+            "mpl": "(in3[8,7,2,5])"
+          },
+          "mpl": "(>[7,8](in3[7,8,2,5])(in3[8,7,2,5]))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[7,8,2,5])(in3[8,7,2,5])))"
+      }
+    },
+    {
+      "id": "peano_external_027",
+      "name": "peano external 27",
+      "method": "external",
+      "source_index": 27,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7",
+            "8"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "7",
+              "8",
+              "6",
+              "4"
+            ],
+            "mpl": "(in3[7,8,6,4])"
+          },
+          "conclusion": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "8",
+              "7",
+              "6",
+              "4"
+            ],
+            "mpl": "(in3[8,7,6,4])"
+          },
+          "mpl": "(>[7,8](in3[7,8,6,4])(in3[8,7,6,4]))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[7,8,6,4])(in3[8,7,6,4])))"
+      }
+    },
+    {
+      "id": "peano_external_028",
+      "name": "peano external 28",
+      "method": "external",
+      "source_index": 28,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7",
+            "8"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "7",
+              "8",
+              "6",
+              "5"
+            ],
+            "mpl": "(in3[7,8,6,5])"
+          },
+          "conclusion": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "8",
+              "7",
+              "6",
+              "5"
+            ],
+            "mpl": "(in3[8,7,6,5])"
+          },
+          "mpl": "(>[7,8](in3[7,8,6,5])(in3[8,7,6,5]))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[7,8,6,5])(in3[8,7,6,5])))"
+      }
+    },
+    {
+      "id": "peano_external_029",
+      "name": "peano external 29",
+      "method": "external",
+      "source_index": 29,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7",
+            "8"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "preorder",
+            "arguments": [
+              "1",
+              "4",
+              "7",
+              "8"
+            ],
+            "mpl": "(preorder[1,4,7,8])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [],
+            "premise": {
+              "kind": "atom",
+              "head": "preorder",
+              "arguments": [
+                "1",
+                "4",
+                "8",
+                "7"
+              ],
+              "mpl": "(preorder[1,4,8,7])"
+            },
+            "conclusion": {
+              "kind": "atom",
+              "head": "=",
+              "arguments": [
+                "7",
+                "8"
+              ],
+              "mpl": "(=[7,8])"
+            },
+            "mpl": "(>[](preorder[1,4,8,7])(=[7,8]))"
+          },
+          "mpl": "(>[7,8](preorder[1,4,7,8])(>[](preorder[1,4,8,7])(=[7,8])))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](preorder[1,4,7,8])(>[](preorder[1,4,8,7])(=[7,8]))))"
+      }
+    },
+    {
+      "id": "peano_external_030",
+      "name": "peano external 30",
+      "method": "external",
+      "source_index": 30,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "=",
+            "arguments": [
+              "6",
+              "7"
+            ],
+            "mpl": "(=[6,7])"
+          },
+          "conclusion": {
+            "kind": "negation",
+            "inner": {
+              "kind": "implication",
+              "bound_variables": [
+                "8"
+              ],
+              "premise": {
+                "kind": "atom",
+                "head": "in",
+                "arguments": [
+                  "8",
+                  "1"
+                ],
+                "mpl": "(in[8,1])"
+              },
+              "conclusion": {
+                "kind": "negation",
+                "inner": {
+                  "kind": "atom",
+                  "head": "in2",
+                  "arguments": [
+                    "8",
+                    "7",
+                    "3"
+                  ],
+                  "mpl": "(in2[8,7,3])"
+                },
+                "mpl": "!(in2[8,7,3])"
+              },
+              "mpl": "(>[8](in[8,1])!(in2[8,7,3]))"
+            },
+            "mpl": "!(>[8](in[8,1])!(in2[8,7,3]))"
+          },
+          "mpl": "(>[7](=[6,7])!(>[8](in[8,1])!(in2[8,7,3])))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7](=[6,7])!(>[8](in[8,1])!(in2[8,7,3]))))"
+      }
+    },
+    {
+      "id": "peano_external_031",
+      "name": "peano external 31",
+      "method": "external",
+      "source_index": 31,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in",
+            "arguments": [
+              "7",
+              "1"
+            ],
+            "mpl": "(in[7,1])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "8"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "in3",
+              "arguments": [
+                "2",
+                "7",
+                "8",
+                "5"
+              ],
+              "mpl": "(in3[2,7,8,5])"
+            },
+            "conclusion": {
+              "kind": "atom",
+              "head": "=",
+              "arguments": [
+                "2",
+                "8"
+              ],
+              "mpl": "(=[2,8])"
+            },
+            "mpl": "(>[8](in3[2,7,8,5])(=[2,8]))"
+          },
+          "mpl": "(>[7](in[7,1])(>[8](in3[2,7,8,5])(=[2,8])))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7](in[7,1])(>[8](in3[2,7,8,5])(=[2,8]))))"
+      }
+    },
+    {
+      "id": "peano_external_032",
+      "name": "peano external 32",
+      "method": "external",
+      "source_index": 32,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in",
+            "arguments": [
+              "7",
+              "1"
+            ],
+            "mpl": "(in[7,1])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "8"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "in3",
+              "arguments": [
+                "2",
+                "8",
+                "7",
+                "4"
+              ],
+              "mpl": "(in3[2,8,7,4])"
+            },
+            "conclusion": {
+              "kind": "atom",
+              "head": "=",
+              "arguments": [
+                "7",
+                "8"
+              ],
+              "mpl": "(=[7,8])"
+            },
+            "mpl": "(>[8](in3[2,8,7,4])(=[7,8]))"
+          },
+          "mpl": "(>[7](in[7,1])(>[8](in3[2,8,7,4])(=[7,8])))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7](in[7,1])(>[8](in3[2,8,7,4])(=[7,8]))))"
+      }
+    },
+    {
+      "id": "peano_external_033",
+      "name": "peano external 33",
+      "method": "external",
+      "source_index": 33,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in",
+            "arguments": [
+              "7",
+              "1"
+            ],
+            "mpl": "(in[7,1])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "8"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "in3",
+              "arguments": [
+                "6",
+                "8",
+                "7",
+                "5"
+              ],
+              "mpl": "(in3[6,8,7,5])"
+            },
+            "conclusion": {
+              "kind": "atom",
+              "head": "=",
+              "arguments": [
+                "7",
+                "8"
+              ],
+              "mpl": "(=[7,8])"
+            },
+            "mpl": "(>[8](in3[6,8,7,5])(=[7,8]))"
+          },
+          "mpl": "(>[7](in[7,1])(>[8](in3[6,8,7,5])(=[7,8])))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7](in[7,1])(>[8](in3[6,8,7,5])(=[7,8]))))"
+      }
+    },
+    {
+      "id": "peano_external_034",
+      "name": "peano external 34",
+      "method": "external",
+      "source_index": 34,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "7"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in",
+            "arguments": [
+              "7",
+              "1"
+            ],
+            "mpl": "(in[7,1])"
+          },
+          "conclusion": {
+            "kind": "negation",
+            "inner": {
+              "kind": "conjunction",
+              "parts": [
+                {
+                  "kind": "negation",
+                  "inner": {
+                    "kind": "atom",
+                    "head": "=",
+                    "arguments": [
+                      "7",
+                      "2"
+                    ],
+                    "mpl": "(=[7,2])"
+                  },
+                  "mpl": "!(=[7,2])"
+                },
+                {
+                  "kind": "implication",
+                  "bound_variables": [
+                    "8"
+                  ],
+                  "premise": {
+                    "kind": "atom",
+                    "head": "in",
+                    "arguments": [
+                      "8",
+                      "1"
+                    ],
+                    "mpl": "(in[8,1])"
+                  },
+                  "conclusion": {
+                    "kind": "negation",
+                    "inner": {
+                      "kind": "atom",
+                      "head": "in2",
+                      "arguments": [
+                        "8",
+                        "7",
+                        "3"
+                      ],
+                      "mpl": "(in2[8,7,3])"
+                    },
+                    "mpl": "!(in2[8,7,3])"
+                  },
+                  "mpl": "(>[8](in[8,1])!(in2[8,7,3]))"
+                }
+              ],
+              "mpl": "(&!(=[7,2])(>[8](in[8,1])!(in2[8,7,3])))"
+            },
+            "mpl": "!(&!(=[7,2])(>[8](in[8,1])!(in2[8,7,3])))"
+          },
+          "mpl": "(>[7](in[7,1])!(&!(=[7,2])(>[8](in[8,1])!(in2[8,7,3]))))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7](in[7,1])!(&!(=[7,2])(>[8](in[8,1])!(in2[8,7,3])))))"
+      }
+    },
+    {
+      "id": "peano_external_035",
+      "name": "peano external 35",
+      "method": "external",
+      "source_index": 35,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "conclusion": {
+          "kind": "negation",
+          "inner": {
+            "kind": "implication",
+            "bound_variables": [
+              "7"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "in",
+              "arguments": [
+                "7",
+                "1"
+              ],
+              "mpl": "(in[7,1])"
+            },
+            "conclusion": {
+              "kind": "negation",
+              "inner": {
+                "kind": "atom",
+                "head": "in2",
+                "arguments": [
+                  "7",
+                  "6",
+                  "3"
+                ],
+                "mpl": "(in2[7,6,3])"
+              },
+              "mpl": "!(in2[7,6,3])"
+            },
+            "mpl": "(>[7](in[7,1])!(in2[7,6,3]))"
+          },
+          "mpl": "!(>[7](in[7,1])!(in2[7,6,3]))"
+        },
+        "mpl": "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])!(>[7](in[7,1])!(in2[7,6,3])))"
+      }
+    }
+  ]
+}

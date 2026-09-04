@@ -402,9 +402,27 @@ namespace gl {
                     std::ifstream in(directory / files[fi],
                                      std::ios::binary);
                     assert(in && "deload file not readable");
+                    // Size first, then ONE block read. The former
+                    // istreambuf_iterator pair copied the image a byte at a
+                    // time through the streambuf into an unreserved vector --
+                    // a virtual call per byte plus geometric reallocation, so
+                    // the cost scaled with image size and dominated every
+                    // canonical reload (14 ms/LB on IncubatorPeano1, 80 ms on
+                    // IncubatorGauss1, where the chapter export made it
+                    // visible). The raw loader beside this one always read in
+                    // blocks; this brings the canonical path in line.
+                    in.seekg(0, std::ios::end);
+                    const std::streamoff fileBytes = in.tellg();
+                    assert(fileBytes >= 0
+                        && "deload file size query failed");
+                    in.seekg(0, std::ios::beg);
                     std::vector<char> bytes(
-                        (std::istreambuf_iterator<char>(in)),
-                        std::istreambuf_iterator<char>());
+                        static_cast<std::size_t>(fileBytes));
+                    if (fileBytes > 0) {
+                        in.read(bytes.data(), fileBytes);
+                        assert(in.gcount() == fileBytes
+                            && "deload file short read");
+                    }
 
                     size_t offset = 0;
                     assert(bytes.size() >= 4

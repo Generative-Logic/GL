@@ -27,7 +27,7 @@
 Each test builds a chapter (list of ProofLine) that violates exactly ONE
 chapter-level invariant enforced inside ``verify_chapter`` and asserts the
 corresponding counter records the failure. Covered meta-checks: theorem
-goal reached, self-reference, anchor handling uniqueness, anchor handling
+goal reached, self-reference, anchor handling
 trace, contradiction trace, vacuous truth trace, origin, definition set
 consistency (D-41), origin chain termination (cycle detection).
 
@@ -192,59 +192,55 @@ def test_self_reference_ignores_tag_mismatch():
 
 
 # ===========================================================================
-#  meta: anchor handling uniqueness
+#  meta: anchor handling trace — multi-root chapters
+#  (D-263: several handling rows per chapter
+#  are legal — one copied-anchor variant per LB depth; every copy var of
+#  every root is put under trace.)
 # ===========================================================================
 
 @register
-def test_anchor_handling_uniqueness_two_rows():
-    """Two 'anchor handling' rows in one chapter -> uniqueness failure."""
-    chapter = [
-        _goal_passing_first_line(),
-        make_proof_line(
-            "(AnchorPeano[N,s,p,zero,one,two])", "main", "anchor handling",
-            "(AnchorPeano[N,s,p,zero,one,two])", "main",
-        ),
-        make_proof_line(
-            "(AnchorPeano[N,s,p,zero,one,two])", "main", "anchor handling",
-            "(AnchorPeano[N,s,p,zero,one,two])", "main",
-        ),
-    ]
-    assert_chapter_meta_fail(
-        chapter, "anchor handling uniqueness",
+def test_anchor_handling_trace_two_roots_both_vars_traced():
+    """Two handling rows (per-LB copy variants); a row citing the second
+    root's copy vars traces back to that root -> trace passes."""
+    root1 = make_proof_line(
+        "(AnchorPeano[N,s,p,zero,1_copy,two])", "main", "anchor handling",
+        "(AnchorPeano[N,s,p,zero,one,two])", "main",
+    )
+    root2 = make_proof_line(
+        "(AnchorPeano[N,s,p,zero,1_copy,2_copy])", "main", "anchor handling",
+        "(AnchorPeano[N,s,p,zero,one,two])", "main",
+    )
+    user = make_proof_line(
+        "(in[v1,N])", "main", "implication",
+        "(AnchorPeano[N,s,p,zero,1_copy,2_copy])", "main",
+    )
+    chapter = [_goal_passing_first_line(), root1, root2, user]
+    assert_chapter_meta_pass(
+        chapter, "anchor handling trace",
         chapter_thm=_GOAL_THM, chapter_type="direct_proof",
     )
 
 
 @register
-def test_anchor_handling_uniqueness_three_rows():
-    chapter = [
-        _goal_passing_first_line(),
-        make_proof_line("(AnchorPeano[N,s,p,zero,one,two])",
-                        "main", "anchor handling",
-                        "(AnchorPeano[N,s,p,zero,one,two])", "main"),
-        make_proof_line("(AnchorPeano[N,s,p,zero,one,two])",
-                        "main", "anchor handling",
-                        "(AnchorPeano[N,s,p,zero,one,two])", "main"),
-        make_proof_line("(AnchorPeano[N,s,p,zero,one,two])",
-                        "main", "anchor handling",
-                        "(AnchorPeano[N,s,p,zero,one,two])", "main"),
-    ]
-    assert_chapter_meta_fail(
-        chapter, "anchor handling uniqueness",
-        chapter_thm=_GOAL_THM, chapter_type="direct_proof",
+def test_anchor_handling_trace_second_root_var_orphaned():
+    """A copy var minted only by the SECOND handling row, cited via a source
+    with no derivation chain to any handling row -> trace failure. (Under
+    the retired first-row-only collection this var escaped tracing.)"""
+    root1 = make_proof_line(
+        "(AnchorPeano[N,s,p,zero,1_copy,two])", "main", "anchor handling",
+        "(AnchorPeano[N,s,p,zero,one,two])", "main",
     )
-
-
-@register
-def test_anchor_handling_uniqueness_four_rows():
-    chapter = [_goal_passing_first_line()]
-    for _ in range(4):
-        chapter.append(make_proof_line(
-            "(AnchorPeano[N,s,p,zero,one,two])", "main", "anchor handling",
-            "(AnchorPeano[N,s,p,zero,one,two])", "main",
-        ))
+    root2 = make_proof_line(
+        "(AnchorPeano[N,s,p,zero,1_copy,2_copy])", "main", "anchor handling",
+        "(AnchorPeano[N,s,p,zero,one,two])", "main",
+    )
+    user = make_proof_line(
+        "(=[v1,v2])", "main", "equality1",
+        "(in[2_copy,N])", "main",
+    )
+    chapter = [_goal_passing_first_line(), root1, root2, user]
     assert_chapter_meta_fail(
-        chapter, "anchor handling uniqueness",
+        chapter, "anchor handling trace",
         chapter_thm=_GOAL_THM, chapter_type="direct_proof",
     )
 

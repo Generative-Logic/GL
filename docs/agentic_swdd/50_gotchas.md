@@ -43,11 +43,11 @@ The pre-fix `prover.cpp::proveKernel` deferred-compaction drain passed the raw `
 ### G-46 — A non-empty level set in a `Mail::statements` deposit silently swallows every theorem derived from the recovered rule
 
 
-**Manifestation.** A hypothesis-LB or contradiction-LB target shows the rule installed (in `overallHashMemory.originals`), the dep present (in `encodedStatements` at v=main), the head derived (in `encodedStatements` at v=main, with the right origin record citing the rule + deps) — yet `toBeProved` never decreases and `theorems.txt` is missing the corresponding theorem. No assert. No verifier failure. No `toBeProved` residue noise.
+**Manifestation.** A hypothesis-LB or contradiction-LB target shows the rule installed (in `overallHashMemory.originals`), the dep present (in `encodedStatements` at v=main), the head derived (in `encodedStatements` at v=main, with the right origin record citing the rule + deps) — yet `theorems.txt` is missing the corresponding theorem. (Historically `toBeProved` also never decreased; since the closure/registration decoupling — [D-278](40_decisions.md#d-278) — the goal closes anyway and only the registration is refused.) No assert. No verifier failure. No `toBeProved` residue noise.
 
 The cross-branch surface symptom (pre-fix): 690 incube theorems vs 's 1035, with the diff concentrated in addition-by-2 uniqueness `(>[15](in3[2,N,15,4])(=[15,N]))` for N ∈ {6, 7, 9, 10, 11, 12, 13, 14} and their downstream back-reformulations and contradictions. N=2 base case proved on both branches; cascade breaks at the FIRST rung that needs a rule arriving via mail.
 
-**Cause.** The rule arriving via `Mail::statements` carries a `std::set<int>` level set in its tuple. The receiver's `addExprToMemoryBlock(..., status=3, levels=<from mail>,...)` installs the recovered rule in `overallHashMemory` with that level set written into `LocalMemoryValue::levels`. At every firing, the derived statement's `intStatementLevelsMap` entry is `union(rule.levels, premise[i].levels)`. The discharge gate `allLevelsInvolved` at `prover.cpp::addExprToMemoryBlock` checks `levels.size == memoryBlock.level + 1` (primary) or `== memoryBlock.level` with no 0 (alternate). A non-empty deposited set pollutes the union with one extra integer, making `size > level + 1`, failing the gate. The rule fires, the head is derived, but the promotion to `globalTheoremList` never happens.
+**Cause.** The rule arriving via `Mail::statements` carries a `std::set<int>` level set in its tuple. The receiver's `addExprToMemoryBlock(..., status=3, levels=<from mail>,...)` installs the recovered rule in `overallHashMemory` with that level set written into `LocalMemoryValue::levels`. At every firing, the derived statement's `intStatementLevelsMap` entry is `union(rule.levels, premise[i].levels)`. The registration verdict `allLevelsInvolved` at `prover.hpp::dischargeToBeProved` checks `levels.size == memoryBlock.level + 1` (primary) or `== memoryBlock.level` with no 0 (alternate). A non-empty deposited set pollutes the union with one extra integer, making `size > level + 1`, turning the verdict false. The rule fires, the head is derived, the goal closes, but the promotion to `globalTheoremList` never happens.
 
 The specific past offender was a `for (int i = 0; i <= kySize; ++i) compactLevels.insert(i);` in `prover.cpp::proveKernel`'s D-76 deferred-compaction drain, fixed in [D-77](40_decisions.md#d-77). The retired `Mail::implications` tuple channel always used `std::set<int>` at every insert site — that was the right answer all along.
 
@@ -611,6 +611,8 @@ See [I-3](30_invariants.md#i-3).
 <a id="g-31"></a>
 ### G-31 — Adding `cleanAdmissionMap` to integration revival
 
+> **Retired on this branch by [D-299](40_decisions.md#d-299) (2026-08-22).** `cleanAdmissionMap` is deleted, so there is nothing left to symmetrize onto the integration side. The standing prohibition — no consumption-driven erase of an admission entry, on either side — moved to [I-200](30_invariants.md#i-200). The rest of this entry describes the retired failure mode.
+
 **Manifestation.** A second revival of the same marker-template fails because the admission entry was silently removed by a previous revival. Verifier still passes (each derivation sound); some previously-provable theorems stop proving.
 
 **Cause.** Someone "symmetrized" the integration revival to match algebra's `revisitRejected2`, which calls `cleanAdmissionMap` after admission use. Integration intentionally does NOT. The algebra revisit can afford cleanup because its `addExprToMemoryBlock` path re-populates admission maps via downstream integration-prep; integration revival is mailIn-only — once the template is gone, nothing re-creates it for a future matching rejection.
@@ -1021,6 +1023,124 @@ The hashburst trace expansion in [D-74](40_decisions.md#d-74) and the `nameMap.i
 - [`30_invariants.md`](30_invariants.md) — the rules that, when forgotten, produce the gotchas above.
 - [`40_decisions.md`](40_decisions.md) — why the rules exist.
 - — the `feedback_*` files are the living history of gotcha discoveries.
+
+<a id="g-63"></a>
+## G-63 — a definition body with `(!(...))`-wrapped negation children fast-fails the definition parser with no message
+
+**Symptom.** `gl_quick.exe` dies with exit 0xC0000409 (stack-buffer fast-fail, Release, no assert text) between the flushed `[INIT] initAnchor done.` print and `Loading proved theorems...` — i.e. inside `ExpressionAnalyzer::compileCoreExpressionMap`'s per-definition `ArgumentAnalyzer` pass — after adding a new operator whose `.mpl` definition wraps a negation child in extra parentheses, e.g. `(&(!(=[n,m]))...)`.
+
+**Cause.** Canonical MPL writes negation children bare — `!(=[n,m])`, as every shipped definition does (`nonInterval.mpl` is the reference shape). The recursive definition parser treats `(` as the start of an operator-named node; `(` followed by `!` has no name and overruns a stack buffer.
+
+**Fix.** Write definition-body children as `(name[args])` or bare `!(...)` only. Diagnosis shortcut when the crash window matches: diff the new definition against `nonInterval.mpl`'s negation shape before instrumenting anything.
+
+<a id="g-64"></a>
+## G-64 — the same OR structure minted under two compact names breaks registry matching across artifacts
+
+
+**Symptom.** A single verifier `origin` failure on a chapter whose `implication` row cites an or-carrying rule: the cited rule IS a proved, registered theorem, but its registry row names the or-compact `or<N>` while the citation names `or<M>` — alpha normalization bridges variable names, never operator names, so the match rightly fails. Looks like an unproved-theorem use; is a naming split.
+
+**Cause.** `constructOrTheorem`'s registration dedup was a stub (`found = true; // for now, assume unique`) that never consulted the registry, so every constructing batch minted a fresh `or<N>` for the same disjunct structure (an I-23 violation). Cross-batch theorem files carry the expanded base form; the reloading batch's compile-side dedup (`repetitionExclusionMap`, one slot per `(elements, category)` key) then resolves the structure to ONE of the duplicate names — not necessarily the one the producing batch wrote into its `global_theorem_list.txt`. Reachable only once incubator batches construct ORs at all (D-255); the D-55 both-directions gate had masked it.
+
+**Fix.** Mint-side dedup mirrors the load side: `constructOrTheorem` builds the u_-canonical elements first, scans `compiledExpressions` for an `or`-category entry with the identical ordered element list, and reuses the existing name on a hit (no counter bump, no re-registration). Diagnosis shortcut: when an origin failure names an or-carrying citation, grep the producing batch's `global_theorem_list.txt` for the same structure under a DIFFERENT `or<N>` before assuming a provenance hole.
+
+<a id="g-65"></a>
+## G-65 — the base-form writer emitted `!!(...)` for negated existence head elements; latent because final-batch rows were never reloaded
+
+
+**Symptom.** `gl_quick.exe` dies with 0xC0000005 right after `Loaded 0 proved theorems.` when a batch loads external theorems whose rows contain a double negation `!!(...)` — malformed MPL that no parser path normalizes (OPEN-MPL-1: no universal double-negation canonicalizer). The rows came from `files/theorems/theorems.txt` itself.
+
+**Cause.** `expandToBaseForm`'s existence branch negated the head element with a blind `"!" +` prefix; an existence whose registered head element already carries `!` (the Gauss `limitSet`/`interval` shapes) produced `!!(...)` — 6 such rows in every generated pool, `main`'s included. Same polarity-blindness class as the or-element bug ([I-175](30_invariants.md#i-175)) — third instance of the family. Latent for months because the affected rows are Gauss-batch rows and Gauss is the final batch: nothing downstream ever reloaded them until the shortcut corpus was refreshed from the base pool.
+
+**Fix.** The head negation cancels a leading `!` (matching the or-branch's `negate` and the outer negation block in the same function). Diagnosis shortcut: on a load-path access violation over inter-batch theorem files, `grep -c '!!'` the input file first.
+
+<a id="g-66"></a>
+## G-66 — a nondeterministic sort key is latent until a new consumer makes tied groups observable
+
+
+**Symptom.** Same-input full runs diverge in one registration observable (a theorem's method, a chapter's producer, a count total) while EVERY per-burst content observable stays byte-identical across runs — the signature that the proof engine is deterministic and only a post-join drain's processing order raced.
+
+**Cause.** A single-threaded drain sorted its records on a key that includes a scheduling artifact — here `coreId`, the worker slot that sealed the record, in `updateGlobalDirectLess`. The key was harmless for years because tied groups (same theorem, different records) had an order-insensitive outcome: the sink's string dedup dropped the loser and both records carried the same effect. The proved-not-broadcast tier changed the loser's effect (a refused record now REGISTERS something different), and the latent key became an observable coin flip. The general trap: "order-insensitive" claims about a nondeterministically-ordered tie are load-bearing assumptions that silently expire when any consumer starts distinguishing tied records.
+
+**Fix.** Sort keys in single-threaded drains must be pure functions of proof state (bytes, verdicts, producer chains via `compareProducerChains`) — never worker slots, allocation addresses, or arrival order. When auditing: for every `std::sort` in a post-join drain, ask what breaks ties and whether two records that tie on the deterministic prefix can carry DIFFERENT effects at the sink.
+
+<a id="g-68"></a>
+## G-68 — a disintegration recognizer that read another function's side effect was silently dead for four weeks
+
+
+**Symptom.** A known negated existence `!(existence<N>[args])` registered flat and produced no `left → !right` / `right → !left` rule; nothing failed — theorem counts, the verifier and the artifacts were all unchanged, because the only consumer in the artifacts (the chapter of `¬∃m(m+1=n) → n=0`) closes by direct contradiction against the derived positive existence, never through the rules.
+
+**Root cause.** The negated-existence block in `disintegrateExprCore2` recognized its input by probing the prepared instruction for the positive existence entity (`innerHit`). `disintegrateExpr2` fills that instruction through `prepareIntegrationCore`, whose polarity guard (, 2026-08-04) returns without committing anything for a `!(` non-atomic input — the guard's comment assumed negated existences are intercepted upstream in `prepareIntegration`, which is true for the integration wrapper but not for the disintegration path. From that commit on the probe could never succeed. A trapped full run: 19 negated existences admitted to disintegration, every one with an empty instruction, the block fired 0 times.
+
+**Fix.** The recognizer resolves the inner existence through the registry (`compiledEntity` on the inner core, category `existence`, two elements) — the or route's pattern — and the compact route (D-310) produces the rules.
+
+**Lesson.** A recognizer that depends on a side effect of another function (an entity committed by `prepareIntegrationCore`) needs either the source of truth itself (the registry) or a tripwire assert that fires when the side effect is missing; a silent `if` on someone else's state is a latent no-op waiting for the next guard. And "no theorem lost" is not evidence a mechanism runs — trap it.
+
+
+<a id="g-67"></a>
+## G-67 — a statement registered and converged in one step lost its history in mail; the failing LB was not the producer
+
+
+**Symptom.** `buildStack: no origin found` in a contradiction LB for a statement at an `_ordis_` branch scope, cited by an `or convergence` row whose scope the failing LB never minted; the walker resolves the cohort's first branch and fails on the last one; every converged row of the cohort fails the same way (96 on IncubatorGauss3).
+
+**Root cause.** The producer (the parent LB) derived the expression at the last-released branch and converged it in the same step: `ordisMerge` step 2 erased the branch row from `intLocalEncodedStatementsDelta` before `fillMailOut` walked it, so the branch's `equality1` row never shipped while the convergence row citing it did. The producer's own map held the origin all along — the hole is in what reaches descendants ([D-311](40_decisions.md#d-311)).
+
+**Diagnosis lesson.** A first trapped run instrumented every local writer of the failing LB and stayed completely silent while the crash reproduced — the rows had come by mail. When a walker fails on a scope the failing LB never minted (its `orBookkeeping` empty at every burst, its `toBeProved` never holding the cited goal), trap the ancestor that owns the scope, and trap the mail-out selector, not only the registration doors. The dump's `mailIn` sections cannot show it: the inbox is absorbed and cleared before the entry dump ([I-101](30_invariants.md#i-101)).
+
+**Fix.** Ship first, drop second at every delta-dropping site — [D-286](40_decisions.md#d-286) for the canonicalization prune, [D-311](40_decisions.md#d-311) for the convergence removal; the sanctioned writers are listed in [I-64](30_invariants.md#i-64).
+
+<a id="g-69"></a>
+## G-69 — under `allow_multiplication` a rule's install is its multiplication's copies: a rule whose multiplication emits no copy installs NOTHING, and a multiplied rule installs one text per surviving partition (2026-08-28, )
+
+**Symptom.** A removal (or any code that assumes "this expanded implication is in hash memory under its own text") asserts `ruleInterner.lookup(text) == 0` on an incubator batch (`allow_multiplication` is `true` in `IncubatorPeano1/2` and `IncubatorGauss1/2`, `false` in `Peano` / `Gauss` / `IncubatorGauss3`) although the door recorded the expansion. Observed: `(>[]!(=[u_10,u_6])!(=[u_2,u_2]))` at `main` in the contradiction LB `!(=[10,2])` of IncubatorPeano2, hashburst 4.
+
+**Mechanism.** `addToHashMemory` loops over `multiplyImplication`'s copies and installs each copy under its own `ruleInterner` id (`originalImplicationId` of every LMV = the copy's id; the owner pair of every index entry likewise). With multiplication off the one copy is the text itself. With it on, the discrete partition's copy is `deduplicateBoundVarsScratch(text)`, and the per-copy trivial-head skip (`(=[x,x])` heads) applies to that copy too; every other partition that would equate two `u_` variables is skipped (`hasDoubleU`). A rule with a trivial-equality head whose one-typed variables are all `u_` therefore has ZERO copies — no chain, no owner, no LMV — while the door's index writes (`expandedImplications`, `compactExpansions`, `expansionCarrierCount`) do not depend on the copy count.
+
+**Spot.** `RuleIndexOp::dropSet` empty after a removal enumeration; `hm.originals.count` unchanged by an install; the unit tests `remove_rule_with_multiplied_copies_drops_every_copy` and `zero_copy_rule_removal_is_a_no_op`.
+
+**Fix direction.** Never look a rule up by its recorded text; run the install's own enumeration (`RuleIndexOp::Remove` stages every copy's pair, the transient probe reads the first copy's chain owner). The install/removal symmetry is the contract — zero copies in, zero out. Whether a zero-copy expansion should be recorded at all (it costs one carrier-index record and is never fireable) is an open design question, not a bug.
+
+<a id="g-71"></a>
+## G-71 — An `equality2` line can be the ONLY well-founded origin of a class-pair equality
+
+**Symptom.** `buildStack` hits its 5M-call tripwire; every class-pair equality of a collapsed class carries exactly `max_origin_per_expr` same-tag `implication` rows and no `equality2` line; a least-fixpoint pass says the chapter goal is not derivable.
+
+**Cause.** Under the canonical door a rule can re-derive a class equality from canonical premises whose only origin cites that equality (circular); the transitivity line written at the class merge is the one non-circular row, and a tag-based cap policy that treats `equality2` as disposable removes it ([D-325](40_decisions.md#d-325)).
+
+**Rule.** Origin rows are kept in insertion order at the cap; tags say nothing about foundational value. Diagnose derivability with a least-fixpoint pass over `exprOriginMap` before touching the walker.
+
+<a id="g-70"></a>
+## G-70 — An `exprOriginMap` row no longer implies a registered statement
+
+**Symptom.** A copy-split statement (`(P[…,X_copy,…])`) never appears at `main` although rule firings derived it (origin rows exist) and its canonical base is registered and multiplied; a lemma whose proof needs the copy (collision-pattern-exact rule keys) is lost together with every theorem citing it.
+
+**Cause.** The canonical door keeps the raw producer line of a deposit it folds and ends (Rule 16 documentation), so origin rows exist for texts that were never registered. Any prover gate that reads `exprOriginMap` as "known" is now wrong — the `applyEquivalenceClass` product commit did exactly that ([D-321](40_decisions.md#d-321)).
+
+**Rule.** Presence in the statement registry is the only "known" test (I-85); the origin map is process documentation (I-44). Diagnose with the Rule-14 dump: `encodedStatements` versus `exprOriginMap` for the same key.
+
+<a id="g-73"></a>
+## G-73 — the canonical door's normal-name walk is bracket-flat: a normal-name member nested inside a compound argument is NOT rewritten
+
+**Symptom.** Two spellings that differ only in a name nested inside a compound argument — `(in2[(s[b]),7])` versus `(in2[(s[a]),7])` under the class `{a, b}` — both survive the canonical door as distinct registered statements; a dedup or equality built on "the door canonicalizes member tokens at any depth" silently misses them (this bit the or-uniqueness gate's first test).
+
+**Cause.** `canonicalFormAtScope`'s normal-name token source is `collectExprTokens` ([`str_ops.hpp`](../GL_Quick_VS/GL_Quick/src/memory_infra/str_ops.hpp)) — a FLAT bracket tokenizer: it scans to the next `[`, takes everything to the next `]` as one comma-split token run, and resumes AFTER that `]`. On a nested compound arg it yields mangled fragments (`(s[b` from the example) and never the inner name, and the text after the inner `]` up to the outer one is skipped entirely. Only the two special tiers (`int_lev_*` / `it_*_lev_*`) are depth-independent — they come from the occurrence scan (`buildSpecialTokenScanView`), not the bracket walk.
+
+**Rule.** Anything comparing spellings "under the door's canonicalization" must use the door's own walk on both sides (the or-uniqueness gate does exactly this) — never assume depth-complete normal-name rewriting. Whether the flat walk is a deliberate scope bound or a latent gap in I-217 is a maintainer question; do not widen `collectExprTokens` without Rule-8 approval (every consumer's byte behavior shifts).
+
+<a id="g-72"></a>
+## G-72 — the rule-owner removal assert fires intermittently on CUDA full runs; its context diagnostic is PERMANENT until root-caused (2026-09-01, )
+
+**Status (2026-09-04, release 13, ): CLOSED and de-instrumented.** The defect is root-caused and fixed ([D-336](40_decisions.md#d-336), [D-337](40_decisions.md#d-337), [I-222](30_invariants.md#i-222)); on the maintainer's order every G-72-specific instrument described below is removed: the `G72_LEDGER` switch and `g72Ledger` writer, `dumpRuleKeyFamily` and its test, the `[RULE-OWNER-REMOVE-*]` context prints, and the remove policy's diagnostic-only fields. The two `removeOwnerFromRun` asserts stay exactly as they were. The abort-time minidump handler in `main.cpp` is general crash plumbing (every assert, every batch) and stays. The paragraphs below are the history of the hunt.
+
+**Symptom.** `removeOwnerFromRun: the key is absent` (the Rule-19 assert in `prover.hpp::removeOwnerFromRun`) aborts a full mixed-CUDA `main.py` run intermittently — observed once in the Peano main prover around hash burst 9 on this branch, and earlier during 's full-run acceptance. Identical-semantics runs pass either side of a firing, and a passing CUDA run's artifacts are byte-identical to the processor reference.
+
+**Reading.** The removal re-enumerates the install's own keys ([I-210](30_invariants.md#i-210) owner lists), so a lookup miss means the remove enumeration diverged from the install. Because proof state is provably identical across backends on passing runs, an intermittent miss implies a timing-sensitive divergence — a latent race or an unpinned order in the owner-list bookkeeping — most likely a defect in the shared machinery that the CUDA route's compressed Phase 2 timing exposes and processor scheduling never hits. No processor-route firing has ever been observed.
+
+**Standing instrumentation (maintainer directive, 2026-09-01).** The full-context diagnostic — `[RULE-OWNER-REMOVE-FAILURE]` (index name, key length, owner) before the retained assert, and `[RULE-OWNER-REMOVE-CONTEXT]` (hash memory, rule text, scope, full `parentMemory` LB chain per Rule 12) at the edge-removal first-visit miss — is PERMANENT observability, not a Rule-30 temporary trap. It stays in the tree, through squashes, until the divergence is root-caused and fixed. The assert itself is never weakened (Rule 19, [I-19](30_invariants.md#i-19)).
+
+**On a firing.** Capture the stderr context lines and the run log; the named rule, scope, and LB chain are the trap-debug entry point (retarget the Rule-14 hashburst dump at that LB chain next).
+**Instrument (2026-09-02, ).** On the removal miss, `removeRuleKeyEntries` now writes the rule's KEY FAMILY to  (`dumpRuleKeyFamily`, Rule 31): the owner, the failing whole key and edge key (raw `NameId` runs), every `normalizedEncodedKeys` / `remainingArgsOwners` entry that still lists the owner, and every edge carrying the failing NormKey under another argument set — the data that tells whether the install's and the removal's key enumerations diverged. A full-memory crash dump cannot answer that (two 44 GB dumps were analysed; only the removal chain came out, via a raw-stack return-address scan). Chain of the two 2026-09-02 firings: `applyEquiClasses → applyEquivalenceClassToCompactImplications → removeCompactExpansion → removeRuleFromHashMemory → removeRuleKeyEntries → removeRemainingArgsOwner → removeOwnerFromRun`, both on existence-implication compacts `!(=[u_X,u_2]) → existence3[u_1,u_X,u_3]` in the Peano batch.
+**Trap campaign (2026-09-03,, ledger `docs/G72/g72_crash_ledger.md`).** Reading the section: the removal's key enumeration is a pure function of the rule text and the LB's own interners, so a single-threaded install / removal divergence is excluded; the defect is cross-thread or a lost entry. Six `#if CRASH_TRAPS` traps (per-slot scratch handover detector, foreign-claim detector, flush read-back, per-LB install ledger of every remaining-args edge checked at removal, owner-less erase audit) stayed silent through two shortcut and two full runs (production and RT-instrumented builds, CUDA); the only lines were the lazy `ruleStagings` construction touching every gen slot from one worker (address takes, benign). Two latent doors found on paper and closed under [D-337](40_decisions.md#d-337): the gen-scratch registry had no reserved slot (its `-1` fallback was worker `logicalCores - 1`'s arena and staging pool), and the claim handshake's `WorkerOwned` early return was not phase-gated. Neither was observed in use in the crashing configuration (resident-only steward).
+**ROOT-CAUSED (2026-09-03, first firing after the traps were removed, Peano main, hash burst 10).** The permanent key-family dump showed the failing edge key as `[-842150451 × 10, 4, 42]` — `0xCDCDCDCD`, the arena poison. `remArgsEdgeKeyInto` built the `(argSet, NormKey)` edge key on the slot's gen-scratch arena and returned only its length; its four callers read the key back at a cursor mark captured BEFORE the allocation. `LbArena::alloc` aligns and pads to the next block when the request would straddle the current block, so whenever the edge build wrapped, the mark addressed the poisoned tail of the previous block: the install staged (or the removal looked up) garbage instead of the edge — whole key and owner present, edge absent. The wrap depends on where the slot's cursor sits inside its block, i.e. on which LBs the slot processed before (scheduling), hence the intermittency and the CUDA / RT sensitivity. Fixed under [D-336](40_decisions.md#d-336) (caller-owned stack buffer, `kMaxRemArgsEdgeKeyBytes`), general rule [I-222](30_invariants.md#i-222). The `[RULE-OWNER-*]` context prints, the key-family dump and the `G72_LEDGER` gate stay as permanent observability of the owner-list machinery.
 
 ---
 

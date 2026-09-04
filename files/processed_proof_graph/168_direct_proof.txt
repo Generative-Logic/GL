@@ -1,0 +1,50 @@
+(fXY[V2,V1,N])	main	implication	(>[](implication0[V2,V1])(>[](implication1[V2,N])(>[](implication4[V1,N,V2])(>[](implication5[V1,V2])(fXY[V2,V1,N])))))	main	(implication0[V2,V1])	main	(implication1[V2,N])	main	(implication4[V1,N,V2])	main	(implication5[V1,V2])	main
+(>[](implication0[V2,V1])(>[](implication1[V2,N])(>[](implication4[V1,N,V2])(>[](implication5[V1,V2])(fXY[V2,V1,N])))))	main	reformulation for integration and	(&(&(&(implication0[V2,V1])(implication1[V2,N]))(implication4[V1,N,V2]))(implication5[V1,V2]))_integration_goal	main
+(&(&(&(implication0[V2,V1])(implication1[V2,N]))(implication4[V1,N,V2]))(implication5[V1,V2]))_integration_goal	main	expansion for integration	(fXY[V2,V1,N])_integration_goal	main
+(implication0[V2,V1])	main	validity name	(in[v2,V1])	main_boundary_(fXY[V2,V1,N])_subproof_(implication0[V2,V1])
+(in[v2,V1])	main_boundary_(fXY[V2,V1,N])_subproof_(implication0[V2,V1])	implication	(>[w1](preorder[N,+,i0,w1])(>[](preorder[N,+,w1,v1])(in[w1,V1])))	main	(preorder[N,+,i0,v2])	main_boundary_(fXY[V2,V1,N])_subproof_(implication0[V2,V1])	(preorder[N,+,v2,v1])	main_boundary_(fXY[V2,V1,N])_subproof_(implication0[V2,V1])
+(>[w1](preorder[N,+,i0,w1])(>[](preorder[N,+,w1,v1])(in[w1,V1])))	main	expansion	(implication28[N,+,i0,v1,V1])	main
+(implication28[N,+,i0,v1,V1])	main	disintegration	(&(&(&(&(implication26[V1,N,+,i0])(implication27[V1,N,+,v1]))(implication28[N,+,i0,v1,V1]))(in[i0,N]))(in[v1,N]))	main
+(&(&(&(&(implication26[V1,N,+,i0])(implication27[V1,N,+,v1]))(implication28[N,+,i0,v1,V1]))(in[i0,N]))(in[v1,N]))	main	expansion	(interval[N,+,i0,v1,V1])	main
+(interval[N,+,i0,v1,V1])	main	task formulation
+(preorder[N,+,i0,v2])	main_boundary_(fXY[V2,V1,N])_subproof_(implication0[V2,V1])	implication	(>[w1](in[w1,V3])(preorder[N,+,i0,w1]))	main	(in[v2,V3])	main_boundary_(fXY[V2,V1,N])_subproof_(implication0[V2,V1])
+(>[w1](in[w1,V3])(preorder[N,+,i0,w1]))	main	expansion	(implication26[V3,N,+,i0])	main
+(implication26[V3,N,+,i0])	main	disintegration	(&(&(&(&(implication26[V3,N,+,i0])(implication27[V3,N,+,v1]))(implication28[N,+,i0,v1,V3]))(in[i0,N]))(in[v1,N]))	main
+(&(&(&(&(implication26[V3,N,+,i0])(implication27[V3,N,+,v1]))(implication28[N,+,i0,v1,V3]))(in[i0,N]))(in[v1,N]))	main	expansion	(interval[N,+,i0,v1,V3])	main
+(interval[N,+,i0,v1,V3])	main	disintegration	!(>[V3](interval[N,+,i0,v1,V3])!(fXY[V2,V3,N]))	main
+!(>[V3](interval[N,+,i0,v1,V3])!(fXY[V2,V3,N]))	main	expansion	(sequence[N,+,i0,v1,V2])	main
+(sequence[N,+,i0,v1,V2])	main	task formulation
+(in[v2,V3])	main_boundary_(fXY[V2,V1,N])_subproof_(implication0[V2,V1])	implication	(>[w1,w2](in2[w1,w2,V2])(in[w1,V3]))	main	(in2[v2,v5,V2])	main_boundary_(fXY[V2,V1,N])_subproof_(implication0[V2,V1])
+(>[w1,w2](in2[w1,w2,V2])(in[w1,V3]))	main	expansion	(implication0[V2,V3])	main
+(implication0[V2,V3])	main	disintegration	(&(&(&(implication0[V2,V3])(implication1[V2,N]))(implication4[V3,N,V2]))(implication5[V3,V2]))	main
+(&(&(&(implication0[V2,V3])(implication1[V2,N]))(implication4[V3,N,V2]))(implication5[V3,V2]))	main	expansion	(fXY[V2,V3,N])	main
+(fXY[V2,V3,N])	main	disintegration	!(>[V3](interval[N,+,i0,v1,V3])!(fXY[V2,V3,N]))	main
+(in2[v2,v5,V2])	main_boundary_(fXY[V2,V1,N])_subproof_(implication0[V2,V1])	premise element	(>[v2,v5](in2[v2,v5,V2])(in[v2,V1]))_integration_goal	main
+(>[v2,v5](in2[v2,v5,V2])(in[v2,V1]))_integration_goal	main	expansion for integration	(implication0[V2,V1])_integration_goal	main
+(preorder[N,+,v2,v1])	main_boundary_(fXY[V2,V1,N])_subproof_(implication0[V2,V1])	implication	(>[w1](in[w1,V3])(preorder[N,+,w1,v1]))	main	(in[v2,V3])	main_boundary_(fXY[V2,V1,N])_subproof_(implication0[V2,V1])
+(>[w1](in[w1,V3])(preorder[N,+,w1,v1]))	main	expansion	(implication27[V3,N,+,v1])	main
+(implication27[V3,N,+,v1])	main	disintegration	(&(&(&(&(implication26[V3,N,+,i0])(implication27[V3,N,+,v1]))(implication28[N,+,i0,v1,V3]))(in[i0,N]))(in[v1,N]))	main
+(implication1[V2,N])	main	disintegration	(&(&(&(implication0[V2,V3])(implication1[V2,N]))(implication4[V3,N,V2]))(implication5[V3,V2]))	main
+(implication4[V1,N,V2])	main	validity name	(existence0[N,v6,V2])	main_boundary_(fXY[V2,V1,N])_subproof_(implication4[V1,N,V2])
+(existence0[N,v6,V2])	main_boundary_(fXY[V2,V1,N])_subproof_(implication4[V1,N,V2])	implication	(>[w1](in[w1,V3])(existence0[N,w1,V2]))	main	(in[v6,V3])	main_boundary_(fXY[V2,V1,N])_subproof_(implication4[V1,N,V2])
+(>[w1](in[w1,V3])(existence0[N,w1,V2]))	main	expansion	(implication4[V3,N,V2])	main
+(implication4[V3,N,V2])	main	disintegration	(&(&(&(implication0[V2,V3])(implication1[V2,N]))(implication4[V3,N,V2]))(implication5[V3,V2]))	main
+(in[v6,V3])	main_boundary_(fXY[V2,V1,N])_subproof_(implication4[V1,N,V2])	implication	(>[w1](preorder[N,+,i0,w1])(>[](preorder[N,+,w1,v1])(in[w1,V3])))	main	(preorder[N,+,i0,v6])	main_boundary_(fXY[V2,V1,N])_subproof_(implication4[V1,N,V2])	(preorder[N,+,v6,v1])	main_boundary_(fXY[V2,V1,N])_subproof_(implication4[V1,N,V2])
+(>[w1](preorder[N,+,i0,w1])(>[](preorder[N,+,w1,v1])(in[w1,V3])))	main	expansion	(implication28[N,+,i0,v1,V3])	main
+(implication28[N,+,i0,v1,V3])	main	disintegration	(&(&(&(&(implication26[V3,N,+,i0])(implication27[V3,N,+,v1]))(implication28[N,+,i0,v1,V3]))(in[i0,N]))(in[v1,N]))	main
+(preorder[N,+,i0,v6])	main_boundary_(fXY[V2,V1,N])_subproof_(implication4[V1,N,V2])	implication	(>[w1](in[w1,V1])(preorder[N,+,i0,w1]))	main	(in[v6,V1])	main_boundary_(fXY[V2,V1,N])_subproof_(implication4[V1,N,V2])
+(>[w1](in[w1,V1])(preorder[N,+,i0,w1]))	main	expansion	(implication26[V1,N,+,i0])	main
+(implication26[V1,N,+,i0])	main	disintegration	(&(&(&(&(implication26[V1,N,+,i0])(implication27[V1,N,+,v1]))(implication28[N,+,i0,v1,V1]))(in[i0,N]))(in[v1,N]))	main
+(in[v6,V1])	main_boundary_(fXY[V2,V1,N])_subproof_(implication4[V1,N,V2])	premise element	(>[v6](in[v6,V1])(existence0[N,v6,V2]))_integration_goal	main
+(>[v6](in[v6,V1])(existence0[N,v6,V2]))_integration_goal	main	expansion for integration	(implication4[V1,N,V2])_integration_goal	main
+(preorder[N,+,v6,v1])	main_boundary_(fXY[V2,V1,N])_subproof_(implication4[V1,N,V2])	implication	(>[w1](in[w1,V1])(preorder[N,+,w1,v1]))	main	(in[v6,V1])	main_boundary_(fXY[V2,V1,N])_subproof_(implication4[V1,N,V2])
+(>[w1](in[w1,V1])(preorder[N,+,w1,v1]))	main	expansion	(implication27[V1,N,+,v1])	main
+(implication27[V1,N,+,v1])	main	disintegration	(&(&(&(&(implication26[V1,N,+,i0])(implication27[V1,N,+,v1]))(implication28[N,+,i0,v1,V1]))(in[i0,N]))(in[v1,N]))	main
+(implication5[V1,V2])	main	validity name	(=[v7,v8])	main_boundary_(fXY[V2,V1,N])_subproof_(implication5[V1,V2])
+(=[v7,v8])	main_boundary_(fXY[V2,V1,N])_subproof_(implication5[V1,V2])	implication	(>[w1](in[w1,V3])(>[w2](in2[w1,w2,V2])(>[w3](in2[w1,w3,V2])(=[w2,w3]))))	main	(in2[v10,v7,V2])	main_boundary_(fXY[V2,V1,N])_subproof_(implication5[V1,V2])	(in2[v10,v8,V2])	main_boundary_(fXY[V2,V1,N])_subproof_(implication5[V1,V2])	(in[v10,V3])	main_boundary_(fXY[V2,V1,N])_subproof_(implication5[V1,V2])
+(>[w1](in[w1,V3])(>[w2](in2[w1,w2,V2])(>[w3](in2[w1,w3,V2])(=[w2,w3]))))	main	expansion	(implication5[V3,V2])	main
+(implication5[V3,V2])	main	disintegration	(&(&(&(implication0[V2,V3])(implication1[V2,N]))(implication4[V3,N,V2]))(implication5[V3,V2]))	main
+(in2[v10,v7,V2])	main_boundary_(fXY[V2,V1,N])_subproof_(implication5[V1,V2])	premise element	(>[v10](in[v10,V1])(>[v7](in2[v10,v7,V2])(>[v8](in2[v10,v8,V2])(=[v7,v8]))))_integration_goal	main
+(>[v10](in[v10,V1])(>[v7](in2[v10,v7,V2])(>[v8](in2[v10,v8,V2])(=[v7,v8]))))_integration_goal	main	expansion for integration	(implication5[V1,V2])_integration_goal	main
+(in2[v10,v8,V2])	main_boundary_(fXY[V2,V1,N])_subproof_(implication5[V1,V2])	premise element	(>[v10](in[v10,V1])(>[v7](in2[v10,v7,V2])(>[v8](in2[v10,v8,V2])(=[v7,v8]))))_integration_goal	main
+(in[v10,V3])	main_boundary_(fXY[V2,V1,N])_subproof_(implication5[V1,V2])	implication	(>[w1,w2](in2[w1,w2,V2])(in[w1,V3]))	main	(in2[v10,v7,V2])	main_boundary_(fXY[V2,V1,N])_subproof_(implication5[V1,V2])

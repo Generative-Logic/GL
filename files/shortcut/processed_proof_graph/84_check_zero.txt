@@ -1,0 +1,11 @@
+(preorder[N,+,i0,v1])	main	equality1	(preorder[N,+,i0,i0])	main	(=[i0,v1])	main
+(preorder[N,+,i0,i0])	main	equality1	(preorder[N,+,v1,v1])	main	(=[v1,i0])	main
+(preorder[N,+,v1,v1])	main	equality1	(preorder[N,+,v1,v1_copy])	main	(=[v1_copy,v1])	main
+(preorder[N,+,v1,v1_copy])	main	implication	(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[w1](in[w1,N])(>[w2](=[w1,w2])(preorder[N,+,w1,w2]))))	main	(=[v1,v1_copy])	main	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	(in[v1,N])	main
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](in[v1,N])(>[v2](=[v1,v2])(preorder[N,+,v1,v2]))))	main	theorem
+(=[v1,v1_copy])	main	variable copy
+(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	task formulation
+(in[v1,N])	main	task formulation
+(=[v1_copy,v1])	main	symmetry of equality	(=[v1,v1_copy])	main
+(=[v1,i0])	main	recursion
+(=[i0,v1])	main	symmetry of equality	(=[v1,i0])	main

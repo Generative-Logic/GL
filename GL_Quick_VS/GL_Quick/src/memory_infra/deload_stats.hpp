@@ -317,14 +317,14 @@ namespace gl {
         /// open). Diffs the current counters against the `beginPhaseWindow`
         /// snapshot, measures the window's own wall duration, and — only when
         /// the phase saw nonzero out/in bytes, worker wait, self-loads, or
-        /// inline evicts — prints one line to stdout. Always returns the
+        /// inline evicts — prints one line to the common diagnostics log. Always returns the
         /// computed `PhaseDelta` (for tests / callers); the caller may ignore
         /// it.
         ///
         /// @return The window's deload deltas and wall duration.
         PhaseDelta endPhaseWindow();
 
-        /// @brief Print the end-of-batch `[DELOAD]` summary block to stdout.
+        /// @brief Print the end-of-batch `[DELOAD]` summary block to the common diagnostics log.
         ///
         /// @details
         /// One multi-line block reporting every accumulated total (dump /

@@ -241,18 +241,20 @@ TEST(rt_tracker, nested_scopes_exclusive_self_time) {
     ASSERT_TRUE(std::filesystem::exists(path));
     const std::string body = readWholeFile(path);
 
-    // Both labels appear.
-    ASSERT_NE(body.find("OUTER"), std::string::npos);
-    ASSERT_NE(body.find("INNER"), std::string::npos);
+    // The nested row renders parent-prefixed; the outer row stands alone
+    // (padded, so two spaces after the label never match the "OUTER > "
+    // prefix of the nested row).
+    const std::size_t pos_inner = body.find("OUTER > INNER");
+    ASSERT_NE(pos_inner, std::string::npos);
+    const std::size_t pos_outer_row = body.find("\nOUTER  ");
+    ASSERT_NE(pos_outer_row, std::string::npos);
 
     // The body lists sections sorted by descending seconds. INNER's
     // self-time is the ~80 ms inner sleep; OUTER's is the ~10 ms
     // before the inner scope. The 8x ratio survives Windows
     // sleep_for jitter (~1-15 ms granularity) so INNER's row
     // reliably appears above OUTER's row in the table.
-    const std::size_t pos_inner = body.find("INNER");
-    const std::size_t pos_outer = body.find("OUTER");
-    ASSERT_TRUE(pos_inner < pos_outer);
+    ASSERT_TRUE(pos_inner < pos_outer_row);
 
     std::error_code ec;
     std::filesystem::remove(path, ec);
@@ -373,4 +375,159 @@ TEST(rt_tracker, repeated_label_accumulates_hits) {
 
     std::error_code ec;
     std::filesystem::remove(path, ec);
+}
+
+// ---------------------------------------------------------------------------
+// Test 8 — one label under two different parents keys two rows.
+// ---------------------------------------------------------------------------
+//
+// Sections are keyed by (label, parentIdx): the same "SHARED_CHILD"
+// literal opened under "PARENT_A" and then under "PARENT_B" must
+// produce two separately-attributed rows, each rendered parent-prefixed.
+
+TEST(rt_tracker, same_label_under_two_parents_keys_two_rows) {
+    SyntheticChain c;
+    buildSyntheticChain(c, "(AnchorPeano[N,i0,s])", "(=[m,n])");
+
+    std::string path;
+    {
+        ::gl::rt_tracker::RTTracker tracker(c.leaf,
+                                            /*triggerSeconds=*/0,
+                                            /*minPercentage=*/0);
+        path = rtFilePath(tracker.chainFilename());
+
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+
+        {
+            ::gl::rt_tracker::RTScope a(tracker, "PARENT_A");
+            ::gl::rt_tracker::RTScope ca(tracker, "SHARED_CHILD");
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        {
+            ::gl::rt_tracker::RTScope b(tracker, "PARENT_B");
+            ::gl::rt_tracker::RTScope cb(tracker, "SHARED_CHILD");
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+    ASSERT_TRUE(std::filesystem::exists(path));
+    const std::string body = readWholeFile(path);
+    ASSERT_NE(body.find("PARENT_A > SHARED_CHILD"), std::string::npos);
+    ASSERT_NE(body.find("PARENT_B > SHARED_CHILD"), std::string::npos);
+
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+// ---------------------------------------------------------------------------
+// Test 8b — a recursively re-opened label collapses onto its live section.
+// ---------------------------------------------------------------------------
+//
+// A label already open on the scope stack (a re-entrant call chain, e.g.
+// the deposit door re-entering itself through class-update products) must
+// re-use the live section instead of minting a fresh (label, parent) row
+// per recursion level — unbounded recursion would otherwise exhaust
+// RT_MAX_SECTIONS. The collapsed row keeps one path (no
+// "RECURSIVE > MIDDLE > RECURSIVE" row) and accumulates the hits.
+
+TEST(rt_tracker, recursive_label_collapses_onto_live_section) {
+    SyntheticChain c;
+    buildSyntheticChain(c, "(AnchorPeano[N,i0,s])", "(=[r,r2])");
+
+    std::string path;
+    {
+        ::gl::rt_tracker::RTTracker tracker(c.leaf,
+                                            /*triggerSeconds=*/0,
+                                            /*minPercentage=*/0);
+        path = rtFilePath(tracker.chainFilename());
+
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+
+        {
+            ::gl::rt_tracker::RTScope outer(tracker, "RECURSIVE");
+            ::gl::rt_tracker::RTScope mid(tracker, "MIDDLE");
+            ::gl::rt_tracker::RTScope inner(tracker, "RECURSIVE");
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+    ASSERT_TRUE(std::filesystem::exists(path));
+    const std::string body = readWholeFile(path);
+    ASSERT_NE(body.find("RECURSIVE"), std::string::npos);
+    ASSERT_EQ(body.find("MIDDLE > RECURSIVE"), std::string::npos);
+
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+// ---------------------------------------------------------------------------
+// Test 9 — the cross-burst aggregate folds every tracker, trigger-free.
+// ---------------------------------------------------------------------------
+//
+// Two trackers with an ABSURDLY high trigger (so neither ever writes a
+// per-call snapshot) both fold their sections into the process-wide
+// aggregate at destruction; dumpRtAggregate then writes a table carrying
+// the (parent, label) rows with summed hits and both tracker calls
+// counted. resetRtAggregate isolates the test from earlier trackers.
+
+// All three phase walls register; the aggregate header prints each tree's
+// attributed / wall line (phase 2 included — the CPU-route request trees
+// need a denominator for their wall~s column, and a CUDA batch shows the
+// device wall alone with 0 s attributed).
+TEST(rt_tracker, aggregate_registers_all_three_phase_walls) {
+    ::gl::rt_tracker::resetRtAggregate();
+    ::gl::rt_tracker::addRtPhaseWallSeconds(1, 2.0);
+    ::gl::rt_tracker::addRtPhaseWallSeconds(2, 4.0);
+    ::gl::rt_tracker::addRtPhaseWallSeconds(3, 8.0);
+    const std::string aggPath = ".rt/_aggregate_unit_test_walls.log";
+    std::error_code ec;
+    std::filesystem::remove(aggPath, ec);
+    ::gl::rt_tracker::dumpRtAggregate(aggPath);
+    ASSERT_TRUE(std::filesystem::exists(aggPath));
+    const std::string body = readWholeFile(aggPath);
+    ASSERT_NE(body.find("Phase-1 tree               : 0.00 s attributed / 2.00 s wall"),
+              std::string::npos);
+    ASSERT_NE(body.find("Phase-2 tree (CPU route)   : 0.00 s attributed / 4.00 s wall"),
+              std::string::npos);
+    ASSERT_NE(body.find("Phase-3 tree               : 0.00 s attributed / 8.00 s wall"),
+              std::string::npos);
+    ::gl::rt_tracker::resetRtAggregate();
+    std::filesystem::remove(aggPath, ec);
+}
+
+TEST(rt_tracker, aggregate_folds_all_trackers_trigger_independent) {
+    SyntheticChain c;
+    buildSyntheticChain(c, "(AnchorPeano[N,i0,s])", "(=[p,q])");
+
+    ::gl::rt_tracker::resetRtAggregate();
+    for (int i = 0; i < 2; ++i) {
+        ::gl::rt_tracker::RTTracker tracker(c.leaf,
+                                            /*triggerSeconds=*/9999,
+                                            /*minPercentage=*/0);
+        ::gl::rt_tracker::RTScope batch(tracker, "AGG_BATCH");
+        ::gl::rt_tracker::RTScope pairing(tracker, "AGG_PAIRING");
+        tracker.noteIterations(3);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    const std::string aggPath = ".rt/_aggregate_unit_test.log";
+    std::error_code ec;
+    std::filesystem::remove(aggPath, ec);
+    ::gl::rt_tracker::dumpRtAggregate(aggPath);
+    ASSERT_TRUE(std::filesystem::exists(aggPath));
+
+    const std::string body = readWholeFile(aggPath);
+    ASSERT_NE(body.find("Tracker calls (bursts)     : 2"), std::string::npos);
+    ASSERT_NE(body.find("AGG_BATCH"), std::string::npos);
+    ASSERT_NE(body.find("AGG_BATCH > AGG_PAIRING"), std::string::npos);
+
+    // The pairing row carries summed hits (2) and iterations (6).
+    const std::size_t row = body.find("AGG_BATCH > AGG_PAIRING");
+    const std::size_t row_end = body.find('\n', row);
+    ASSERT_NE(row_end, std::string::npos);
+    const std::string row_text = body.substr(row, row_end - row);
+    ASSERT_NE(row_text.find("| 6"), std::string::npos);
+
+    ::gl::rt_tracker::resetRtAggregate();
+    std::filesystem::remove(aggPath, ec);
 }

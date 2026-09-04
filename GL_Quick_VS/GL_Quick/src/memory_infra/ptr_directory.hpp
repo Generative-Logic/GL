@@ -233,7 +233,7 @@ namespace gl {
         /// a live index.
         ///
         /// @param i A live entry index in `[0, size())` (caller-guaranteed).
-        char* peek(int32_t i) const { return readAt(i); }
+        GL_FORCEINLINE char* peek(int32_t i) const { return readAt(i); }
 
         /// @brief Overwrite entry `i` in place — the operation `pageTable_`
         ///        compaction needs (rebind a vid to a new physical page).
@@ -336,7 +336,7 @@ namespace gl {
 
     private:
         /// @brief Read entry `i` (inline or spilled), no bounds check.
-        char* readAt(int32_t i) const {
+        GL_FORCEINLINE char* readAt(int32_t i) const {
             if (i < kInline) return inline_[i];
             const int32_t s = i - kInline;
             return *reinterpret_cast<char* const*>(

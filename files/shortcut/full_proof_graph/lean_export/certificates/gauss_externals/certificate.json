@@ -1,0 +1,2276 @@
+{
+  "schema": "gl-external-theorem-list",
+  "schema_version": 2,
+  "source": {
+    "theorem_list": "files/shortcut/theorems/externally_provided_theorems.txt",
+    "theorem_list_sha256": "8DE5BCC3F9FAA7CCF13307942ECA5C05AFFAFE6CA250AF2F19E87F7FF068C3C9"
+  },
+  "corpus": {
+    "id": "gauss_externals_24",
+    "coverage": {
+      "theorems": 24
+    },
+    "dependency_edges": []
+  },
+  "types": {},
+  "binary_definitions": {},
+  "theorems": [
+    {
+      "id": "gauss_external_000",
+      "name": "gauss external 0",
+      "method": "external",
+      "source_index": 0,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorGauss",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8"
+          ],
+          "mpl": "(AnchorGauss[1,2,3,4,5,6,7,8])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "9",
+            "10",
+            "11"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in3",
+            "arguments": [
+              "9",
+              "10",
+              "11",
+              "5"
+            ],
+            "mpl": "(in3[9,10,11,5])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "12"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "fold",
+              "arguments": [
+                "1",
+                "3",
+                "4",
+                "8",
+                "2",
+                "9",
+                "12"
+              ],
+              "mpl": "(fold[1,3,4,8,2,9,12])"
+            },
+            "conclusion": {
+              "kind": "implication",
+              "bound_variables": [],
+              "premise": {
+                "kind": "atom",
+                "head": "in2",
+                "arguments": [
+                  "9",
+                  "10",
+                  "3"
+                ],
+                "mpl": "(in2[9,10,3])"
+              },
+              "conclusion": {
+                "kind": "atom",
+                "head": "in3",
+                "arguments": [
+                  "7",
+                  "12",
+                  "11",
+                  "5"
+                ],
+                "mpl": "(in3[7,12,11,5])"
+              },
+              "mpl": "(>[](in2[9,10,3])(in3[7,12,11,5]))"
+            },
+            "mpl": "(>[12](fold[1,3,4,8,2,9,12])(>[](in2[9,10,3])(in3[7,12,11,5])))"
+          },
+          "mpl": "(>[9,10,11](in3[9,10,11,5])(>[12](fold[1,3,4,8,2,9,12])(>[](in2[9,10,3])(in3[7,12,11,5]))))"
+        },
+        "mpl": "(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10,11](in3[9,10,11,5])(>[12](fold[1,3,4,8,2,9,12])(>[](in2[9,10,3])(in3[7,12,11,5])))))"
+      }
+    },
+    {
+      "id": "gauss_external_001",
+      "name": "gauss external 1",
+      "method": "external",
+      "source_index": 1,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorGauss",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8"
+          ],
+          "mpl": "(AnchorGauss[1,2,3,4,5,6,7,8])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "9",
+            "10"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "fXY",
+            "arguments": [
+              "9",
+              "10",
+              "1"
+            ],
+            "mpl": "(fXY[9,10,1])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "11"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "interval",
+              "arguments": [
+                "1",
+                "4",
+                "2",
+                "11",
+                "10"
+              ],
+              "mpl": "(interval[1,4,2,11,10])"
+            },
+            "conclusion": {
+              "kind": "atom",
+              "head": "sequence",
+              "arguments": [
+                "1",
+                "4",
+                "2",
+                "11",
+                "9"
+              ],
+              "mpl": "(sequence[1,4,2,11,9])"
+            },
+            "mpl": "(>[11](interval[1,4,2,11,10])(sequence[1,4,2,11,9]))"
+          },
+          "mpl": "(>[9,10](fXY[9,10,1])(>[11](interval[1,4,2,11,10])(sequence[1,4,2,11,9])))"
+        },
+        "mpl": "(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](fXY[9,10,1])(>[11](interval[1,4,2,11,10])(sequence[1,4,2,11,9]))))"
+      }
+    },
+    {
+      "id": "gauss_external_002",
+      "name": "gauss external 2",
+      "method": "external",
+      "source_index": 2,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorGauss",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8"
+          ],
+          "mpl": "(AnchorGauss[1,2,3,4,5,6,7,8])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "9",
+            "10"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "fold",
+            "arguments": [
+              "1",
+              "3",
+              "4",
+              "8",
+              "2",
+              "9",
+              "10"
+            ],
+            "mpl": "(fold[1,3,4,8,2,9,10])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "11"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "in2",
+              "arguments": [
+                "9",
+                "11",
+                "3"
+              ],
+              "mpl": "(in2[9,11,3])"
+            },
+            "conclusion": {
+              "kind": "implication",
+              "bound_variables": [
+                "12"
+              ],
+              "premise": {
+                "kind": "atom",
+                "head": "in3",
+                "arguments": [
+                  "7",
+                  "10",
+                  "12",
+                  "5"
+                ],
+                "mpl": "(in3[7,10,12,5])"
+              },
+              "conclusion": {
+                "kind": "atom",
+                "head": "in3",
+                "arguments": [
+                  "9",
+                  "11",
+                  "12",
+                  "5"
+                ],
+                "mpl": "(in3[9,11,12,5])"
+              },
+              "mpl": "(>[12](in3[7,10,12,5])(in3[9,11,12,5]))"
+            },
+            "mpl": "(>[11](in2[9,11,3])(>[12](in3[7,10,12,5])(in3[9,11,12,5])))"
+          },
+          "mpl": "(>[9,10](fold[1,3,4,8,2,9,10])(>[11](in2[9,11,3])(>[12](in3[7,10,12,5])(in3[9,11,12,5]))))"
+        },
+        "mpl": "(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](fold[1,3,4,8,2,9,10])(>[11](in2[9,11,3])(>[12](in3[7,10,12,5])(in3[9,11,12,5])))))"
+      }
+    },
+    {
+      "id": "gauss_external_003",
+      "name": "gauss external 3",
+      "method": "external",
+      "source_index": 3,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorGauss",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8"
+          ],
+          "mpl": "(AnchorGauss[1,2,3,4,5,6,7,8])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "9",
+            "10"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in2",
+            "arguments": [
+              "9",
+              "10",
+              "3"
+            ],
+            "mpl": "(in2[9,10,3])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "11",
+              "12"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "limitSequence",
+              "arguments": [
+                "1",
+                "4",
+                "9",
+                "11",
+                "12"
+              ],
+              "mpl": "(limitSequence[1,4,9,11,12])"
+            },
+            "conclusion": {
+              "kind": "implication",
+              "bound_variables": [],
+              "premise": {
+                "kind": "atom",
+                "head": "sequence",
+                "arguments": [
+                  "1",
+                  "4",
+                  "2",
+                  "10",
+                  "11"
+                ],
+                "mpl": "(sequence[1,4,2,10,11])"
+              },
+              "conclusion": {
+                "kind": "atom",
+                "head": "sequence",
+                "arguments": [
+                  "1",
+                  "4",
+                  "2",
+                  "9",
+                  "12"
+                ],
+                "mpl": "(sequence[1,4,2,9,12])"
+              },
+              "mpl": "(>[](sequence[1,4,2,10,11])(sequence[1,4,2,9,12]))"
+            },
+            "mpl": "(>[11,12](limitSequence[1,4,9,11,12])(>[](sequence[1,4,2,10,11])(sequence[1,4,2,9,12])))"
+          },
+          "mpl": "(>[9,10](in2[9,10,3])(>[11,12](limitSequence[1,4,9,11,12])(>[](sequence[1,4,2,10,11])(sequence[1,4,2,9,12]))))"
+        },
+        "mpl": "(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11,12](limitSequence[1,4,9,11,12])(>[](sequence[1,4,2,10,11])(sequence[1,4,2,9,12])))))"
+      }
+    },
+    {
+      "id": "gauss_external_004",
+      "name": "gauss external 4",
+      "method": "external",
+      "source_index": 4,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorGauss",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8"
+          ],
+          "mpl": "(AnchorGauss[1,2,3,4,5,6,7,8])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "9",
+            "10"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in2",
+            "arguments": [
+              "9",
+              "10",
+              "3"
+            ],
+            "mpl": "(in2[9,10,3])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "11",
+              "12"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "limitSet",
+              "arguments": [
+                "1",
+                "4",
+                "11",
+                "10",
+                "12"
+              ],
+              "mpl": "(limitSet[1,4,11,10,12])"
+            },
+            "conclusion": {
+              "kind": "implication",
+              "bound_variables": [],
+              "premise": {
+                "kind": "atom",
+                "head": "interval",
+                "arguments": [
+                  "1",
+                  "4",
+                  "2",
+                  "9",
+                  "11"
+                ],
+                "mpl": "(interval[1,4,2,9,11])"
+              },
+              "conclusion": {
+                "kind": "negation",
+                "inner": {
+                  "kind": "atom",
+                  "head": "interval",
+                  "arguments": [
+                    "1",
+                    "4",
+                    "2",
+                    "10",
+                    "12"
+                  ],
+                  "mpl": "(interval[1,4,2,10,12])"
+                },
+                "mpl": "!(interval[1,4,2,10,12])"
+              },
+              "mpl": "(>[](interval[1,4,2,9,11])!(interval[1,4,2,10,12]))"
+            },
+            "mpl": "(>[11,12](limitSet[1,4,11,10,12])(>[](interval[1,4,2,9,11])!(interval[1,4,2,10,12])))"
+          },
+          "mpl": "(>[9,10](in2[9,10,3])(>[11,12](limitSet[1,4,11,10,12])(>[](interval[1,4,2,9,11])!(interval[1,4,2,10,12]))))"
+        },
+        "mpl": "(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11,12](limitSet[1,4,11,10,12])(>[](interval[1,4,2,9,11])!(interval[1,4,2,10,12])))))"
+      }
+    },
+    {
+      "id": "gauss_external_005",
+      "name": "gauss external 5",
+      "method": "external",
+      "source_index": 5,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorGauss",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8"
+          ],
+          "mpl": "(AnchorGauss[1,2,3,4,5,6,7,8])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "9",
+            "10"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in2",
+            "arguments": [
+              "9",
+              "10",
+              "3"
+            ],
+            "mpl": "(in2[9,10,3])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "11",
+              "12"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "limitSet",
+              "arguments": [
+                "1",
+                "4",
+                "11",
+                "6",
+                "12"
+              ],
+              "mpl": "(limitSet[1,4,11,6,12])"
+            },
+            "conclusion": {
+              "kind": "implication",
+              "bound_variables": [],
+              "premise": {
+                "kind": "atom",
+                "head": "interval",
+                "arguments": [
+                  "1",
+                  "4",
+                  "2",
+                  "9",
+                  "11"
+                ],
+                "mpl": "(interval[1,4,2,9,11])"
+              },
+              "conclusion": {
+                "kind": "negation",
+                "inner": {
+                  "kind": "atom",
+                  "head": "interval",
+                  "arguments": [
+                    "1",
+                    "4",
+                    "2",
+                    "10",
+                    "12"
+                  ],
+                  "mpl": "(interval[1,4,2,10,12])"
+                },
+                "mpl": "!(interval[1,4,2,10,12])"
+              },
+              "mpl": "(>[](interval[1,4,2,9,11])!(interval[1,4,2,10,12]))"
+            },
+            "mpl": "(>[11,12](limitSet[1,4,11,6,12])(>[](interval[1,4,2,9,11])!(interval[1,4,2,10,12])))"
+          },
+          "mpl": "(>[9,10](in2[9,10,3])(>[11,12](limitSet[1,4,11,6,12])(>[](interval[1,4,2,9,11])!(interval[1,4,2,10,12]))))"
+        },
+        "mpl": "(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11,12](limitSet[1,4,11,6,12])(>[](interval[1,4,2,9,11])!(interval[1,4,2,10,12])))))"
+      }
+    },
+    {
+      "id": "gauss_external_006",
+      "name": "gauss external 6",
+      "method": "external",
+      "source_index": 6,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorGauss",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8"
+          ],
+          "mpl": "(AnchorGauss[1,2,3,4,5,6,7,8])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "9",
+            "10"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in2",
+            "arguments": [
+              "9",
+              "10",
+              "3"
+            ],
+            "mpl": "(in2[9,10,3])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "11",
+              "12"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "limitSet",
+              "arguments": [
+                "1",
+                "4",
+                "11",
+                "7",
+                "12"
+              ],
+              "mpl": "(limitSet[1,4,11,7,12])"
+            },
+            "conclusion": {
+              "kind": "implication",
+              "bound_variables": [],
+              "premise": {
+                "kind": "atom",
+                "head": "interval",
+                "arguments": [
+                  "1",
+                  "4",
+                  "2",
+                  "9",
+                  "11"
+                ],
+                "mpl": "(interval[1,4,2,9,11])"
+              },
+              "conclusion": {
+                "kind": "negation",
+                "inner": {
+                  "kind": "atom",
+                  "head": "interval",
+                  "arguments": [
+                    "1",
+                    "4",
+                    "2",
+                    "10",
+                    "12"
+                  ],
+                  "mpl": "(interval[1,4,2,10,12])"
+                },
+                "mpl": "!(interval[1,4,2,10,12])"
+              },
+              "mpl": "(>[](interval[1,4,2,9,11])!(interval[1,4,2,10,12]))"
+            },
+            "mpl": "(>[11,12](limitSet[1,4,11,7,12])(>[](interval[1,4,2,9,11])!(interval[1,4,2,10,12])))"
+          },
+          "mpl": "(>[9,10](in2[9,10,3])(>[11,12](limitSet[1,4,11,7,12])(>[](interval[1,4,2,9,11])!(interval[1,4,2,10,12]))))"
+        },
+        "mpl": "(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11,12](limitSet[1,4,11,7,12])(>[](interval[1,4,2,9,11])!(interval[1,4,2,10,12])))))"
+      }
+    },
+    {
+      "id": "gauss_external_007",
+      "name": "gauss external 7",
+      "method": "external",
+      "source_index": 7,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorGauss",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8"
+          ],
+          "mpl": "(AnchorGauss[1,2,3,4,5,6,7,8])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "9",
+            "10"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in2",
+            "arguments": [
+              "9",
+              "10",
+              "3"
+            ],
+            "mpl": "(in2[9,10,3])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "11",
+              "12"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "limitSet",
+              "arguments": [
+                "1",
+                "4",
+                "11",
+                "9",
+                "12"
+              ],
+              "mpl": "(limitSet[1,4,11,9,12])"
+            },
+            "conclusion": {
+              "kind": "implication",
+              "bound_variables": [],
+              "premise": {
+                "kind": "atom",
+                "head": "interval",
+                "arguments": [
+                  "1",
+                  "4",
+                  "2",
+                  "10",
+                  "11"
+                ],
+                "mpl": "(interval[1,4,2,10,11])"
+              },
+              "conclusion": {
+                "kind": "atom",
+                "head": "interval",
+                "arguments": [
+                  "1",
+                  "4",
+                  "2",
+                  "9",
+                  "12"
+                ],
+                "mpl": "(interval[1,4,2,9,12])"
+              },
+              "mpl": "(>[](interval[1,4,2,10,11])(interval[1,4,2,9,12]))"
+            },
+            "mpl": "(>[11,12](limitSet[1,4,11,9,12])(>[](interval[1,4,2,10,11])(interval[1,4,2,9,12])))"
+          },
+          "mpl": "(>[9,10](in2[9,10,3])(>[11,12](limitSet[1,4,11,9,12])(>[](interval[1,4,2,10,11])(interval[1,4,2,9,12]))))"
+        },
+        "mpl": "(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11,12](limitSet[1,4,11,9,12])(>[](interval[1,4,2,10,11])(interval[1,4,2,9,12])))))"
+      }
+    },
+    {
+      "id": "gauss_external_008",
+      "name": "gauss external 8",
+      "method": "external",
+      "source_index": 8,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorGauss",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8"
+          ],
+          "mpl": "(AnchorGauss[1,2,3,4,5,6,7,8])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "9",
+            "10"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in2",
+            "arguments": [
+              "9",
+              "10",
+              "3"
+            ],
+            "mpl": "(in2[9,10,3])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "11"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "interval",
+              "arguments": [
+                "1",
+                "4",
+                "2",
+                "10",
+                "11"
+              ],
+              "mpl": "(interval[1,4,2,10,11])"
+            },
+            "conclusion": {
+              "kind": "negation",
+              "inner": {
+                "kind": "atom",
+                "head": "interval",
+                "arguments": [
+                  "1",
+                  "4",
+                  "2",
+                  "9",
+                  "11"
+                ],
+                "mpl": "(interval[1,4,2,9,11])"
+              },
+              "mpl": "!(interval[1,4,2,9,11])"
+            },
+            "mpl": "(>[11](interval[1,4,2,10,11])!(interval[1,4,2,9,11]))"
+          },
+          "mpl": "(>[9,10](in2[9,10,3])(>[11](interval[1,4,2,10,11])!(interval[1,4,2,9,11])))"
+        },
+        "mpl": "(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11](interval[1,4,2,10,11])!(interval[1,4,2,9,11]))))"
+      }
+    },
+    {
+      "id": "gauss_external_009",
+      "name": "gauss external 9",
+      "method": "external",
+      "source_index": 9,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorGauss",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8"
+          ],
+          "mpl": "(AnchorGauss[1,2,3,4,5,6,7,8])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "9",
+            "10"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in2",
+            "arguments": [
+              "9",
+              "10",
+              "3"
+            ],
+            "mpl": "(in2[9,10,3])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "11"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "interval",
+              "arguments": [
+                "1",
+                "4",
+                "2",
+                "10",
+                "11"
+              ],
+              "mpl": "(interval[1,4,2,10,11])"
+            },
+            "conclusion": {
+              "kind": "negation",
+              "inner": {
+                "kind": "implication",
+                "bound_variables": [
+                  "12"
+                ],
+                "premise": {
+                  "kind": "atom",
+                  "head": "limitSet",
+                  "arguments": [
+                    "1",
+                    "4",
+                    "11",
+                    "9",
+                    "12"
+                  ],
+                  "mpl": "(limitSet[1,4,11,9,12])"
+                },
+                "conclusion": {
+                  "kind": "negation",
+                  "inner": {
+                    "kind": "atom",
+                    "head": "interval",
+                    "arguments": [
+                      "1",
+                      "4",
+                      "2",
+                      "9",
+                      "12"
+                    ],
+                    "mpl": "(interval[1,4,2,9,12])"
+                  },
+                  "mpl": "!(interval[1,4,2,9,12])"
+                },
+                "mpl": "(>[12](limitSet[1,4,11,9,12])!(interval[1,4,2,9,12]))"
+              },
+              "mpl": "!(>[12](limitSet[1,4,11,9,12])!(interval[1,4,2,9,12]))"
+            },
+            "mpl": "(>[11](interval[1,4,2,10,11])!(>[12](limitSet[1,4,11,9,12])!(interval[1,4,2,9,12])))"
+          },
+          "mpl": "(>[9,10](in2[9,10,3])(>[11](interval[1,4,2,10,11])!(>[12](limitSet[1,4,11,9,12])!(interval[1,4,2,9,12]))))"
+        },
+        "mpl": "(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11](interval[1,4,2,10,11])!(>[12](limitSet[1,4,11,9,12])!(interval[1,4,2,9,12])))))"
+      }
+    },
+    {
+      "id": "gauss_external_010",
+      "name": "gauss external 10",
+      "method": "external",
+      "source_index": 10,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorGauss",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8"
+          ],
+          "mpl": "(AnchorGauss[1,2,3,4,5,6,7,8])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "9",
+            "10"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in2",
+            "arguments": [
+              "9",
+              "10",
+              "3"
+            ],
+            "mpl": "(in2[9,10,3])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "11"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "interval",
+              "arguments": [
+                "1",
+                "4",
+                "2",
+                "6",
+                "11"
+              ],
+              "mpl": "(interval[1,4,2,6,11])"
+            },
+            "conclusion": {
+              "kind": "negation",
+              "inner": {
+                "kind": "implication",
+                "bound_variables": [
+                  "12"
+                ],
+                "premise": {
+                  "kind": "atom",
+                  "head": "limitSet",
+                  "arguments": [
+                    "1",
+                    "4",
+                    "11",
+                    "9",
+                    "12"
+                  ],
+                  "mpl": "(limitSet[1,4,11,9,12])"
+                },
+                "conclusion": {
+                  "kind": "atom",
+                  "head": "interval",
+                  "arguments": [
+                    "1",
+                    "4",
+                    "2",
+                    "10",
+                    "12"
+                  ],
+                  "mpl": "(interval[1,4,2,10,12])"
+                },
+                "mpl": "(>[12](limitSet[1,4,11,9,12])(interval[1,4,2,10,12]))"
+              },
+              "mpl": "!(>[12](limitSet[1,4,11,9,12])(interval[1,4,2,10,12]))"
+            },
+            "mpl": "(>[11](interval[1,4,2,6,11])!(>[12](limitSet[1,4,11,9,12])(interval[1,4,2,10,12])))"
+          },
+          "mpl": "(>[9,10](in2[9,10,3])(>[11](interval[1,4,2,6,11])!(>[12](limitSet[1,4,11,9,12])(interval[1,4,2,10,12]))))"
+        },
+        "mpl": "(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11](interval[1,4,2,6,11])!(>[12](limitSet[1,4,11,9,12])(interval[1,4,2,10,12])))))"
+      }
+    },
+    {
+      "id": "gauss_external_011",
+      "name": "gauss external 11",
+      "method": "external",
+      "source_index": 11,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorGauss",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8"
+          ],
+          "mpl": "(AnchorGauss[1,2,3,4,5,6,7,8])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "9",
+            "10"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in2",
+            "arguments": [
+              "9",
+              "10",
+              "3"
+            ],
+            "mpl": "(in2[9,10,3])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "11"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "interval",
+              "arguments": [
+                "1",
+                "4",
+                "2",
+                "9",
+                "11"
+              ],
+              "mpl": "(interval[1,4,2,9,11])"
+            },
+            "conclusion": {
+              "kind": "negation",
+              "inner": {
+                "kind": "atom",
+                "head": "interval",
+                "arguments": [
+                  "1",
+                  "4",
+                  "2",
+                  "10",
+                  "11"
+                ],
+                "mpl": "(interval[1,4,2,10,11])"
+              },
+              "mpl": "!(interval[1,4,2,10,11])"
+            },
+            "mpl": "(>[11](interval[1,4,2,9,11])!(interval[1,4,2,10,11]))"
+          },
+          "mpl": "(>[9,10](in2[9,10,3])(>[11](interval[1,4,2,9,11])!(interval[1,4,2,10,11])))"
+        },
+        "mpl": "(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11](interval[1,4,2,9,11])!(interval[1,4,2,10,11]))))"
+      }
+    },
+    {
+      "id": "gauss_external_012",
+      "name": "gauss external 12",
+      "method": "external",
+      "source_index": 12,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorGauss",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8"
+          ],
+          "mpl": "(AnchorGauss[1,2,3,4,5,6,7,8])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "9",
+            "10"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in2",
+            "arguments": [
+              "9",
+              "10",
+              "3"
+            ],
+            "mpl": "(in2[9,10,3])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "11"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "interval",
+              "arguments": [
+                "1",
+                "4",
+                "2",
+                "9",
+                "11"
+              ],
+              "mpl": "(interval[1,4,2,9,11])"
+            },
+            "conclusion": {
+              "kind": "negation",
+              "inner": {
+                "kind": "implication",
+                "bound_variables": [
+                  "12"
+                ],
+                "premise": {
+                  "kind": "atom",
+                  "head": "limitSet",
+                  "arguments": [
+                    "1",
+                    "4",
+                    "11",
+                    "9",
+                    "12"
+                  ],
+                  "mpl": "(limitSet[1,4,11,9,12])"
+                },
+                "conclusion": {
+                  "kind": "atom",
+                  "head": "interval",
+                  "arguments": [
+                    "1",
+                    "4",
+                    "2",
+                    "10",
+                    "12"
+                  ],
+                  "mpl": "(interval[1,4,2,10,12])"
+                },
+                "mpl": "(>[12](limitSet[1,4,11,9,12])(interval[1,4,2,10,12]))"
+              },
+              "mpl": "!(>[12](limitSet[1,4,11,9,12])(interval[1,4,2,10,12]))"
+            },
+            "mpl": "(>[11](interval[1,4,2,9,11])!(>[12](limitSet[1,4,11,9,12])(interval[1,4,2,10,12])))"
+          },
+          "mpl": "(>[9,10](in2[9,10,3])(>[11](interval[1,4,2,9,11])!(>[12](limitSet[1,4,11,9,12])(interval[1,4,2,10,12]))))"
+        },
+        "mpl": "(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11](interval[1,4,2,9,11])!(>[12](limitSet[1,4,11,9,12])(interval[1,4,2,10,12])))))"
+      }
+    },
+    {
+      "id": "gauss_external_013",
+      "name": "gauss external 13",
+      "method": "external",
+      "source_index": 13,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorGauss",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8"
+          ],
+          "mpl": "(AnchorGauss[1,2,3,4,5,6,7,8])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "9",
+            "10"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in2",
+            "arguments": [
+              "9",
+              "10",
+              "3"
+            ],
+            "mpl": "(in2[9,10,3])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "11"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "interval",
+              "arguments": [
+                "1",
+                "4",
+                "2",
+                "9",
+                "11"
+              ],
+              "mpl": "(interval[1,4,2,9,11])"
+            },
+            "conclusion": {
+              "kind": "negation",
+              "inner": {
+                "kind": "implication",
+                "bound_variables": [
+                  "12"
+                ],
+                "premise": {
+                  "kind": "atom",
+                  "head": "limitSet",
+                  "arguments": [
+                    "1",
+                    "4",
+                    "11",
+                    "10",
+                    "12"
+                  ],
+                  "mpl": "(limitSet[1,4,11,10,12])"
+                },
+                "conclusion": {
+                  "kind": "atom",
+                  "head": "interval",
+                  "arguments": [
+                    "1",
+                    "4",
+                    "2",
+                    "10",
+                    "12"
+                  ],
+                  "mpl": "(interval[1,4,2,10,12])"
+                },
+                "mpl": "(>[12](limitSet[1,4,11,10,12])(interval[1,4,2,10,12]))"
+              },
+              "mpl": "!(>[12](limitSet[1,4,11,10,12])(interval[1,4,2,10,12]))"
+            },
+            "mpl": "(>[11](interval[1,4,2,9,11])!(>[12](limitSet[1,4,11,10,12])(interval[1,4,2,10,12])))"
+          },
+          "mpl": "(>[9,10](in2[9,10,3])(>[11](interval[1,4,2,9,11])!(>[12](limitSet[1,4,11,10,12])(interval[1,4,2,10,12]))))"
+        },
+        "mpl": "(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11](interval[1,4,2,9,11])!(>[12](limitSet[1,4,11,10,12])(interval[1,4,2,10,12])))))"
+      }
+    },
+    {
+      "id": "gauss_external_014",
+      "name": "gauss external 14",
+      "method": "external",
+      "source_index": 14,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorGauss",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8"
+          ],
+          "mpl": "(AnchorGauss[1,2,3,4,5,6,7,8])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "9",
+            "10"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in2",
+            "arguments": [
+              "9",
+              "10",
+              "3"
+            ],
+            "mpl": "(in2[9,10,3])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "11"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "interval",
+              "arguments": [
+                "1",
+                "4",
+                "2",
+                "9",
+                "11"
+              ],
+              "mpl": "(interval[1,4,2,9,11])"
+            },
+            "conclusion": {
+              "kind": "negation",
+              "inner": {
+                "kind": "implication",
+                "bound_variables": [
+                  "12"
+                ],
+                "premise": {
+                  "kind": "atom",
+                  "head": "limitSet",
+                  "arguments": [
+                    "1",
+                    "4",
+                    "11",
+                    "6",
+                    "12"
+                  ],
+                  "mpl": "(limitSet[1,4,11,6,12])"
+                },
+                "conclusion": {
+                  "kind": "atom",
+                  "head": "interval",
+                  "arguments": [
+                    "1",
+                    "4",
+                    "2",
+                    "10",
+                    "12"
+                  ],
+                  "mpl": "(interval[1,4,2,10,12])"
+                },
+                "mpl": "(>[12](limitSet[1,4,11,6,12])(interval[1,4,2,10,12]))"
+              },
+              "mpl": "!(>[12](limitSet[1,4,11,6,12])(interval[1,4,2,10,12]))"
+            },
+            "mpl": "(>[11](interval[1,4,2,9,11])!(>[12](limitSet[1,4,11,6,12])(interval[1,4,2,10,12])))"
+          },
+          "mpl": "(>[9,10](in2[9,10,3])(>[11](interval[1,4,2,9,11])!(>[12](limitSet[1,4,11,6,12])(interval[1,4,2,10,12]))))"
+        },
+        "mpl": "(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11](interval[1,4,2,9,11])!(>[12](limitSet[1,4,11,6,12])(interval[1,4,2,10,12])))))"
+      }
+    },
+    {
+      "id": "gauss_external_015",
+      "name": "gauss external 15",
+      "method": "external",
+      "source_index": 15,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorGauss",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8"
+          ],
+          "mpl": "(AnchorGauss[1,2,3,4,5,6,7,8])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "9",
+            "10"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in2",
+            "arguments": [
+              "9",
+              "10",
+              "3"
+            ],
+            "mpl": "(in2[9,10,3])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "11"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "interval",
+              "arguments": [
+                "1",
+                "4",
+                "2",
+                "9",
+                "11"
+              ],
+              "mpl": "(interval[1,4,2,9,11])"
+            },
+            "conclusion": {
+              "kind": "negation",
+              "inner": {
+                "kind": "implication",
+                "bound_variables": [
+                  "12"
+                ],
+                "premise": {
+                  "kind": "atom",
+                  "head": "limitSet",
+                  "arguments": [
+                    "1",
+                    "4",
+                    "11",
+                    "7",
+                    "12"
+                  ],
+                  "mpl": "(limitSet[1,4,11,7,12])"
+                },
+                "conclusion": {
+                  "kind": "atom",
+                  "head": "interval",
+                  "arguments": [
+                    "1",
+                    "4",
+                    "2",
+                    "10",
+                    "12"
+                  ],
+                  "mpl": "(interval[1,4,2,10,12])"
+                },
+                "mpl": "(>[12](limitSet[1,4,11,7,12])(interval[1,4,2,10,12]))"
+              },
+              "mpl": "!(>[12](limitSet[1,4,11,7,12])(interval[1,4,2,10,12]))"
+            },
+            "mpl": "(>[11](interval[1,4,2,9,11])!(>[12](limitSet[1,4,11,7,12])(interval[1,4,2,10,12])))"
+          },
+          "mpl": "(>[9,10](in2[9,10,3])(>[11](interval[1,4,2,9,11])!(>[12](limitSet[1,4,11,7,12])(interval[1,4,2,10,12]))))"
+        },
+        "mpl": "(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11](interval[1,4,2,9,11])!(>[12](limitSet[1,4,11,7,12])(interval[1,4,2,10,12])))))"
+      }
+    },
+    {
+      "id": "gauss_external_016",
+      "name": "gauss external 16",
+      "method": "external",
+      "source_index": 16,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorGauss",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8"
+          ],
+          "mpl": "(AnchorGauss[1,2,3,4,5,6,7,8])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "9",
+            "10"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in2",
+            "arguments": [
+              "9",
+              "10",
+              "3"
+            ],
+            "mpl": "(in2[9,10,3])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "11"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "interval",
+              "arguments": [
+                "1",
+                "4",
+                "2",
+                "9",
+                "11"
+              ],
+              "mpl": "(interval[1,4,2,9,11])"
+            },
+            "conclusion": {
+              "kind": "negation",
+              "inner": {
+                "kind": "implication",
+                "bound_variables": [
+                  "12"
+                ],
+                "premise": {
+                  "kind": "atom",
+                  "head": "limitSet",
+                  "arguments": [
+                    "1",
+                    "4",
+                    "11",
+                    "2",
+                    "12"
+                  ],
+                  "mpl": "(limitSet[1,4,11,2,12])"
+                },
+                "conclusion": {
+                  "kind": "atom",
+                  "head": "interval",
+                  "arguments": [
+                    "1",
+                    "4",
+                    "2",
+                    "10",
+                    "12"
+                  ],
+                  "mpl": "(interval[1,4,2,10,12])"
+                },
+                "mpl": "(>[12](limitSet[1,4,11,2,12])(interval[1,4,2,10,12]))"
+              },
+              "mpl": "!(>[12](limitSet[1,4,11,2,12])(interval[1,4,2,10,12]))"
+            },
+            "mpl": "(>[11](interval[1,4,2,9,11])!(>[12](limitSet[1,4,11,2,12])(interval[1,4,2,10,12])))"
+          },
+          "mpl": "(>[9,10](in2[9,10,3])(>[11](interval[1,4,2,9,11])!(>[12](limitSet[1,4,11,2,12])(interval[1,4,2,10,12]))))"
+        },
+        "mpl": "(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11](interval[1,4,2,9,11])!(>[12](limitSet[1,4,11,2,12])(interval[1,4,2,10,12])))))"
+      }
+    },
+    {
+      "id": "gauss_external_017",
+      "name": "gauss external 17",
+      "method": "external",
+      "source_index": 17,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorGauss",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8"
+          ],
+          "mpl": "(AnchorGauss[1,2,3,4,5,6,7,8])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "9",
+            "10"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in2",
+            "arguments": [
+              "9",
+              "10",
+              "3"
+            ],
+            "mpl": "(in2[9,10,3])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "11"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "sequence",
+              "arguments": [
+                "1",
+                "4",
+                "2",
+                "10",
+                "11"
+              ],
+              "mpl": "(sequence[1,4,2,10,11])"
+            },
+            "conclusion": {
+              "kind": "negation",
+              "inner": {
+                "kind": "implication",
+                "bound_variables": [
+                  "12"
+                ],
+                "premise": {
+                  "kind": "atom",
+                  "head": "limitSequence",
+                  "arguments": [
+                    "1",
+                    "4",
+                    "9",
+                    "11",
+                    "12"
+                  ],
+                  "mpl": "(limitSequence[1,4,9,11,12])"
+                },
+                "conclusion": {
+                  "kind": "negation",
+                  "inner": {
+                    "kind": "atom",
+                    "head": "sequence",
+                    "arguments": [
+                      "1",
+                      "4",
+                      "2",
+                      "9",
+                      "12"
+                    ],
+                    "mpl": "(sequence[1,4,2,9,12])"
+                  },
+                  "mpl": "!(sequence[1,4,2,9,12])"
+                },
+                "mpl": "(>[12](limitSequence[1,4,9,11,12])!(sequence[1,4,2,9,12]))"
+              },
+              "mpl": "!(>[12](limitSequence[1,4,9,11,12])!(sequence[1,4,2,9,12]))"
+            },
+            "mpl": "(>[11](sequence[1,4,2,10,11])!(>[12](limitSequence[1,4,9,11,12])!(sequence[1,4,2,9,12])))"
+          },
+          "mpl": "(>[9,10](in2[9,10,3])(>[11](sequence[1,4,2,10,11])!(>[12](limitSequence[1,4,9,11,12])!(sequence[1,4,2,9,12]))))"
+        },
+        "mpl": "(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(>[11](sequence[1,4,2,10,11])!(>[12](limitSequence[1,4,9,11,12])!(sequence[1,4,2,9,12])))))"
+      }
+    },
+    {
+      "id": "gauss_external_018",
+      "name": "gauss external 18",
+      "method": "external",
+      "source_index": 18,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorGauss",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8"
+          ],
+          "mpl": "(AnchorGauss[1,2,3,4,5,6,7,8])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "9",
+            "10"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "in2",
+            "arguments": [
+              "9",
+              "10",
+              "3"
+            ],
+            "mpl": "(in2[9,10,3])"
+          },
+          "conclusion": {
+            "kind": "atom",
+            "head": "preorder",
+            "arguments": [
+              "1",
+              "4",
+              "9",
+              "10"
+            ],
+            "mpl": "(preorder[1,4,9,10])"
+          },
+          "mpl": "(>[9,10](in2[9,10,3])(preorder[1,4,9,10]))"
+        },
+        "mpl": "(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](in2[9,10,3])(preorder[1,4,9,10])))"
+      }
+    },
+    {
+      "id": "gauss_external_019",
+      "name": "gauss external 19",
+      "method": "external",
+      "source_index": 19,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorGauss",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8"
+          ],
+          "mpl": "(AnchorGauss[1,2,3,4,5,6,7,8])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "9",
+            "10"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "interval",
+            "arguments": [
+              "1",
+              "4",
+              "2",
+              "9",
+              "10"
+            ],
+            "mpl": "(interval[1,4,2,9,10])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "11"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "sequence",
+              "arguments": [
+                "1",
+                "4",
+                "2",
+                "9",
+                "11"
+              ],
+              "mpl": "(sequence[1,4,2,9,11])"
+            },
+            "conclusion": {
+              "kind": "atom",
+              "head": "fXY",
+              "arguments": [
+                "11",
+                "10",
+                "1"
+              ],
+              "mpl": "(fXY[11,10,1])"
+            },
+            "mpl": "(>[11](sequence[1,4,2,9,11])(fXY[11,10,1]))"
+          },
+          "mpl": "(>[9,10](interval[1,4,2,9,10])(>[11](sequence[1,4,2,9,11])(fXY[11,10,1])))"
+        },
+        "mpl": "(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](interval[1,4,2,9,10])(>[11](sequence[1,4,2,9,11])(fXY[11,10,1]))))"
+      }
+    },
+    {
+      "id": "gauss_external_020",
+      "name": "gauss external 20",
+      "method": "external",
+      "source_index": 20,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorGauss",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8"
+          ],
+          "mpl": "(AnchorGauss[1,2,3,4,5,6,7,8])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "9",
+            "10"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "interval",
+            "arguments": [
+              "1",
+              "4",
+              "2",
+              "9",
+              "10"
+            ],
+            "mpl": "(interval[1,4,2,9,10])"
+          },
+          "conclusion": {
+            "kind": "atom",
+            "head": "in",
+            "arguments": [
+              "9",
+              "10"
+            ],
+            "mpl": "(in[9,10])"
+          },
+          "mpl": "(>[9,10](interval[1,4,2,9,10])(in[9,10]))"
+        },
+        "mpl": "(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](interval[1,4,2,9,10])(in[9,10])))"
+      }
+    },
+    {
+      "id": "gauss_external_021",
+      "name": "gauss external 21",
+      "method": "external",
+      "source_index": 21,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorGauss",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8"
+          ],
+          "mpl": "(AnchorGauss[1,2,3,4,5,6,7,8])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "9",
+            "10"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "preorder",
+            "arguments": [
+              "1",
+              "4",
+              "9",
+              "10"
+            ],
+            "mpl": "(preorder[1,4,9,10])"
+          },
+          "conclusion": {
+            "kind": "implication",
+            "bound_variables": [
+              "11"
+            ],
+            "premise": {
+              "kind": "atom",
+              "head": "preorder",
+              "arguments": [
+                "1",
+                "4",
+                "10",
+                "11"
+              ],
+              "mpl": "(preorder[1,4,10,11])"
+            },
+            "conclusion": {
+              "kind": "atom",
+              "head": "preorder",
+              "arguments": [
+                "1",
+                "4",
+                "9",
+                "11"
+              ],
+              "mpl": "(preorder[1,4,9,11])"
+            },
+            "mpl": "(>[11](preorder[1,4,10,11])(preorder[1,4,9,11]))"
+          },
+          "mpl": "(>[9,10](preorder[1,4,9,10])(>[11](preorder[1,4,10,11])(preorder[1,4,9,11])))"
+        },
+        "mpl": "(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9,10](preorder[1,4,9,10])(>[11](preorder[1,4,10,11])(preorder[1,4,9,11]))))"
+      }
+    },
+    {
+      "id": "gauss_external_022",
+      "name": "gauss external 22",
+      "method": "external",
+      "source_index": 22,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorGauss",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8"
+          ],
+          "mpl": "(AnchorGauss[1,2,3,4,5,6,7,8])"
+        },
+        "conclusion": {
+          "kind": "implication",
+          "bound_variables": [
+            "9"
+          ],
+          "premise": {
+            "kind": "atom",
+            "head": "interval",
+            "arguments": [
+              "1",
+              "4",
+              "2",
+              "6",
+              "9"
+            ],
+            "mpl": "(interval[1,4,2,6,9])"
+          },
+          "conclusion": {
+            "kind": "atom",
+            "head": "in",
+            "arguments": [
+              "6",
+              "9"
+            ],
+            "mpl": "(in[6,9])"
+          },
+          "mpl": "(>[9](interval[1,4,2,6,9])(in[6,9]))"
+        },
+        "mpl": "(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(>[9](interval[1,4,2,6,9])(in[6,9])))"
+      }
+    },
+    {
+      "id": "gauss_external_023",
+      "name": "gauss external 23",
+      "method": "external",
+      "source_index": 23,
+      "theorem": {
+        "kind": "implication",
+        "bound_variables": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8"
+        ],
+        "premise": {
+          "kind": "atom",
+          "head": "AnchorGauss",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8"
+          ],
+          "mpl": "(AnchorGauss[1,2,3,4,5,6,7,8])"
+        },
+        "conclusion": {
+          "kind": "atom",
+          "head": "AnchorPeano",
+          "arguments": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "mpl": "(AnchorPeano[1,2,3,4,5,6])"
+        },
+        "mpl": "(>[1,2,3,4,5,6,7,8](AnchorGauss[1,2,3,4,5,6,7,8])(AnchorPeano[1,2,3,4,5,6]))"
+      }
+    }
+  ]
+}

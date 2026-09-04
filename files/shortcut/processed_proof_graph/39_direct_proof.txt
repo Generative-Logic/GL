@@ -1,0 +1,17 @@
+(preorder[N,+,v4,v5])	main	implication	(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[w1,w2,w3](in3[w1,w2,w3,+])(preorder[N,+,w1,w3])))	main	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	(in3[v4,v6,v5,+])	main
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2,v3](in3[v1,v2,v3,+])(preorder[N,+,v1,v3])))	main	theorem
+(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	task formulation
+(in3[v4,v6,v5,+])	main	implication	(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[w1,w2,w3](in3[w1,w2,w3,+])(>[w4,w5](in3[w4,w2,w5,+])(>[w6](in3[w3,w4,w6,+])(in3[w5,w1,w6,+])))))	main	(AnchorPeano[N,i0,s,+,*,i1])	main	(in3[v2,v3,v5,+])	main	(in3[v3,v1,v4,+])	main	(in3[v6,v1,v2,+])	main
+(AnchorPeano[N,i0,s,+,*,i1])	main	implication	(>[](NaturalNumbers[N,i0,s,+,*])(>[](in2[i0,i1,s])(AnchorPeano[N,i0,s,+,*,i1])))	main	(NaturalNumbers[N,i0,s,+,*])	main	(in2[i0,i1,s])	main
+(>[](NaturalNumbers[N,i0,s,+,*])(>[](in2[i0,i1,s])(AnchorPeano[N,i0,s,+,*,i1])))	main	reformulation for integration and	(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))_integration_goal	main
+(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))_integration_goal	main	expansion for integration	(AnchorPeano[N,i0,s,+,*,i1])_integration_goal	main
+(NaturalNumbers[N,i0,s,+,*])	main	disintegration	(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main
+(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main	expansion	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main
+(in2[i0,i1,s])	main	disintegration	(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))	main
+(in3[v2,v3,v5,+])	main	task formulation
+(in3[v3,v1,v4,+])	main	implication	(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[w1,w2,w3](in3[w1,w2,w3,+])(in3[w2,w1,w3,+])))	main	(AnchorPeano[N,i0,s,+,*,i1])	main	(in3[v1,v3,v4,+])	main
+(in3[v1,v3,v4,+])	main	task formulation
+(in3[v6,v1,v2,+])	main	implication	(>[N,i0,s,+,*,i1](AnchorPeano[N,i0,s,+,*,i1])(>[w1,w2,w3](in3[w1,w2,w3,+])(in3[w2,w1,w3,+])))	main	(AnchorPeano[N,i0,s,+,*,i1])	main	(in3[v1,v6,v2,+])	main
+(in3[v1,v6,v2,+])	main	disintegration	!(>[v6](in[v6,N])!(in3[v1,v6,v2,+]))	main
+!(>[v6](in[v6,N])!(in3[v1,v6,v2,+]))	main	expansion	(preorder[N,+,v1,v2])	main
+(preorder[N,+,v1,v2])	main	task formulation

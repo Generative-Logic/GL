@@ -1,0 +1,10 @@
+(preorder[N,*,i1,v1])	main	implication	(>[v2](in[v2,N])(>[](in3[i1,v2,v1,*])(preorder[N,*,i1,v1])))	main	(in3[i1,v1_copy,v1,*])	main	(in[v1_copy,N])	main
+(>[v2](in[v2,N])(>[](in3[i1,v2,v1,*])(preorder[N,*,i1,v1])))	main	reformulation for integration >[bound]	!(>[v4](in[v4,N])!(in3[i1,v4,v1,*]))_integration_goal	main
+!(>[v4](in[v4,N])!(in3[i1,v4,v1,*]))_integration_goal	main	expansion for integration	(preorder[N,*,i1,v1])_integration_goal	main
+(in3[i1,v1_copy,v1,*])	main	implication	(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[w1](in[w1,N])(>[w2](=[w1,w2])(in3[i1,w1,w2,*]))))	main	(=[v1_copy,v1])	main	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	(in[v1_copy,N])	main
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](in[v1,N])(>[v2](=[v1,v2])(in3[i1,v1,v2,*]))))	main	theorem
+(=[v1_copy,v1])	main	symmetry of equality	(=[v1,v1_copy])	main
+(=[v1,v1_copy])	main	variable copy
+(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	task formulation
+(in[v1_copy,N])	main	equality1	(in[v1,N])	main	(=[v1,v1_copy])	main
+(in[v1,N])	main	task formulation

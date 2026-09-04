@@ -31,7 +31,9 @@
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
-  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="ExtensionSettings">
+    <Import Project="$(VCTargetsPath)\BuildCustomizations\CUDA 13.3.props" />
+  </ImportGroup>
   <ImportGroup Label="Shared" />
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
@@ -59,17 +61,22 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>_DEBUG;_CONSOLE;USE_MIMALLOC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_DEBUG;_CONSOLE;USE_MIMALLOC;GL_CUDA;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <AdditionalIncludeDirectories>$(ProjectDir)\src;$(ProjectDir)\..\..\vcpkg_installed\x64-windows\include</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <AdditionalOptions>/Zo /bigobj %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
+    <CudaCompile>
+      <TargetMachinePlatform>64</TargetMachinePlatform>
+      <CodeGeneration>compute_89,sm_89;compute_120,sm_120</CodeGeneration>
+      <AdditionalOptions>-std=c++17 -Xcompiler=/Zc:preprocessor %(AdditionalOptions)</AdditionalOptions>
+    </CudaCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <StackReserveSize>16777216</StackReserveSize>
-      <AdditionalLibraryDirectories>$(ProjectDir)\..\..\vcpkg_installed\x64-windows\debug\lib</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(ProjectDir)\..\..\vcpkg_installed\x64-windows\debug\lib;$(CudaToolkitLibDir)</AdditionalLibraryDirectories>
       <AdditionalDependencies>mimalloc.dll.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
@@ -79,7 +86,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>_CONSOLE;USE_MIMALLOC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_CONSOLE;USE_MIMALLOC;GL_CUDA;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <AdditionalIncludeDirectories>$(ProjectDir)\src;$(ProjectDir)\..\..\vcpkg_installed\x64-windows\include</AdditionalIncludeDirectories>
@@ -94,13 +101,18 @@
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <AdditionalOptions>/Zo /bigobj %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
+    <CudaCompile>
+      <TargetMachinePlatform>64</TargetMachinePlatform>
+      <CodeGeneration>compute_89,sm_89;compute_120,sm_120</CodeGeneration>
+      <AdditionalOptions>-std=c++17 -Xcompiler=/Zc:preprocessor %(AdditionalOptions)</AdditionalOptions>
+    </CudaCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <StackReserveSize>16777216</StackReserveSize>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>$(ProjectDir)\..\..\vcpkg_installed\x64-windows\lib</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(ProjectDir)\..\..\vcpkg_installed\x64-windows\lib;$(CudaToolkitLibDir)</AdditionalLibraryDirectories>
       <AdditionalDependencies>mimalloc.dll.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
@@ -116,6 +128,9 @@
     <ClCompile Include="src\conjecturer.cpp" />
     <ClCompile Include="src\infra\hashburst_dump.cpp" />
     <ClCompile Include="src\infra\rt_tracker.cpp" />
+    <ClCompile Include="src\infra\mem_tracker.cpp" />
+    <ClCompile Include="src\gpu\phase2_projection.cpp" />
+    <ClCompile Include="src\gpu\phase2_sealing.cpp" />
     <ClCompile Include="src\memory_infra\global_memory_manager.cpp" />
     <ClCompile Include="src\memory_infra\lb_arena.cpp" />
     <ClCompile Include="src\memory_infra\lb_store.cpp" />
@@ -127,6 +142,7 @@
     <ClCompile Include="src\memory_infra\sealed_pages.cpp" />
     <ClCompile Include="src\tests\test_harness.cpp" />
     <ClCompile Include="src\tests\test_memory.cpp" />
+    <ClCompile Include="src\tests\test_incubator_mail_routing.cpp" />
     <ClCompile Include="src\tests\test_mail_log.cpp" />
     <ClCompile Include="src\tests\test_compiler.cpp" />
     <ClCompile Include="src\tests\test_filter.cpp" />
@@ -134,16 +150,26 @@
     <ClCompile Include="src\tests\test_conjecturer.cpp" />
     <ClCompile Include="src\tests\test_contradiction_negated_head.cpp" />
     <ClCompile Include="src\tests\test_or_intro_rules.cpp" />
+    <ClCompile Include="src\tests\test_or_theorem_construction.cpp" />
+    <ClCompile Include="src\tests\test_or_implications.cpp" />
+    <ClCompile Include="src\tests\test_existence_implications.cpp" />
+    <ClCompile Include="src\tests\test_or_elimination.cpp" />
     <ClCompile Include="src\tests\test_antisym_variable_copy.cpp" />
+    <ClCompile Include="src\tests\test_output_collision_copy.cpp" />
     <ClCompile Include="src\tests\test_vacuous_premise_suppression.cpp" />
     <ClCompile Include="src\tests\test_axed_anchor_exception.cpp" />
     <ClCompile Include="src\tests\test_disintegration_allowed.cpp" />
+    <ClCompile Include="src\tests\test_negated_and_demorgan.cpp" />
     <ClCompile Include="src\tests\test_cleanup_levels_retention.cpp" />
     <ClCompile Include="src\tests\test_theorem_sink_dedup.cpp" />
     <ClCompile Include="src\tests\test_twin_deactivation.cpp" />
     <ClCompile Include="src\tests\test_equi_reshuffle.cpp" />
+    <ClCompile Include="src\tests\test_theorem_usage_graph.cpp" />
     <ClCompile Include="src\tests\test_admission_reshuffle.cpp" />
     <ClCompile Include="src\tests\test_admission_integration_reshuffle.cpp" />
+    <ClCompile Include="src\tests\test_rejected_ordis.cpp" />
+    <ClCompile Include="src\tests\test_rt_tracker.cpp" />
+    <ClCompile Include="src\tests\test_mem_tracker.cpp" />
     <ClCompile Include="src\tests\test_lb_split.cpp" />
     <ClCompile Include="src\tests\test_static_memory.cpp" />
     <ClCompile Include="src\tests\test_lb_arena.cpp" />
@@ -167,6 +193,17 @@
     <ClCompile Include="src\tests\test_simple_map_store.cpp" />
     <ClCompile Include="src\tests\test_reconstruct_implication.cpp" />
     <ClCompile Include="src\tests\test_reverse_args_index.cpp" />
+    <ClCompile Include="src\tests\test_request_key_build.cpp" />
+    <ClCompile Include="src\tests\test_key_encode_memo.cpp" />
+    <ClCompile Include="src\tests\test_rule_index_staging.cpp" />
+    <ClCompile Include="src\tests\test_two_target_install.cpp" />
+    <ClCompile Include="src\tests\test_rebuild_in_place.cpp" />
+    <ClCompile Include="src\tests\test_request_gates.cpp" />
+    <ClCompile Include="src\tests\test_phase2_projection.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <CudaCompile Include="src\gpu\phase2_cuda.cu" />
+    <CudaCompile Include="src\tests\test_phase2_cuda.cu" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\compiler.hpp" />
@@ -177,7 +214,9 @@
     <ClInclude Include="src\filter.hpp" />
     <ClInclude Include="src\conjecturer.hpp" />
     <ClInclude Include="src\infra\hashburst_dump.hpp" />
+    <ClInclude Include="src\infra\diagnostics_log.hpp" />
     <ClInclude Include="src\infra\rt_tracker.hpp" />
+    <ClInclude Include="src\infra\mem_tracker.hpp" />
     <ClInclude Include="src\memory_infra\dirty_state.hpp" />
     <ClInclude Include="src\memory_infra\global_memory_manager.hpp" />
     <ClInclude Include="src\memory_infra\lb_arena.hpp" />
@@ -202,14 +241,20 @@
     <ClInclude Include="src\memory_infra\cold_mail.hpp" />
     <ClInclude Include="src\memory_infra\paged_hash_index.hpp" />
     <ClInclude Include="src\memory_infra\reverse_args_index.hpp" />
+    <ClInclude Include="src\memory_infra\rule_index_staging.hpp" />
     <ClInclude Include="src\memory_infra\ptr_directory.hpp" />
     <ClInclude Include="src\memory_infra\cold_string_table.hpp" />
     <ClInclude Include="src\json.hpp" />
     <ClInclude Include="src\parameters.hpp" />
     <ClInclude Include="src\compressor.hpp" />
     <ClInclude Include="src\run_modes.hpp" />
+    <ClInclude Include="src\gpu\phase2_cuda.hpp" />
+    <ClInclude Include="src\gpu\phase2_projection.hpp" />
+    <ClInclude Include="src\gpu\phase2_sealing.hpp" />
     <ClInclude Include="src\tests\test_harness.hpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
-  <ImportGroup Label="ExtensionTargets" />
+  <ImportGroup Label="ExtensionTargets">
+    <Import Project="$(VCTargetsPath)\BuildCustomizations\CUDA 13.3.targets" />
+  </ImportGroup>
 </Project>

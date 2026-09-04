@@ -31,6 +31,7 @@
 #include "paged_vector.hpp"
 #include "scratch_arena.hpp"
 #include "str_ops.hpp"
+#include "infra/rt_tracker.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -161,6 +162,19 @@ namespace gl {
             return bytePool_.liveBytes() + locations_.liveBytes();
         }
 
+        /// @brief Return the exact logical key-byte total without walking keys.
+        ///
+        /// @details
+        /// Tracks the sum of every live key length independently of the padded
+        /// no-straddle byte pool. Append, canonical reload, copy, compaction, clear,
+        /// and release maintain the counter in lockstep, so capacity planning can
+        /// read the canonical bytes-tag size in constant time.
+        ///
+        /// @return Sum of live key lengths in id order.
+        /// @invariant Equals `contentBytesFrom(0)` and excludes page-tail padding
+        ///            and erased-key holes.
+        int64_t logicalByteCount() const { return logicalByteCount_; }
+
         /// @brief Append `s` at the next id — the store's write primitive.
         ///
         /// @details
@@ -174,9 +188,13 @@ namespace gl {
         ///
         /// @param s Key bytes to store.
         void appendKey(const StrSpan& s) {
+            assert(s.len >= 0);
+            assert(logicalByteCount_
+                <= std::numeric_limits<int64_t>::max() - s.len);
             const int32_t start = bytePool_.appendRunNoStraddle(s.ptr, s.len);
             locations_.push_back(ColdStringLocation{
                 start, s.len, hashSpan(s) });
+            logicalByteCount_ += s.len;
         }
 
         /// @brief Cached FNV-1a 64-bit hash of stored key `id`'s bytes — the
@@ -210,7 +228,7 @@ namespace gl {
         /// @param probe     The contiguous lookup bytes.
         /// @param probeHash The probe's already-computed FNV-1a digest.
         /// @return `true` when lengths and bytes match.
-        bool equalStored(int32_t id, const StrSpan& probe,
+        GL_FORCEINLINE bool equalStored(int32_t id, const StrSpan& probe,
                          uint64_t probeHash) const {
             const ColdStringLocation& loc = locations_[id - 1];
             if (loc.hash != probeHash) return false;
@@ -245,7 +263,7 @@ namespace gl {
         /// @param id A stored id; `1 <= id <= count()`.
         /// @return Contiguous span over the key's bytes; the empty span for an
         ///         interned empty key.
-        StrSpan decodeAt(int32_t id) const {
+        GL_FORCEINLINE StrSpan decodeAt(int32_t id) const {
             assert(id >= 1 && id <= locations_.size()
                 && "BytesKeyStore::decodeAt on an unstored id");
             const ColdStringLocation& loc = locations_[id - 1];
@@ -293,6 +311,7 @@ namespace gl {
         void clear() {
             locations_.clear();
             bytePool_.clear();
+            logicalByteCount_ = 0;
         }
 
         /// @brief Drop everything including page capacity — the owning set's
@@ -300,6 +319,7 @@ namespace gl {
         void release() {
             locations_.release();
             bytePool_.release();
+            logicalByteCount_ = 0;
         }
 
         /// @brief Slide stored key `srcId` down to 0-based position `destPos` —
@@ -319,6 +339,11 @@ namespace gl {
         /// @param destPos Destination position in `[0, count())`.
         /// @param srcId   Source id; `1 <= srcId <= count()`.
         void moveKeyTo(int32_t destPos, int32_t srcId) {
+            assert(destPos >= 0 && destPos < locations_.size());
+            assert(srcId >= 1 && srcId <= locations_.size());
+            logicalByteCount_ -= locations_[destPos].len;
+            logicalByteCount_ += locations_[srcId - 1].len;
+            assert(logicalByteCount_ >= 0);
             locations_.setAt(destPos, locations_[srcId - 1]);
         }
 
@@ -334,7 +359,13 @@ namespace gl {
         /// (I-83).
         ///
         /// @param newCount Retained key count, in `[0, count()]`.
-        void truncate(int32_t newCount) { locations_.truncate(newCount); }
+        void truncate(int32_t newCount) {
+            assert(newCount >= 0 && newCount <= locations_.size());
+            for (int32_t index = newCount; index < locations_.size(); ++index)
+                logicalByteCount_ -= locations_[index].len;
+            assert(logicalByteCount_ >= 0);
+            locations_.truncate(newCount);
+        }
 
         /// @brief Cross-arena deep copy of the keys — the owning set's
         ///        `copyFrom` (the LB-clone path).
@@ -350,6 +381,7 @@ namespace gl {
         void copyKeysFrom(const BytesKeyStore& other) {
             assert(locations_.empty()
                 && "BytesKeyStore::copyKeysFrom into a non-empty store");
+            assert(logicalByteCount_ == 0);
             const int32_t n = other.count();
             for (int32_t id = 1; id <= n; ++id) {
                 const ColdStringLocation& oloc = other.locations_[id - 1];
@@ -370,7 +402,9 @@ namespace gl {
                 }
                 locations_.push_back(ColdStringLocation{
                     start, oloc.len, oloc.hash });
+                logicalByteCount_ += oloc.len;
             }
+            assert(logicalByteCount_ == other.logicalByteCount_);
         }
 
         /// @brief Canonical content dump, lengths part: every key's length, in
@@ -431,6 +465,7 @@ namespace gl {
         int64_t contentBytesFrom(int32_t fromRow) const {
             const int32_t n = locations_.size();
             assert(fromRow >= 0 && fromRow <= n);
+            if (fromRow == 0) return logicalByteCount_;
             int64_t total = 0;
             for (int32_t i = fromRow; i < n; ++i) total += locations_[i].len;
             return total;
@@ -472,6 +507,9 @@ namespace gl {
             }
             assert(off == byteLen
                 && "BytesKeyStore::bulkLoadKeys: bytes longer than lengths");
+            assert(logicalByteCount_
+                <= std::numeric_limits<int64_t>::max() - byteLen);
+            logicalByteCount_ += byteLen;
         }
 
         /// @brief Stage one file set's lengths column — the first half of the
@@ -544,6 +582,10 @@ namespace gl {
         // The bytes dump emits the LOGICAL per-key bytes, not this pool's raw
         // bytes, so the padding never reaches the image.
         PagedVector<char> bytePool_;
+
+        // Exact canonical bytes-tag size. The raw pool is not equivalent because
+        // no-straddle placement leaves page-tail padding and erase leaves holes.
+        int64_t logicalByteCount_{ 0 };
 
         // Reload handshake stash: the lengths facet's column waiting for the
         // bytes facet's content (heap bookkeeping; empty outside a load).
@@ -656,7 +698,7 @@ namespace gl {
         /// @param probeHash The owning lookup's hash (unused: POD equality is a
         ///                  direct fixed-width byte comparison).
         /// @return `true` when the raw bytes match.
-        bool equalStored(int32_t id, const K& probe, uint64_t probeHash) const {
+        GL_FORCEINLINE bool equalStored(int32_t id, const K& probe, uint64_t probeHash) const {
             (void)probeHash;
             return std::memcmp(&keys_[id - 1], &probe, sizeof(K)) == 0;
         }
@@ -666,7 +708,7 @@ namespace gl {
         ///
         /// @param id A stored id; `1 <= id <= count()`.
         /// @return Const reference to the key.
-        const K& decodeAt(int32_t id) const {
+        GL_FORCEINLINE const K& decodeAt(int32_t id) const {
             assert(id >= 1 && id <= keys_.size()
                 && "PodKeyStore::decodeAt on an unstored id");
             return keys_[id - 1];
@@ -1370,6 +1412,15 @@ namespace gl {
             return end - start;
         }
 
+        /// @brief Byte offset where blob index `b` ends — the next blob's
+        ///        start, or the pool end for the last blob.
+        ///
+        /// @param b Blob index in `[0, blobCount())`.
+        /// @return The pool byte offset one past the blob.
+        int32_t blobEnd(int32_t b) const {
+            return (b + 1 < blobStarts_.size()) ? blobStarts_[b + 1] : blobPool_.size();
+        }
+
         /// @brief Run-start (first blob index) of the key at 0-based position
         ///        `i` — the splice / compaction raw read.
         ///
@@ -1407,8 +1458,7 @@ namespace gl {
         /// @param out Destination buffer (resized to the blob length).
         void readBlob(int32_t b, std::vector<char>& out) const {
             const int32_t start = blobStarts_[b];
-            const int32_t end = (b + 1 < blobStarts_.size())
-                ? blobStarts_[b + 1] : blobPool_.size();
+            const int32_t end = blobEnd(b);
             const int32_t len = end - start;
             out.resize(static_cast<size_t>(len));
             int32_t pos = start, off = 0;
@@ -1438,8 +1488,7 @@ namespace gl {
         /// @param out Destination buffer, at least the blob's byte length.
         void readBlob(int32_t b, char* out) const {
             const int32_t start = blobStarts_[b];
-            const int32_t end = (b + 1 < blobStarts_.size())
-                ? blobStarts_[b + 1] : blobPool_.size();
+            const int32_t end = blobEnd(b);
             int32_t pos = start, off = 0;
             while (pos < end) {
                 int32_t run = 0;
@@ -1475,8 +1524,7 @@ namespace gl {
         ///         page straddle.
         bool peekBlob(int32_t b, const char*& p, int32_t& len) const {
             const int32_t start = blobStarts_[b];
-            const int32_t end = (b + 1 < blobStarts_.size())
-                ? blobStarts_[b + 1] : blobPool_.size();
+            const int32_t end = blobEnd(b);
             len = end - start;
             if (len == 0) { p = nullptr; return true; }
             int32_t run = 0;
@@ -1646,6 +1694,10 @@ namespace gl {
             assert(M >= 0 && newBytes >= 0);
             const int32_t y0 = runByteStart(b0);
             const int32_t oldBytes = runByteStart(b0 + oldCount) - y0;
+            {
+            RT_SCOPE_HERE("CSR_POOL_SHIFT_WRITE");
+            if (newBytes != oldBytes)   // iter = pool bytes memmoved behind the run
+                RT_NOTE_ITERATIONS_HERE(blobPool_.size() - (y0 + oldBytes));
             blobPool_.replaceRangeGenerated(y0, oldBytes, newBytes,
                 [&](const auto& byteSink) {
                     int32_t emitted = 0, bytesEmitted = 0;
@@ -1659,7 +1711,12 @@ namespace gl {
                         && "BlobCsrValueStore::replaceRunGenerated byte emitter "
                            "shape mismatch");
                 });
+            } // RT_SCOPE CSR_POOL_SHIFT_WRITE
             int32_t acc = y0;
+            {
+            RT_SCOPE_HERE("CSR_BLOBSTARTS_SHIFT");
+            if (M != oldCount || newBytes != oldBytes)   // iter = start entries touched behind the run
+                RT_NOTE_ITERATIONS_HERE(blobStarts_.size() - (b0 + oldCount));
             blobStarts_.replaceRangeGenerated(b0, oldCount, M,
                 [&](const auto& startSink) {
                     int32_t emitted = 0;
@@ -1675,6 +1732,522 @@ namespace gl {
             const int32_t byteDelta = newBytes - oldBytes;
             if (byteDelta != 0)
                 blobStarts_.addScalarToSuffix(b0 + M, byteDelta);
+            } // RT_SCOPE CSR_BLOBSTARTS_SHIFT
+        }
+
+        /// @brief The per-key record sink of @ref rebuildRunsGenerated: the
+        ///        emitter produces a key's final run either record by record
+        ///        (`blob`) or, for a key whose stored run is unchanged, as one
+        ///        wholesale copy (`unchanged`).
+        ///
+        /// @details
+        /// `unchanged(id)` marks the stored run of key `id` as carried over
+        /// verbatim; CONSECUTIVE unchanged keys coalesce into one pending
+        /// range that materializes as three chunked copies (the run starts
+        /// re-based by one blob-index delta, the blob starts by one byte
+        /// delta, the pool bytes as they are) when a produced key or the end
+        /// of the rebuild follows — an untouched stretch of the map costs a
+        /// memcpy of its bytes, not a call per key or per record. `blob`
+        /// appends one record to the current key's run (materializing any
+        /// pending range first, so the columns stay in id order). A key uses
+        /// one of the two forms (asserted); a key that emits nothing gets an
+        /// empty run. The sink is valid only inside the rebuild it belongs to.
+        class RebuildSink {
+        public:
+            /// @brief Bind the sink to the store being rebuilt and the three
+            ///        new columns; the emitter never constructs one.
+            RebuildSink(BlobCsrValueStore& store, PagedVector<int32_t>& newRunStarts,
+                        PagedVector<int32_t>& newBlobStarts,
+                        PagedVector<char>& newPool, int32_t storedKeys)
+                : store_(store), newRunStarts_(newRunStarts),
+                  newBlobStarts_(newBlobStarts), newPool_(newPool),
+                  storedKeys_(storedKeys) {}
+
+            /// @brief Append one record to the current key's run.
+            /// @param bytes The record bytes; read only when `len > 0`.
+            /// @param len   The record length; `>= 0`.
+            void blob(const char* bytes, int32_t len) {
+                assert(len >= 0 && (len == 0 || bytes != nullptr)
+                    && "RebuildSink::blob: record length without bytes");
+                assert(!curUnchanged_
+                    && "RebuildSink::blob: a key is either copied wholesale or emitted");
+                if (!curStarted_) {
+                    materializePending();
+                    newRunStarts_.push_back(newBlobStarts_.size());
+                    curStarted_ = true;
+                }
+                newBlobStarts_.push_back(newPool_.size());
+                if (len > 0) newPool_.appendRun(bytes, len);
+            }
+
+            /// @brief Carry the stored run of key @p id over verbatim as the
+            ///        current key's run (the key's records are unchanged).
+            /// @param id The current key; a key with a stored run,
+            ///           `1 <= id <= storedKeys`.
+            void unchanged(int32_t id) {
+                assert(id == curId_ && "RebuildSink::unchanged: not the current key");
+                assert(id >= 1 && id <= storedKeys_
+                    && "RebuildSink::unchanged: the key has no stored run");
+                assert(!curStarted_ && !curUnchanged_
+                    && "RebuildSink::unchanged: a key is either copied wholesale or emitted");
+                if (pendingN_ > 0 && id == pendingFirst_ + pendingN_) {
+                    ++pendingN_;
+                } else {
+                    materializePending();
+                    pendingFirst_ = id;
+                    pendingN_ = 1;
+                }
+                curUnchanged_ = true;
+            }
+
+            /// @brief The driver's per-key entry.
+            /// @param id The key about to be emitted.
+            void beginKey(int32_t id) {
+                curId_ = id;
+                curStarted_ = false;
+                curUnchanged_ = false;
+            }
+
+            /// @brief The driver's per-key exit: a key that emitted nothing and
+            ///        was not carried over gets an empty run.
+            void endKey() {
+                if (!curStarted_ && !curUnchanged_) {
+                    materializePending();
+                    newRunStarts_.push_back(newBlobStarts_.size());
+                }
+            }
+
+            /// @brief The driver's final call: materialize a trailing range.
+            void finish() { materializePending(); }
+
+            /// @brief This sink writes (the scratch rebuild has one pass).
+            bool isWritePass() const { return true; }
+
+        private:
+            /// @brief Copy the pending range of unchanged keys into the new
+            ///        columns as three chunked copies.
+            void materializePending() {
+                if (pendingN_ == 0) return;
+                const int32_t f = pendingFirst_;
+                const int32_t l = pendingFirst_ + pendingN_ - 1;
+                const int32_t b0 = store_.runStarts_[f - 1];
+                const int32_t bEnd = (l < storedKeys_) ? store_.runStarts_[l]
+                                                       : store_.blobStarts_.size();
+                const int32_t y0 = store_.runByteStart(b0);
+                const int32_t yEnd = store_.runByteStart(bEnd);
+                appendShifted(newRunStarts_, store_.runStarts_, f - 1, l,
+                              newBlobStarts_.size() - b0);
+                appendShifted(newBlobStarts_, store_.blobStarts_, b0, bEnd,
+                              newPool_.size() - y0);
+                for (int32_t y = y0; y < yEnd;) {
+                    int32_t run = 0;
+                    const char* p = store_.blobPool_.contiguousRun(y, run);
+                    if (run > yEnd - y) run = yEnd - y;
+                    newPool_.appendRun(p, run);
+                    y += run;
+                }
+                pendingN_ = 0;
+            }
+
+            /// @brief Append `src[from, to)` plus @p delta to @p dst in
+            ///        stack-buffered chunks.
+            static void appendShifted(PagedVector<int32_t>& dst,
+                                      const PagedVector<int32_t>& src,
+                                      int32_t from, int32_t to, int32_t delta) {
+                int32_t buf[256];
+                for (int32_t i = from; i < to;) {
+                    int32_t run = 0;
+                    const int32_t* p = src.contiguousRun(i, run);
+                    if (run > to - i) run = to - i;
+                    for (int32_t done = 0; done < run;) {
+                        const int32_t n = std::min(256, run - done);
+                        for (int32_t k = 0; k < n; ++k) buf[k] = p[done + k] + delta;
+                        dst.appendRun(buf, n);
+                        done += n;
+                    }
+                    i += run;
+                }
+            }
+
+            BlobCsrValueStore& store_;
+            PagedVector<int32_t>& newRunStarts_;
+            PagedVector<int32_t>& newBlobStarts_;
+            PagedVector<char>& newPool_;
+            int32_t storedKeys_;
+            int32_t curId_ = 0;
+            bool curStarted_ = false;
+            bool curUnchanged_ = false;
+            int32_t pendingFirst_ = 0;
+            int32_t pendingN_ = 0;
+        };
+
+        /// @brief Rebuild EVERY run from a per-key record emitter in one pass —
+        ///        the batch write that replaces many interior splices.
+        ///
+        /// @details
+        /// The flush door of the rule-index staging
+        /// (D-333). @p emitAll is called once per key
+        /// id in `1..keyCount` with a @ref RebuildSink and produces that key's
+        /// complete final run — record by record (`blob`) or, for a key whose
+        /// stored run is unchanged, as one wholesale copy (`unchanged`); the
+        /// emitter may read this store's CURRENT runs while it produces (the
+        /// old columns stay intact until the last key is emitted). The new
+        /// columns are built on @p scratch in their final absolute form (run
+        /// starts, blob starts, the pool), then the three dense CSR columns
+        /// are refilled from them in page-sized chunks. The result is
+        /// byte-identical to `openRun` + `appendBlob` of the same records in
+        /// the same order for a fresh store, i.e. to what the same final runs
+        /// reach through any sequence of `assignRun` / `appendBlobToRun`
+        /// splices — with no tail move at all. Cost: a memcpy of the old pool
+        /// plus the produced records, once, instead of O(pool tail) per
+        /// splice. Forces `Restructured` (the whole value side is rewritten).
+        /// Single-threaded write side only (I-83).
+        ///
+        /// A key beyond the stored ones (its run has not been opened yet) is
+        /// legal: @p keyCount may exceed the run-start column's current size;
+        /// the emitter supplies its run with `blob` like any other and the
+        /// owner mints the key afterwards.
+        ///
+        /// @tparam EmitAll Callable `void(int32_t id, RebuildSink& sink)`
+        ///                 invoked once per key id in ascending order.
+        /// @param keyCount The owning map's key count after the owner's pending
+        ///                 mints; every id in `1..keyCount` receives a run.
+        /// @param emitAll  The per-key record producer.
+        /// @param scratch  Per-slot scratch arena for the three collection
+        ///                 columns (page tier); released before return.
+        /// @return Nothing.
+        /// @invariant After return: `runStarts_.size() == keyCount`, the blob
+        ///            starts are the prefix sums of the emitted lengths, the
+        ///            pool holds exactly the emitted bytes in emission order.
+        /// @see replaceRunGenerated (the single-run splice), RebuildSink,
+        ///      HashMap::assignAllRunsGenerated.
+        template <typename EmitAll>
+        void rebuildRunsGenerated(int32_t keyCount, EmitAll emitAll,
+                                  LbArena& scratch) {
+            const int32_t storedKeys = runStarts_.size();
+            assert(keyCount >= storedKeys
+                && "BlobCsrValueStore::rebuildRunsGenerated: fewer keys than runs");
+            DirtyState scratchDirty = DirtyState::Clean;
+            PagedVector<int32_t> newRunStarts(&scratch, &scratchDirty);
+            PagedVector<int32_t> newBlobStarts(&scratch, &scratchDirty);
+            PagedVector<char> newPool(&scratch, &scratchDirty);
+            RebuildSink sink(*this, newRunStarts, newBlobStarts, newPool, storedKeys);
+            {
+                RT_SCOPE_HERE("CSR_REBUILD_EMIT");   // iter = keys walked
+                RT_NOTE_ITERATIONS_HERE(keyCount);
+                for (int32_t id = 1; id <= keyCount; ++id) {
+                    sink.beginKey(id);
+                    emitAll(id, sink);
+                    sink.endKey();
+                }
+                sink.finish();
+            }
+            {
+                RT_SCOPE_HERE("CSR_REBUILD_REFILL");   // iter = pool bytes copied back
+                RT_NOTE_ITERATIONS_HERE(newPool.size());
+                refillFrom(runStarts_, newRunStarts);
+                refillFrom(blobStarts_, newBlobStarts);
+                refillFrom(blobPool_, newPool);
+            }
+            assert(runStarts_.size() == keyCount
+                && blobStarts_.size() == newBlobStarts.size()
+                && blobPool_.size() == newPool.size()
+                && "BlobCsrValueStore::rebuildRunsGenerated: rebuilt columns diverge");
+            newPool.clear();
+            newBlobStarts.clear();
+            newRunStarts.clear();
+        }
+
+        /// @brief The single-pass sink of @ref rebuildRunsInPlace: a produced
+        ///        key's records are buffered on scratch (proportional to the
+        ///        produced runs, never to the map), a carried-over key is only
+        ///        measured.
+        ///
+        /// @details
+        /// The same `blob` / `unchanged` protocol as @ref RebuildSink. The one
+        /// emit pass runs BEFORE any column changes, so the emitter reads the
+        /// store's intact runs; `isWritePass()` is `true` (an emitter's
+        /// write-only side effect, the remaining-args reverse-index edge, runs
+        /// in this pass).
+        class ProduceSink {
+        public:
+            /// @brief Bind to the store being rebuilt and the produced-run scratch.
+            ProduceSink(const BlobCsrValueStore& store, int32_t storedKeys,
+                        PagedVector<int32_t>& prodLens, PagedVector<char>& prodPool)
+                : store_(store), storedKeys_(storedKeys),
+                  prodLens_(prodLens), prodPool_(prodPool) {}
+
+            /// @brief Buffer one produced record.
+            void blob(const char* bytes, int32_t len) {
+                assert(len >= 0 && (len == 0 || bytes != nullptr)
+                    && "ProduceSink::blob: record length without bytes");
+                assert(!unchanged_
+                    && "ProduceSink::blob: a key is either copied wholesale or emitted");
+                prodLens_.push_back(len);
+                if (len > 0) prodPool_.appendRun(bytes, len);
+                ++blobs_;
+                bytes_ += len;
+            }
+
+            /// @brief Measure the stored run of the current key as carried over.
+            void unchanged(int32_t id) {
+                assert(id == curId_ && "ProduceSink::unchanged: not the current key");
+                assert(id >= 1 && id <= storedKeys_
+                    && "ProduceSink::unchanged: the key has no stored run");
+                assert(blobs_ == 0 && !unchanged_
+                    && "ProduceSink::unchanged: a key is either copied wholesale or emitted");
+                const int32_t b0 = store_.runStarts_[id - 1];
+                const int32_t bEnd = (id < storedKeys_) ? store_.runStarts_[id]
+                                                        : store_.blobStarts_.size();
+                blobs_ = bEnd - b0;
+                bytes_ = store_.runByteStart(bEnd) - store_.runByteStart(b0);
+                unchanged_ = true;
+            }
+
+            /// @brief The one pass carries the side effects.
+            bool isWritePass() const { return true; }
+
+            /// @brief The driver's per-key entry.
+            void beginKey(int32_t id) {
+                curId_ = id;
+                blobs_ = 0;
+                bytes_ = 0;
+                unchanged_ = false;
+                lensStart_ = prodLens_.size();
+                poolStart_ = prodPool_.size();
+            }
+
+            int32_t blobs() const { return blobs_; }          ///< The key's final blob count.
+            int64_t bytes() const { return bytes_; }          ///< The key's final byte count.
+            bool produced() const { return !unchanged_; }     ///< Produced (rewritten) key?
+            int32_t lensStart() const { return lensStart_; }  ///< Its first record length slot.
+            int32_t poolStart() const { return poolStart_; }  ///< Its first scratch pool byte.
+
+        private:
+            const BlobCsrValueStore& store_;
+            int32_t storedKeys_;
+            PagedVector<int32_t>& prodLens_;
+            PagedVector<char>& prodPool_;
+            int32_t curId_ = 0;
+            int32_t blobs_ = 0;
+            int64_t bytes_ = 0;
+            bool unchanged_ = false;
+            int32_t lensStart_ = 0;
+            int32_t poolStart_ = 0;
+        };
+
+        /// @brief Rebuild every run IN PLACE from a per-key record emitter —
+        ///        one emit pass, nothing before the first produced key moves,
+        ///        scratch proportional to the produced runs only.
+        ///
+        /// @details
+        /// The production flush door of the rule-index staging
+        /// (D-333). Pass one calls @p emitAll once per
+        /// key on the intact store (`ProduceSink`): a produced key's records
+        /// are buffered on @p scratch, a carried-over key is measured. Pass
+        /// two grows the three columns to the final sizes
+        /// (`PagedVector::growTo`) and walks from the last key down to the
+        /// FIRST produced key writing the tail backwards from the new end: a
+        /// stretch of carried-over keys moves once as one range (`moveRange`
+        /// on the pool, delta-shifted moves of the blob starts and run
+        /// starts), a produced key's buffered run is placed. Keys before the
+        /// first produced key are untouched, so the cost is O(bytes behind the
+        /// first produced key) plus the produced records — the cost of ONE
+        /// splice at that key — and the only memory growth is the delta. The
+        /// walk is safe because a produced run never shrinks (asserted: every
+        /// merge only adds), so every write lands at or above the old
+        /// position of the data it replaces and the unprocessed keys' old
+        /// data stays intact below. Result byte-identical to
+        /// @ref rebuildRunsGenerated (the scratch twin, the test oracle).
+        /// Forces `Restructured`. Single-threaded write side only (I-83).
+        ///
+        /// @tparam EmitAll Callable `void(int32_t id, ProduceSink& sink)`
+        ///                 invoked once per key id in ascending order.
+        /// @param keyCount The owning map's key count after the owner's pending
+        ///                 mints; every id in `1..keyCount` receives a run.
+        /// @param emitAll  The per-key record producer.
+        /// @param scratch  Per-slot scratch arena for the per-key size tables
+        ///                 and the produced-run buffer (page tier).
+        /// @return Nothing.
+        /// @invariant After return the columns equal those @ref
+        ///            rebuildRunsGenerated produces for the same emitter.
+        /// @see rebuildRunsGenerated, ProduceSink, HashMap::assignAllRunsGenerated.
+        template <typename EmitAll>
+        void rebuildRunsInPlace(int32_t keyCount, EmitAll emitAll, LbArena& scratch) {
+            const int32_t storedKeys = runStarts_.size();
+            assert(keyCount >= storedKeys
+                && "BlobCsrValueStore::rebuildRunsInPlace: fewer keys than runs");
+            DirtyState scratchDirty = DirtyState::Clean;
+            PagedVector<int32_t> newBlobs(&scratch, &scratchDirty);
+            PagedVector<int32_t> newBytes(&scratch, &scratchDirty);
+            PagedVector<int32_t> lensStart(&scratch, &scratchDirty);
+            PagedVector<int32_t> poolStart(&scratch, &scratchDirty);
+            PagedVector<char> produced(&scratch, &scratchDirty);
+            PagedVector<int32_t> prodLens(&scratch, &scratchDirty);
+            PagedVector<char> prodPool(&scratch, &scratchDirty);
+            int64_t totalBlobs = 0;
+            int64_t totalBytes = 0;
+            int32_t firstProduced = 0;
+            {
+                RT_SCOPE_HERE("CSR_REBUILD_EMIT");   // iter = keys emitted
+                RT_NOTE_ITERATIONS_HERE(keyCount);
+                ProduceSink ps(*this, storedKeys, prodLens, prodPool);
+                for (int32_t id = 1; id <= keyCount; ++id) {
+                    ps.beginKey(id);
+                    emitAll(id, ps);
+                    assert(ps.bytes() <= INT32_MAX
+                        && "rebuildRunsInPlace: a run exceeds the pool's index range");
+                    if (ps.produced() && id <= storedKeys) {
+                        const int32_t b0 = runStarts_[id - 1];
+                        const int32_t bEnd = (id < storedKeys) ? runStarts_[id]
+                                                                : blobStarts_.size();
+                        assert(ps.blobs() >= bEnd - b0
+                            && ps.bytes() >= runByteStart(bEnd) - runByteStart(b0)
+                            && "rebuildRunsInPlace: a produced run shrank - the merges only add");
+                    }
+                    assert((ps.produced() || id <= storedKeys)
+                        && "rebuildRunsInPlace: a key without a stored run must be produced");
+                    newBlobs.push_back(ps.blobs());
+                    newBytes.push_back(static_cast<int32_t>(ps.bytes()));
+                    lensStart.push_back(ps.lensStart());
+                    poolStart.push_back(ps.poolStart());
+                    produced.push_back(ps.produced() ? 1 : 0);
+                    if (ps.produced() && firstProduced == 0) firstProduced = id;
+                    totalBlobs += ps.blobs();
+                    totalBytes += ps.bytes();
+                }
+            }
+            assert(totalBlobs <= INT32_MAX && totalBytes <= INT32_MAX
+                && "rebuildRunsInPlace: the rebuilt columns exceed the index range");
+            if (firstProduced != 0) {
+                const int32_t oldBytes = blobPool_.size();
+                // Where the untouched prefix ends - the cursors must land exactly here.
+                const int32_t prefixBlobs = (firstProduced <= storedKeys)
+                    ? runStarts_[firstProduced - 1] : blobStarts_.size();
+                const int32_t prefixBytes = runByteStart(prefixBlobs);
+                RT_SCOPE_HERE("CSR_REBUILD_WRITE");   // iter = pool bytes behind the first produced key
+                RT_NOTE_ITERATIONS_HERE(oldBytes - prefixBytes);
+                runStarts_.growTo(keyCount);
+                blobStarts_.growTo(static_cast<int32_t>(totalBlobs));
+                blobPool_.growTo(static_cast<int32_t>(totalBytes));
+
+                int32_t blobCursor = static_cast<int32_t>(totalBlobs);
+                int32_t byteCursor = static_cast<int32_t>(totalBytes);
+                int32_t pendingLo = 0, pendingHi = 0;       // a carried-over range [lo, hi]
+                int32_t pendingBlobs = 0, pendingBytes = 0;
+                const auto movePending = [&]() {
+                    if (pendingHi == 0) return;
+                    const int32_t b0 = runStarts_[pendingLo - 1];
+                    const int32_t y0 = blobStarts_[b0];
+                    const int32_t destBlob = blobCursor - pendingBlobs;
+                    const int32_t destByte = byteCursor - pendingBytes;
+                    assert(destBlob >= b0 && destByte >= y0
+                        && "rebuildRunsInPlace: a carried-over range would move down");
+                    blobPool_.moveRange(y0, destByte, pendingBytes);
+                    moveShiftedDescending(blobStarts_, b0, destBlob, pendingBlobs, destByte - y0);
+                    moveShiftedDescending(runStarts_, pendingLo - 1, pendingLo - 1,
+                                          pendingHi - pendingLo + 1, destBlob - b0);
+                    blobCursor = destBlob;
+                    byteCursor = destByte;
+                    pendingLo = pendingHi = 0;
+                    pendingBlobs = pendingBytes = 0;
+                };
+                for (int32_t id = keyCount; id >= firstProduced; --id) {
+                    if (produced[id - 1] == 0) {
+                        if (pendingHi == 0) pendingHi = id;
+                        pendingLo = id;
+                        pendingBlobs += newBlobs[id - 1];
+                        pendingBytes += newBytes[id - 1];
+                        continue;
+                    }
+                    movePending();
+                    const int32_t M = newBlobs[id - 1];
+                    const int32_t B = newBytes[id - 1];
+                    const int32_t ls = lensStart[id - 1];
+                    const int32_t pst = poolStart[id - 1];
+                    blobCursor -= M;
+                    byteCursor -= B;
+                    for (int32_t at = 0; at < B;) {
+                        int32_t run = 0;
+                        const char* p = prodPool.contiguousRun(pst + at, run);
+                        if (run > B - at) run = B - at;
+                        blobPool_.writeRunAt(byteCursor + at, p, run);
+                        at += run;
+                    }
+                    {
+                        int32_t buf[256];
+                        int32_t acc = byteCursor;
+                        for (int32_t j = 0; j < M;) {
+                            const int32_t n = std::min(256, M - j);
+                            for (int32_t k = 0; k < n; ++k) {
+                                buf[k] = acc;
+                                acc += prodLens[ls + j + k];
+                            }
+                            blobStarts_.writeRunAt(blobCursor + j, buf, n);
+                            j += n;
+                        }
+                        assert(acc == byteCursor + B
+                            && "rebuildRunsInPlace: the produced run's lengths do not sum to its bytes");
+                    }
+                    runStarts_.setAt(id - 1, blobCursor);
+                }
+                movePending();
+                assert(blobCursor == prefixBlobs && byteCursor == prefixBytes
+                    && "rebuildRunsInPlace: the backward walk did not land on the untouched prefix");
+            } else {
+                // Every key carried over: the columns already hold the result.
+                assert(keyCount == storedKeys);
+            }
+            prodPool.clear();
+            prodLens.clear();
+            produced.clear();
+            poolStart.clear();
+            lensStart.clear();
+            newBytes.clear();
+            newBlobs.clear();
+        }
+
+        /// @brief Move `src[from, from+count)` to `dest..` adding @p delta to
+        ///        every element, walking from the high end so an overlapping
+        ///        upward move never reads a slot it already wrote
+        ///        (`dest >= from`).
+        ///
+        /// @param v     The column.
+        /// @param from  First source slot.
+        /// @param dest  First destination slot; `>= from`.
+        /// @param count Elements; `<= 0` is a no-op.
+        /// @param delta Added to every moved element.
+        /// @return Nothing.
+        static void moveShiftedDescending(PagedVector<int32_t>& v, int32_t from,
+                                          int32_t dest, int32_t count, int32_t delta) {
+            assert(dest >= from && "moveShiftedDescending: downward move");
+            if (count <= 0) return;
+            int32_t buf[256];
+            for (int32_t rem = count; rem > 0;) {
+                const int32_t n = std::min(256, rem);
+                const int32_t s = from + rem - n;
+                for (int32_t k = 0; k < n; ++k) buf[k] = v[s + k] + delta;
+                v.writeRunAt(dest + rem - n, buf, n);
+                rem -= n;
+            }
+        }
+
+        /// @brief Replace a column's content with another column's, copied in
+        ///        page-sized chunks (the rebuild's adoption step).
+        ///
+        /// @tparam T   The element type.
+        /// @param dst  The column to refill (cleared first; `Restructured`).
+        /// @param src  The source column (on any arena).
+        /// @return Nothing.
+        template <typename T>
+        static void refillFrom(PagedVector<T>& dst, const PagedVector<T>& src) {
+            dst.clear();
+            for (int32_t at = 0; at < src.size();) {
+                int32_t run = 0;
+                const T* p = src.contiguousRun(at, run);
+                dst.appendRun(p, run);
+                at += run;
+            }
         }
 
         /// @brief Rebase every key-run start from @p first by one blob-count
@@ -1791,6 +2364,7 @@ namespace gl {
         PagedVector<int32_t> runStarts_;   // id-1 -> first blob index (CSR/blobs)
         PagedVector<int32_t> blobStarts_;  // blob -> byte offset    (CSR/bytes)
         PagedVector<char> blobPool_;       // all blob bytes, dense, key-id order
+
     };
 
     /// @brief The one cold hash container — cold keys + a heap open-addressing
@@ -1895,6 +2469,20 @@ namespace gl {
                  + ValueStore::valuesLiveBytes();
         }
 
+        /// @brief Bytes held by the DERIVED key→id index alone.
+        ///
+        /// @details
+        /// The `PagedHashIndex` slot array is rebuilt on reload and never
+        /// deloaded ([I-117]), so it appears in no `ContainerTag` and the
+        /// deload image understates the container's real RAM by exactly this
+        /// much. Telemetry only — the memory measurement reads it to separate
+        /// derived-index cost from block and page slack; nothing in the prover
+        /// branches on it (Rule 16).
+        ///
+        /// @return Live bytes of the throw-away hash index.
+        /// @see `indexBytes()` on the key facet views, `mem_tracker.hpp`.
+        int64_t indexBytes() const { return buckets_.liveBytes(); }
+
         /// @brief The cold key store — the column-dump / reload escape hatch for
         ///        the embedding map forms (`ColdHashMap` / `ColdMultiMap`) and
         ///        the deload round-trip tests.
@@ -1933,6 +2521,7 @@ namespace gl {
             ks_.appendKey(k);
             const int32_t id = ks_.count();
             indexInsert(id);
+            ++insertEpoch_;
             // Consistency: the just-minted key must resolve to its own id
             // through the index (a cheap per-mint round-trip tripwire).
             assert(lookup(k) == id
@@ -2487,8 +3076,13 @@ namespace gl {
                           const int32_t* lens, int32_t M) {
             assert(M >= 0 && (M == 0 || lens != nullptr));
             const int32_t before = ks_.count();
-            const int32_t id = mint(k);
+            int32_t id = 0;
+            {
+                RT_SCOPE_HERE("CSR_MINT_KEY");
+                id = mint(k);
+            }
             if (id == before + 1) {              // brand-new key
+                RT_SCOPE_HERE("CSR_APPEND_RUN");
                 ValueStore::openRun();
                 int32_t off = 0;
                 for (int32_t j = 0; j < M; ++j) {
@@ -2528,8 +3122,13 @@ namespace gl {
                                    int32_t newBytes, Emit emit) {
             assert(M >= 0 && newBytes >= 0);
             const int32_t before = ks_.count();
-            const int32_t id = mint(k);
+            int32_t id = 0;
+            {
+                RT_SCOPE_HERE("CSR_MINT_KEY");
+                id = mint(k);
+            }
             if (id == before + 1) {
+                RT_SCOPE_HERE("CSR_APPEND_RUN");
                 ValueStore::openRun();
                 int32_t emitted = 0, bytesEmitted = 0;
                 emit([&](const char* bytes, int32_t len) {
@@ -2576,10 +3175,16 @@ namespace gl {
             assert(M >= 0 && (M == 0 || lens != nullptr));
             const int32_t b0 = ValueStore::runStartRaw(id - 1);
             const int32_t oldCount = ValueStore::runLen(id, keyCount);
-            ValueStore::replaceRun(b0, oldCount, bytes, lens, M);
+            {
+                RT_SCOPE_HERE("CSR_REPLACE_RUN");
+                ValueStore::replaceRun(b0, oldCount, bytes, lens, M);
+            }
             const int32_t countDelta = M - oldCount;
-            if (countDelta != 0)
+            if (countDelta != 0) {
+                RT_SCOPE_HERE("CSR_RUNSTARTS_SHIFT");
+                RT_NOTE_ITERATIONS_HERE(keyCount - id);   // later keys renumbered
                 ValueStore::addToRunStartsSuffix(id, countDelta);
+            }
             return id;
         }
 
@@ -2613,10 +3218,16 @@ namespace gl {
             assert(M >= 0 && newBytes >= 0);
             const int32_t b0 = ValueStore::runStartRaw(id - 1);
             const int32_t oldCount = ValueStore::runLen(id, keyCount);
-            ValueStore::replaceRunGenerated(b0, oldCount, M, newBytes, emit);
+            {
+                RT_SCOPE_HERE("CSR_REPLACE_RUN");
+                ValueStore::replaceRunGenerated(b0, oldCount, M, newBytes, emit);
+            }
             const int32_t countDelta = M - oldCount;
-            if (countDelta != 0)
+            if (countDelta != 0) {
+                RT_SCOPE_HERE("CSR_RUNSTARTS_SHIFT");
+                RT_NOTE_ITERATIONS_HERE(keyCount - id);   // later keys renumbered
                 ValueStore::addToRunStartsSuffix(id, countDelta);
+            }
             return id;
         }
 
@@ -2651,9 +3262,75 @@ namespace gl {
             const int32_t oldCount = ValueStore::runLen(id, kc);
             // Insert the one new blob at the run-end (oldCount == 0 -> a pure
             // insert; the existing blobs are not read).
-            ValueStore::replaceRun(b0 + oldCount, 0, blob, &len, 1);
+            {
+                RT_SCOPE_HERE("CSR_REPLACE_RUN");
+                ValueStore::replaceRun(b0 + oldCount, 0, blob, &len, 1);
+            }
             // One blob was inserted before every later key's run -> +1 each.
-            ValueStore::addToRunStartsSuffix(id, 1);
+            {
+                RT_SCOPE_HERE("CSR_RUNSTARTS_SHIFT");
+                RT_NOTE_ITERATIONS_HERE(kc - id);   // later keys renumbered
+                ValueStore::addToRunStartsSuffix(id, 1);
+            }
+        }
+
+        /// @brief Replace EVERY key's run at once from a per-key record emitter
+        ///        — the batch twin of a sequence of `assignRun` /
+        ///        `appendBlobToRun` splices (blob map).
+        ///
+        /// @details
+        /// The emitter is called for every id in `1..keyCount` and may read the
+        /// current runs of the stored keys (`forEachBlobContiguous`,
+        /// `peekBlobContiguous`, ids `<= count()`) while producing — the
+        /// columns are rebuilt only after the last key
+        /// (`BlobCsrValueStore::rebuildRunsGenerated`). Ids beyond `count()`
+        /// are the keys the caller mints RIGHT AFTER this call, in id order
+        /// (the first mint receives `count() + 1`, and so on); minting them
+        /// before would put the run-start column and the key store out of
+        /// step for the emitter's reads. The key store and the index are
+        /// untouched here. Single-threaded write side only (I-83). A member
+        /// template, instantiated only when called.
+        ///
+        /// @tparam EmitAll Callable `void(int32_t id, RebuildSink& sink)` —
+        ///                 `sink.blob(bytes, len)` per record in final run
+        ///                 order, or `sink.unchanged(id)` for a stored key
+        ///                 whose run does not change.
+        /// @param keyCount The key count after the caller's pending mints;
+        ///                 `>= count()`.
+        /// @param emitAll  The per-key record producer.
+        /// @param scratch  Per-slot scratch arena for the rebuild's collection
+        ///                 columns.
+        /// @return Nothing.
+        /// @invariant The value columns equal those of a fresh map given the
+        ///            same keys and the same final runs.
+        /// @see BlobCsrValueStore::rebuildRunsGenerated, assignRun, appendBlobToRun.
+        template <typename EmitAll, typename VS = ValueStore>
+        void assignAllRunsGenerated(int32_t keyCount, EmitAll emitAll,
+                                    LbArena& scratch) {
+            assert(arena_->resident()
+                && "assignAllRunsGenerated on a deloaded LB (I-111)");
+            assert(keyCount >= ks_.count()
+                && "assignAllRunsGenerated: fewer runs than stored keys");
+            ValueStore::rebuildRunsInPlace(keyCount, emitAll, scratch);
+        }
+
+        /// @brief The scratch-rebuild twin of @ref assignAllRunsGenerated —
+        ///        the test oracle (`BlobCsrValueStore::rebuildRunsGenerated`,
+        ///        one write pass into scratch columns, then a refill).
+        ///
+        /// @tparam EmitAll As for @ref assignAllRunsGenerated (one pass).
+        /// @param keyCount As for @ref assignAllRunsGenerated.
+        /// @param emitAll  The per-key record producer.
+        /// @param scratch  Scratch arena for the three collection columns.
+        /// @return Nothing.
+        template <typename EmitAll, typename VS = ValueStore>
+        void assignAllRunsViaScratch(int32_t keyCount, EmitAll emitAll,
+                                     LbArena& scratch) {
+            assert(arena_->resident()
+                && "assignAllRunsViaScratch on a deloaded LB (I-111)");
+            assert(keyCount >= ks_.count()
+                && "assignAllRunsViaScratch: fewer runs than stored keys");
+            ValueStore::rebuildRunsGenerated(keyCount, emitAll, scratch);
         }
 
         /// @brief Copy blob `j` of key `id`'s run into `out` (blob map).
@@ -2874,7 +3551,9 @@ namespace gl {
         /// order preserved, so the post-wipe ids and deload bytes are a
         /// deterministic function of the surviving content. Every write is guarded
         /// against a no-op, so a predicate matching nothing leaves the container —
-        /// and its dirty state — untouched. POD-key only (`setKeyAt`).
+        /// and its dirty state — untouched. POD and byte keys alike (`moveKeyTo`: a
+        /// byte key slides only its location entry, its dead bytes stay as a hole
+        /// the copying compaction reclaims — I-119).
         /// Single-threaded write side only (I-83).
         ///
         /// @tparam Pred A callable `bool(KeyDecode)` — erase the key when true.
@@ -2894,7 +3573,7 @@ namespace gl {
                     ValueStore::runByteStart(rs + rl) - yStart;
                 if (pred(ks_.decodeAt(read))) continue;   // drop key + its run
                 if (writeKey != read - 1)
-                    ks_.setKeyAt(writeKey, ks_.decodeAt(read));
+                    ks_.moveKeyTo(writeKey, read);
                 if (ValueStore::runStartRaw(writeKey) != writeBlob)
                     ValueStore::setRunStartRaw(writeKey, writeBlob);
                 for (int32_t j = 0; j < rl; ++j) {
@@ -3014,6 +3693,7 @@ namespace gl {
             ks_.clear();
             buckets_.clear();
             ValueStore::clearValues();
+            ++insertEpoch_;
             // Consistency: a fresh container is fully empty.
             assert(ks_.count() == 0 && buckets_.empty()
                 && "cold-index desync: resetToFresh left state non-empty");
@@ -3137,7 +3817,23 @@ namespace gl {
                       int64_t byteLen, int32_t rowCount) {
             ks_.bulkLoadKeys(lengths, bytes, byteLen, rowCount);
             rebuildIndex();
+            ++insertEpoch_;
         }
+
+        /// @brief Key-set generation counter: bumped by every operation that
+        ///        can ADD a key (`mint` on a miss, `resetToFresh`, `bulkLoad`).
+        ///
+        /// @details
+        /// Erasures and value writes leave it unchanged. A consumer that
+        /// derives a transient index over the key set (the equi-class hooks'
+        /// `RejectedValidityBuckets`) records the epoch at build time and asserts
+        /// it unchanged at every later use: a key the index has never seen cannot
+        /// exist while the epoch stands, so a stale-entry filter (`lookup == 0`)
+        /// is the only tolerance the index needs. Process-lifetime monotonic,
+        /// never dumped, never a proof input.
+        ///
+        /// @return The current key-set epoch.
+        uint32_t insertEpoch() const { return insertEpoch_; }
 
         /// @brief Stage one file set's lengths column (reload handshake).
         ///
@@ -3185,6 +3881,18 @@ namespace gl {
             explicit LengthsView(HashMap* owner) : owner_(owner) {
                 assert(owner != nullptr);
             }
+
+            /// @brief Bytes of the owning container's DERIVED key index.
+            ///
+            /// @details
+            /// Present on the FIRST facet of a container only, so a caller
+            /// walking every facet adds the index exactly once. Telemetry for
+            /// the memory measurement; the index is never deloaded (I-117) and
+            /// therefore has no `ContainerTag` of its own.
+            ///
+            /// @return Live bytes of the owner's hash index.
+            int64_t indexBytes() const { return owner_->indexBytes(); }
+
 
             /// @brief String count (the lengths tag's element count).
             ///
@@ -3299,6 +4007,18 @@ namespace gl {
             explicit KeysView(HashMap* owner) : owner_(owner) {
                 assert(owner != nullptr);
             }
+
+            /// @brief Bytes of the owning container's DERIVED key index.
+            ///
+            /// @details
+            /// Present on the FIRST facet of a container only, so a caller
+            /// walking every facet adds the index exactly once. Telemetry for
+            /// the memory measurement; the index is never deloaded (I-117) and
+            /// therefore has no `ContainerTag` of its own.
+            ///
+            /// @return Live bytes of the owner's hash index.
+            int64_t indexBytes() const { return owner_->indexBytes(); }
+
 
             /// @brief Key count (the key tag's element count).
             ///
@@ -3662,6 +4382,7 @@ namespace gl {
         // writes are safe precisely because it is never in a deload image
         // (I-117, throw-away-paged-hash form).
         PagedHashIndex buckets_;
+        uint32_t insertEpoch_ = 0;   // key-set generation (see insertEpoch())
     };
 
     /// @brief The cold hash SET — keys only (the interner shape), the value

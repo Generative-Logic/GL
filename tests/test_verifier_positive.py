@@ -419,7 +419,10 @@ def test_pos_nested_or_convergence_requires_all_flat_leaves():
 @register
 def test_pos_nested_or_expansion_and_mutual_implication_use_flat_leaves():
     state = _state_with_nested_or()
-    expanded = "!(&!(&!(=[a,X])!(=[b,X]))!(=[c,X]))"
+    # Flat-leaf De Morgan form with the or-so-far nested NEGATED (its
+    # !(&...) cancels to the bare (&...) conjunct) — the D-260 polarity
+    # fix; the former fixture bytes !(&!(&...)...) encoded the defect.
+    expanded = "!(&(&!(=[a,X])!(=[b,X]))!(=[c,X]))"
     origin = make_proof_line("(or91[a,b,c])", "main", "task formulation")
     expansion = make_proof_line(
         expanded, "main", "expansion", "(or91[a,b,c])", "main")
@@ -744,31 +747,6 @@ def test_pos_meta_no_self_reference_recorded():
     ]
     assert_chapter_meta_pass(
         chapter, "self-reference",
-        chapter_thm=chapter_thm, chapter_type="direct_proof",
-    )
-
-
-@register
-def test_pos_meta_single_anchor_handling_passes_uniqueness():
-    """Exactly ONE anchor handling row -> uniqueness counter records nothing
-    (count > 1 is the trigger)."""
-    from tests.test_harness import assert_chapter_meta_pass
-    chapter_thm = (
-        "(>[v1](AnchorPeano[N,s,p,zero,one,two])(in[v1,N]))",
-        "direct", "ref",
-    )
-    chapter = [
-        make_proof_line("(in[v1,N])", "main", "task formulation"),
-        make_proof_line(
-            "(AnchorPeano[N,s,p,zero,one,two])", "main", "anchor handling",
-            "(AnchorPeano[N,s,p,zero,one,two])", "main",
-        ),
-        make_proof_line(
-            "(AnchorPeano[N,s,p,zero,one,two])", "main", "task formulation",
-        ),
-    ]
-    assert_chapter_meta_pass(
-        chapter, "anchor handling uniqueness",
         chapter_thm=chapter_thm, chapter_type="direct_proof",
     )
 

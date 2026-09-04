@@ -23,15 +23,24 @@
  Contributor License Agreement(CLA).See the project's CONTRIBUTING.md file.*/
 
 #include "prover.hpp"
+#include "infra/diagnostics_log.hpp"
+
 #include "parameters.hpp"
 #include "infra/hashburst_dump.hpp"
 #include "infra/rt_tracker.hpp"
+#include "infra/mem_tracker.hpp"
 #include "memory_infra/global_memory_manager.hpp"
 #include "memory_infra/scratch_arena.hpp"
 #include "memory_infra/lb_deload.hpp"
 #include "memory_infra/deload_stats.hpp"
+#include "gpu/phase2_projection.hpp"
+#ifdef GL_CUDA
+#include "gpu/phase2_cuda.hpp"
+#include "gpu/phase2_sealing.hpp"
+#endif
 #include <iostream>
 #include <fstream>
+#include <array>
 #include <numeric>
 #include <algorithm>
 #include <utility>
@@ -100,8 +109,6 @@ namespace gl {
     }
 
 
-
-
 /// @brief Construct the prover for a named anchor batch.
 ///
 /// @details
@@ -131,6 +138,8 @@ namespace gl {
 /// @param anchorID Short anchor name (e.g. `"Peano"`, `"Gauss"`,
 ///                 `"IncubatorPeano"`). The `"Anchor"` prefix is added
 ///                 internally by `ce::initAnchor`.
+/// @param selectedPhase2Backend Explicit Phase 2 execution backend retained
+///                              for every proof iteration in this batch.
 /// @pre  `files/config/Config<anchorID>.json` exists and is well-formed.
 /// @post `coreExpressionMap`, `anchorInfo`, `operators`,
 ///       `expressionsFromConfig`, and the per-batch counters are
@@ -143,8 +152,11 @@ namespace gl {
 /// @see [`ce::modifyCoreExpressionMap`](compiler.hpp#modifycoreexpressionmap),
 ///      [`ce::initAnchor`](compiler.hpp#initanchor).
 // Default constructor definition
-ExpressionAnalyzer::ExpressionAnalyzer(std::string anchorID)
+ExpressionAnalyzer::ExpressionAnalyzer(
+    std::string anchorID,
+    std::optional<Phase2Backend> selectedPhase2Backend)
     :parameters(),
+    phase2Backend(Phase2Backend::cpu),
     body(),
     allMappingsAna(),
     allPermutationsAna(),
@@ -224,6 +236,8 @@ ExpressionAnalyzer::ExpressionAnalyzer(std::string anchorID)
                 if (pp.contains("min_split_work")) parameters.min_split_work = pp["min_split_work"];
                 if (pp.contains("enable_quiesce_skip")) parameters.enable_quiesce_skip = pp["enable_quiesce_skip"];
                 if (pp.contains("enable_extent_deload")) parameters.enable_extent_deload = pp["enable_extent_deload"];
+                if (pp.contains("use_gpu")) parameters.use_gpu = pp["use_gpu"];
+                if (pp.contains("allow_ssd_deload")) parameters.allow_ssd_deload = pp["allow_ssd_deload"];
                 // Memory-size knobs (static pool/block/page, persistent
                 // pool/block, hot-arena) are intentionally NOT read from the
                 // config: they are fixed in parameters.hpp and identical for
@@ -234,6 +248,36 @@ ExpressionAnalyzer::ExpressionAnalyzer(std::string anchorID)
             std::cerr << "Warning: Failed to load config from " << configPath << ": " << e.what() << std::endl;
         }
     }
+
+    phase2Backend = selectedPhase2Backend.value_or(
+        parameters.use_gpu ? Phase2Backend::cuda : Phase2Backend::cpu);
+#ifndef GL_CUDA
+    // A build without CUDA support (a Makefile build with USE_CUDA=0) has no
+    // CUDA route at all: selecting one is refused at startup, never worked
+    // around by the processor route (I-211).
+    assert(phase2Backend == Phase2Backend::cpu
+        && "the CUDA Phase 2 route was selected, but this build has no CUDA "
+           "support (build the Visual Studio project, or make USE_CUDA=1)");
+#endif
+    // The single backend-ownership boundary derives the SSD policy: CUDA and
+    // SSD deload are mutually exclusive, so a CUDA batch runs the
+    // resident-only steward; a processor batch keeps its configured
+    // permission (default true) and pages through the working-set steward.
+    parameters.allow_ssd_deload = parameters.allow_ssd_deload
+        && phase2Backend == Phase2Backend::cpu;
+    std::cout << "[EXECUTION-POLICY] phase2_backend="
+              << (phase2Backend == Phase2Backend::cuda ? "cuda" : "cpu")
+              << " config_use_gpu=" << (parameters.use_gpu ? "true" : "false")
+              << " allow_ssd_deload="
+              << (parameters.allow_ssd_deload ? "true" : "false")
+              << (selectedPhase2Backend.has_value()
+                    ? " source=command-line-override" : " source=batch-config")
+              << std::endl;
+    // Batch header in the diagnostics log: every telemetry line that follows
+    // belongs to this analyzer's batch until the next header.
+    diagnosticsLog() << "=== batch " << anchorID << " phase2_backend="
+                     << (phase2Backend == Phase2Backend::cuda ? "cuda" : "cpu")
+                     << " ===" << std::endl;
 
     // Statification sizing triple must satisfy the carving contract (pool a
     // whole multiple of block with block a power of two, and block a whole
@@ -339,7 +383,6 @@ ExpressionAnalyzer::ExpressionAnalyzer(std::string anchorID)
     }
 
 
-
     this->anchorID_ = anchorID;
 
     // Check for explicit anchor_name override in config JSON
@@ -382,7 +425,15 @@ ExpressionAnalyzer::ExpressionAnalyzer(std::string anchorID)
     // Request-generation scratch arenas: a second per-slot set, holding the
     // generators' DFS frontier (byte-bump popTo) and per-batch containers (page
     // tier), isolated from the string-scratch arena above. Released per task.
-    initGenScratchArenas(logicalCores);
+    // Same shape as the string registry — logicalCores worker slots PLUS the
+    // reserved single-threaded slot (index logicalCores) that every
+    // g_currentCoreId == -1 caller resolves to: the seam drains, the CE-fact
+    // load, the compressor, and any steward / io thread that reaches
+    // gen-scratch (a canonical reload's reverse-index rebuild). Without it the
+    // "reserved" fallback was worker logicalCores-1's own arena and its
+    // rule-index staging pool — a shared arena between a worker and whichever
+    // non-worker thread hit the fallback while that worker ran.
+    initGenScratchArenas(logicalCores + 1);
 
     compileCoreExpressionMap();
 
@@ -870,8 +921,6 @@ std::string ExpressionAnalyzer::expandExpr(const std::string& expr) {
 
     return expandedExpr;
 }
-
-
 
 
 /// @brief Compute the *global key* for a memory block — the canonical
@@ -1568,14 +1617,12 @@ void ExpressionAnalyzer::multiplyImplication(StrSpan implication,
 
 // The hash-engine bodies live in memory.cpp: addToHashMemory(),
 // makeNormalizedKeysForAdmission(), lessByName(), lessByOriginal(),
-// filterIntEncodedStatements(), the two obligatory-stump builders,
-// generateEncodedRequestsStatic(), and checkLocalEncodedMemoryStatic().
+// filterIntEncodedStatements(), generateEncodedRequestsStatic(), and
+// checkLocalEncodedMemoryStatic().
 
 // ========================================================================
 // Static pipeline: IntEncodedExpr-based, zero-alloc request generation
 // ========================================================================
-
-// makeMandatoryEncodedStatementLists1Static() and …2Static() — moved to memory.cpp.
 
 //#pragma optimize("", off)
 /// @brief Install the dead-end variable-copy equalities for every
@@ -1804,6 +1851,20 @@ void ExpressionAnalyzer::reactToHypo(Memory& mb) {
 
 // Per-split-part submatch counter — the hashburst work metric. See prover.hpp.
 thread_local int64_t ExpressionAnalyzer::g_growthMatchCount = 0;
+thread_local uint64_t ExpressionAnalyzer::g_gpuGrowAttemptsByDepth[
+    ExecutionParameters::MAX_EXPRESSIONS + 1]{};
+thread_local uint64_t ExpressionAnalyzer::g_gpuGrowFrontierByDepth[
+    ExecutionParameters::MAX_EXPRESSIONS + 1]{};
+thread_local uint64_t ExpressionAnalyzer::g_gpuGrowSubkeysByDepth[
+    ExecutionParameters::MAX_EXPRESSIONS + 1]{};
+thread_local uint64_t ExpressionAnalyzer::g_gpuGrowRequestsByDepth[
+    ExecutionParameters::MAX_EXPRESSIONS + 1]{};
+thread_local uint64_t ExpressionAnalyzer::g_gpuProducerAttemptsByDepth[
+    ExecutionParameters::MAX_EXPRESSIONS + 1]{};
+thread_local uint64_t ExpressionAnalyzer::g_gpuProducerSurvivorsByDepth[
+    ExecutionParameters::MAX_EXPRESSIONS + 1]{};
+thread_local ExpressionAnalyzer::GpuEvaluationUsage
+    ExpressionAnalyzer::g_gpuEvaluationUsage{};
 // I-28 detect-and-defer trial: set true only inside a parallel phase-1/phase-3
 // worker task (the runPhase wrappers); gates updateAdmissionMap3's ancestor write.
 thread_local bool ExpressionAnalyzer::g_inParallelWorkerPhase = false;
@@ -1812,16 +1873,26 @@ thread_local bool ExpressionAnalyzer::g_inParallelWorkerPhase = false;
 // scratch arena. -1 (the default, never overwritten on single-threaded setup
 // threads) maps to the reserved scratch slot.
 thread_local int ExpressionAnalyzer::g_currentCoreId = -1;
+#if RT_MEASUREMENT
+// [RT phase measurement] C15 submatch-attribution state (see prover.hpp).
+thread_local bool ExpressionAnalyzer::g_crtArmed = false;
+thread_local NameId ExpressionAnalyzer::g_crtPreorderId = 0;
+thread_local NameId ExpressionAnalyzer::g_crtFiveId = 0;
+std::atomic<int64_t> ExpressionAnalyzer::g_crtAttempts{ 0 };
+std::atomic<int64_t> ExpressionAnalyzer::g_crtAttemptsUnlinked{ 0 };
+std::atomic<int64_t> ExpressionAnalyzer::g_crtAccepted{ 0 };
+std::atomic<int64_t> ExpressionAnalyzer::g_crtAcceptedUnlinked{ 0 };
+#endif
 
 // Turn optimizations OFF for just this section
 //#pragma optimize("", off)
 
 /// @see Declaration in `prover.hpp` for the full contract.
 void ExpressionAnalyzer::performElem2(const Memory& body, unsigned coreId,
-    int processID, int splitCount, int partCount,
+    int partCount,
     const SplitStumpRef& splitStump,
     SealedPageSet& sealedPages,
-    std::atomic<bool>& burstShouldStop) {
+    std::atomic<int64_t>& doomLine) {
 
     // The LB split's expression dimension. A stump-split sub-part carries a bucket
     // of stumps, and every request it generates contains one of them; an ordinary
@@ -1829,16 +1900,23 @@ void ExpressionAnalyzer::performElem2(const Memory& body, unsigned coreId,
     assert((splitStump.count == 0) == (splitStump.stumps == nullptr)
         && "performElem2: stump bucket present iff non-empty");
     // A stump bucket only ever rides a MULTI-PART LB: the whole-LB expression split
-    // runs partCount bucket parts (at splitCount == 1). The burst early-exit (I-76)
-    // is disabled whenever partCount > 1, because a sibling bailing on another
-    // part's stop is a scheduling race; a bucket part is exactly such a sibling, and
-    // this assert is what makes the g_isMultiPart gate cover it.
+    // runs partCount bucket parts, and the doom line's winner
+    // selection relies on each bucket part carrying its bucket ordinal among
+    // partCount siblings.
     assert((splitStump.count == 0 || partCount > 1)
-        && "performElem2: a stump bucket belongs to a MULTI-PART LB — the "
-           "early-exit gate reads g_isMultiPart and would re-enable at 1");
+        && "performElem2: a stump bucket belongs to a MULTI-PART LB");
+    // The burst reads the rule indexes: every staged install write was
+    // flushed at its window's close (D-333), so this
+    // slot's stagings are empty.
+    assert(ruleStagings().slotIsEmpty(coreId)
+        && "performElem2: staged rule-index writes reached the burst - a flush seam was missed");
     assert((splitStump.count == 0 || splitStump.total >= 1)
         && "performElem2: a stump sub-part has a place among its siblings");
     assert(partCount >= 1 && "performElem2: partCount is the LB's part count (>= 1)");
+    // The doom line identifies its winner by the part's invocation ordinal; an
+    // unsplit part is ordinal 0 by construction (default SplitStumpRef).
+    assert((splitStump.count > 0 || splitStump.ordinal == 0)
+        && "performElem2: an unsplit part carries ordinal 0");
 
     // Per-call RT tracker home. performElem2 is the hashburst (request
     // generation + the inline fixpoint check) — where a runaway LB spends its
@@ -1849,15 +1927,6 @@ void ExpressionAnalyzer::performElem2(const Memory& body, unsigned coreId,
     // .rt/<chain>.log per LB with no cross-part races. See
     // D-110, I-59.
     RT_TRACKER_DECL(body);
-
-    // Per-executor LB-split context (thread-local; read by partitionAccepts so
-    // this executor generates only its id % splitCount == processID slice).
-    g_splitProcessID = processID;
-    g_splitCount = splitCount;
-    // Per-burst multi-part signal for the early-exit gate (I-76), independent of
-    // the rule dimension: a whole-LB expression split runs partCount bucket parts
-    // at splitCount == 1, and each must run to completion (D-121).
-    g_isMultiPart = (partCount > 1);
 
     // The request keys + the IntEncodedExpr copies now ride this slot's gen
     // scratch arena (genScratchArenas().forSlot(coreId)), released per worker
@@ -1874,22 +1943,37 @@ void ExpressionAnalyzer::performElem2(const Memory& body, unsigned coreId,
     // worker finishes.
 
     // Submatch counter reset: zero the per-split-part tally at the start of this
-    // part. The generator's grow-DFS and the merge's preEvaluateFromEncoded bump it
-    // on every match this part owns; canAccept caps the burst on it, and the worker
+    // part. The generator's grow-DFS bumps it on every match this part owns;
+    // canAccept caps the burst on it, and the worker
     // reads it after this call to drive the split policy. See D-109.
     g_growthMatchCount = 0;
 
+#if RT_MEASUREMENT
+    // [RT phase measurement] arm the C15 attribution for the dump-target
+    // LB's parts only; reassigned on every entry so no stale thread state.
+    g_crtArmed = gl::hashburst_dump::isTargetLB(body);
+    if (g_crtArmed) {
+        g_crtPreorderId = body.nameMap.lookup(std::string("preorder"));
+        g_crtFiveId = body.nameMap.lookup(std::string("5"));
+        if (g_crtPreorderId == 0 || g_crtFiveId == 0) g_crtArmed = false;
+    }
+#endif
+
     // Streaming consumer: each generated request is checked inline (dependency
     // skip + checkLocalEncodedMemoryStatic) instead of being buffered and
-    // checked afterwards. The external `burstShouldStop` flag — per-LB, shared
-    // by all the LB's parts and living OUTSIDE the LB — lets a SINGLE-part LB end
-    // its burst early without writing anything on the LB (I-66); a multi-part LB
-    // runs every part to completion (I-76 / g_isMultiPart).
+    // checked afterwards. The external `doomLine` atomic — per-LB, shared by
+    // all the LB's parts and living OUTSIDE the LB — lets any part end its
+    // burst early without writing anything on the LB (I-66): a doom trigger
+    // publishes its deterministic stream position, every part stops once its
+    // own counter passes that position, and the finalize merges the winning
+    // part's chain alone.
     //
-    // No submatch cap: main-path bursts run to COMPLETION and a straggler is split
-    // preemptively next iteration (the stats-driven trigger in proveKernel), never
-    // truncated mid-burst. The CE filter was already uncapped (ceFilteringActive).
-    BurstSink sink{ this, &body, coreId, &sealedPages, &burstShouldStop,
+    // No submatch cap: a burst without a doom trigger runs to COMPLETION and a
+    // straggler is split preemptively next iteration (the stats-driven trigger
+    // in proveKernel), never truncated mid-burst. The CE filter was already
+    // uncapped (ceFilteringActive).
+    BurstSink sink{ this, &body, coreId, &sealedPages, &doomLine,
+                    static_cast<int32_t>(splitStump.ordinal),
                     SealedRecordCursor<FiringRecord>(sealedPages) };
 
     // ===================================================================
@@ -1902,109 +1986,128 @@ void ExpressionAnalyzer::performElem2(const Memory& body, unsigned coreId,
 
     if (ceFilteringActive) {
         RT_SCOPE_HERE("REQGEN_CE_MODE");
-        // --- CE mode: no element is obligatory, so the stump is empty and every
-        // base candidate is itself a request.
+        // --- CE mode: no ingredient is obligatory, so the term list is empty and
+        // every whole key is a request.
+        //
+        // The counter-example filter runs one unsplit LB per conjecture, which is
+        // what licenses its submatch tally going unread (the cap is bypassed in
+        // BurstSink::canAccept, and an unsplit LB has no split policy). It is the
+        // only caller for which that holds, so the statement lives here and not in
+        // the generator, which cannot tell this call from a termless prover batch.
+        assert(partCount == 1
+            && "performElem2: the counter-example filter runs one unsplit LB per "
+               "conjecture");
         this->generateEncodedRequestsStatic(body, body.overallHashMemory,
-            /*stumpLen=*/0, /*stumps=*/nullptr, /*stumpCount=*/0,
-            IntStmtView(), IntStmtView(), SplitStumpRef{}, coreId, sink);
+            /*terms=*/nullptr, /*termCount=*/0,
+            SplitStumpRef{}, coreId, sink);
     } else {
-        // --- Normal mode: 5-batch obligatory-stump pipeline ---
-        // Batch 1 reads the persistent `body.workingMemory` and the
-        // mail-pair batches read `body.intExternalStatements`, both
-        // filled by the absorb above.
-
-        Stump stumpBuf[4096];
+        // --- Normal mode: four request batches, one per rule registry ---
+        // Each batch names, as mandatory-containment terms, the ingredient a
+        // request must be new because of; batch 5 names none, because there the
+        // rule itself is what is new. The registries differ, which is why the
+        // batches cannot share one call: the registry drives the key length, the
+        // target owner map and every owner probe. Batch 1 reads the persistent
+        // `body.workingMemory` and the mail batches read
+        // `body.intExternalStatements`, all filled by the absorb above.
 
         // --- Batch 1: mail-recovered rules (body.workingMemory) ---
-        // Filled by the absorb above (status=3 recovered implications). The
-        // leading sink.canAccept() skips this batch's stump build + generate
-        // once the LB hit the cap or was early-exited by another part.
-        if (sink.canAccept() && !body.workingMemory.encodedMap.empty()) {
+        // Filled by the absorb above (status=3 recovered implications). What is
+        // new here is the RULE, so a request has to carry it against a fact this
+        // LB already holds: one term naming the local statements. The leading
+        // sink.canAccept() skips the batch once the LB hit the cap or was
+        // early-exited by another part; the emptiness test skips a search whose
+        // only term no candidate could satisfy.
+        if (sink.canAccept() && !body.workingMemory.encodedMap.empty()
+            && !body.intLocalEncodedStatements.empty()) {
             RT_SCOPE_HERE("REQGEN_BATCH1_WORKING_MEMORY");
-            NameId nMsl1 = this->makeMandatoryEncodedStatementLists1Static(
-                body.workingMemory, body.nameMap,
-                IntStmtView(body.intLocalEncodedStatements),
-                stumpBuf, 4096);
-            if (nMsl1 > 0) {
-                this->generateEncodedRequestsStatic(body, body.workingMemory,
-                    /*stumpLen=*/1, stumpBuf, nMsl1,
-                    IntStmtView(body.intLocalEncodedStatements), IntStmtView(),
-                    splitStump, coreId, sink);
-            }
+            MandatoryTerm terms[1];
+            terms[0].views[0] = IntStmtView(body.intLocalEncodedStatements);
+            terms[0].viewCount = 1;
+
+            this->generateEncodedRequestsStatic(body, body.workingMemory,
+                terms, /*termCount=*/1,
+                splitStump, coreId, sink);
         }
 
-        // --- Batch 2: new local delta ---
+        // --- Batch 2+3: everything new this burst, in ONE search ---
+        // Both former batches read the same rule registry (overallHashMemory) and
+        // the same statement universe (intEncodedStatements); they differed only
+        // in what they obliged a request to contain. The mandatory-containment
+        // control states that difference directly, so one enumeration covers both
+        // and reaches each request exactly once — no pairing merge, and no
+        // cross-batch duplicate for a request that carries both a fresh local
+        // statement and a fresh arrival.
+        //
+        // Term 1: a statement derived here this burst.
+        // Term 2: a mail arrival AND a local statement — a purely-external
+        //         combination already fired at the ancestor that mailed it (I-57),
+        //         and batch 4 below covers arrivals against this LB's own rules.
         if (sink.canAccept()) {
-            RT_SCOPE_HERE("REQGEN_BATCH2_LOCAL_DELTA");
-            NameId nMsl2 = this->makeMandatoryEncodedStatementLists1Static(
-                body.overallHashMemory, body.nameMap,
-                IntStmtView(body.intLocalEncodedStatementsDelta),
-                stumpBuf, 4096);
-
-            if (nMsl2 > 0) {
-                this->generateEncodedRequestsStatic(body, body.overallHashMemory,
-                    /*stumpLen=*/1, stumpBuf, nMsl2,
-                    IntStmtView(body.intLocalEncodedStatementsDelta), IntStmtView(),
-                    splitStump, coreId, sink);
+            RT_SCOPE_HERE("REQGEN_BATCH23_NEW_THIS_BURST");
+            // The mail side is staged by the same absorb that offers each arrival
+            // to the statement registry, so a staged arrival that clears the
+            // iteration cap is registered here and the one grow universe below
+            // reaches it. A miss would silently drop every request that arrival
+            // could serve, so it is a hard stop, not a widened universe.
+            for (int32_t k = 0; k < body.intExternalStatements.size(); ++k) {
+                const IntEncodedExpr& ext = body.intExternalStatements[k];
+                if (ext.maxIteration > parameters.maxIterationNumberVariable)
+                    continue;
+                assert(body.intKnownStatements.find(
+                           StatementKey{ ext.originalId, ext.validityId }) != nullptr
+                    && "performElem2: a staged mail arrival must still be "
+                       "registered at this LB - the absorb stages only what the "
+                       "registry accepted, and every registry erase purges the "
+                       "matching staged row");
             }
+
+            MandatoryTerm terms[2];
+            terms[0].views[0] = IntStmtView(body.intLocalEncodedStatementsDelta);
+            terms[0].viewCount = 1;
+            terms[1].views[0] = IntStmtView(body.intExternalStatements);
+            terms[1].views[1] = IntStmtView(body.intLocalEncodedStatements);
+            terms[1].viewCount = 2;
+
+            this->generateEncodedRequestsStatic(body, body.overallHashMemory,
+                terms, /*termCount=*/2,
+                splitStump, coreId, sink);
         }
 
-        // --- Batch 3: local × mail pairs (two-element stumps) ---
-        // Mail side = body.intExternalStatements (filled by the absorb above).
-        if (sink.canAccept()) {
-            RT_SCOPE_HERE("REQGEN_BATCH3_LOCAL_X_MAIL");
-            Stump pairsBuf[8192];
-            NameId nPairs = this->makeMandatoryEncodedStatementLists2Static(
-                body, body.overallHashMemory,
-                IntStmtView(body.intLocalEncodedStatements),
-                IntStmtView(body.intExternalStatements),
-                pairsBuf, 8192);
-            if (nPairs > 0) {
-                this->generateEncodedRequestsStatic(body, body.overallHashMemory,
-                    /*stumpLen=*/2, pairsBuf, nPairs,
-                    IntStmtView(body.intLocalEncodedStatements),
-                    IntStmtView(body.intExternalStatements),
-                    splitStump, coreId, sink);
-            }
-        }
-
-        // --- Batch 4: localHashMemory — mail one-element stumps ---
-        // Mail side = body.intExternalStatements (filled by the absorb above).
-        if (sink.canAccept() && !body.localHashMemory.encodedMap.empty() && !body.intExternalStatements.empty()) {
+        // --- Batch 4: localHashMemory x fresh mail ---
+        // Every rule this LB already owns has to be tested against the arrivals
+        // this burst brought in, so the mandatory ingredient is the mail side:
+        // one term naming body.intExternalStatements (filled by the absorb above).
+        if (sink.canAccept() && !body.localHashMemory.encodedMap.empty()
+            && !body.intExternalStatements.empty()) {
             RT_SCOPE_HERE("REQGEN_BATCH4_LOCAL_X_MAIL_SINGLES");
-            NameId nMsl4 = this->makeMandatoryEncodedStatementLists1Static(
-                body.localHashMemory, body.nameMap,
-                IntStmtView(body.intExternalStatements),
-                stumpBuf, 4096);
-            if (nMsl4 > 0) {
-                this->generateEncodedRequestsStatic(body, body.localHashMemory,
-                    /*stumpLen=*/1, stumpBuf, nMsl4,
-                    IntStmtView(body.intExternalStatements), IntStmtView(),
-                    splitStump, coreId, sink);
-            }
+            MandatoryTerm terms[1];
+            terms[0].views[0] = IntStmtView(body.intExternalStatements);
+            terms[0].viewCount = 1;
+
+            this->generateEncodedRequestsStatic(body, body.localHashMemory,
+                terms, /*termCount=*/1,
+                splitStump, coreId, sink);
         }
 
         // --- Batch 5: localHashMemoryDelta ---
+        // The rule is what is new here, and a rule that lands this burst must
+        // meet every visible statement, not only the ones that arrived with it.
+        // So there is no mandatory ingredient at all: the term list is EMPTY and
+        // every whole key of this registry is a request. (Naming the whole
+        // statement universe as a term would say the same thing and then pay a
+        // per-candidate mask test that can never fail.)
         if (sink.canAccept() && !body.localHashMemoryDelta.encodedMap.empty()) {
             RT_SCOPE_HERE("REQGEN_BATCH5_LOCAL_HASH_DELTA");
-            NameId nMsl5 = this->makeMandatoryEncodedStatementLists1Static(
-                body.localHashMemoryDelta, body.nameMap,
-                IntStmtView(body.intEncodedStatements),
-                stumpBuf, 4096);
-            if (nMsl5 > 0) {
-                this->generateEncodedRequestsStatic(body, body.localHashMemoryDelta,
-                    /*stumpLen=*/1, stumpBuf, nMsl5,
-                    IntStmtView(body.intEncodedStatements), IntStmtView(),
-                    splitStump, coreId, sink);
-            }
+            this->generateEncodedRequestsStatic(body, body.localHashMemoryDelta,
+                /*terms=*/nullptr, /*termCount=*/0,
+                splitStump, coreId, sink);
         }
     } // end normal mode
 
-    // Per-step delta clears are deliberately NOT done here. At splitCount>1 a
-    // later executor's request generation still reads body.localHashMemoryDelta
-    // / body.intLocalEncodedStatementsDelta for its own id % splitCount slice
-    // (batches 2 and 5); clearing per-executor would wipe the input the next
-    // executor needs. performElemPhase2 clears them ONCE, after every executor's
+    // Per-step delta clears are deliberately NOT done here. A later part of a
+    // multi-part LB still reads body.localHashMemoryDelta /
+    // body.intLocalEncodedStatementsDelta; clearing per-part would wipe the
+    // input the next part needs. performElemPhase2 clears them ONCE, after every part's
     // reqgen and before the merge (D-126). The clear is
     // still pre-merge, so admissionKeysAlgebra / deferredIntegrationPreps are
     // reset before applyFiringRecords repopulates them.
@@ -2017,7 +2120,7 @@ void ExpressionAnalyzer::performElem2(const Memory& body, unsigned coreId,
     // point an iterated loop would (D-104). Per I-66 phase 2 never mutates the
     // LB's `isActive`; deactivation / discharge happen in phase 3's post-burst
     // absorb (`dischargeContradiction` / `dischargeToBeProved`). The streaming
-    // early-exit only sets the external `burstShouldStop` flag, never the LB.
+    // early-exit only lowers the external `doomLine` atomic, never the LB.
 
 
     // No return: the split-policy marker is this part's submatch count
@@ -2033,7 +2136,10 @@ void ExpressionAnalyzer::performElem2(const Memory& body, unsigned coreId,
     scratchArenas().forSlot(coreId).releaseAll();
     // The request-generation scratch arena rides the same per-task lifetime:
     // return its blocks to the pool on every exit path (the DFS stack frames and
-    // the per-batch containers held this iteration).
+    // the per-batch containers held this iteration). The slot's rule-index
+    // stagings ride it too and must be empty here (every window flushed).
+    assert(ruleStagings().slotIsEmpty(coreId)
+        && "performElem2 exit: staged rule-index writes outlive their window");
     genScratchArenas().forSlot(coreId).releaseAll();
 }
 
@@ -2051,7 +2157,9 @@ bool ExpressionAnalyzer::isStraggler(int64_t work, int64_t totalWork,
 
 /// @see Declaration in `prover.hpp` for the full contract.
 void ExpressionAnalyzer::performElemPhase2(Memory& body,
-    SealedPageSet* const* parts, int32_t partCount) {
+    SealedPageSet* const* parts, int32_t partCount,
+    int64_t doomLine,
+    bool firingRecordsCanonical) {
     // Per-LB finalize of the FLAT executor pool: apply this LB's captured firing
     // records and drain the per-burst admission / integration staging. The
     // executors already ran in proveKernel's flat (LB, part) sweep, each read-only
@@ -2076,13 +2184,39 @@ void ExpressionAnalyzer::performElemPhase2(Memory& body,
         body.localHashMemoryDelta.resetToFresh();
         body.admissionKeysAlgebra.clear();
         body.deferredIntegrationPreps.clear();
+        body.admissionKeysOrdis2.clear();
 
         // Merge the parts' captured deposits in canonical sorted order —
         // partition-independent (D-117): the same
         // firing SET sorts identically regardless of how it was split or in what
         // thread order the parts completed. This is why flat parallel execution
         // stays deterministic.
-        this->applyFiringRecords(body, parts, partCount);
+        //
+        // Doom line set: a doom trigger fired this burst, so the merge takes
+        // ONLY the winning part's chain (the lexicographic-minimum
+        // (position, ordinal) trigger — a pure function of the parts'
+        // deterministic streams). The other parts' chains are discarded unread:
+        // the trigger guarantees phase 3 discharges the LB, so sibling records
+        // are wasted-once-doomed and dropping them keeps the merged set
+        // deterministic (their tails end wherever the line caught them). An
+        // unsplit LB is its own winner, so its early-exit merge is unchanged.
+        if (firingRecordsCanonical) {
+            assert(partCount == 1
+                && "canonical GPU output is one compacted chain per LB");
+            assert(doomLine == kNoDoomLine
+                && "canonical GPU output already applied doom selection");
+            this->applyFiringRecords(body, parts, partCount, true);
+        } else if (doomLine != kNoDoomLine) {
+            assert(partCount > 0
+                && "performElemPhase2: a doom trigger implies a fired part");
+            const int32_t w = doomLineOrdinal(doomLine);
+            assert(w < partCount
+                && "performElemPhase2: doom-line winner outside this LB's parts");
+            SealedPageSet* const winner[1] = { parts[w] };
+            this->applyFiringRecords(body, winner, 1, false);
+        } else {
+            this->applyFiringRecords(body, parts, partCount, false);
+        }
     }
 
     // Quiescence (D-194): admission-map churn this burst is a
@@ -2091,14 +2225,16 @@ void ExpressionAnalyzer::performElemPhase2(Memory& body,
     // enable a fresh it_/int_ admission (and thus a firing) next burst. Flag it
     // so the LB stays awake. Read while the staging vectors still hold this
     // burst's records, before the drains below consume them.
-    if (!body.admissionKeysAlgebra.empty() || !body.deferredIntegrationPreps.empty())
+    if (!body.admissionKeysAlgebra.empty() || !body.deferredIntegrationPreps.empty()
+        || !body.admissionKeysOrdis2.empty())
         body.mutatedThisBurst = true;
 
-    // Drain the per-burst admission / integration records (replay in firing
-    // order before phase 3's post-burst standardProcessing absorb). Run for
-    // every LB, active or discharged in phase 1.
+    // Drain the per-burst admission / integration / demand records (replay
+    // in firing order before phase 3's post-burst standardProcessing
+    // absorb). Run for every LB, active or discharged in phase 1.
     this->drainAdmissionKeysAlgebra(body);
     this->drainDeferredIntegrationPreps(body);
+    this->drainAdmissionKeysOrdis2(body);
 
     // The drained staging vectors carried sealed views into the tasks' page
     // sets; clear them NOW, before the post-join sweep frees the pages, so
@@ -2108,6 +2244,7 @@ void ExpressionAnalyzer::performElemPhase2(Memory& body,
     // bookkeeping and the D-126 delta contract.)
     body.admissionKeysAlgebra.clear();
     body.deferredIntegrationPreps.clear();
+    body.admissionKeysOrdis2.clear();
 
 }
 
@@ -2116,6 +2253,29 @@ void ExpressionAnalyzer::performElemPhase1(Memory& body, unsigned coreId) {
     // Publish this worker's slot for the absorb door's per-slot scratch arena
     // (read deep in disintegration by prefixArgumentsWithU).
     g_currentCoreId = static_cast<int>(coreId);
+    // Per-call phase-1 tracker: feeds the cross-burst aggregate so the
+    // pre-burst absorb (standardProcessing and the deposit-door tree under
+    // it) is attributed down to its atomic sections. Per-LB `.rt` files stay
+    // trigger-gated; the aggregate records every call.
+    RT_TRACKER_DECL(body);
+#if PHASE13_DEEP_TIMING
+    const auto recordPhase1Detail =
+        [this, coreId](Phase13TimingSlot slot,
+                       std::chrono::steady_clock::time_point started) {
+            // No rows bound = the defined no-measurement state (unit tests /
+            // CE clones run phase helpers outside proveKernel's binding) —
+            // same contract as standardProcessing's recordPhase13Detail.
+            if (phase13TimingRows == nullptr) return;
+            assert(coreId < phase13TimingWorkers
+                && "Phase 1 timing row is not bound to this worker");
+            phase13TimingRows[
+                static_cast<std::size_t>(coreId) * kPhase13TimingSlotCount
+                + static_cast<std::size_t>(slot)] +=
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - started).count();
+        };
+    const auto claimLoadStarted = std::chrono::steady_clock::now();
+#endif
     // Unified working-set handshake (the user's "a worker uploads itself"):
     // claim this LB and make it resident before ANYTHING reads it — the dump
     // trap below included. All three phases use the same handshake
@@ -2125,9 +2285,16 @@ void ExpressionAnalyzer::performElemPhase1(Memory& body, unsigned coreId) {
     // of the body so the steward may reclaim the LB once done. CE-filter
     // clones run with NO steward (always resident, never deloaded) and skip
     // the handshake entirely.
-    if (steward)
-        steward->claimAndLoadForWork(body, /*phase=*/1,
-                                     lbdeload::kDeloadDirectory);
+    {
+        RT_SCOPE("PH1_CLAIM_LOAD");
+        if (steward)
+            steward->claimAndLoadForWork(body, /*phase=*/1,
+                                         lbdeload::kDeloadDirectory);
+    }
+#if PHASE13_DEEP_TIMING
+    recordPhase1Detail(Phase13TimingSlot::claimLoad, claimLoadStarted);
+    const auto burstSetupStarted = std::chrono::steady_clock::now();
+#endif
 
     // Quiescence SLEEP detector reset (D-194): the per-burst
     // non-statement mutation flag starts clean, and the statement-count baseline
@@ -2142,15 +2309,33 @@ void ExpressionAnalyzer::performElemPhase1(Memory& body, unsigned coreId) {
     // are unchanged, Rule 14). Mirrored in `feedback_dump_structure_immutable.md`.
     if (hashburst_dump::isTargetLB(body)) {
         hashburst_dump::dumpEntry(body, this->compiledExpressions);
+#if RT_MEASUREMENT
+        // [RT phase measurement] fresh per-burst attribution tallies;
+        // burst separator in the hit log (truncate on the first burst of a run).
+        g_crtAttempts.store(0, std::memory_order_relaxed);
+        g_crtAttemptsUnlinked.store(0, std::memory_order_relaxed);
+        g_crtAccepted.store(0, std::memory_order_relaxed);
+        g_crtAcceptedUnlinked.store(0, std::memory_order_relaxed);
+        {
+            static std::atomic<int> crtBurstNo{ 0 };
+            const int b = crtBurstNo.fetch_add(1, std::memory_order_relaxed);
+            std::ofstream hf(".debug/c15_successful_submatches.txt",
+                             b == 0 ? std::ios::trunc : std::ios::app);
+            hf << "== target-LB burst " << (b + 1) << " ==\n";
+        }
+#endif
     }
 
-    // Per-step delta-class tracker: cleared at the start of every
-    // elementary step (in performElemPhase1) so the set tracks ONLY classes
-    // touched during THIS step's mail-absorb pass. Populated by
-    // `updateEquivalenceClasses` immediately after a merged class is
-    // committed to `equivalenceClassesMap`; consumed by
-    // `applyEquiClasses` (between mail-absorb-clear and request generation).
-    body.changedClassesThisStep.clear();
+    // The per-step delta-class tracker `changedClassesThisStep` is
+    // deliberately NOT cleared here: its sole clear is the tail of
+    // `standardProcessing` (Step 7), after every consumer has read it. A
+    // delta minted OUTSIDE any `standardProcessing` call — LB seeding
+    // (`addTheoremToMemory` copy axioms / equality premises), post-join
+    // barrier deposits — must survive to this step's `applyEquiClasses`,
+    // which back-applies it to every pre-existing statement (Pass 1). An
+    // entry clear here discards exactly those deltas unconsumed (the
+    // waterline seeded at class creation then hides the pre-existing
+    // statements from Pass 2 forever).
 
     { RT_SCOPE_HERE("PRE_FIXPOINT_MAIL_ABSORB");
     // ===================================================================
@@ -2175,6 +2360,10 @@ void ExpressionAnalyzer::performElemPhase1(Memory& body, unsigned coreId) {
     // local-premise containers); this absorb is their sole writer.
     body.workingMemory.resetToFresh();
     body.intExternalStatements.clear();
+#if PHASE13_DEEP_TIMING
+    recordPhase1Detail(Phase13TimingSlot::burstSetup, burstSetupStarted);
+    const auto routingMailPullStarted = std::chrono::steady_clock::now();
+#endif
 
     // The sameIterationInternalMail absorb runs AFTER the hashburst loop
     // (the game resets after hashburst). The mailIn (parent-emitted)
@@ -2210,6 +2399,7 @@ void ExpressionAnalyzer::performElemPhase1(Memory& body, unsigned coreId) {
     // so they are gated out.
     int64_t trackedMailInBlocks = 0;
     if (!ceFilteringActive && !parameters.compressor_mode) {
+        RT_SCOPE("PH1_MAIL_PULL");
         this->mailLog.pull(&body, body.mailIn);
         trackedMailInBlocks = body.mailIn.blocksHeld();
         const int64_t simultaneousMailInBlocks =
@@ -2224,6 +2414,10 @@ void ExpressionAnalyzer::performElemPhase1(Memory& body, unsigned coreId) {
                 std::memory_order_relaxed)) {
         }
     }
+#if PHASE13_DEEP_TIMING
+    recordPhase1Detail(Phase13TimingSlot::routingMailPull,
+                       routingMailPullStarted);
+#endif
 
     // mailIn is HOT (I-101): the absorb reads its canonical
     // sorted snapshots directly — no transient heap Mail. Cleared here, after the
@@ -2234,6 +2428,10 @@ void ExpressionAnalyzer::performElemPhase1(Memory& body, unsigned coreId) {
                              /*internalMailIn =*/body.nextIterationInternalMail,
                              /*internalMailOut=*/body.sameIterationInternalMail,
                              coreId);
+#if PHASE13_DEEP_TIMING
+    const auto routingMailCleanupStarted =
+        std::chrono::steady_clock::now();
+#endif
     body.mailIn.clear();
     if (!ceFilteringActive && !parameters.compressor_mode) {
         const int64_t beforeRelease = routingMailInBlocksInFlight.fetch_sub(
@@ -2241,10 +2439,17 @@ void ExpressionAnalyzer::performElemPhase1(Memory& body, unsigned coreId) {
         assert(beforeRelease >= trackedMailInBlocks
             && "routing mailIn attribution counter underflow");
     }
+#if PHASE13_DEEP_TIMING
+    recordPhase1Detail(Phase13TimingSlot::routingMailCleanup,
+                       routingMailCleanupStarted);
+#endif
     } // RT_SCOPE PRE_FIXPOINT_MAIL_ABSORB
 
     // Release the claim — phase 1 is done with this LB, so it is deloadable
     // again (the steward may now reclaim it). CE clones have no steward.
+#if PHASE13_DEEP_TIMING
+    const auto releaseClaimStarted = std::chrono::steady_clock::now();
+#endif
     if (steward) {
         assert(body.stewardClaim.load(std::memory_order_relaxed)
                    == static_cast<uint8_t>(Memory::StewardClaim::WorkerOwned)
@@ -2253,6 +2458,10 @@ void ExpressionAnalyzer::performElemPhase1(Memory& body, unsigned coreId) {
             static_cast<uint8_t>(Memory::StewardClaim::Idle),
             std::memory_order_release);
     }
+#if PHASE13_DEEP_TIMING
+    recordPhase1Detail(Phase13TimingSlot::releaseClaim,
+                       releaseClaimStarted);
+#endif
 }
 
 /// @see Declaration in `prover.hpp` for the full contract.
@@ -2260,11 +2469,38 @@ void ExpressionAnalyzer::performElemPhase3(Memory& body, unsigned coreId) {
     // Publish this worker's slot for the absorb door's per-slot scratch arena
     // (read deep in disintegration by prefixArgumentsWithU).
     g_currentCoreId = static_cast<int>(coreId);
+#if PHASE13_DEEP_TIMING
+    const auto recordPhase3Detail =
+        [this, coreId](Phase13TimingSlot slot,
+                       std::chrono::steady_clock::time_point started) {
+            // No rows bound = the defined no-measurement state — same
+            // contract as standardProcessing's recordPhase13Detail.
+            if (phase13TimingRows == nullptr) return;
+            assert(coreId < phase13TimingWorkers
+                && "Phase 3 timing row is not bound to this worker");
+            phase13TimingRows[
+                static_cast<std::size_t>(coreId) * kPhase13TimingSlotCount
+                + static_cast<std::size_t>(slot)] +=
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - started).count();
+        };
+    const auto claimLoadStarted = std::chrono::steady_clock::now();
+#endif
+    // Per-call phase-3 tracker: feeds the cross-burst aggregate so the
+    // post-burst absorb, the discharge machinery, and the end-of-burst
+    // sanitize drains are attributed down to their atomic sections.
+    RT_TRACKER_DECL(body);
     // Unified working-set handshake (all phases equivalent): claim + load
     // this LB before phase 3 reads it; CE clones run with no steward.
-    if (steward)
-        steward->claimAndLoadForWork(body, /*phase=*/3,
-                                     lbdeload::kDeloadDirectory);
+    {
+        RT_SCOPE("PH3_CLAIM_LOAD");
+        if (steward)
+            steward->claimAndLoadForWork(body, /*phase=*/3,
+                                         lbdeload::kDeloadDirectory);
+    }
+#if PHASE13_DEEP_TIMING
+    recordPhase3Detail(Phase13TimingSlot::claimLoad, claimLoadStarted);
+#endif
 
     { RT_SCOPE_HERE("POST_FIXPOINT_MAIL_FLUSH");
     this->standardProcessing(body,
@@ -2279,23 +2515,50 @@ void ExpressionAnalyzer::performElemPhase3(Memory& body, unsigned coreId) {
     // would leave that commit nothing to ship.
     } // RT_SCOPE POST_FIXPOINT_MAIL_FLUSH
 
+#if PHASE13_DEEP_TIMING
+    const auto reactToHypothesisStarted = std::chrono::steady_clock::now();
+#endif
     { RT_SCOPE_HERE("REACT_TO_HYPO");
 	reactToHypo(body);
     } // RT_SCOPE REACT_TO_HYPO
+#if PHASE13_DEEP_TIMING
+    recordPhase3Detail(Phase13TimingSlot::reactToHypothesis,
+                       reactToHypothesisStarted);
+#endif
 
     { RT_SCOPE_HERE("END_OF_BURST_SANITIZE");
-    // End-of-burst sanitization: walk `expandedImplications` and
-    // `toBeProved` and rewrite entries whose `it_/int_` args are
-    // now downprioritized under the active equi-classes. One pass
-    // per burst — equi-class machinery has stabilized by this point.
-    this->sanitizeHashMemory(body);
-    this->sanitizeToBeProved(body);
+    // End-of-burst sanitization: walk `toBeProved` and rewrite goals
+    // whose `it_/int_` args are now downprioritized under the active
+    // equi-classes. One pass per burst — equi-class machinery has
+    // stabilized by this point. (The hash-memory twin is gone: the rules
+    // stay canonical through the install gate and the applyEquiClasses
+    // compact hook, D-312.)
+#if PHASE13_DEEP_TIMING
+    const auto sanitizeToBeProvedStarted = std::chrono::steady_clock::now();
+#endif
+    {
+        RT_SCOPE("SANITIZE_TOBEPROVED");
+        this->sanitizeToBeProved(body);
+    }
+#if PHASE13_DEEP_TIMING
+    recordPhase3Detail(Phase13TimingSlot::sanitizeToBeProved,
+                       sanitizeToBeProvedStarted);
+    const auto drainDisprovedGoalsStarted = std::chrono::steady_clock::now();
+#endif
 
     // Disproved-goal cleanup: probe the inbox against this LB's MAIN goals
     // and, on a hit, erase the goal plus its integration machinery — the
     // matched scope roots land on pendingWipeScopes so the radical wipe
     // below removes the nested state in this same burst.
-    this->drainDisprovedGoals(body);
+    {
+        RT_SCOPE("DRAIN_DISPROVED_GOALS");
+        this->drainDisprovedGoals(body);
+    }
+#if PHASE13_DEEP_TIMING
+    recordPhase3Detail(Phase13TimingSlot::drainDisprovedGoals,
+                       drainDisprovedGoalsStarted);
+    const auto drainDeadOrBranchesStarted = std::chrono::steady_clock::now();
+#endif
 
     // Dead _ordis_ branch retirement: a branch whose asserted disjunct is
     // refuted (staged by ordisMerge's probe) is wiped, its cohort's
@@ -2303,7 +2566,59 @@ void ExpressionAnalyzer::performElemPhase3(Memory& body, unsigned coreId) {
     // Runs after the disproof drain (wholesale-retired cohorts are gone
     // first) and before the wipe drain below so the branch wipes land in
     // this same burst.
-    this->drainDeadOrBranches(body);
+    {
+        RT_SCOPE("DRAIN_DEAD_OR_BRANCHES");
+        this->drainDeadOrBranches(body);
+    }
+#if PHASE13_DEEP_TIMING
+    recordPhase3Detail(Phase13TimingSlot::drainDeadOrBranches,
+                       drainDeadOrBranchesStarted);
+    const auto freezeResolvedOrBranchesStarted =
+        std::chrono::steady_clock::now();
+#endif
+
+    // Duplicate-or-cohort retirement: when a class merge made two OPEN
+    // cohorts at one parent equi variants of each other, keep the most
+    // advanced (branch-statement census, lex tie-break) and retire the
+    // rest — live branches to pendingWipeScopes, scheduling rows erased,
+    // frozen branches and history kept. Runs before the freeze sweep so
+    // retired branches are never evaluated, and before the wipe drain so
+    // the subtree wipes land in this same burst.
+    {
+        RT_SCOPE("RETIRE_DUPLICATE_OR_COHORTS");
+        this->retireDuplicateOrCohorts(body);
+    }
+
+    // Or-branch freeze: every live _ordis_ branch whose chain goals are all
+    // known at the branch or above is frozen — its subtree leaves the request
+    // universe from the next burst on, nothing is wiped. Runs after the
+    // retirement drain (this burst's dead branches are filtered first) and
+    // before the release drain.
+    {
+        RT_SCOPE("FREEZE_RESOLVED_OR_BRANCHES");
+        this->freezeResolvedOrBranches(body);
+    }
+#if PHASE13_DEEP_TIMING
+    recordPhase3Detail(Phase13TimingSlot::freezeResolvedOrBranches,
+                       freezeResolvedOrBranchesStarted);
+    const auto drainPendingOrReleasesStarted =
+        std::chrono::steady_clock::now();
+#endif
+
+    // Sequenced or-disintegration: release the next pending branch of every
+    // cohort whose live branch resolved this burst (a toBeProved goal
+    // reached under the branch, or the branch retired refuted by the drain
+    // above — the retirement staging must land first so a refuted live
+    // branch releases its successor in this same burst).
+    {
+        RT_SCOPE("DRAIN_PENDING_OR_RELEASES");
+        this->drainPendingOrReleases(body);
+    }
+#if PHASE13_DEEP_TIMING
+    recordPhase3Detail(Phase13TimingSlot::drainPendingOrReleases,
+                       drainPendingOrReleasesStarted);
+    const auto wipeSubtreesStarted = std::chrono::steady_clock::now();
+#endif
 
     // D-72: drain pending subtree wipes
     // queued during this burst by impl-closure call sites
@@ -2316,6 +2631,7 @@ void ExpressionAnalyzer::performElemPhase3(Memory& body, unsigned coreId) {
     // sortedNew loops have all completed for this burst, so no
     // in-flight iteration can be invalidated.
     if (!body.pendingWipeScopes.empty()) {
+        RT_SCOPE("WIPE_SUBTREES");
         // Quiescence (D-194): a subtree wipe eradicates state
         // (and can leave the net statement count unchanged if it also erased what
         // this burst added), so flag it as a mutation directly rather than relying
@@ -2351,7 +2667,35 @@ void ExpressionAnalyzer::performElemPhase3(Memory& body, unsigned coreId) {
             body.wipeSubtree(ids[k]);
         gArena.popTo(drainMark);
     }
+#if PHASE13_DEEP_TIMING
+    recordPhase3Detail(Phase13TimingSlot::wipeSubtrees,
+                       wipeSubtreesStarted);
+    const auto sweepAncestorKnownRowsStarted =
+        std::chrono::steady_clock::now();
+#endif
+
+    // Ancestor-known sweep (I-187): drop
+    // statement-LIST rows at non-main scopes whose text a strict ancestor
+    // knows — the branch-first residue the deposit-time gates cannot see
+    // (NameMap has no child index). Runs LAST: after the sanitize twins
+    // (rewrites stabilized) and after the dead-branch and wipe drains
+    // (retired scopes are gone, so the sweep never touches a scope a wipe
+    // just erased). Registry rows survive as the dedup tombstones the
+    // gates and re-check paths read.
+    {
+        RT_SCOPE("SWEEP_ANCESTOR_KNOWN_ROWS");
+        this->sweepAncestorKnownRows(body);
+    }
+#if PHASE13_DEEP_TIMING
+    recordPhase3Detail(Phase13TimingSlot::sweepAncestorKnownRows,
+                       sweepAncestorKnownRowsStarted);
+#endif
     } // RT_SCOPE END_OF_BURST_SANITIZE
+
+#if PHASE13_DEEP_TIMING
+    const auto quiescenceAndDumpsStarted =
+        std::chrono::steady_clock::now();
+#endif
 
     // Quiescence SLEEP (D-194): the burst has finished
     // mutating. Clear hasWork unless this burst produced work — a statement
@@ -2441,6 +2785,16 @@ void ExpressionAnalyzer::performElemPhase3(Memory& body, unsigned coreId) {
     }
 #endif
 
+#if MEM_MEASUREMENT
+    // End-of-burst memory poll. This is the last point at which the burst's LB
+    // is still claimed and resident, and a deloaded container reads empty behind
+    // a residency assert (I-111), so an idle LB is unpollable by construction.
+    // Writes only this worker's own accumulator row; folded at the barrier.
+    gl::mem_tracker::addLbSample(
+        body.lbMemory,
+        static_cast<unsigned>(coreId));
+#endif
+
     // EXIT trap — delegate to hashburst_dump (relocated here from the inline
     // performElem tail with the phase split; dump unchanged, Rule 14).
     if (hashburst_dump::isTargetLB(body)) {
@@ -2448,10 +2802,30 @@ void ExpressionAnalyzer::performElemPhase3(Memory& body, unsigned coreId) {
         // No abort — let the pipeline run to completion. The trap
         // continues firing for every EXIT of this LB; the trace
         // accumulates all of them.
+#if RT_MEASUREMENT
+        // Per-burst submatch attribution for the hashburst dump's target LB.
+        // File-bound like the phase report beside it, never stdout.
+        std::filesystem::create_directories(".rt");
+        std::ofstream c15Log(".rt/burst_phases.log", std::ios::app);
+        c15Log << "[C15-SUB] accepted="
+                  << g_crtAccepted.load(std::memory_order_relaxed)
+                  << " acceptedUnlinkedDiv="
+                  << g_crtAcceptedUnlinked.load(std::memory_order_relaxed)
+                  << " attempts="
+                  << g_crtAttempts.load(std::memory_order_relaxed)
+                  << " attemptsUnlinkedDiv="
+                  << g_crtAttemptsUnlinked.load(std::memory_order_relaxed)
+                  << "\n";
+#endif
     }
 
     // Release the claim — phase 3 is done with this LB; deloadable again
     // (the steward may now reclaim it). CE clones have no steward.
+#if PHASE13_DEEP_TIMING
+    recordPhase3Detail(Phase13TimingSlot::quiescenceAndDumps,
+                       quiescenceAndDumpsStarted);
+    const auto releaseClaimStarted = std::chrono::steady_clock::now();
+#endif
     if (steward) {
         assert(body.stewardClaim.load(std::memory_order_relaxed)
                    == static_cast<uint8_t>(Memory::StewardClaim::WorkerOwned)
@@ -2460,6 +2834,10 @@ void ExpressionAnalyzer::performElemPhase3(Memory& body, unsigned coreId) {
             static_cast<uint8_t>(Memory::StewardClaim::Idle),
             std::memory_order_release);
     }
+#if PHASE13_DEEP_TIMING
+    recordPhase3Detail(Phase13TimingSlot::releaseClaim,
+                       releaseClaimStarted);
+#endif
 }
 
 /// @brief Walk a theorem expression and return the set of args that must
@@ -2732,7 +3110,45 @@ bool ExpressionAnalyzer::appendGlobalTheorem(const std::string& theorem,
     const std::string& method, const std::string& aux2,
     const std::string& aux3, const Memory* producer) {
     std::lock_guard<std::mutex> lock(this->theoremListMutex);
-    if (!this->globalTheoremStrings.insert(theorem).second) return false;
+    if (!this->globalTheoremStrings.insert(theorem).second) {
+        // Method-aware upgrade: a first-class registration REPLACES an
+        // existing proved-not-broadcast row in place. The tier records a
+        // closure that never circulated, so a level-complete (or
+        // constructed) derivation of the same theorem supersedes it; every
+        // other duplicate is dropped (first emission wins), and a tier
+        // arrival never demotes an existing row of any method.
+        if (method == "proved not broadcast") return false;
+        for (std::size_t i = 0; i < this->globalTheoremList.size(); ++i) {
+            auto& tpl = this->globalTheoremList[i];
+            if (std::get<0>(tpl) != theorem) continue;
+            if (std::get<1>(tpl) != "proved not broadcast") return false;
+            std::get<1>(tpl) = method;
+            std::get<2>(tpl) = aux2;
+            std::get<3>(tpl) = aux3;
+            this->globalTheoremProducers[i] = producer;
+            // The in-run or-construction scan marks a tier row scanned when
+            // it skips it; the upgraded row is first-class and must be
+            // scannable as new, so the settled mark leaves with the tier
+            // method.
+            this->orInRunScannedRows.erase(theorem);
+            // The tier registration mirrored its chapter row into
+            // fullTheoremList; the upgraded row re-mirrors through the
+            // first-class path, so the tier mirror leaves.
+            for (std::size_t f = this->fullTheoremList.size(); f-- > 0; ) {
+                if (std::get<0>(this->fullTheoremList[f]) == theorem
+                    && std::get<1>(this->fullTheoremList[f])
+                           == "proved not broadcast") {
+                    this->fullTheoremList.erase(this->fullTheoremList.begin()
+                        + static_cast<std::ptrdiff_t>(f));
+                }
+            }
+            return true;
+        }
+        assert(false
+            && "appendGlobalTheorem: globalTheoremStrings out of step with "
+               "globalTheoremList");
+        return false;
+    }
     this->globalTheoremList.emplace_back(theorem, method, aux2, aux3);
     this->globalTheoremProducers.push_back(producer);
     return true;
@@ -2855,8 +3271,72 @@ std::vector<std::string> ExpressionAnalyzer::classifyVacuousPremisePairs() {
     return classified;
 }
 
+/// @brief Provenance completion for a tier row's LB chain.
+///
+/// @details
+/// See the declaration's Doxygen block in `prover.hpp` for the full
+/// contract. Implementation notes: the decoded scan collects the pending
+/// deposits first and mutates the map only afterwards (no writes while
+/// walking the blob); the residency door is the claim handshake when the
+/// steward is live and `ensureLoadedForRead` in the steward-less
+/// unit-test context — two defined contexts, matching the existing
+/// dual-context sites.
+///
+/// @return Nothing.
+void ExpressionAnalyzer::repairTierCitationOrigins(Memory* producer) {
+    assert(producer && "repairTierCitationOrigins: tier registration without a producer LB");
+    const int maxOrigins = parameters.compressor_mode
+        ? parameters.compressor_max_origins_per_expr
+        : parameters.max_origin_per_expr;
+    for (Memory* mb = producer; mb != nullptr; mb = mb->parentMemory) {
+        if (steward) {
+            steward->claimAndLoadForWork(*mb, /*phase=*/4,
+                                         lbdeload::kDeloadDirectory);
+        } else {
+            mb->ensureLoadedForRead(lbdeload::kDeloadDirectory);
+        }
+
+        std::set<std::string> pendingDeposits;
+        {
+            const auto rows = decodeOriginMapSorted(mb->exprOriginMap,
+                                                    mb->originInterner);
+            for (const auto& row : rows) {
+                for (const auto& line : row.second) {
+                    for (const ExpressionWithValidity& dep : line.second) {
+                        if (dep.validityName != "main") continue;
+                        if (!startsWith(dep.original, "(>[", 3)) continue;
+                        if (this->globalTheoremStrings.count(dep.original) == 0) continue;
+                        int64_t pk = 0;
+                        if (lookupOriginKey(mb->originInterner, dep.original,
+                                            "main", pk)) {
+                            const int32_t oid = mb->exprOriginMap.lookup(pk);
+                            if (oid != 0 && mb->exprOriginMap.runLen(oid) > 0) {
+                                continue;   // already documented here
+                            }
+                        }
+                        pendingDeposits.insert(dep.original);
+                    }
+                }
+            }
+        }
+        for (const std::string& thm : pendingDeposits) {
+            addOriginEncoded(mb->exprOriginMap, mb->originInterner,
+                ExpressionWithValidity(thm, "main"),
+                std::make_pair(std::string("theorem"),
+                               std::vector<ExpressionWithValidity>()),
+                maxOrigins);
+        }
+
+        if (steward) {
+            mb->stewardClaim.store(
+                static_cast<uint8_t>(Memory::StewardClaim::Idle),
+                std::memory_order_release);
+        }
+    }
+}
+
 void ExpressionAnalyzer::updateGlobalDirect(const std::string& theorem, int coreId,
-    const Memory* producer) {
+    const Memory* producer, bool registerGlobally) {
     // 1) Disintegrate to chain + head
     std::vector<std::tuple<std::string, std::vector<std::string>, std::set<std::string>>> tempChain;
     Mail mailOut;
@@ -2876,6 +3356,35 @@ void ExpressionAnalyzer::updateGlobalDirect(const std::string& theorem, int core
     // Retire them through the same matching walk; a twin form that matches
     // no originalAuxyMap entry is a defined no-op.
     deactivateUnnecessary(reconstructImplication(ky, negate(value)), this->body);
+
+    // Level-refused registration (D-278) — proved-but-not-broadcast tier:
+    // the goal lifecycle above ran level-free; every CIRCULATION surface
+    // below — reformulation, broadcast, compaction staging, mail merge —
+    // stays refused when the sealed verdict says the proof did not consume
+    // every premise level (the theorem's stronger form is the fact that
+    // should circulate). But the closure IS a sound proof, so the theorem
+    // is RECORDED: a global-list row with method "proved not broadcast"
+    // and its own chapter. It never travels as a rule and never feeds the
+    // or construction; its one downstream consumer is the pre-split merge,
+    // which may cite it as a guard variant. Excluded from theorems.txt.
+    if (!registerGlobally) {
+        // Compressor-mode re-derivation audits FIRST-CLASS registration
+        // only — its theorem lists must stay byte-identical to the run it
+        // audits — so the tier registration is a defined no-op there,
+        // exactly like both or-construction seams.
+        if (!parameters.compressor_mode) {
+            if (this->appendGlobalTheorem(theorem, "proved not broadcast", "-1", "-1", producer)) {
+                this->fullTheoremList.emplace_back(theorem, "proved not broadcast", "-1", "-1");
+                std::cout << "Proved, not broadcast (level-refused registration): "
+                          << theorem << std::endl;
+                // The tier chapter walks this LB chain's real derivation;
+                // complete any theorem citation whose broadcast history
+                // line will never land (the LB dies in this window).
+                repairTierCitationOrigins(const_cast<Memory*>(producer));
+            }
+        }
+        return;
+    }
 
     // Save original decomposition before sections 3/4 overwrite ky/value
     const std::vector<std::string> origKy = ky;
@@ -2906,69 +3415,15 @@ void ExpressionAnalyzer::updateGlobalDirect(const std::string& theorem, int core
             ky.reserve(tempChain.size());
             for (std::size_t i = 0; i < tempChain.size(); ++i) ky.push_back(std::get<0>(tempChain[i]));
 
-            Memory* memoryBlockR = accessMemory(ky, this->body);
-            if (memoryBlockR != NULL) {
-                // L3 span-record: the "implication" record antecedents (the
-                // broadcast theorem + its N decomposition-chain keys, all stable
-                // std::string locals) fill a bounded stack OriginDep[] for the
-                // span door; "main" is a static literal.
-                OriginDep implDeps[64];
-                int implDepN = 0;
-                implDeps[implDepN++] = { StrSpan(refTheoremCompiled), StrSpan("main", 4) };
-                for (const std::string& keyElement : ky) {
-                    assert(implDepN < 64 && "broadcast origin chain exceeds 64");
-                    implDeps[implDepN++] = { StrSpan(keyElement), StrSpan("main", 4) };
-                }
-
-                int lvRunR[65];
-                assert(static_cast<int>(ky.size()) + 1 <= 65
-                    && "broadcast level run exceeds lvRunR");
-                for (int i = 0; i <= static_cast<int>(ky.size()); ++i) lvRunR[i] = i;
-                const int32_t lvRunRN = static_cast<int32_t>(ky.size()) + 1;
-
-                // Cross-LB deposit into the target block's
-                // `nextIterationInternalMail`. memoryBlockR is a
-                // different LB; its elementary step will be
-                // run later by the parallel pool, and its pre-burst
-                // standardProcessing call will drain
-                // nextIterationInternalMail alongside mailIn.
-                if (!memoryBlockR->dischargedForever) {
-                    // SEAM DOOR (D-196): memoryBlockR is a
-                    // DIFFERENT LB whose nextIterationInternalMail rides its
-                    // DELOADABLE arena (I-102). The uniform handshake makes it
-                    // resident, claim-correct (never Dumped-but-resident), and
-                    // holds WorkerOwned across the write so the barrier seam
-                    // window's executors cannot evict it mid-deposit; the
-                    // release below makes it evictable again (the deposit
-                    // lives in the arena and rides the raw image). A
-                    // dischargedForever target is skipped -- it never drains
-                    // its nextIter again (dead deposit), and the reload
-                    // asserts on a discharged LB.
-                    steward->claimAndLoadForWork(*memoryBlockR, /*phase=*/4,
-                                                 lbdeload::kDeloadDirectory);
-                    const int maxOrigins = parameters.compressor_mode
-                        ? parameters.compressor_max_origins_per_expr
-                        : parameters.max_origin_per_expr;
-                    insertInternalStatement(memoryBlockR->nextIterationInternalMail,
-                        memoryBlockR->nameMap, StrSpan(valueR), StrSpan("main", 4),
-                        lvRunR, lvRunRN);
-                    if (parameters.trackHistory) {
-                        addInternalMailOrigin(memoryBlockR->nextIterationInternalMail,
-                                      memoryBlockR->originInterner,
-                                      StrSpan(valueR), StrSpan("main", 4),
-                                      OriginTag::implication, implDeps, implDepN,
-                                      maxOrigins);
-                    }
-                    // WAKE DOOR 1 (D-194): a cross-LB deposit
-                    // into memoryBlockR's nextIterationInternalMail is new work it
-                    // will drain next step — mark it dirty so the skip filter
-                    // sweeps it even if it had converged.
-                    memoryBlockR->hasWork = true;
-                    memoryBlockR->stewardClaim.store(
-                        static_cast<uint8_t>(Memory::StewardClaim::Idle),
-                        std::memory_order_release);
-                }
-            }
+            // No settled-head deposit at the reformulated chain LB: the
+            // compact broadcast below reaches it through root mail, the rule
+            // installs, and the head re-derives from the LB's own seed
+            // premises with residence-honest levels {0..chain-1}. A direct
+            // deposit would have to fabricate a level run — the retired
+            // {0..ky.size()} stamp poisoned the receiving LB's level
+            // arithmetic (one past its level universe) and broke the
+            // allLevelsInvolved verdict of every statement derived from it
+            // (D-324).
 
             // ASIC 0.1 reshuffle: the legacy Mail::implications channel is
             // removed; this implication now travels SOLELY as the D-76
@@ -3372,7 +3827,7 @@ void ExpressionAnalyzer::updateGlobal(int auxyIndex, bool allLevelsInvolved, int
 
             const StatementFlags* typingRow = lookupStatementFlags(
                 memoryBlock->intKnownStatements, memoryBlock->nameMap, typingGoal, "main");
-            if (!(typingRow && typingRow->registered)) {
+            if (typingRow == nullptr) {
                 // Typing not established — reject induction promotion silently.
                 return;
             }
@@ -3392,58 +3847,38 @@ void ExpressionAnalyzer::updateGlobal(int auxyIndex, bool allLevelsInvolved, int
             memoryBlock->intToBeProved.eraseSet(
                 packStatementKey(tbpOrigId, NameMap::MAIN_ID));
 
-            // Build origin and levels
-            // L3 span-record: the "implication" record antecedents (proved head
-            // + N decomposition-chain keys, stable std::string locals) fill a
-            // bounded stack OriginDep[]; "main" is a static literal.
-            OriginDep implDeps[64];
-            int implDepN = 0;
-            implDeps[implDepN++] = { StrSpan(expr), StrSpan("main", 4) };
-            for (const std::string& keyElement : ky) {
-                assert(implDepN < 64 && "broadcast origin chain exceeds 64");
-                implDeps[implDepN++] = { StrSpan(keyElement), StrSpan("main", 4) };
-            }
-
-            int lvRun[65];
-            assert(static_cast<int>(ky.size()) + 1 <= 65
-                && "broadcast level run exceeds lvRun");
-            for (int i = 0; i <= static_cast<int>(ky.size()); ++i) lvRun[i] = i;
-            const int32_t lvRunN = static_cast<int32_t>(ky.size()) + 1;
-
-            // Deposit the proved head into this LB's
-            // `nextIterationInternalMail` for absorption at the start
-            // of its next elementary step (alongside mailIn).
+            // No settled-head deposit here: the compact broadcast below
+            // reaches this LB through root mail, the rule installs, and the
+            // head re-derives from the LB's own seed premises with
+            // residence-honest levels {0..chain-1}. A direct deposit would
+            // have to fabricate a level run — the retired {0..ky.size()}
+            // stamp poisoned this LB's level arithmetic (one past its level
+            // universe) and broke the allLevelsInvolved verdict of every
+            // statement derived from it
+            // (D-324).
+            // WAKE DOOR 2 (D-194): a main goal was erased above — state the
+            // deactivation survey must see next step; keep the LB swept (a
+            // dischargedForever LB has no next step, I-102). hasWork is
+            // never-deloaded logical state (I-153), so no claim handshake
+            // is needed for this flag-only write.
             if (!memoryBlock->dischargedForever) {
-                // SEAM DOOR (D-196): this LB just ran its
-                // phases, but the barrier seam window's executors may have
-                // evicted it since its release — the uniform handshake reloads
-                // it claim-correctly and holds WorkerOwned across the write;
-                // the release makes it evictable again. A dischargedForever LB
-                // has no next step to drain the deposit (dead), so it is
-                // skipped (I-102).
-                steward->claimAndLoadForWork(*memoryBlock, /*phase=*/4,
-                                             lbdeload::kDeloadDirectory);
-                const int maxOrigins = parameters.compressor_mode
-                    ? parameters.compressor_max_origins_per_expr
-                    : parameters.max_origin_per_expr;
-                insertInternalStatement(memoryBlock->nextIterationInternalMail,
-                    memoryBlock->nameMap, StrSpan(value), StrSpan("main", 4),
-                    lvRun, lvRunN);
-                if (parameters.trackHistory) {
-                    addInternalMailOrigin(memoryBlock->nextIterationInternalMail,
-                                  memoryBlock->originInterner,
-                                  StrSpan(value), StrSpan("main", 4),
-                                  OriginTag::implication, implDeps, implDepN,
-                                  maxOrigins);
-                }
-                // WAKE DOOR 2 (D-194): updateGlobal deposits
-                // the proved head into this LB's nextIterationInternalMail (and
-                // erased a main goal above) — new work next step; keep it swept.
                 memoryBlock->hasWork = true;
-                memoryBlock->stewardClaim.store(
-                    static_cast<uint8_t>(Memory::StewardClaim::Idle),
-                    std::memory_order_release);
             }
+
+            // FullBind-rebuild expr for every OUTWARD channel. The
+            // as-scheduled `expr` is the conjecturer's pre-FullBind shape —
+            // its outer binder omits anchor slots unused beyond the anchor
+            // premise, leaving them as bare free variables. That form must
+            // never circulate: compacting it lifts the unbound anchor slots
+            // into template parameters, producing the forbidden
+            // (Anchor...[...,u_N]) rule elements (an anchor expression never
+            // carries u_ arguments) whose canonical `compilation` citation
+            // has no origin row for the chapter walker. Compaction, the
+            // `theorem` origin row, and the registry all take the FullBind
+            // form; `expr` survives only for or_pairs matching and as
+            // reformulateTheorem input (its outputs rebind themselves).
+            const std::string exprFullBind =
+                this->reconstructImplicationFullBind(ky, value);
 
             // ASIC 0.1 reshuffle: the legacy Mail::implications channel is
             // removed; this implication travels SOLELY as the D-76 compact
@@ -3452,24 +3887,14 @@ void ExpressionAnalyzer::updateGlobal(int auxyIndex, bool allLevelsInvolved, int
             // paired-origin; I-44: exprOriginMap is documentation, not a
             // proof input). Deferred compile+deposit (parallel worker path
             // -> I-28); drained single-threaded post-pool.join.
-            recordPendingCompaction(expr, static_cast<int>(ky.size()), coreId);
+            recordPendingCompaction(exprFullBind, static_cast<int>(ky.size()), coreId);
 
             if (parameters.trackHistory) {
-                ExpressionWithValidity ev(expr, "main");
+                ExpressionWithValidity ev(exprFullBind, "main");
                 addOrigin(mailOut.exprOriginMap, ev, std::make_pair("theorem", std::vector<ExpressionWithValidity>()), (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
             }
 
             // ---- record in globalTheoremList (short critical section) ----
-            //
-            // FullBind-rebuild expr before registering. The runtime side keeps
-            // the as-scheduled `expr` (used downstream for compaction, origin,
-            // reformulation); the REGISTRY entry must be FullBind so
-            // the verifier's origin meta-check (which walks the chapter's
-            // binary-canonical citation, itself emitted in FullBind by
-            // broadcastTheorems / the deferred-compaction drain) finds a
-            // left-column hit.
-            const std::string exprFullBind =
-                this->reconstructImplicationFullBind(ky, value);
             this->appendGlobalTheorem(exprFullBind, "induction", indVar,
                 recCounter, memoryBlock);
             std::cout << exprFullBind << std::endl;
@@ -3502,59 +3927,16 @@ void ExpressionAnalyzer::updateGlobal(int auxyIndex, bool allLevelsInvolved, int
                     ky.reserve(tempChain.size());
                     for (std::size_t i = 0; i < tempChain.size(); ++i) ky.push_back(std::get<0>(tempChain[i]));
 
-                    Memory* memoryBlockR = accessMemory(ky, this->body);
-                    if (memoryBlockR != NULL) {
-                        // L3 span-record: the "implication" record antecedents
-                        // (broadcast theorem + N decomposition-chain keys, stable
-                        // std::string locals) fill a bounded stack OriginDep[].
-                        OriginDep implDeps[64];
-                        int implDepN = 0;
-                        implDeps[implDepN++] = { StrSpan(refTheoremCompiled), StrSpan("main", 4) };
-                        for (const std::string& keyElement : ky) {
-                            assert(implDepN < 64 && "broadcast origin chain exceeds 64");
-                            implDeps[implDepN++] = { StrSpan(keyElement), StrSpan("main", 4) };
-                        }
-
-                        int lvRunR[65];
-                        assert(static_cast<int>(ky.size()) + 1 <= 65
-                            && "broadcast level run exceeds lvRunR");
-                        for (int i = 0; i <= static_cast<int>(ky.size()); ++i) lvRunR[i] = i;
-                        const int32_t lvRunRN = static_cast<int32_t>(ky.size()) + 1;
-
-                        // Cross-LB deposit into the target block's
-                // `nextIterationInternalMail` for next-iter absorb.
-                if (!memoryBlockR->dischargedForever) {
-                    // SEAM DOOR (D-196): the uniform
-                    // handshake reloads the recipient claim-correctly and
-                    // holds WorkerOwned across the write (the barrier seam
-                    // window's executors cannot evict it mid-deposit); the
-                    // release makes it evictable again. A dischargedForever
-                    // target is skipped -- it never drains its nextIter again
-                    // (dead deposit; I-102).
-                    steward->claimAndLoadForWork(*memoryBlockR, /*phase=*/4,
-                                                 lbdeload::kDeloadDirectory);
-                    const int maxOrigins = parameters.compressor_mode
-                        ? parameters.compressor_max_origins_per_expr
-                        : parameters.max_origin_per_expr;
-                    insertInternalStatement(memoryBlockR->nextIterationInternalMail,
-                        memoryBlockR->nameMap, StrSpan(valueR), StrSpan("main", 4),
-                        lvRunR, lvRunRN);
-                    if (parameters.trackHistory) {
-                        addInternalMailOrigin(memoryBlockR->nextIterationInternalMail,
-                                      memoryBlockR->originInterner,
-                                      StrSpan(valueR), StrSpan("main", 4),
-                                      OriginTag::implication, implDeps, implDepN,
-                                      maxOrigins);
-                    }
-                    // WAKE DOOR 1 (D-194): cross-LB deposit
-                    // into memoryBlockR's nextIterationInternalMail — new work
-                    // next step; keep it swept.
-                    memoryBlockR->hasWork = true;
-                    memoryBlockR->stewardClaim.store(
-                        static_cast<uint8_t>(Memory::StewardClaim::Idle),
-                        std::memory_order_release);
-                }
-                    }
+                    // No settled-head deposit at the reformulated chain LB:
+                    // the compact broadcast below reaches it through root
+                    // mail, the rule installs, and the head re-derives from
+                    // the LB's own seed premises with residence-honest levels
+                    // {0..chain-1}. A direct deposit would have to fabricate
+                    // a level run — the retired {0..ky.size()} stamp poisoned
+                    // the receiving LB's level arithmetic (one past its level
+                    // universe) and broke the allLevelsInvolved verdict of
+                    // every statement derived from it
+                    // (D-324).
 
                     // ASIC 0.1 reshuffle: reformulated implication travels
                     // SOLELY as the D-76 compact statement (legacy
@@ -3855,12 +4237,45 @@ void ExpressionAnalyzer::drainDeferredAncestorAdmissions() {
 }
 
 /// @see Declaration in `prover.hpp` for the full contract.
+int ExpressionAnalyzer::compareProducerChains(const Memory* a, const Memory* b) {
+    if (a == b) return 0;
+    while (true) {
+        if (a == nullptr) return (b == nullptr) ? 0 : -1;
+        if (b == nullptr) return 1;
+        if (a == b) {
+            // Chains converged on a shared ancestor while every deeper key
+            // compared equal — two distinct LBs with a byte-equal full chain
+            // would break the full-chain identity every chain-matched
+            // consumer (deload naming, debug traps) relies on.
+            assert(false && "compareProducerChains: distinct LBs share a "
+                            "byte-equal full parentMemory chain");
+            return 0;
+        }
+        const int c = compareSpans(a->exprKeyView(), b->exprKeyView());
+        if (c != 0) return c;
+        a = a->parentMemory;
+        b = b->parentMemory;
+    }
+}
+
+/// @see Declaration in `prover.hpp` for the full contract.
 int ExpressionAnalyzer::updateGlobalDirectLess(const UpdateGlobalDirectRec& a,
                                                const UpdateGlobalDirectRec& b) {
     const int c = compareSpans(StrSpan(a.theorem), StrSpan(b.theorem));
     if (c != 0) return c;
-    if (a.coreId != b.coreId) return a.coreId < b.coreId ? -1 : 1;
-    return 0;
+    // Level-verdict tiebreak, TRUE FIRST: when one theorem seals from both a
+    // level-complete and a level-poor route in the same iteration, the sink's
+    // string dedup makes the FIRST-drained record's method the registration —
+    // so the level-complete record must drain first, else the theorem lands
+    // in the proved-not-broadcast tier although a full-level proof closed.
+    if (a.allLevelsInvolved != b.allLevelsInvolved)
+        return a.allLevelsInvolved ? -1 : 1;
+    // Producer-chain tiebreak: the deterministic LB identity (leaf-to-root
+    // exprKey bytes). coreId must not participate anywhere in this order —
+    // it is the phase-dispatch worker slot, a scheduling race outcome, and
+    // for a level-poor pair the first record's producer chain becomes the
+    // tier chapter's derivation.
+    return compareProducerChains(a.producer, b.producer);
 }
 
 /// @see Declaration in `prover.hpp` for the full contract.
@@ -3873,10 +4288,11 @@ void ExpressionAnalyzer::drainUpdateGlobalDirect() {
     if (ps.recordCount() == 0) { updateGlobalDirectPages.reset(); return; }
 
     // Single-threaded post-join (g_currentCoreId == -1 -> reserved last gen
-    // slot). Gather record pointers, index-sort on the (theorem bytes, coreId)
-    // total order — the former std::sort over std::tuple<std::string,int>. The
-    // refs / idx ride the gen-scratch tiers; the sealed strings ride
-    // updateGlobalDirectPages (never crossed, I-124).
+    // slot). Gather record pointers, index-sort on the (theorem bytes, level
+    // verdict true-first, producer chain) total order — every key a pure
+    // function of proof state, never the dispatch coreId. The refs / idx ride
+    // the gen-scratch tiers; the sealed strings ride updateGlobalDirectPages
+    // (never crossed, I-124).
     const unsigned slot = (g_currentCoreId >= 0)
         ? static_cast<unsigned>(g_currentCoreId)
         : genScratchArenas().slotCount() - 1;
@@ -3910,17 +4326,24 @@ void ExpressionAnalyzer::drainUpdateGlobalDirect() {
         // Materialize the std::string at the still-heap updateGlobalDirect edge
         // (the sink is not a statification target; the sealed bytes crossing the
         // join is the win). The sealed strings are live until freePages() below.
+        // The sealed level verdict rides along: a false verdict runs only the
+        // lifecycle section inside plus the proved-not-broadcast tier
+        // registration (D-278).
         updateGlobalDirect(StrSpan(r.theorem).toStdString(), r.coreId,
-                           r.producer);
+                           r.producer, r.allLevelsInvolved);
 
-        // Disproof deposit: a primed __contradiction__ discharge emits a
+        // Settled-goal deposit: a primed __contradiction__ discharge emits a
         // theorem whose head is negate(seed) (I-165), so hand the seed to the
-        // parent's disproved-goal inbox. The parent's own end-of-burst
-        // drainDisprovedGoals probes it against the parent's MAIN goals —
-        // a hit is a disproof (the verbatim twin fired), a miss is the
-        // complement twin proving the goal (normal closure handles it) or an
-        // already-closed goal; both are defined outcomes, so the deposit is
-        // unconditional for primed producers. Single-threaded post-join seam;
+        // parent's settled-goal inbox. The parent's own end-of-burst
+        // drainDisprovedGoals probes BOTH directions against the parent's
+        // MAIN goals — seed == goal is a disproof (the verbatim twin fired;
+        // goal + machinery wiped), negate(seed) == goal is a proof (the
+        // complement twin fired; goal closed with success semantics,
+        // D-279); a double miss is an
+        // already-closed goal — a defined outcome, so the deposit is
+        // unconditional for primed producers. It runs EVEN when the record's
+        // level verdict refused registration above: goal settlement is
+        // level-free by contract (D-278). Single-threaded post-join seam;
         // the inbox rides the never-deloaded persistent pool (the I-108
         // pattern), so no claim is needed while the parent is cold, and the
         // hasWork wake satisfies I-153.
@@ -3947,14 +4370,16 @@ void ExpressionAnalyzer::drainUpdateGlobalDirect() {
     updateGlobalDirectPages.reset();
 }
 
-/// @brief End-of-burst drain of the disproved-goal inbox — erase a disproved
-///        MAIN goal and every piece of integration machinery its preparation
-///        spawned.
+/// @brief End-of-burst drain of the settled-goal inbox — close the MAIN goal
+///        a contradiction twin settled: a disproved goal loses its whole
+///        integration machinery, a proved goal closes with the ordinary
+///        success-path semantics.
 ///
 /// @details
 /// See the declaration's Doxygen block in `prover.hpp` for the full contract
-/// (deposit protocol, the six cleanup steps, determinism, and the flagged
-/// verbatim-match limitation). Implementation notes:
+/// (deposit protocol, the two settlement directions, the six disproof cleanup
+/// steps, determinism, and the flagged verbatim-match limitation).
+/// Implementation notes:
 ///
 /// - Heap-free (Rule 28): seed snapshots ride the string-scratch tier, the
 ///   root-name / dead-compact scratch rides the gen-scratch tiers, all
@@ -4010,18 +4435,54 @@ void ExpressionAnalyzer::drainDisprovedGoals(Memory& body) {
         return compareSpans(a, b) < 0;
     });
 
+    // Shared goal-scope enumeration for both settlement directions below:
+    // visit every MAIN-parented scope whose payload embeds `goal` — the
+    // `<goal>_subproof_<bare>` shape (split into gOut/bOut), the hypo
+    // sentinel, or the `_var…_hypo_<goal>` working scope — and hand each hit
+    // to onMatch(id, isSubproof, bOut). Non-minting throughout (I-3).
+    const auto forEachGoalScopeRoot = [&](const StrSpan goal, auto&& onMatch) {
+        static const char SENT_PFX[] =
+            "product_of_hypo_disintegration_of_integration_goal_";
+        const int32_t sentLen = static_cast<int32_t>(sizeof(SENT_PFX) - 1);
+        static const char HYPO_TOK[] = "_hypo_";
+        const int32_t hypoLen = static_cast<int32_t>(sizeof(HYPO_TOK) - 1);
+        for (NameId id = 2; id <= body.nameMap.nameCount(); ++id) {
+            if (body.nameMap.stackEmpty(id)) continue;
+            if (body.nameMap.parentOf(id) != NameMap::MAIN_ID) continue;
+            const StrSpan payload =
+                body.nameMap.decodeSubView(body.nameMap.stackBack(id));
+            StrSpan gOut, bOut;
+            if (splitSubproofPayload(payload, gOut, bOut)) {
+                if (equalSpans(gOut, goal))
+                    onMatch(id, /*isSubproof=*/true, bOut);
+            } else if (payload.len == sentLen + goal.len
+                       && std::memcmp(payload.ptr, SENT_PFX,
+                                      static_cast<size_t>(sentLen)) == 0
+                       && equalSpans(StrSpan(payload.ptr + sentLen, goal.len),
+                                     goal)) {
+                onMatch(id, /*isSubproof=*/false, StrSpan());
+            } else if (payload.len > hypoLen + goal.len
+                       && payload.ptr[0] == '_'
+                       && equalSpans(StrSpan(payload.ptr + payload.len
+                                                 - goal.len, goal.len),
+                                     goal)
+                       && std::memcmp(payload.ptr + payload.len - goal.len
+                                          - hypoLen,
+                                      HYPO_TOK,
+                                      static_cast<size_t>(hypoLen)) == 0) {
+                onMatch(id, /*isSubproof=*/false, StrSpan());
+            }
+        }
+    };
+
     for (int32_t si = 0; si < seedN; ++si) {
         const StrSpan seed = seeds[si];
-        const NameId goalId = body.nameMap.lookup(seed);
-        if (goalId == 0) continue;   // never a goal here — complement twin
-        const int64_t goalPk = packStatementKey(goalId, NameMap::MAIN_ID);
-        if (body.intToBeProved.lookup(goalPk) == 0) continue;  // closed / twin
 
-        // ---- 1. the goal row ----
-        body.intToBeProved.eraseSet(goalPk);
-
-        // The negated form of the seed — the disproof PRODUCT, which the
-        // MAIN-keyed origin sweep below must never erase.
+        // The seed's negation (double-negation cancelling). Both directions
+        // read it: for a PROOF settlement it IS the parent goal the twin
+        // proved (I-165: theorem head == negate(seed)); for a DISPROOF hit it
+        // is the disproof PRODUCT, which the MAIN-keyed origin sweep below
+        // must never erase.
         StrSpan negSeed;
         if (seed.len > 0 && seed.ptr[0] == '!') {
             negSeed = StrSpan(seed.ptr + 1, seed.len - 1);
@@ -4031,6 +4492,44 @@ void ExpressionAnalyzer::drainDisprovedGoals(Memory& body) {
             std::memcpy(nb + 1, seed.ptr, static_cast<size_t>(seed.len));
             negSeed = StrSpan(nb, seed.len + 1);
         }
+
+        // ---- PROOF direction (D-279) ----
+        // The twin emitted the theorem headed negate(seed); when that head is
+        // a registered MAIN goal here, the goal SUCCEEDED — close it with the
+        // ordinary success-path semantics: erase the row, stage the goal's
+        // scope wipes (wipeSubtree preserve rules — exprOriginMap stays,
+        // Rule 16 / I-44), and nothing else. No origin erase, no gate/cohort
+        // erase, no closed-subproof exception: those are disproof-only
+        // scrubbing of a dead goal's machinery; a proved goal's history and
+        // products stay like any proved statement's. Twin retirement (and,
+        // when the sealed level verdict allowed it, registration) already
+        // happened at the deposit seam (drainUpdateGlobalDirect ->
+        // deactivateUnnecessary); a level-refused settlement still closes
+        // here (D-278).
+        {
+            const NameId provedGoalId = body.nameMap.lookup(negSeed);
+            if (provedGoalId != 0) {
+                const int64_t provedPk =
+                    packStatementKey(provedGoalId, NameMap::MAIN_ID);
+                if (body.intToBeProved.lookup(provedPk) != 0) {
+                    body.intToBeProved.eraseSet(provedPk);
+                    forEachGoalScopeRoot(negSeed,
+                        [&](NameId id, bool, StrSpan) {
+                            body.pendingWipeScopes.mint(id);
+                            body.intValidityNamesToFilter.mint(id);
+                        });
+                }
+            }
+        }
+
+        // ---- DISPROOF direction ----
+        const NameId goalId = body.nameMap.lookup(seed);
+        if (goalId == 0) continue;   // seed never a goal here
+        const int64_t goalPk = packStatementKey(goalId, NameMap::MAIN_ID);
+        if (body.intToBeProved.lookup(goalPk) == 0) continue;  // already closed
+
+        // ---- 1. the goal row ----
+        body.intToBeProved.eraseSet(goalPk);
 
         // ---- 2. MAIN-level scope roots that embed the goal ----
         // Subtree membership for the erases below is the TEXT gate
@@ -4046,23 +4545,11 @@ void ExpressionAnalyzer::drainDisprovedGoals(Memory& body) {
         // never-closed machinery is dead.
         DirtyState rootsDirty = DirtyState::Clean;
         PagedVector<StrSpan> rootNames(&gArena, &rootsDirty);
-        static const char SENT_PFX[] =
-            "product_of_hypo_disintegration_of_integration_goal_";
-        const int32_t sentLen = static_cast<int32_t>(sizeof(SENT_PFX) - 1);
-        static const char HYPO_TOK[] = "_hypo_";
-        const int32_t hypoLen = static_cast<int32_t>(sizeof(HYPO_TOK) - 1);
         static const char ORINT_PFX[] = "orint_";
         const int32_t orintLen = static_cast<int32_t>(sizeof(ORINT_PFX) - 1);
-        for (NameId id = 2; id <= body.nameMap.nameCount(); ++id) {
-            if (body.nameMap.stackEmpty(id)) continue;
-            if (body.nameMap.parentOf(id) != NameMap::MAIN_ID) continue;
-            const StrSpan payload =
-                body.nameMap.decodeSubView(body.nameMap.stackBack(id));
-            bool matched = false;
-            StrSpan gOut, bOut;
-            if (splitSubproofPayload(payload, gOut, bOut)) {
-                matched = equalSpans(gOut, seed);
-                if (matched) {
+        forEachGoalScopeRoot(seed,
+            [&](NameId id, bool isSubproof, StrSpan bOut) {
+                if (isSubproof) {
                     // Derive the subproof's product: the bare compact
                     // (Case A) or the OR signature (Case OR branch).
                     StrSpan product;
@@ -4085,31 +4572,13 @@ void ExpressionAnalyzer::drainDisprovedGoals(Memory& body) {
                         const StatementFlags* row = lookupStatementFlags(
                             body.intKnownStatements, body.nameMap, product,
                             StrSpan("main", 4));
-                        if (row && row->registered) continue;  // closed — keep
+                        if (row != nullptr) return;  // closed — keep
                     }
                 }
-            } else if (payload.len == sentLen + seed.len
-                       && std::memcmp(payload.ptr, SENT_PFX,
-                                      static_cast<size_t>(sentLen)) == 0
-                       && equalSpans(StrSpan(payload.ptr + sentLen, seed.len),
-                                     seed)) {
-                matched = true;   // the hypo sentinel of this goal
-            } else if (payload.len > hypoLen + seed.len
-                       && payload.ptr[0] == '_'
-                       && equalSpans(StrSpan(payload.ptr + payload.len
-                                                 - seed.len, seed.len),
-                                     seed)
-                       && std::memcmp(payload.ptr + payload.len - seed.len
-                                          - hypoLen,
-                                      HYPO_TOK,
-                                      static_cast<size_t>(hypoLen)) == 0) {
-                matched = true;   // the `_var…_hypo_<goal>` working scope
-            }
-            if (!matched) continue;
-            body.pendingWipeScopes.mint(id);
-            body.intValidityNamesToFilter.mint(id);
-            rootNames.push_back(body.nameMap.decodeView(id));
-        }
+                body.pendingWipeScopes.mint(id);
+                body.intValidityNamesToFilter.mint(id);
+                rootNames.push_back(body.nameMap.decodeView(id));
+            });
 
         // ---- 3. goal-template gates at MAIN ----
         const auto tmplMatches = [&](int32_t tid) -> bool {
@@ -4199,6 +4668,20 @@ void ExpressionAnalyzer::drainDisprovedGoals(Memory& body) {
         });
         body.orBookkeeping.eraseSetIf([&](const LbStatePairKey& k) {
             return cohortDead(static_cast<int32_t>(k.low));
+        });
+        body.orPendingBranches.eraseSetIf([&](int32_t k) {
+            return cohortDead(k);
+        });
+        body.orPendingLevels.eraseSetIf([&](int32_t k) {
+            return cohortDead(k);
+        });
+        // Processed-or ledger rows at wiped scopes leave with the cohort
+        // rows: a disproof-cleaned scope can be re-derived and must
+        // re-process its ors from scratch (keys are NameMap vids —
+        // decode, then the wiped-root text gate like the origin sweeps
+        // above).
+        body.processedOrLedger.eraseSetIf([&](NameId vid) {
+            return underWipedRoot(body.nameMap.decodeView(vid));
         });
     }
     gArena.popTo(gMark);
@@ -4299,6 +4782,12 @@ void ExpressionAnalyzer::drainDeadOrBranches(Memory& body) {
         deadCohortIds.push_back(cohortId);
         deadDjIds.push_back(deadDjId);
 
+        // Sequenced release: a retired live branch RESOLVES its cohort — if
+        // branches are still pending, stage the cohort for the release drain
+        // that runs right after this one (drainPendingOrReleases).
+        if (body.orPendingBranches.lookup(cohortId) != 0)
+            body.pendingOrReleases.mint(cohortId);
+
         // Record the retired disjunct with the SHALLOWEST scope where its
         // negation is `known` — the reductio ingredient a later
         // reduced-cohort `or convergence` row cites for this branch. The
@@ -4326,7 +4815,7 @@ void ExpressionAnalyzer::drainDeadOrBranches(Memory& body) {
             for (NameId a = vid; a != 0; a = body.nameMap.parentOf(a)) {
                 const StatementFlags* row = body.intKnownStatements.find(
                     StatementKey{ negId, a });
-                if (row && row->known) refutScope = a;
+                if (row != nullptr) refutScope = a;
                 if (a == NameMap::MAIN_ID) break;
             }
             assert(refutScope != 0
@@ -4380,6 +4869,15 @@ void ExpressionAnalyzer::drainDeadOrBranches(Memory& body) {
             // (a reductio LB) or the vacuous-premise flag + global-theorem
             // reversion (a normal LB at main).
             body.orDisjunctCount.erase(cid);
+            // Wholesale retirement also drops the cohort's pending queue —
+            // nothing may release into a fully-refuted cohort. (A sequenced
+            // cohort reaches zero survivors only after every branch was
+            // released, so this is normally a no-op; the guard covers the
+            // disproof-drain overlap.)
+            body.orPendingBranches.eraseSetIf(
+                [&](int32_t k) { return k == cid; });
+            body.orPendingLevels.eraseSetIf(
+                [&](int32_t k) { return k == cid; });
         } else {
             body.orDisjunctCount.setValueAt(cntRow, newCount);
         }
@@ -4476,6 +4974,441 @@ void ExpressionAnalyzer::drainDeadOrBranches(Memory& body) {
 }
 
 
+/// @brief Duplicate-or-cohort retirement — see the declaration's Doxygen
+///        block in `prover.hpp` for the full contract.
+///
+/// @details
+/// Implementation notes: the ledger snapshot is taken up front because
+/// the per-loser `clearProcessedOr` restructures the container
+/// mid-drain; grouping is an O(n²) canonical-span compare per scope
+/// (n = the recorded ors of one scope — unbounded, so the per-scope
+/// working arrays ride the gen-scratch byte tier sized by the actual
+/// count); the branch-statement census is one pass over
+/// `intEncodedStatements` per duplicate group with a per-open-member
+/// prefix probe. Nothing in the drain mints into the NameMap or the
+/// `lbStateInterner`, so every held `decodeView` span stays valid to
+/// last use (I-3); the wipe itself is delegated to this same burst's
+/// `pendingWipeScopes` drain.
+///
+/// @param body The LB whose processed-or ledger is swept.
+void ExpressionAnalyzer::retireDuplicateOrCohorts(Memory& body)
+{
+    const int32_t scopeN = body.processedOrLedger.count();
+    if (scopeN == 0) return;
+
+    const unsigned gSlot = (g_currentCoreId >= 0)
+        ? static_cast<unsigned>(g_currentCoreId)
+        : genScratchArenas().slotCount() - 1;
+    ScratchArena& gArena = genScratchArenas().forSlot(gSlot);
+    const ArenaOffset gMark = gArena.cursor();
+    const unsigned sSlot = (g_currentCoreId >= 0)
+        ? static_cast<unsigned>(g_currentCoreId)
+        : scratchArenas().slotCount() - 1;
+    ScratchArena& sArena = scratchArenas().forSlot(sSlot);
+
+    // Ledger snapshot (gen-scratch page tier): scopes with fewer than two
+    // recorded ors can hold no duplicate and are skipped at the source.
+    struct LedgerScopeRow { NameId vid; int32_t start; int32_t n; };
+    DirtyState snapDirty = DirtyState::Clean;
+    PagedVector<int64_t> entryPool(&gArena, &snapDirty);
+    PagedVector<LedgerScopeRow> scopeRows(&gArena, &snapDirty);
+    for (int32_t id = 1; id <= scopeN; ++id) {
+        const int32_t n = body.processedOrLedger.runLen(id);
+        if (n < 2) continue;
+        const LedgerScopeRow row{ body.processedOrLedger.decodeKey(id),
+                                  static_cast<int32_t>(entryPool.size()), n };
+        for (int32_t j = 0; j < n; ++j)
+            entryPool.push_back(body.processedOrLedger.valueAt(id, j));
+        scopeRows.push_back(row);
+    }
+
+    const StrSpan BOUNDARY_ORDIS("_boundary_ordis_", 16);
+
+    for (int32_t si = 0; si < static_cast<int32_t>(scopeRows.size()); ++si) {
+        const LedgerScopeRow& sr = scopeRows[static_cast<std::size_t>(si)];
+        const StrSpan vName = body.nameMap.decodeView(sr.vid);
+        // Non-minting cohort recovery: an uninterned parent means no
+        // cohort ever opened at this scope — nothing to retire.
+        const int32_t parentId = body.lbStateInterner.lookup(vName);
+        if (parentId == 0) continue;
+
+        // Per-scope working arrays on the gen-scratch byte tier, sized by
+        // the actual recorded-or count — a scope's ledger run is unbounded
+        // (an FTA shortcut main records hundreds), so no stack cap. The
+        // nested clearProcessedOr allocations below are LIFO above this
+        // mark; the per-scope popTo reclaims everything.
+        ScratchScope scopeStrScope(sArena);
+        const ArenaOffset scopeMark = gArena.cursor();
+        const auto allocRun = [&](int32_t bytes, int32_t align) -> char* {
+            return gArena.resolve(gArena.alloc(bytes, align));
+        };
+        StrSpan* text = reinterpret_cast<StrSpan*>(allocRun(
+            sr.n * static_cast<int32_t>(sizeof(StrSpan)),
+            static_cast<int32_t>(alignof(StrSpan))));
+        NameId* canonId = reinterpret_cast<NameId*>(allocRun(
+            sr.n * static_cast<int32_t>(sizeof(NameId)),
+            static_cast<int32_t>(alignof(NameId))));
+        NameId* entryId = reinterpret_cast<NameId*>(allocRun(
+            sr.n * static_cast<int32_t>(sizeof(NameId)),
+            static_cast<int32_t>(alignof(NameId))));
+        int32_t* cohortIdOf = reinterpret_cast<int32_t*>(allocRun(
+            sr.n * static_cast<int32_t>(sizeof(int32_t)),
+            static_cast<int32_t>(alignof(int32_t))));
+        int32_t* groupOf = reinterpret_cast<int32_t*>(allocRun(
+            sr.n * static_cast<int32_t>(sizeof(int32_t)),
+            static_cast<int32_t>(alignof(int32_t))));
+        int32_t* score = reinterpret_cast<int32_t*>(allocRun(
+            sr.n * static_cast<int32_t>(sizeof(int32_t)),
+            static_cast<int32_t>(alignof(int32_t))));
+        for (int32_t j = 0; j < sr.n; ++j) {
+            const int64_t e = entryPool[static_cast<std::size_t>(sr.start + j)];
+            // The ledger's canonical half is current (re-keyed at every
+            // class change at this scope, I-219), so the grouping below is
+            // an id comparison — no canonicalization at the drain.
+            entryId[j] = ledgerOriginalId(e);
+            canonId[j] = ledgerCanonicalId(e);
+            text[j] = body.nameMap.decodeView(entryId[j]);
+            cohortIdOf[j] = 0;
+            const int32_t cid = lookupOrCohortId(body.lbStateInterner,
+                parentId, body.lbStateInterner.lookup(text[j]));
+            if (cid != 0 && body.orDisjunctCount.lookup(cid) != 0) {
+                cohortIdOf[j] = cid;   // OPEN cohort
+            }
+            groupOf[j] = j;
+            for (int32_t k = 0; k < j; ++k) {
+                if (canonId[k] == canonId[j]) { groupOf[j] = groupOf[k]; break; }
+            }
+        }
+
+        for (int32_t g = 0; g < sr.n; ++g) {
+            if (groupOf[g] != g) continue;   // one drain per group leader
+            int32_t openN = 0;
+            for (int32_t j = 0; j < sr.n; ++j)
+                if (groupOf[j] == g && cohortIdOf[j] != 0) ++openN;
+            if (openN < 2) continue;         // no duplicated OPEN case split
+
+            // Census: statements already registered under each open
+            // member's `_ordis_` branch scopes (prefix
+            // `<parent>_boundary_ordis_<sig>_(`, which every branch scope
+            // and branch descendant extends).
+            for (int32_t j = 0; j < sr.n; ++j) score[j] = 0;
+            for (int32_t r = 0; r < body.intEncodedStatements.size(); ++r) {
+                const StrSpan rowV = body.nameMap.decodeView(
+                    body.intEncodedStatements[r].validityId);
+                if (rowV.len <= vName.len + BOUNDARY_ORDIS.len) continue;
+                if (!equalSpans(StrSpan(rowV.ptr, vName.len), vName)) continue;
+                if (!equalSpans(StrSpan(rowV.ptr + vName.len,
+                                        BOUNDARY_ORDIS.len),
+                                BOUNDARY_ORDIS)) continue;
+                const StrSpan tail(rowV.ptr + vName.len + BOUNDARY_ORDIS.len,
+                                   rowV.len - vName.len - BOUNDARY_ORDIS.len);
+                for (int32_t j = 0; j < sr.n; ++j) {
+                    if (groupOf[j] != g || cohortIdOf[j] == 0) continue;
+                    const StrSpan sig = text[j];
+                    if (tail.len > sig.len + 1
+                        && equalSpans(StrSpan(tail.ptr, sig.len), sig)
+                        && tail.ptr[sig.len] == '_') {
+                        ++score[j];
+                    }
+                }
+            }
+
+            // Keeper: most branch statements; ties to the byte-lex
+            // smaller signature (deterministic).
+            int32_t keep = -1;
+            for (int32_t j = 0; j < sr.n; ++j) {
+                if (groupOf[j] != g || cohortIdOf[j] == 0) continue;
+                if (keep < 0 || score[j] > score[keep]
+                    || (score[j] == score[keep]
+                        && compareSpans(text[j], text[keep]) < 0)) {
+                    keep = j;
+                }
+            }
+            assert(keep >= 0);
+
+            for (int32_t j = 0; j < sr.n; ++j) {
+                if (groupOf[j] != g || cohortIdOf[j] == 0 || j == keep)
+                    continue;
+                const int32_t loserCid = cohortIdOf[j];
+                // Live branches of the loser leave the live registry NOW
+                // (the freeze sweep runs after this drain) and their
+                // subtrees ride this burst's wipe drain. Frozen branches,
+                // orBookkeeping runs and every history line stay.
+                const int32_t liveN = body.orLiveBranches.count();
+                for (int32_t li = 1; li <= liveN; ++li) {
+                    const NameId bvid = body.orLiveBranches.decode(li);
+                    StrSpan orSigV, branchBodyV;
+                    if (classifyOrScopeView(body.nameMap, bvid,
+                                            orSigV, branchBodyV)
+                            != OrScopeKind::Disintegration) continue;
+                    if (body.nameMap.parentOf(bvid) != sr.vid) continue;
+                    if (!equalSpans(orSigV, text[j])) continue;
+                    body.pendingWipeScopes.mint(bvid);
+                }
+                body.orLiveBranches.eraseIf([&](const NameId& v) {
+                    return body.pendingWipeScopes.lookup(v) != 0;
+                });
+                // Scheduling rows leave; a stale pendingOrReleases
+                // staging is the release drain's defined skip on the
+                // missing count row.
+                body.orDisjunctCount.eraseIf(
+                    [loserCid](int32_t cid) { return cid == loserCid; });
+                body.orPendingBranches.eraseSet(loserCid);
+                body.orPendingLevels.eraseSet(loserCid);
+                body.orStarterPick.erase(loserCid);
+                clearProcessedOr(body, entryId[j], sr.vid);
+                body.mutatedThisBurst = true;
+            }
+        }
+        gArena.popTo(scopeMark);
+    }
+    gArena.popTo(gMark);
+}
+
+
+/// @brief End-of-burst release drain of the sequenced or-disintegration
+///        cohorts — mint the next pending branch of every resolved cohort.
+///
+/// @details
+/// See the declaration's Doxygen block in `prover.hpp` for the full contract
+/// (staging sources, the defined skips, the ranking, the release channel).
+/// Implementation notes:
+///
+/// - Heap-free (Rule 28): the cohort snapshot rides the gen-scratch tier,
+///   the branch-validity string the string tier, both reclaimed at exit;
+///   the disjunct / clean-form arrays are bounded stack runs
+///   (`MAX_INSTRUCTION_ELEMENTS`).
+/// - Span lifetimes: every decoded span in the loop aliases
+///   `lbStateInterner` cold pages, and nothing in the loop mints into that
+///   interner (the seed door mints NameMap, the origin door mints
+///   `originInterner`, the queue rebuild inserts KNOWN ids), so the spans
+///   stay valid to last use (I-3).
+/// - The released seed rides `sameIterationInternalMail` exactly like an
+///   `ordisMerge` promotion; the branch scope name itself is minted by the
+///   door's `NameMap::encode`, which re-derives boundary parentage
+///   (I-139), so no explicit `encodePush` is needed here.
+///
+/// @param memoryBlock The LB whose release inbox is drained.
+/// @invariant Staged cohorts process in decoded (parent, signature) order;
+///            the released disjunct is a pure function of the remaining
+///            pending set plus the LB's anchor arguments (I-84).
+/// @see Memory::pendingOrReleases, Memory::orPendingBranches,
+///      Memory::orPendingLevels, pickTopOrDisjunct, collectAnchorArgs.
+void ExpressionAnalyzer::freezeResolvedOrBranches(Memory& body) {
+    const int32_t liveN = body.orLiveBranches.count();
+    if (liveN == 0) return;
+    const int32_t goalN = body.intToBeProved.count();
+    for (int32_t li = 1; li <= liveN; ++li) {
+        const NameId vid = body.orLiveBranches.decode(li);
+        // A retired or wipe-closed branch never receives a deposit again:
+        // dropped by the compaction below, never evaluated.
+        if (body.intValidityNamesToFilter.lookup(vid) != 0) continue;
+        assert(body.frozenOrBranches.lookup(vid) == 0
+            && "a frozen branch must not be live");
+        StrSpan orSigV, branchBodyV;
+        const OrScopeKind kind = classifyOrScopeView(body.nameMap, vid,
+                                                     orSigV, branchBodyV);
+        assert(kind == OrScopeKind::Disintegration
+            && "orLiveBranches vid must be an _ordis_ branch scope");
+        (void)kind;
+        const NameId chainStart = body.nameMap.parentOf(vid);
+        assert(chainStart != 0
+            && "an _ordis_ branch scope has a cohort parent");
+        bool resolved = true;
+        for (int32_t gi = 1; gi <= goalN && resolved; ++gi) {
+            const StatementKey goal = body.intToBeProved.decodeKey(gi);
+            // Chain goal: its scope is the cohort parent or an ancestor of it.
+            if (!body.nameMap.ancContains(chainStart, goal.validity)) continue;
+            if (!ancestorKnown(body, goal.orig, vid, /*includeSelf=*/true))
+                resolved = false;
+        }
+        if (resolved) body.frozenOrBranches.mint(vid);
+    }
+    body.orLiveBranches.eraseIf([&](const NameId& v) {
+        return body.frozenOrBranches.lookup(v) != 0
+            || body.intValidityNamesToFilter.lookup(v) != 0;
+    });
+}
+
+void ExpressionAnalyzer::drainPendingOrReleases(Memory& body) {
+    const int32_t stagedN = body.pendingOrReleases.count();
+    if (stagedN == 0) return;
+    // No goals, no or branches (I-206): a goal-less LB
+    // releases nothing — the staging drops (a goal-less registry never regains
+    // a goal, so the drop is final); its live branches freeze vacuously.
+    if (body.intToBeProved.empty()) {
+        body.pendingOrReleases.resetToFresh();
+        return;
+    }
+
+    const unsigned gSlot = (g_currentCoreId >= 0)
+        ? static_cast<unsigned>(g_currentCoreId)
+        : genScratchArenas().slotCount() - 1;
+    ScratchArena& gArena = genScratchArenas().forSlot(gSlot);
+    const ArenaOffset gMark = gArena.cursor();
+    const unsigned sSlot = (g_currentCoreId >= 0)
+        ? static_cast<unsigned>(g_currentCoreId)
+        : scratchArenas().slotCount() - 1;
+    ScratchArena& sArena = scratchArenas().forSlot(sSlot);
+    ScratchScope sScope(sArena);
+
+    // Snapshot + reset (the pendingDeadOrBranches idiom), then sort by the
+    // decoded cohort identity — parent bytes, then signature bytes. The pod
+    // set dedups and the cohort id is injective over the (parent, orSig)
+    // pair, so the sort is tie-free (I-84).
+    int32_t* cids = reinterpret_cast<int32_t*>(gArena.resolve(
+        gArena.alloc(stagedN * static_cast<int32_t>(sizeof(int32_t)),
+                     alignof(int32_t))));
+    for (int32_t i = 1; i <= stagedN; ++i)
+        cids[i - 1] = body.pendingOrReleases.decode(i);
+    body.pendingOrReleases.resetToFresh();
+    std::sort(cids, cids + stagedN, [&](int32_t a, int32_t b) {
+        const LbStatePairKey ca = decodeOrCohortIds(body.lbStateInterner, a);
+        const LbStatePairKey cb = decodeOrCohortIds(body.lbStateInterner, b);
+        const int c = compareSpans(
+            body.lbStateInterner.decodeView(static_cast<int32_t>(ca.high)),
+            body.lbStateInterner.decodeView(static_cast<int32_t>(cb.high)));
+        if (c != 0) return c < 0;
+        return compareSpans(
+            body.lbStateInterner.decodeView(static_cast<int32_t>(ca.low)),
+            body.lbStateInterner.decodeView(static_cast<int32_t>(cb.low)))
+            < 0;
+    });
+
+    for (int32_t ci = 0; ci < stagedN; ++ci) {
+        const int32_t cid = cids[ci];
+        // Defined skips: the cohort retired wholesale (count row gone — a
+        // stale staging), or nothing is pending.
+        if (body.orDisjunctCount.lookup(cid) == 0) continue;
+        const int32_t pRow = body.orPendingBranches.lookup(cid);
+        if (pRow == 0) continue;
+        const LbStatePairKey cohort =
+            decodeOrCohortIds(body.lbStateInterner, cid);
+        const StrSpan parentV = body.lbStateInterner.decodeView(
+            static_cast<int32_t>(cohort.high));
+        const StrSpan sigV = body.lbStateInterner.decodeView(
+            static_cast<int32_t>(cohort.low));
+        // A filtered parent scope belongs to a retired region — the seed
+        // deposit would be refused there; leave the queue untouched.
+        const NameId parentVid = body.nameMap.lookup(parentV);
+        assert(parentVid != 0
+            && "ordis cohort parent scope must be interned");
+        if (body.intValidityNamesToFilter.lookup(parentVid) != 0) continue;
+
+        // Rank the pending disjuncts over their clean forms and pick the
+        // release. The wrapped payload bodies come off the queue run in
+        // decoded-lex storage order; ids are captured before the rebuild.
+        const int32_t pendN = body.orPendingBranches.runLen(pRow);
+        assert(pendN >= 1
+            && pendN <= ExecutionParameters::MAX_INSTRUCTION_ELEMENTS
+            && "ordis pending run exceeds the flattened-leaf cap");
+        int32_t djIds[ExecutionParameters::MAX_INSTRUCTION_ELEMENTS];
+        StrSpan cleanSpans[ExecutionParameters::MAX_INSTRUCTION_ELEMENTS];
+        for (int32_t j = 0; j < pendN; ++j) {
+            djIds[j] = body.orPendingBranches.valueAt(pRow, j);
+            const StrSpan w = body.lbStateInterner.decodeView(djIds[j]);
+            assert(w.len >= 2 && w.ptr[0] == '('
+                && w.ptr[w.len - 1] == ')'
+                && "pending ordis disjunct must be a wrapped (disjunct)");
+            cleanSpans[j] = StrSpan(w.ptr + 1, w.len - 2);
+        }
+        StrSpan anchorArgs[ExecutionParameters::MAX_ARITY];
+        const int32_t anchorArgN = collectAnchorArgs(
+            body, anchorArgs, ExecutionParameters::MAX_ARITY);
+        int32_t top =
+            pickTopOrDisjunct(cleanSpans, pendN, anchorArgs, anchorArgN);
+        // Route-(a) starter override, ONE-SHOT: a cohort opened by the
+        // demand probe releases its ADMITTED disjunct first — the demand
+        // names which branch carries the relevance. The row is erased on
+        // consumption (later releases rank as usual); a recorded starter no
+        // longer pending (already released or retired) falls back to the
+        // ranking — a defined skip, not a failure.
+        {
+            const int32_t* starterPayload = body.orStarterPick.find(cid);
+            if (starterPayload != nullptr) {
+                const int32_t starterId = *starterPayload;
+                body.orStarterPick.erase(cid);
+                for (int32_t j = 0; j < pendN; ++j) {
+                    if (djIds[j] == starterId) {
+                        top = j;
+                        break;
+                    }
+                }
+            }
+        }
+        const StrSpan wrappedTop = body.lbStateInterner.decodeView(djIds[top]);
+
+        // Branch validity "<parent>_boundary_ordis_<orSig>_(<disjunct>)" on
+        // the string tier, explicit-length.
+        ScratchScope relScope(sArena);
+        const StrSpan BOUNDARY_ORDIS("_boundary_ordis_", 16);
+        const int32_t bvLen = parentV.len + BOUNDARY_ORDIS.len + sigV.len
+            + 1 + wrappedTop.len;
+        char* bvBuf = sArena.allocBytes(bvLen);
+        {
+            int32_t at = 0;
+            std::memcpy(bvBuf + at, parentV.ptr,
+                static_cast<std::size_t>(parentV.len));
+            at += parentV.len;
+            std::memcpy(bvBuf + at, BOUNDARY_ORDIS.ptr,
+                static_cast<std::size_t>(BOUNDARY_ORDIS.len));
+            at += BOUNDARY_ORDIS.len;
+            std::memcpy(bvBuf + at, sigV.ptr,
+                static_cast<std::size_t>(sigV.len));
+            at += sigV.len;
+            bvBuf[at++] = '_';
+            std::memcpy(bvBuf + at, wrappedTop.ptr,
+                static_cast<std::size_t>(wrappedTop.len));
+            at += wrappedTop.len;
+            assert(at == bvLen);
+        }
+        const StrSpan branchV(bvBuf, bvLen);
+
+        // The cohort's seed level run (stored at cohort mint time).
+        int lvRun[256];
+        int32_t lvN = 0;
+        const int32_t lRow = body.orPendingLevels.lookup(cid);
+        if (lRow != 0) {
+            const int32_t ln = body.orPendingLevels.runLen(lRow);
+            assert(ln <= 256 && "ordis seed level run exceeds 256");
+            for (int32_t j = 0; j < ln; ++j)
+                lvRun[j] = body.orPendingLevels.valueAt(lRow, j);
+            lvN = ln;
+        }
+
+        // Quiescence (D-194): the release creates work for the next absorb.
+        body.mutatedThisBurst = true;
+        insertInternalStatement(body.sameIterationInternalMail, body.nameMap,
+            cleanSpans[top], branchV, lvRun, lvN);
+        if (parameters.trackHistory) {
+            const OriginDep relDeps[1] = { { sigV, parentV } };
+            addInternalMailOrigin(body.sameIterationInternalMail,
+                body.originInterner, cleanSpans[top], branchV,
+                OriginTag::orDisintegration, relDeps, 1,
+                (parameters.compressor_mode
+                    ? parameters.compressor_max_origins_per_expr
+                    : parameters.max_origin_per_expr));
+        }
+
+        // The released disjunct leaves the queue: rebuild the run without it
+        // through the canonical doors. An emptied queue drops the cohort's
+        // level row too.
+        body.orPendingBranches.eraseSetIf(
+            [&](int32_t k) { return k == cid; });
+        for (int32_t j = 0; j < pendN; ++j) {
+            if (j == top) continue;
+            body.orPendingBranches.insertSorted(cid, djIds[j],
+                DecodedIdLess{ &body.lbStateInterner });
+        }
+        if (pendN == 1) {
+            body.orPendingLevels.eraseSetIf(
+                [&](int32_t k) { return k == cid; });
+        }
+    }
+    gArena.popTo(gMark);
+}
+
+
 /// @brief Negate an MPL expression — wrap with `!(...)` or peel off an
 /// existing `!(...)`.
 ///
@@ -4513,6 +5446,11 @@ std::string ExpressionAnalyzer::negate(std::string expr) {
 /// false if the expression carries a non-`"main"` scope on the
 /// implication/statement channel.
 ///
+/// An expression whose `int_lev` witness tokens all carry a level strictly
+/// below the LB's own `level` passes unconditionally (parent-level pass):
+/// those names arrived by ancestor mail and are already known at every
+/// descendant. Own-level tokens qualify only through the memo filters.
+///
 /// @param expression  Canonical MPL expression text (span over a
 ///                    caller-stable buffer; the interior is mint-free so the
 ///                    span cannot dangle).
@@ -4530,6 +5468,18 @@ bool ExpressionAnalyzer::allowedForMail(StrSpan expression, const Memory& body) 
     StrSpan theVar;
     const int intLevVerdict = scanSingleDistinctIntLev(expression, theVar);
     if (intLevVerdict == 0) {
+        return true;
+    }
+
+    // Parent-level pass: an expression whose int_lev tokens ALL carry a level
+    // strictly below this LB's own level is mailable unconditionally — such
+    // names can only have arrived by ancestor mail (mail flows down only,
+    // I-57), and every ancestor deposit is pulled by ALL of this LB's
+    // descendants directly, so the names are known below by construction.
+    // Implication-shaped text is still refused (rules travel only as
+    // compacts, I-54). Own-level tokens fall through to the memo gates.
+    if (!(expression.len >= 2 && expression.ptr[0] == '(' && expression.ptr[1] == '>')
+        && allIntLevLevelsBelow(expression, body.level)) {
         return true;
     }
 
@@ -4931,11 +5881,15 @@ void ExpressionAnalyzer::addEquality(StrSpan expr,
     const TransientOrigin& origin,
     StrSpan validityName)
 {
-
+    // Callers arrive through the addStatement door, which pins the level-run
+    // invariant: non-empty, and either exactly {-1} or all-values-≥0.
+    assert(levelCount > 0
+        && ((levelCount == 1 && levels[0] == -1) || levels[0] >= 0)
+        && "addEquality: invalid statement level run");
 
     const StatementFlags* eqRow = lookupStatementFlags(
         memoryBlock.intKnownStatements, memoryBlock.nameMap, expr, validityName);
-    if (!(eqRow && eqRow->registered))
+    if (eqRow == nullptr)
     {
         // 1. Register the original equality
         const int64_t pkEq = packStatementKey(
@@ -4943,8 +5897,7 @@ void ExpressionAnalyzer::addEquality(StrSpan expr,
             memoryBlock.nameMap.encode(validityName));
         memoryBlock.intStatementLevelsMap.assignSetRange(
             pkEq, levels, levels + levelCount);
-        upsertStatementKey(memoryBlock.intKnownStatements, pkEq,
-            local, /*registered=*/true, /*known=*/true);
+        upsertStatementKey(memoryBlock.intKnownStatements, pkEq, local);
 
         if (parameters.trackHistory && origin.present) {
             assert(origin.tag != OriginTag::COUNT);
@@ -5000,7 +5953,7 @@ void ExpressionAnalyzer::addEquality(StrSpan expr,
 
         const StatementFlags* mirrorRow = lookupStatementFlags(
             memoryBlock.intKnownStatements, memoryBlock.nameMap, mirrored, validitySpan);
-        assert(!(mirrorRow && mirrorRow->registered));
+        assert(mirrorRow == nullptr);
         (void)mirrorRow;
 
         const int64_t pkEqM = packStatementKey(
@@ -5008,8 +5961,7 @@ void ExpressionAnalyzer::addEquality(StrSpan expr,
             memoryBlock.nameMap.encode(validitySpan));
         memoryBlock.intStatementLevelsMap.assignSetRange(
             pkEqM, levels, levels + levelCount);
-        upsertStatementKey(memoryBlock.intKnownStatements, pkEqM,
-            local, /*registered=*/true, /*known=*/true);
+        upsertStatementKey(memoryBlock.intKnownStatements, pkEqM, local);
 
         if (parameters.trackHistory) {
             // symmetry-of-equality mirror origin: one antecedent = the
@@ -5079,10 +6031,15 @@ void ExpressionAnalyzer::addNegatedEquality(StrSpan expr,
     // Sole gateway — any external path that registers a negated equality
     // without passing through here breaks the invariant and will trip the
     // mirror-absence assert below.
+    // Callers arrive through the addStatement door, which pins the level-run
+    // invariant: non-empty, and either exactly {-1} or all-values-≥0.
+    assert(levelCount > 0
+        && ((levelCount == 1 && levels[0] == -1) || levels[0] >= 0)
+        && "addNegatedEquality: invalid statement level run");
 
     const StatementFlags* negRow = lookupStatementFlags(
         memoryBlock.intKnownStatements, memoryBlock.nameMap, expr, validityName);
-    if (!(negRow && negRow->registered))
+    if (negRow == nullptr)
     {
         // 1. Register the original negated equality
         const int64_t pkNeg = packStatementKey(
@@ -5090,8 +6047,7 @@ void ExpressionAnalyzer::addNegatedEquality(StrSpan expr,
             memoryBlock.nameMap.encode(validityName));
         memoryBlock.intStatementLevelsMap.assignSetRange(
             pkNeg, levels, levels + levelCount);
-        upsertStatementKey(memoryBlock.intKnownStatements, pkNeg,
-            local, /*registered=*/true, /*known=*/true);
+        upsertStatementKey(memoryBlock.intKnownStatements, pkNeg, local);
 
         if (parameters.trackHistory && origin.present) {
             assert(origin.tag != OriginTag::COUNT);
@@ -5147,7 +6103,7 @@ void ExpressionAnalyzer::addNegatedEquality(StrSpan expr,
 
         const StatementFlags* negMirrorRow = lookupStatementFlags(
             memoryBlock.intKnownStatements, memoryBlock.nameMap, mirrored, validitySpan);
-        assert(!(negMirrorRow && negMirrorRow->registered));
+        assert(negMirrorRow == nullptr);
         (void)negMirrorRow;
 
         const int64_t pkNegM = packStatementKey(
@@ -5155,8 +6111,7 @@ void ExpressionAnalyzer::addNegatedEquality(StrSpan expr,
             memoryBlock.nameMap.encode(validitySpan));
         memoryBlock.intStatementLevelsMap.assignSetRange(
             pkNegM, levels, levels + levelCount);
-        upsertStatementKey(memoryBlock.intKnownStatements, pkNegM,
-            local, /*registered=*/true, /*known=*/true);
+        upsertStatementKey(memoryBlock.intKnownStatements, pkNegM, local);
 
         if (parameters.trackHistory) {
             // symmetry-of-inequality mirror origin: one antecedent = the
@@ -5191,6 +6146,11 @@ void ExpressionAnalyzer::checkNecessityForEquality(StrSpan inputExprStr, Memory&
 
     if (parameters.ban_disintegration) return;
 
+    // Atomic RT attribution: self-time = the whole-registry chain scan
+    // (decode + head match); the mint-heavy premise handling below opens
+    // its own nested rows.
+    RT_SCOPE_HERE("CNFE");
+
     // Use special function to make all args "u_" (D7). ONE ScratchScope spans the
     // whole function; genericInput's name/args are read throughout — held named, no
     // rewind inside the chain loop (all fresh bytes byte-bump forward, reclaimed at
@@ -5224,7 +6184,12 @@ void ExpressionAnalyzer::checkNecessityForEquality(StrSpan inputExprStr, Memory&
         : reinterpret_cast<int32_t*>(ocArena.resolve(ocArena.alloc(
               chainCount * static_cast<int32_t>(sizeof(int32_t)),
               static_cast<int32_t>(alignof(int32_t)))));
-    const int32_t chainN = sortOriginalChainIndex(mb, chainIdx, chainCount);
+    int32_t chainN = 0;
+    {
+        RT_SCOPE_HERE("CNFE_SORT_CHAINS");
+        chainN = sortOriginalChainIndex(mb, chainIdx, chainCount);
+    }
+    RT_NOTE_ITERATIONS_HERE(chainN);
     for (int32_t cix = 0; cix < chainN; ++cix) {
         // Per-cix scope (mirrors the former chain.clear()): chainSpans + the
         // premise-loop temporaries are freed each iteration; genericInput /
@@ -5243,24 +6208,21 @@ void ExpressionAnalyzer::checkNecessityForEquality(StrSpan inputExprStr, Memory&
             for (int32_t i = 0; i < count; ++i) chainIds[i] = kv.idAt(i);
         }
         if (count == 0) continue;
-        // Copy each chain element onto sArena BEFORE the premise loop (which mints
-        // ruleInterner via prepareIntegration -> addToHashMemory, so a raw
-        // decodeView would dangle -- I-3). Held under cixScope.
-        StrSpan chainSpans[64];
-        for (int32_t i = 0; i < count; ++i) {
-            const StrSpan dv = mb.ruleInterner.decodeView(chainIds[i]);
-            chainSpans[i] = StrSpan(ScratchString::copyFrom(sArena, dv.ptr, dv.len));
-        }
 
-        // "Head" is the last element of the implication chain (D10).
-        const StrSpan headStr = chainSpans[count - 1];
-        const StrSpan headName = extractExpressionSpan(headStr);
-        StrSpan headArgs[ExecutionParameters::MAX_ARITY];
-        const int32_t headArgN = getArgsSpans(headStr, headArgs,
-                                              ExecutionParameters::MAX_ARITY);
+        // Head-first gate. Every check up to the match verdict is a pure read
+        // (no mint), so the head -- the last element of the implication chain
+        // (D10) -- is inspected through a raw decodeView span and the chain is
+        // copied onto sArena only once it has matched (below). Almost every
+        // chain leaves at the name compare; for it nothing beyond the head is
+        // decoded and nothing is copied.
+        const StrSpan headView = mb.ruleInterner.decodeView(chainIds[count - 1]);
+        const StrSpan headName = extractExpressionSpan(headView);
 
         // Structural check: Name and Arity must match the input expression
         if (!equalSpans(headName, inputName)) continue;
+        StrSpan headArgs[ExecutionParameters::MAX_ARITY];
+        const int32_t headArgN = getArgsSpans(headView, headArgs,
+                                              ExecutionParameters::MAX_ARITY);
         if (headArgN != inputArgN) continue;
 
         // Check if head is "Generic except for one arg X"
@@ -5307,6 +6269,24 @@ void ExpressionAnalyzer::checkNecessityForEquality(StrSpan inputExprStr, Memory&
         }
         if (!match) continue;
 
+        // Matched: copy each chain element onto sArena BEFORE the premise loop
+        // (which mints ruleInterner via prepareIntegration -> addToHashMemory,
+        // so the raw decodeView spans above would dangle -- I-3). Held under
+        // cixScope. The head's argument spans are re-derived from the stable
+        // copy because headArgs[constantIndex] feeds the replacement pair used
+        // across those mints.
+        StrSpan chainSpans[64];
+        for (int32_t i = 0; i < count; ++i) {
+            const StrSpan dv = mb.ruleInterner.decodeView(chainIds[i]);
+            chainSpans[i] = StrSpan(ScratchString::copyFrom(sArena, dv.ptr, dv.len));
+        }
+        const StrSpan headStr = chainSpans[count - 1];
+        const int32_t headArgNCopy = getArgsSpans(headStr, headArgs,
+                                                  ExecutionParameters::MAX_ARITY);
+        assert(headArgNCopy == headArgN
+               && "checkNecessityForEquality: head copy parses differently");
+        (void)headArgNCopy;
+
         // "Replacement map is not identity. in one arg they r not equal. these two args are use for replacement"
         const StrReplacement rp[1] = { { headArgs[constantIndex], inputArgs[constantIndex] } };
 
@@ -5343,7 +6323,10 @@ void ExpressionAnalyzer::checkNecessityForEquality(StrSpan inputExprStr, Memory&
                 argsSet[lo] = removedArgs[a]; ++argsSetN;
             }
 
-            prepareIntegration(StrSpan(removed), argsSet, argsSetN, mb, StrSpan(validityName), inputExprStr);
+            {
+                RT_SCOPE_HERE("CNFE_PREPARE_INTEGRATION");
+                prepareIntegration(StrSpan(removed), argsSet, argsSetN, mb, StrSpan(validityName), inputExprStr);
+            }
 
             // NEW: Explicitly check inputArgs[constantIndex] occurs 2 times
             // and did NOT occur 2 times before replacement
@@ -5488,7 +6471,6 @@ static int countOrDisjuncts(const std::string& expr) {
 //#pragma optimize("", off)
 
 
-
 bool ExpressionAnalyzer::checkForEquivalence(const std::string& expr,
     const std::string& validityName,
     Memory& memoryBlock)
@@ -5605,7 +6587,7 @@ bool ExpressionAnalyzer::checkForEquivalence(StrSpan expr,
         // fullyDisintegrated flag, not local-ness and not mere presence.
         const StatementFlags* cfeVarRow = lookupStatementFlags(
             memoryBlock.intKnownStatements, memoryBlock.nameMap, StrSpan(variant), StrSpan(validityName));
-        if (cfeVarRow && cfeVarRow->registered && cfeVarRow->fullyDisintegrated) {
+        if (cfeVarRow && cfeVarRow->fullyDisintegrated) {
             return true;
         }
 
@@ -5783,52 +6765,192 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
     int auxyIndex,
     StrSpan validityName,
     bool doNotDisintegrate,
-    bool allowOrDisintegration) {
+    bool allowOrDisintegration,
+    IntEncodedExpr* registeredOut) {
 
-    // D-32: OR-disintegration may fire only when general disintegration
-    // is allowed. If doNotDisintegrate is true the disintegrateExpr2
-    // call below is skipped anyway, so this assignment is defensive —
-    // it documents the coupling and survives future refactors.
-    if (doNotDisintegrate) {
-        allowOrDisintegration = false;
-    }
+    // Two-route or-cohort opening (admission-based ordis; restores the D-32
+    // gate READ the sequenced branch had overridden): route (b) is the
+    // threaded product-of-disintegration signal (the FiringRecord /
+    // disintegration-signal plumbing fed from D-32's
+    // productOfDisintegration stamp) — such heads open unconditionally, as
+    // in rungs 1+2; route (a) is the demand probe at the or arm, enabled by
+    // allowOrProbe for every real deposit through this door. The
+    // rule-intrinsic doNotDisintegrate (D-241 intro-fired suppression,
+    // integration-justified rules) and the D-29 firing-context clauses block
+    // both routes. The hypothetical-disintegration path calls
+    // disintegrateExpr2 directly (bypassing this door) with both defaults
+    // false, so no cohort ever mints — and no park ever writes — at a
+    // sentinel scope.
+    allowOrDisintegration = allowOrDisintegration && !doNotDisintegrate;
+    const bool allowOrProbe = !doNotDisintegrate;
+
+    // Atomic RT attribution: the door's own row carries the gate / glue
+    // self-time; every heavyweight sub-call below opens its own nested row.
+    RT_SCOPE_HERE("DOOR_ADD_EXPR");
 
     // --- Static (int-based) early checks ---
     // Fast path: duplicate + validity filter with just nm.encode (no regex, no vector alloc)
-    NameId origId = memoryBlock.nameMap.encode(expr);
-    NameId valId = memoryBlock.nameMap.encode(validityName);
+    NameId origId = 0;
+    NameId valId = 0;
+    {
+        RT_SCOPE_HERE("DOOR_ENTRY_GATES");
+        origId = memoryBlock.nameMap.encode(expr);
+        valId = memoryBlock.nameMap.encode(validityName);
 
-    // Site F — dup suppression via ancestor scan. A known statement at any
-    // ancestor scope (including self) means the same fact already holds at a
-    // strictly weaker set of assumptions, so the child-scope insertion is
-    // redundant. ancestorsOf[valId] includes valId itself and every strict
-    // prefix scope registered via encodePush. For a flat root (e.g. legacy
-    // integration cleanSignature-as-validity) the list is just {valId},
-    // degenerating to the old strict-equality check — safe under the
-    // MAIN_ID transition guard.
-    if (!parameters.compressor_mode) {
+        // Site F — dup suppression via ancestor scan. A known statement at any
+        // ancestor scope (including self) means the same fact already holds at a
+        // strictly weaker set of assumptions, so the child-scope insertion is
+        // redundant. ancestorsOf[valId] includes valId itself and every strict
+        // prefix scope registered via encodePush. For a flat root (e.g. legacy
+        // integration cleanSignature-as-validity) the list is just {valId},
+        // degenerating to the old strict-equality check — safe under the
+        // MAIN_ID transition guard. The scan is the shared `ancestorKnown`
+        // predicate (one definition of the contract across every door); a
+        // refusal still carries the or-branch resolution signal (I-174) — the
+        // branch derived the expression even though the deposit is redundant.
+        if (!parameters.compressor_mode
+            && ancestorKnown(memoryBlock, origId, valId, /*includeSelf=*/true)) {
+            stageOrReleaseForRefusedDeposit(memoryBlock, origId, valId);
+            return;
+        }
+
+        // Site H — ancestor-scan the int validity blacklist. A blacklist entry at
+        // any ancestor scope filters every descendant scope (deeper scopes inherit
+        // the filter because they carry strictly more assumptions).
         for (int32_t ancK = 0, ancN = memoryBlock.nameMap.ancLen(valId);
              ancK < ancN; ++ancK) {
             const NameId anc = memoryBlock.nameMap.ancAt(valId, ancK);
-            const StatementFlags* kf = memoryBlock.intKnownStatements.find(StatementKey{ origId, anc });
-            if (kf != nullptr && kf->known) return;
+            if (memoryBlock.intValidityNamesToFilter.contains(anc)) return;
         }
     }
 
-    // Site H — ancestor-scan the int validity blacklist. A blacklist entry at
-    // any ancestor scope filters every descendant scope (deeper scopes inherit
-    // the filter because they carry strictly more assumptions).
-    for (int32_t ancK = 0, ancN = memoryBlock.nameMap.ancLen(valId);
-         ancK < ancN; ++ancK) {
-        const NameId anc = memoryBlock.nameMap.ancAt(valId, ancK);
-        if (memoryBlock.intValidityNamesToFilter.contains(anc)) return;
+    // The canonical door: only the class-canonical form of a deposit is
+    // admitted. For every status except a goal (2) and every shape except
+    // the two equality shapes (goal closure is literal and neither shape is
+    // ever multiplied) and anchors (a scope identity, I-53), the text is
+    // rewritten under the equivalence classes at its OWN scope
+    // (`canonicalFormAtScope`: a fresh scope's bucket is empty, so seeds
+    // keep the spelling their scope name / identity was minted from). A
+    // changed deposit: (1) keeps the RAW text's producer history line
+    // (Rule 16 — the canonical form's bridge below terminates on it) and,
+    // for a local status, ships that line to mailOut so a receiver's
+    // chapter walk terminates on it too (the D-286 ship — the raw form
+    // never becomes a delta row, so fillMailOut would never carry it);
+    // (2) ends the deposit when the canonical form is already known at
+    // this scope or a strict ancestor — the same Site-F refusal as for the
+    // raw text, releasing the or-branch resolution signal for BOTH ids
+    // (I-174); (3) otherwise proceeds with the canonical text, its origin
+    // replaced by ONE `equality1` bridge (deps[0] = raw form at this scope,
+    // then each applied `(=[member,canonical])` cited where its row lives)
+    // when the canonical form has no history row yet (the I-34 gate), and
+    // its level run = the deposit's levels ∪ the applied pairs' class
+    // levels. `applyEquiClasses` still multiplies the registered canonical
+    // form into its orbit, so a literal non-equality goal closes from the
+    // product in the same standardProcessing call. The canonical text and
+    // every span the rest of the door reads from it ride the string-tier
+    // arena under this function-level scope; every nested scope the
+    // deposit paths open rewinds above it (LIFO).
+    static constexpr int32_t kDoorLevelCap = 256;
+    assert(involvedLevelCount <= kDoorLevelCap
+        && "addExprToMemoryBlock: level run exceeds kDoorLevelCap");
+    int doorLevels[kDoorLevelCap];
+    int32_t doorLevelN = involvedLevelCount;
+    for (int32_t li = 0; li < involvedLevelCount; ++li) doorLevels[li] = involvedLevels[li];
+    OriginDep bridgeDeps[1 + ExecutionParameters::MAX_ARITY];
+    TransientOrigin doorOrigin = origin;
+    // A deposit the door REWRITES under an equality of this LB's own is this
+    // LB's class product — an equality1 rewrite performed here — so it flips
+    // to a LOCAL derivation whatever the arrival status: the canonical form
+    // registers local (visible to the main-goal discharge's delta and to
+    // fillMailOut) and the raw form's producer line ships to mailOut with it,
+    // exactly the history an applyEquivalenceClass product leaves behind. A
+    // rewrite licensed only by mailed equalities stays the sender's
+    // knowledge and keeps the arrival's locality. A mailed fact that
+    // canonicalizes onto a main goal's literal text under a local hypothesis
+    // would otherwise sit in the registry as the sender's non-local row,
+    // never discharge the goal, and Site-F-refuse the local derivation of
+    // the same text.
+    bool rewriteIsLocal = false;
+    const unsigned doorStrSlot = (g_currentCoreId >= 0)
+        ? static_cast<unsigned>(g_currentCoreId)
+        : scratchArenas().slotCount() - 1;
+    ScratchArena& doorStrArena = scratchArenas().forSlot(doorStrSlot);
+    ScratchScope doorStrScope(doorStrArena);
+    if (status != 2 && !parameters.skip_eq_classes
+        && !isEquality(expr) && !isNegatedEquality(expr)) {
+        RT_SCOPE_HERE("DOOR_CANONICALIZE");
+        const CanonicalForm cf = canonicalFormAtScope(
+            expr, validityName, memoryBlock, doorStrArena,
+            doorLevels, doorLevelN, kDoorLevelCap);
+        if (cf.changed) {
+            for (int32_t k = 0; k < cf.eqN; ++k) {
+                if (cf.eqLocal[k]) rewriteIsLocal = true;
+            }
+            // Known canonical form -> the deposit ends here: no row, no
+            // history line for the new raw spelling (nothing will cite
+            // it), both ids carry the or-branch resolution signal.
+            const NameId canonId = memoryBlock.nameMap.lookup(cf.text);
+            if (!parameters.compressor_mode && canonId != 0
+                && ancestorKnown(memoryBlock, canonId, valId, /*includeSelf=*/true)) {
+                stageOrReleaseForRefusedDeposit(memoryBlock, origId, valId);
+                stageOrReleaseForRefusedDeposit(memoryBlock, canonId, valId);
+                return;
+            }
+            const int originCap = parameters.compressor_mode
+                ? parameters.compressor_max_origins_per_expr
+                : parameters.max_origin_per_expr;
+            if (parameters.trackHistory) {
+                // A rewritten deposit without a producer line would leave
+                // the bridge citing a form no chapter can resolve
+                // (buildStack: no origin found) — surface the site here.
+                assert(origin.present
+                    && "addExprToMemoryBlock: canonical door rewrote a deposit that carries no origin line");
+                assert(origin.tag != OriginTag::COUNT);
+                addOriginEncoded(memoryBlock.exprOriginMap, memoryBlock.originInterner,
+                    expr, validityName, origin.tag, origin.deps, origin.depN, originCap);
+                // A canonical form that registers local mails; the raw form
+                // never becomes a delta row, so its line ships from here (the
+                // D-286 ship) whenever the registered row will be local.
+                if (status == 0 || status == 1 || rewriteIsLocal) {
+                    copyOriginRowsToMailOut(memoryBlock, expr, validityName, originCap);
+                }
+                if (!originRowExists(memoryBlock, cf.text, validityName)) {
+                    const int bridgeN = 1 + cf.eqN;
+                    assert(bridgeN <= 1 + ExecutionParameters::MAX_ARITY
+                        && "addExprToMemoryBlock: bridge dep run exceeds cap");
+                    bridgeDeps[0] = OriginDep{ expr, validityName };
+                    for (int32_t bk = 0; bk < cf.eqN; ++bk) {
+                        // The cite scope may be a NameMap decode; the mints
+                        // below (canonical text, its argument ids) precede
+                        // the bridge write, so copy it onto the string tier
+                        // (I-3).
+                        const StrSpan cite = findEqualityCiteScope(
+                            memoryBlock, cf.eqJust[bk], validityName);
+                        const ScratchString citeHold =
+                            ScratchString::copyFrom(doorStrArena, cite.ptr, cite.len);
+                        bridgeDeps[1 + bk] = OriginDep{ cf.eqJust[bk], StrSpan(citeHold) };
+                    }
+                    doorOrigin = TransientOrigin{
+                        true, OriginTag::equality1, bridgeDeps, bridgeN };
+                } else {
+                    // Canonical target already documented — no second line
+                    // (the I-34 gate); the door registers with no origin write.
+                    doorOrigin = TransientOrigin{};
+                }
+            }
+            expr = cf.text;
+            origId = memoryBlock.nameMap.encode(expr);
+        }
     }
+    involvedLevels = doorLevels;
+    involvedLevelCount = doorLevelN;
 
     // Passed fast checks — now do full encoding for axed var check + downstream.
     // Span twin: parse + encode in one pass off the stable expr/validityName
     // buffers, no intermediate EncodedExpression heap.
     IntEncodedExpr ie =
         encodeExpression(expr, validityName, memoryBlock.nameMap);
+    if (registeredOut != nullptr) *registeredOut = ie;
 
     // Axed-variable containment: a deposit carrying an x-copy name in any
     // argument slot is dropped — the copies exist to serve as anchor-premise
@@ -5854,6 +6976,13 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
 
     if (status == 4)
     {
+        // A levels row is never empty and never mixes the non-derived tier
+        // {-1} with real levels (the addStatement door rule; status 4
+        // bypasses that door, so the invariant is pinned here too).
+        assert(involvedLevelCount > 0
+            && ((involvedLevelCount == 1 && involvedLevels[0] == -1)
+                || involvedLevels[0] >= 0)
+            && "status-4 fact load: invalid statement level run");
         memoryBlock.intLocalEncodedStatementsSet.mint(
             packStatementKey(ie.originalId, ie.validityId));
         memoryBlock.intEncodedStatements.push_back(ie);
@@ -5864,7 +6993,7 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
             involvedLevels, involvedLevels + involvedLevelCount);
         upsertStatementKey(memoryBlock.intKnownStatements,
             packStatementKey(ie.originalId, ie.validityId),
-            /*local=*/true, /*registered=*/true, /*known=*/true);
+            /*local=*/true);
 
         return;
     }
@@ -5895,7 +7024,6 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
     // mid-burst read-only `burstDeactivates` predicate (prover.hpp) see them and
     // refute the conjecture — handled uniformly with the incubator and
     // vacuous-truth reactions.
-
 
 
     if (status == 2) {
@@ -5941,7 +7069,10 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
             else
                 memoryBlock.intToBeProved.assignSet(pkTBP, nullptr, 0);
 
-			checkNecessityForEquality(expr, memoryBlock, validityName);
+            {
+                RT_SCOPE_HERE("DOOR_GOAL_CHECK_NECESSITY");
+                checkNecessityForEquality(expr, memoryBlock, validityName);
+            }
         }
 
         StrSpan argSpans[ExecutionParameters::MAX_ARITY];
@@ -5965,7 +7096,10 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
             for (int32_t z = unchN; z > lo; --z) unchRun[z] = unchRun[z - 1];
             unchRun[lo] = v; ++unchN;
         }
-        prepareIntegration(expr, unchRun, unchN, memoryBlock, validityName, expr);
+        {
+            RT_SCOPE_HERE("DOOR_PREPARE_INTEGRATION");
+            prepareIntegration(expr, unchRun, unchN, memoryBlock, validityName, expr);
+        }
         // `allowedForMail` probes the memo only for `int_lev_*`-carrying
         // expressions (its lexical scanSingleDistinctIntLev gate short-circuits
         // everything else), so any other entry could never be read.
@@ -5976,6 +7110,7 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
         const ce::CoreExpressionConfig* cfg = coreConfig(extractExpressionSpan(expr));
 
         if (cfg != nullptr && !cfg->inputIndices.empty()) {
+            RT_SCOPE_HERE("DOOR_UPDATE_ADMISSION3");
             this->updateAdmissionMap3(expr,
                 memoryBlock,
                 parameters.inductionMaxAdmissionDepth,
@@ -5985,12 +7120,13 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
         return;
     }
     else {
-        if (parameters.trackHistory && origin.present) {
-            assert(origin.tag != OriginTag::COUNT);
-            addOriginEncoded(memoryBlock.exprOriginMap, memoryBlock.originInterner, expr, validityName, origin.tag, origin.deps, origin.depN, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
+        if (parameters.trackHistory && doorOrigin.present) {
+            RT_SCOPE_HERE("DOOR_ORIGIN_WRITE");
+            assert(doorOrigin.tag != OriginTag::COUNT);
+            addOriginEncoded(memoryBlock.exprOriginMap, memoryBlock.originInterner, expr, validityName, doorOrigin.tag, doorOrigin.deps, doorOrigin.depN, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
         }
 
-        // Statuses 0/1/3 reach here (status 2 returned above, status 4
+        // Statuses 0/1/3/5 reach here (status 2 returned above, status 4
         // returned earlier). Status 0/1 (local derivations) always
         // disintegrate. status 3 (external-mail / non-local absorb) is
         // admitted to disintegrateExpr2 ONLY for the two RULE-CARRIER
@@ -6002,7 +7138,14 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
         // NOT be disintegrated under status=3: disintegrating it mints
         // fresh it_/int_ names, which (a) overflows the static
         // MAX_NAME_IDS cap (prover.hpp assert) and (b) drives the
-        // non-convergence runaway. Without the negated-existence
+        // non-convergence runaway. Status 5 (flag-5 relay arrival,
+        // D-284) IS admitted with witness minting: the
+        // sender's disintegration parked this compact's products for lack
+        // of admission demand, and this receiver may hold the demand. The
+        // mint volume stays bounded — only parked compacts are relayed,
+        // products remain demand-gated (Pass B parks undemanded ones
+        // here exactly like local derivations), and a status-5
+        // disintegration never re-stages a relay (no cascade). Without the negated-existence
         // admission, a descendant LB receives a universal premise (e.g.
         // an induction step sub-LB inheriting "7 has no predecessor")
         // as a bare statement whose rule can then never meet the
@@ -6018,9 +7161,7 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
 
             // Compact implication = literal "(implication" followed by a
             // digit (the compileImplicationToCompact form "(implication<N>[...]").
-            const bool isCompactImplication =
-                expr.len > 12 && startsWithSpan(expr, "(implication", 12)
-                && expr.ptr[12] >= '0' && expr.ptr[12] <= '9';
+            const bool isCompactImplication = isCompactImplicationSpan(expr);
 
             // Negated compact existence = literal "!(existence" followed by
             // a digit — the second rule-carrier shape admitted at status 3.
@@ -6028,12 +7169,30 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
                 expr.len > 11 && startsWithSpan(expr, "!(existence", 11)
                 && expr.ptr[11] >= '0' && expr.ptr[11] <= '9';
 
+            // Or-uniqueness gate: an or<N> deposit whose equi class already
+            // has a fully-processed representative at this scope stays a
+            // PASSIVE statement — registered below and multiplied by
+            // applyEquiClasses like any statement, but never disintegrated
+            // (no K/subset-exclusion compacts, no cohort, no ordis park),
+            // on every entry path (local and the flag-5 relay alike).
+            // Ordered before checkForEquivalence so a suppressed or skips
+            // the Cartesian probe.
+            const bool orCompactDeposit = isOrCompactSpan(expr);
+            bool orEquiDuplicate = false;
+            if (orCompactDeposit && !doNotDisintegrate) {
+                RT_SCOPE_HERE("DOOR_OR_EQUI_GATE");
+                orEquiDuplicate =
+                    orEquiRepresentativeRecorded(memoryBlock, expr, validityName);
+            }
             // Suppress disintegration when an equivalence-class variant of
             // this expression is already a registered statement.
-            const bool cfeEq = (!doNotDisintegrate)
-                ? checkForEquivalence(expr, validityName, memoryBlock) : false;
+            bool cfeEq = false;
+            if (!doNotDisintegrate && !orEquiDuplicate) {
+                RT_SCOPE_HERE("DOOR_CHECK_EQUIVALENCE");
+                cfeEq = checkForEquivalence(expr, validityName, memoryBlock);
+            }
             const bool willDisintegrate =
-                !doNotDisintegrate && !cfeEq
+                !doNotDisintegrate && !orEquiDuplicate && !cfeEq
                 && (status != 3 || isCompactImplication || isNegatedExistence);
             // Hoist the two return channels ABOVE the if/else so both branches
             // fill ONE `out` (per-slot arena, freed per task); consumed directly
@@ -6045,163 +7204,93 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
             if (willDisintegrate)
             {
                 // Rule-19 invariant: a non-rule-carrier must only reach
-                // disintegrateExpr2 under a local status (0/1). status=3 is
-                // admissible here ONLY for the two rule-carrier shapes —
-                // compact implication or negated compact existence (the
-                // guard enforces it); anything else reaching here with
-                // status=3 fires this assert and pins the forbidden path.
+                // disintegrateExpr2 under a local status (0/1) or the
+                // flag-5 relay status (5). status=3 is admissible here ONLY
+                // for the two rule-carrier shapes — compact implication or
+                // negated compact existence (the guard enforces it);
+                // anything else reaching here with status=3 fires this
+                // assert and pins the forbidden path.
                 assert(isCompactImplication || isNegatedExistence
-                    || status == 0 || status == 1);
-                fullDisintegrationHappened = this->disintegrateExpr2(expr,
-                        memoryBlock,
-                        iteration,
-                        status == 0,
-                        validityName,
-                        out,
-                        /*trackHistoryLocal=*/true,
-                        allowOrDisintegration);
+                    || status == 0 || status == 1 || status == 5);
+                {
+                    RT_SCOPE_HERE("DOOR_DISINTEGRATE");
+                    fullDisintegrationHappened = this->disintegrateExpr2(expr,
+                            memoryBlock,
+                            iteration,
+                            status == 0,
+                            validityName,
+                            out,
+                            /*trackHistoryLocal=*/true,
+                            allowOrDisintegration,
+                            involvedLevels, involvedLevelCount,
+                            allowOrProbe);
+                }
+                // First representative: record the or's full processing so
+                // later equi variants at this scope stay passive (the
+                // or-uniqueness gate above).
+                if (orCompactDeposit) {
+                    recordProcessedOr(memoryBlock, origId, valId);
+                }
+                // Uniform admission — no not-self-returned exemption: a fully
+                // disintegrated deposit (e.g. a broadcast theorem compact
+                // decomposed into its rule) is OFFERED to the one admission
+                // door like any statement. The channel dedups on the
+                // composite key, so a self-returned expr makes this a no-op;
+                // a not-self-returned expr joins the stmts loop below and is
+                // admitted (row + levels) or refused by the door's gates —
+                // never row-stamped outside admission. A PARTIALLY
+                // disintegrated deposit is deliberately NOT offered: it must
+                // stay re-processable (a row would Site-F-block the retry of
+                // its unwitnessed existences).
+                if (fullDisintegrationHappened) {
+                    out.statements.append(expr, validityName);
+                }
+                // Flag-5 relay staging (D-284): the highest
+                // uncovered existence groups' compacts await a flag-5 mail
+                // deposit so a demand-holding descendant can disintegrate
+                // them. LOCAL deposits only — a mailed carrier (status 3/5)
+                // never re-stages (delivery already reached all descendants);
+                // main scope only (I-26). The NameMap mint is single-threaded
+                // per LB (worker claim / post-join drain).
+                if ((status == 0 || status == 1)
+                    && equalSpans(validityName, StrSpan("main", 4))) {
+                    out.relayCompacts.forEachSorted(
+                        [&](StrSpan rc, StrSpan rcValidity) {
+                            (void)rcValidity;
+                            memoryBlock.stagePendingRelay(
+                                memoryBlock.nameMap.encode(rc), iteration,
+                                involvedLevels, involvedLevelCount);
+                        });
+                }
             }
             else
             {
                 out.statements.append(expr, validityName);
             }
 
-            out.implications.forEachSorted([&](StrSpan impStr, StrSpan impValidity)
             {
-                // Row 248: the key-only span twin of the retired extractKeyValue
-                // (its value field is dead here). kyS is a NAMED ScratchString on
-                // the string-tier arena, held live under kvScope across the
-                // extractRemainingArgs read below (09c pitfall 4). impStr aliases
-                // out's channel interner (stable across the loop; the callee mints
-                // are into DIFFERENT interners, I-3).
-                const unsigned kvSlot = (g_currentCoreId >= 0)
-                    ? static_cast<unsigned>(g_currentCoreId)
-                    : scratchArenas().slotCount() - 1;
-                ScratchArena& kvArena = scratchArenas().forSlot(kvSlot);
-                ScratchScope kvScope(kvArena);
-                const ScratchString kyS =
-                    ce::extractKeyValueKeyScratch(impStr, kvArena);
-
-                // extractRemainingArgs is 0% heap (span output); build the
-                // addToHashMemory sink's sorted-unique run (remKeyRun) directly.
-                // The slices point into `kyS`, which lives under kvScope.
-                StrSpan remainingArgsSpans[ExecutionParameters::MAX_KEY_SLOTS];
-                const int32_t remainingArgsN = extractRemainingArgs(
-                    StrSpan(kyS), remainingArgsSpans, ExecutionParameters::MAX_KEY_SLOTS);
-                StrSpan remKeyRun[ExecutionParameters::MAX_ADMISSION_REM_ARGS];
-                int32_t remKeyRunN = 0;
-                for (int32_t i = 0; i < remainingArgsN; ++i) {
-                    const StrSpan v = remainingArgsSpans[i];
-                    int32_t lo = 0, hi = remKeyRunN; bool dup = false;
-                    while (lo < hi) {
-                        const int32_t mid = (lo + hi) / 2;
-                        const int c = compareSpans(remKeyRun[mid], v);
-                        if (c == 0) { dup = true; break; }
-                        if (c < 0) lo = mid + 1; else hi = mid;
-                    }
-                    if (dup) continue;
-                    assert(remKeyRunN < ExecutionParameters::MAX_ADMISSION_REM_ARGS
-                        && "addToHashMemory rem run exceeds cap");
-                    for (int32_t z = remKeyRunN; z > lo; --z) remKeyRun[z] = remKeyRun[z - 1];
-                    remKeyRun[lo] = v; ++remKeyRunN;
-                }
-
-                // Row 238: span twin — chainRun from each triple's key (get<0>);
-                // head = headSpan. Spans slice impStr (the channel span, stable).
-                StrSpan chainRun[ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS];
-                int32_t chainRunN = 0;
-                StrSpan headSpan;
-                ce::disintegrateImplicationSpans(impStr, headSpan,
-                    [&chainRun, &chainRunN](StrSpan keySpan, const StrSpan*, int32_t) {
-                        assert(chainRunN < ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS
-                            && "addToHashMemory chain run exceeds cap");
-                        chainRun[chainRunN++] = keySpan;
-                    });
-
-
-                // Distribute the recovered implication by status (ASIC 0.1
-                // reshuffle). overallHashMemory (full visibility) gets it
-                // in every case. status=3 (external-mail absorb) is NOT a
-                // local derivation: its rule must NOT enter localHashMemory
-                // / localHashMemoryDelta (those are local-impl-only — B5's
-                // delta batch would otherwise treat an external rule as a
-                // local delta); instead it is staged into the per-burst
-                // workingMemory, which the NEXT burst's Batch 1 reads.
-                // status 0/1 (local derivations) keep the local 3-way
-                // fan-out and never touch workingMemory.
-                // Span-run edges: chainRun / remKeyRun (built above), headSpan,
-                // and the impStr / impValidity channel spans, all stable across
-                // the four installs (addToHashMemory mints DIFFERENT interners).
-                this->addToHashMemory(chainRun, chainRunN, headSpan, remKeyRun, remKeyRunN,
-                    memoryBlock, memoryBlock.overallHashMemory,
-                    involvedLevels, involvedLevelCount, impStr,
-                    parameters.maxIterationNumberVariable, parameters.standardMaxSecondaryNumber, false,
-                    parameters.minNumOperatorsKey, StrSpan("implication", 11), true, impStr, impValidity);
-                if (status == 3)
-                {
-                    this->addToHashMemory(chainRun, chainRunN, headSpan, remKeyRun, remKeyRunN,
-                        memoryBlock, memoryBlock.workingMemory,
-                        involvedLevels, involvedLevelCount, impStr,
-                        parameters.maxIterationNumberVariable, parameters.standardMaxSecondaryNumber, false,
-                        parameters.minNumOperatorsKey, StrSpan("implication", 11), true, impStr, impValidity);
-                }
-                else
-                {
-                    this->addToHashMemory(chainRun, chainRunN, headSpan, remKeyRun, remKeyRunN,
-                        memoryBlock, memoryBlock.localHashMemory,
-                        involvedLevels, involvedLevelCount, impStr,
-                        parameters.maxIterationNumberVariable, parameters.standardMaxSecondaryNumber, false,
-                        parameters.minNumOperatorsKey, StrSpan("implication", 11), true, impStr, impValidity);
-                    this->addToHashMemory(chainRun, chainRunN, headSpan, remKeyRun, remKeyRunN,
-                        memoryBlock, memoryBlock.localHashMemoryDelta,
-                        involvedLevels, involvedLevelCount, impStr,
-                        parameters.maxIterationNumberVariable, parameters.standardMaxSecondaryNumber, false,
-                        parameters.minNumOperatorsKey, StrSpan("implication", 11), true, impStr, impValidity);
-                }
-
-                // Track this implication for the once-per-burst
-                // `sanitizeHashMemory` walk that runs at the END of
-                // the elementary step (`performElemPhase3`). When a later equi-
-                // class downprioritizes an `it_/int_` arg of this
-                // implication, the sanitizer mails the canonical-form
-                // rewrite to `sameIterationInternalMail` and eradicates this
-                // entry's traces from the LB.
-                memoryBlock.expandedImplications.mint(LbStatePairKey{
-                    memoryBlock.lbStateInterner.encode(impStr),
-                    memoryBlock.lbStateInterner.encode(impValidity) });
-                // (The cross-LB broadcast of this index entry was removed: the
-                // mail expandedImplications column was never serialized/delivered
-                // — Codec<Mail> carries only statements + exprOriginMap — so the
-                // receiver-side merge was always a no-op. Each LB populates its own
-                // expandedImplications index locally, here.)
-
-                // Mail-out contract: cross-LB rule propagation is
-                // MAIN-ONLY. Non-main rules stay local — receivers
-                // re-derive them from the mailed v=main statements + their
-                // own disintegration. mailOut.exprOriginMap (history)
-                // continues to carry entries for all scopes per the
-                // existing trackExpansionHistory invariant; only the
-                // rule-propagation channel is gated. (Pre-fix this gate
-                // was missing, and impl24-scope rules from the SE2 LB
-                // shipped to the contradiction LB and got installed at
-                // v=main with origin keyed at the sender's deeper scope,
-                // breaking the visualizer walk's exprOriginMap lookup.)
-                //
-                // The disintegration-recovered implication is NOT
-                // re-broadcast or re-compacted here, and does NOT go
-                // through recordPendingCompaction. A locally-derived
-                // implication already carries its compact/compiled form in
-                // `expressions`, and a mail-recovered one's compact form is
-                // the very statement being disintegrated — so no compilation
-                // is needed and none is done. recordPendingCompaction here
-                // would produce an N-LB-fan-out re-broadcast runaway.
-                // Receivers still install the recovered rule locally
-                // (overallHashMemory + workingMemory above); the Mail-out
-                // MAIN-ONLY contract (I-26) above is unchanged.
+            RT_SCOPE_HERE("DOOR_IMPLICATIONS_WALK");
+            out.implications.forEachSortedWithSource([&](StrSpan impStr, StrSpan impValidity,
+                                                         StrSpan carrier)
+            {
+                RT_SCOPE_HERE("DOOR_INSTALL_IMPLICATION");
+                // The per-implication install — the canonical gate, the
+                // status-selected instances, the D-274 row, both indexes —
+                // lives in installExpandedImplication. The mail-out contract
+                // stays MAIN-ONLY (I-26): a disintegration-recovered
+                // implication is neither re-broadcast nor re-compacted here
+                // (a locally derived one carries its compact form in
+                // `expressions`, a mail-recovered one IS the statement being
+                // disintegrated; recordPendingCompaction here would fan out).
+                this->installExpandedImplication(memoryBlock, impStr, impValidity, carrier,
+                    status, iteration, involvedLevels, involvedLevelCount,
+                    expr, validityName);
             });
+            } // RT_SCOPE DOOR_IMPLICATIONS_WALK
 
             if (out.implications.count() > 0)
             {
+                RT_SCOPE_HERE("DOOR_GOALS_CHECK_NECESSITY");
                 // Check necessity for equality for all pending proofs.
                 // Snapshot the packed goal keys sorted by decoded
                 // (original, validity) -- byte-identical processing order to the
@@ -6245,8 +7334,10 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
 
             // Process statements — each carries its own validity name (normal
             // stmts have parent validity, OR branches have branch validity).
+            RT_SCOPE_HERE("DOOR_STATEMENTS_WALK");
             out.statements.forEachSorted([&](StrSpan evOrig, StrSpan evValidity)
             {
+                RT_SCOPE_HERE("DOOR_STATEMENT_ROW");
                 int64_t pkEv = 0;
                 const bool evHasKey = lookupOriginKey(memoryBlock.originInterner,
                     evOrig, evValidity, pkEv);
@@ -6295,7 +7386,33 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
                 // `addNegatedEquality` for equality-shaped inputs and
                 // sets the expression's `registered` membership bit.
                 {
-                    const bool isLocal = (status == 0 || status == 1);
+                    // Locality: local statuses register everything local.
+                    // A flag-5 relay arrival (status 5) splits per statement
+                    // (D-284): the CARRIER itself registers
+                    // non-local — only local delta rows reach fillMailOut, so
+                    // it is structurally never re-forwarded (delivery already
+                    // reached every descendant) — while its disintegration
+                    // products are THIS LB's own derivations (witnesses
+                    // minted here) and register local, mailable and visible
+                    // to the local-delta request batches.
+                    const bool isCarrier = (status == 5)
+                        && equalSpans(evOrig, expr)
+                        && equalSpans(evValidity, validityName);
+                    const bool isLocal = (status == 0 || status == 1)
+                        || (status == 5 && !isCarrier)
+                        || rewriteIsLocal;
+
+                    // The single-token carriers among a status-5
+                    // disintegration's products memoize as sendable
+                    // (canBeSentIds) exactly like the force-deep local
+                    // path's products — "products mail normally". Sorted
+                    // walk order (forEachSorted) keeps the mint order
+                    // deterministic (I-105). The carrier is excluded.
+                    if (status == 5 && !isCarrier
+                        && containsSpan(evOrig, StrSpan("int_lev_", 8))) {
+                        memoryBlock.canBeSentIds.mint(
+                            memoryBlock.nameMap.encode(evOrig));
+                    }
 
                     // Id-form out-param on the per-slot gen-scratch arena —
                     // addStatement is void now (PagedVector is non-movable, cannot
@@ -6307,9 +7424,12 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
                     ScratchArena& addedArena = genScratchArenas().forSlot(addedSlot);
                     DirtyState addedDirty = DirtyState::Clean;
                     PagedVector<IntEncodedExpr> added(&addedArena, &addedDirty);
-                    this->addStatement(evOrig, memoryBlock, isLocal,
-                        involvedLevels, involvedLevelCount, frontTO,
-                        evValidity, added);
+                    {
+                        RT_SCOPE_HERE("DOOR_ADD_STATEMENT");
+                        this->addStatement(evOrig, memoryBlock, isLocal,
+                            involvedLevels, involvedLevelCount, frontTO,
+                            evValidity, added);
+                    }
 
                     // `added` is not read before here, so index-sort it into the
                     // exact former std::sort(std::vector<EWV>) order
@@ -6341,23 +7461,33 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
                             memoryBlock.nameMap.decodeView(addedRow.validityId);
                         const ScratchString effectiveValidity = ScratchString::copyFrom(
                             rowStrArena, addValidView.ptr, addValidView.len);
-                        updateAdmissionMapIntegration(StrSpan(addExpression), memoryBlock,
-                                                      StrSpan(effectiveValidity));
-                        updateAdmissionMapRecursion(StrSpan(addExpression), memoryBlock,
-                                                    StrSpan(effectiveValidity));
+                        {
+                            RT_SCOPE_HERE("DOOR_ADMISSION_INTEGRATION");
+                            updateAdmissionMapIntegration(StrSpan(addExpression), memoryBlock,
+                                                          StrSpan(effectiveValidity));
+                        }
+                        {
+                            RT_SCOPE_HERE("DOOR_ADMISSION_RECURSION");
+                            updateAdmissionMapRecursion(StrSpan(addExpression), memoryBlock,
+                                                        StrSpan(effectiveValidity));
+                        }
 
                         const int32_t addLvlsId = lookupStatementLevels(
                             memoryBlock.intStatementLevelsMap, memoryBlock.nameMap,
                             StrSpan(addExpression), StrSpan(effectiveValidity));
                         assert(addLvlsId
+                               && memoryBlock.intStatementLevelsMap.runLen(addLvlsId) > 0
                                && "addStatement post-loop intStatementLevelsMap invariant violated");
                         int lvRun[256];
                         const int32_t lvN = coldIntRunAt(
                             memoryBlock.intStatementLevelsMap, addLvlsId,
                             lvRun, 256);
 
-                        ordisMerge(StrSpan(addExpression), StrSpan(effectiveValidity),
-                                   lvRun, lvN, memoryBlock);
+                        {
+                            RT_SCOPE_HERE("DOOR_ORDIS_MERGE");
+                            ordisMerge(StrSpan(addExpression), StrSpan(effectiveValidity),
+                                       lvRun, lvN, memoryBlock);
+                        }
                     }
                 }
 
@@ -6370,19 +7500,24 @@ void ExpressionAnalyzer::addExprToMemoryBlock(StrSpan expr,
             });
 
             // expr entered disintegrateExpr2 and came back fully disintegrated:
-            // flag its own registry entries so cFE suppresses future equivalence-
-            // class variants of expr (a rejecting / partial twin stays unflagged
-            // and never suppresses — the Gauss-fold mirror-bug fix). The stmts
-            // loop above registered expr's entry when it was returned among stmts;
-            // if it was not self-returned, insert the entry.
+            // OR the `fullyDisintegrated` bit onto expr's registry row so cFE
+            // suppresses future equivalence-class variants of expr (a
+            // rejecting / partial twin stays unflagged and never suppresses —
+            // the Gauss-fold mirror-bug fix). Bookkeeping on top of admission,
+            // nothing more: the row exists iff the admission door created one
+            // (expr rode the stmts loop above via the uniform-admission
+            // offer); the marker never creates a row and never grants `known`
+            // — a statement the door refused stays exactly as the door left
+            // it.
             if (fullDisintegrationHappened) {
-                const bool isLocalExpr = (status == 0 || status == 1);
-                const int64_t intKeyFull = packStatementKey(
-                    memoryBlock.nameMap.encode(expr),
-                    memoryBlock.nameMap.encode(validityName));
-                upsertStatementKey(memoryBlock.intKnownStatements, intKeyFull,
-                    isLocalExpr, /*registered=*/true, /*known=*/true,
-                    /*fullyDisintegrated=*/true);
+                const NameId markOrigId = memoryBlock.nameMap.encode(expr);
+                const NameId markValId = memoryBlock.nameMap.encode(validityName);
+                if (memoryBlock.intKnownStatements.find(
+                        StatementKey{ markOrigId, markValId }) != nullptr) {
+                    upsertStatementKey(memoryBlock.intKnownStatements,
+                        packStatementKey(markOrigId, markValId),
+                        /*local=*/false, /*fullyDisintegrated=*/true);
+                }
             }
 
         }
@@ -6657,6 +7792,170 @@ bool detectAntisymmetryCopyVar(const std::vector<std::string>& chain,
     return false;
 }
 
+/// @brief Detect the output-collision conjecture shape and name the
+///        variable to duplicate — the fifth variable-copy trigger.
+///
+/// @details
+/// A conjecture states an equality between two compound terms by fusing
+/// their result binders into one name: two premises of the same operator
+/// carry the same name in the operator's output slot while their input
+/// slots differ (`(in3[a,c,r,·])` / `(in3[b,c,r,·])` encodes
+/// `a·c = b·c`). A pool rule written with two distinct result variables
+/// for such a premise pair can then never match — request matching only
+/// renames, it never binds two rule variables to one statement name — so
+/// the rule's firings, demand markers, and integration seeds all starve.
+/// The cure is the same dead-end variable-copy axiom `(=[r,r_copy])` the
+/// antisymmetry trigger deposits: the equivalence class generates the
+/// all-distinct statement variants and the standard machinery closes the
+/// proof.
+///
+/// This function is the pure detection half: it scans every ordered pair
+/// of chain elements for the shape and, on the first match, reports the
+/// shared output name and the chain index of the SECOND colliding
+/// premise — the LB the caller deposits at. The first colliding premise
+/// is typically an anchor-adjacent chain prefix shared by foreign
+/// conjectures, and mail flows to every descendant, so a deposit there
+/// leaks the copy into subtrees that never asked for it; every genuine
+/// consumer (deeper premise LBs, the contradiction twins under the
+/// innermost premise, recursion auxiliaries) sits at or below the second
+/// colliding premise. Both verdicts are defined results of the detection
+/// contract.
+///
+/// Guards: both premises positive (no `!` prefix); identical operator
+/// name and arity, with a compiled core config carrying exactly one
+/// output slot; the output argument equal in both and a plain atom (no
+/// parentheses — the shallow `ce::getArgs` parse is exact only for flat
+/// argument lists); every argument that is neither an input slot nor the
+/// output slot byte-equal between the two premises; at least one input
+/// slot differing; no third positive premise matching the same
+/// (operator, non-input/output arguments, output name) signature — the
+/// gate is exactly-two by design, extendable later; and the shared name
+/// is never an ANCHOR argument (the I-24 analogue: an anchor-slot name
+/// is a theory constant — e.g. zero in `s(a)=0 ∧ s(b)=0 → a=b` — and
+/// duplicating a constant variant-fans every statement carrying it and
+/// breaches the one-changeable-arg integration contract). Theorem chains
+/// never carry `u_`-prefixed arguments; the shared name is asserted plain.
+///
+/// @param chain         The disintegrated premise chain of the
+///                      conjecture (raw element strings).
+/// @param coreMap       Compiled operator configurations — supplies each
+///                      operator's input/output slot classification.
+/// @param copyVarOut    On detection, the shared output name to
+///                      duplicate; untouched otherwise.
+/// @param firstIndexOut On detection, the chain index of the second
+///                      colliding premise — the deposit LB; untouched
+///                      otherwise.
+/// @return True iff the output-collision shape was detected.
+/// @see gl::detectAntisymmetryCopyVar — the sibling trigger whose
+///      deposit contract (name shape, origin tag, mailOut pairing) this
+///      trigger shares; ExpressionAnalyzer::addTheoremToMemory — the
+///      deposit site.
+bool detectOutputCollisionCopyVar(const std::vector<std::string>& chain,
+                                  const ce::CoreExpressionMap& coreMap,
+                                  std::string& copyVarOut,
+                                  std::size_t& firstIndexOut) {
+    for (std::size_t i = 0; i < chain.size(); ++i) {
+        const std::string& p1 = chain[i];
+        if (p1.empty() || p1[0] == '!') continue;
+        const std::string op = ce::extractExpression(p1);
+        const ce::CoreExpressionMap::const_iterator cfgIt = coreMap.find(op);
+        if (cfgIt == coreMap.end()) continue;
+        const ce::CoreExpressionConfig& cfg = cfgIt->second;
+        if (cfg.outputIndices.size() != 1) continue;
+        const int outIdx = cfg.outputIndices[0];
+        const std::vector<std::string> a1 = ce::getArgs(p1);
+        if (outIdx < 0 || outIdx >= static_cast<int>(a1.size())) continue;
+
+        const auto isInputSlot = [&cfg](std::size_t k) -> bool {
+            for (const int idx : cfg.inputIndices) {
+                if (idx == static_cast<int>(k)) return true;
+            }
+            return false;
+        };
+
+        for (std::size_t j = i + 1; j < chain.size(); ++j) {
+            const std::string& p2 = chain[j];
+            if (p2.empty() || p2[0] == '!') continue;
+            if (ce::extractExpression(p2) != op) continue;
+            const std::vector<std::string> a2 = ce::getArgs(p2);
+            if (a2.size() != a1.size()) continue;
+
+            const std::string& r = a1[static_cast<std::size_t>(outIdx)];
+            if (a2[static_cast<std::size_t>(outIdx)] != r) continue;
+            if (r.find('(') != std::string::npos) continue;
+            assert(r.rfind("u_", 0) != 0
+                && "output-collision copy: theorem chains never carry u_ arguments");
+
+            // ANCHOR GUARD (the I-24 analogue): never copy an anchor-slot
+            // name. A shared output that is an anchor argument is a THEORY
+            // CONSTANT (e.g. zero in `s(a)=0 ∧ s(b)=0 → a=b`), not a
+            // theorem-bound result variable; duplicating a constant
+            // variant-fans every statement carrying it across the grid and
+            // breaches the one-changeable-arg integration contract.
+            {
+                bool rIsAnchorArg = false;
+                for (std::size_t k2 = 0; k2 < chain.size() && !rIsAnchorArg;
+                     ++k2) {
+                    const std::string& el = chain[k2];
+                    if (el.rfind("(Anchor", 0) != 0) continue;
+                    const std::vector<std::string> aArgs = ce::getArgs(el);
+                    for (const std::string& a : aArgs) {
+                        if (a == r) { rIsAnchorArg = true; break; }
+                    }
+                }
+                if (rIsAnchorArg) continue;
+            }
+
+            bool nonIoEqual = true;
+            bool inputDiffers = false;
+            for (std::size_t k = 0; k < a1.size(); ++k) {
+                if (static_cast<int>(k) == outIdx) continue;
+                if (isInputSlot(k)) {
+                    if (a1[k] != a2[k]) inputDiffers = true;
+                } else if (a1[k] != a2[k]) {
+                    nonIoEqual = false;
+                    break;
+                }
+            }
+            if (!nonIoEqual || !inputDiffers) continue;
+
+            // Exactly-two gate: a third positive premise matching the same
+            // (operator, non-input/output args, output name) signature
+            // suppresses the fire — narrow by design, extendable later.
+            bool third = false;
+            for (std::size_t k2 = 0; k2 < chain.size() && !third; ++k2) {
+                if (k2 == i || k2 == j) continue;
+                const std::string& p3 = chain[k2];
+                if (p3.empty() || p3[0] == '!') continue;
+                if (ce::extractExpression(p3) != op) continue;
+                const std::vector<std::string> a3 = ce::getArgs(p3);
+                if (a3.size() != a1.size()) continue;
+                if (a3[static_cast<std::size_t>(outIdx)] != r) continue;
+                bool nio = true;
+                for (std::size_t k = 0; k < a1.size(); ++k) {
+                    if (static_cast<int>(k) == outIdx || isInputSlot(k)) continue;
+                    if (a1[k] != a3[k]) { nio = false; break; }
+                }
+                if (nio) third = true;
+            }
+            if (third) continue;
+
+            copyVarOut = r;
+            // Deposit at the SECOND colliding premise (maintainer decision
+            // 2026-08-10): the first colliding premise is typically an
+            // anchor-adjacent chain prefix SHARED by foreign conjectures,
+            // and a deposit there mails the copy into their subtrees
+            // (full-run Peano breach). Every consumer of the copy — the
+            // deeper premise LBs, the contradiction twins under the
+            // innermost premise, recursion auxiliaries — sits at or below
+            // the second colliding premise, so mail still reaches them all.
+            firstIndexOut = j;
+            return true;
+        }
+    }
+    return false;
+}
+
 // Turn optimizations OFF for just this section
 //#pragma optimize("", off)
 
@@ -6686,6 +7985,20 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
     std::vector<std::string> chain;
     chain.reserve(tempChain.size());
     for (std::size_t i = 0; i < tempChain.size(); ++i) chain.push_back(std::get<0>(tempChain[i]));
+
+    // Output-collision conjecture: two same-operator premises fuse their
+    // result binders into one shared output name (the MPL encoding of an
+    // equality between compound terms). Detect before the walk; the
+    // deposit lands during the walk at the SECOND colliding premise LB —
+    // mail flows only ancestor-to-descendant, and every consumer of the
+    // copy (deeper premise LBs, contradiction twins under the innermost
+    // premise, recursion auxiliaries) sits at or below it, while foreign
+    // conjectures sharing only the first colliding premise as a chain
+    // prefix never see it.
+    std::string collisionCopyVar;
+    std::size_t collisionDepositIndex = 0;
+    const bool haveOutputCollision = detectOutputCollisionCopyVar(
+        chain, this->coreExpressionMap, collisionCopyVar, collisionDepositIndex);
 
     // 2) Walk/build the memory path for the chain
     Memory* memoryBlock = &memory;
@@ -6731,6 +8044,38 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
                 child->addMailOutOrigin(StrSpan(ev.original),
                     StrSpan(ev.validityName), origin.tag, origin.deps,
                     origin.depN, maxOriginsLocal);
+            }
+        }
+
+        // Output-collision copy axiom (=[r,r_copy]) at the second
+        // colliding premise LB — same dead-end contract as the
+        // antisymmetry deposit below (variableCopy origin, zero deps);
+        // family sibling rows sharing this LB re-run the deposit and the
+        // door dedups.
+        if (haveOutputCollision && index == collisionDepositIndex) {
+            const std::string copyEquality =
+                "(=[" + collisionCopyVar + "," + collisionCopyVar + "_copy])";
+            const TransientOrigin copyOrigin{
+                true, OriginTag::variableCopy, nullptr, 0 };
+            const int lvRunCopy[1] = { memoryBlock->level };
+            this->addExprToMemoryBlock(StrSpan(copyEquality),
+                *memoryBlock, iteration, 0, lvRunCopy, 1,
+                copyOrigin, -1, -1, StrSpan("main", 4), false);
+
+            // LB-creation paired mailOut write — the same timing exception
+            // as the premise deposit above: buildGrid's startup commit
+            // needs mailOut populated so every descendant receives the
+            // axiom and its history line on its first phase-1 pull.
+            if (parameters.trackHistory) {
+                const int maxOriginsLocal = parameters.compressor_mode
+                    ? parameters.compressor_max_origins_per_expr
+                    : parameters.max_origin_per_expr;
+                ExpressionWithValidity ev(copyEquality, "main");
+                memoryBlock->insertMailOutStatement(StrSpan(ev.original),
+                    StrSpan(ev.validityName), lvRunCopy, 1);
+                memoryBlock->addMailOutOrigin(StrSpan(ev.original),
+                    StrSpan(ev.validityName), copyOrigin.tag,
+                    copyOrigin.deps, copyOrigin.depN, maxOriginsLocal);
             }
         }
 
@@ -6798,7 +8143,6 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
                         tempMb->recursionHypothesisId =
                             tempMb->nameMap.encode(tempExpr2);
                         tempMb->isPartOfRecursion = true;
-
 
 
                         // history tag for auxy implication
@@ -6928,7 +8272,7 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
                 // finally mark head as "to be proved" at the original block too
                 const StatementFlags* headRow = lookupStatementFlags(
                     memoryBlock->intKnownStatements, memoryBlock->nameMap, head, "main");
-                if (headRow && headRow->registered) {
+                if (headRow != nullptr) {
                     // Head already derived (e.g. from anchor disintegration) — register directly
                     std::string fullTheorem = reconstructImplication(chain, head);
                     this->appendGlobalTheorem(fullTheorem, "direct", "-1",
@@ -7156,13 +8500,11 @@ void ExpressionAnalyzer::addTheoremToMemory(const std::string& expr,
 //#pragma optimize("", off)
 
 
-
 void ExpressionAnalyzer::revisitRejected2(StrSpan markedExpr,
     Memory& memoryBlock,
     StrSpan validityName)
 {
     auto& rm = memoryBlock.overallHashMemory.rejectedMap;
-
 
     // Guard: prevent re-entrant processing of the same marker. Non-minting
     // probe — a never-interned template is never in progress.
@@ -7183,6 +8525,7 @@ void ExpressionAnalyzer::revisitRejected2(StrSpan markedExpr,
     if (rmId == 0) {
         return;
     }
+
 
     // [user-directed budget guard] Revival must respect the secondary-variable
     // budget; without a cnt cap it re-admits sums with unbounded secondary it_
@@ -7315,10 +8658,11 @@ void ExpressionAnalyzer::revisitRejected2(StrSpan markedExpr,
         }
 
         // intStatementLevelsMap consistency check intentionally absent here —
-        // the compact form's level entry may legitimately be missing when
-        // the rejection was committed before the kernel's stmts-loop wrote
-        // the compound's entry. The record's levels (captured at buffer time,
-        // may be empty) are the authoritative deposit-time levels set.
+        // the record's levels are the authoritative deposit-time set: the
+        // park captured frame ∪ registry
+        // (D-327), so the run is empty only when
+        // the parking compound itself was non-derived ({-1} tier); the
+        // addStatement door re-stamps {-1} for that case.
 
         // Deposit the stored cohort onto sameIterationInternalMail for absorb
         // at the next hashburst. pre == post (no rewrite participated here);
@@ -7357,8 +8701,373 @@ void ExpressionAnalyzer::revisitRejected2(StrSpan markedExpr,
         assert(ok); // inserted above — both halves are interned
         memoryBlock.overallHashMemory.revisitInProgress.erase(donePk);
     }
+}
 
-    cleanAdmissionMap(markedExpr, validityName, memoryBlock);
+void ExpressionAnalyzer::resetParkedOrStatementRegistries(Memory& mb,
+    StrSpan original,
+    StrSpan validityName)
+{
+    // encode (not lookup) — mirrors resetResentExpressionRegistries: the
+    // statement and scope are both interned already (the statement was
+    // deposited and the cohort parked there), so these are id fetches.
+    const NameId origId = mb.nameMap.encode(original);
+    const NameId valId = mb.nameMap.encode(validityName);
+    mb.intStatementLevelsMap.eraseSet(packStatementKey(origId, valId));
+    mb.intKnownStatements.erase(StatementKey{ origId, valId });
+    // Stored rows are canonical-pipeline encodings, so the id pair is the
+    // full identity; erase back to front to keep indices valid. The local
+    // vectors are included — the parked statement is a LOCAL statement (the
+    // non-local resetResentExpressionRegistries contract excludes them).
+    for (int32_t i = mb.intEncodedStatements.size(); i-- > 0; ) {
+        if (mb.intEncodedStatements[i].originalId == origId
+            && mb.intEncodedStatements[i].validityId == valId) {
+            mb.intEncodedStatements.erase(i);
+        }
+    }
+    for (int32_t i = mb.intLocalEncodedStatements.size(); i-- > 0; ) {
+        if (mb.intLocalEncodedStatements[i].originalId == origId
+            && mb.intLocalEncodedStatements[i].validityId == valId) {
+            mb.intLocalEncodedStatements.erase(i);
+        }
+    }
+    for (int32_t i = mb.intLocalEncodedStatementsDelta.size(); i-- > 0; ) {
+        if (mb.intLocalEncodedStatementsDelta[i].originalId == origId
+            && mb.intLocalEncodedStatementsDelta[i].validityId == valId) {
+            mb.intLocalEncodedStatementsDelta.erase(i);
+        }
+    }
+    // The external staging is a view of the registry for this burst's
+    // request generation: a row whose registry entry is gone must leave
+    // it too, or request generation keeps a mandatory ingredient that
+    // can no longer be a premise.
+    for (int32_t i = mb.intExternalStatements.size(); i-- > 0; ) {
+        if (mb.intExternalStatements[i].originalId == origId
+            && mb.intExternalStatements[i].validityId == valId) {
+            mb.intExternalStatements.erase(i);
+        }
+    }
+    // The revived statement must re-enter the door as the representative:
+    // drop its processed-or row (idempotent — a second park key of the
+    // same or finds it already cleared).
+    clearProcessedOr(mb, origId, valId);
+}
+
+/// @brief The or-uniqueness gate's probe — see the declaration's Doxygen
+///        block in `prover.hpp` for the full contract.
+///
+/// @details
+/// Implementation notes: the operator prefix (the bytes up to and
+/// including the first `[`) must match before any canonicalization is
+/// attempted — two different `or<N>` operators are never equi variants
+/// of each other; the recorded text's canonicalization rides a per-call
+/// string-tier scratch scope with a throwaway level run (the gate must
+/// not touch the deposit's own level run) and mints nothing, so every
+/// `decodeView` span held across the loop stays valid (I-3).
+///
+/// @param mb           Owning LB.
+/// @param expr         The deposit's (door-canonical) or-compact text.
+/// @param validityName The deposit's scope.
+/// @return `true` when a recorded equi variant exists at the scope.
+NameId ExpressionAnalyzer::canonicalOrIdAtScope(Memory& mb, NameId origId,
+    StrSpan validityName)
+{
+    assert(origId != 0
+        && "canonicalOrIdAtScope: the original id must be minted");
+    const StrSpan text = mb.nameMap.decodeView(origId);
+    assert(isOrCompactSpan(text)
+        && "canonicalOrIdAtScope: ledger rows hold or compacts only");
+    const unsigned slot = (g_currentCoreId >= 0)
+        ? static_cast<unsigned>(g_currentCoreId)
+        : scratchArenas().slotCount() - 1;
+    ScratchArena& strArena = scratchArenas().forSlot(slot);
+    ScratchScope canonScope(strArena);
+    int lvBuf[256];
+    int32_t lvN = 0;
+    const CanonicalForm cf = canonicalFormAtScope(
+        text, validityName, mb, strArena, lvBuf, lvN, 256);
+    if (!cf.changed) return origId;
+    // The one mint of the ledger path: `text` (a decodeView span) is dead
+    // from here on; `cf.text` rides the scratch scope and dies at return.
+    return mb.nameMap.encode(cf.text);
+}
+
+bool ExpressionAnalyzer::orEquiRepresentativeRecorded(Memory& mb,
+    StrSpan expr,
+    StrSpan validityName)
+{
+    assert(isOrCompactSpan(expr)
+        && "orEquiRepresentativeRecorded: caller must gate on the or-compact shape");
+
+    const NameId vid = mb.nameMap.lookup(validityName);
+    if (vid == 0) return false;   // fresh scope: nothing recorded there yet
+    const int32_t row = mb.processedOrLedger.lookup(vid);
+    if (row == 0) return false;
+    // Never interned here -> no recorded original and no re-keyed canonical
+    // text can equal it (both halves are minted ids of this NameMap).
+    const NameId exprId = mb.nameMap.lookup(expr);
+    if (exprId == 0) return false;
+    const int32_t n = mb.processedOrLedger.runLen(row);
+    for (int32_t j = 0; j < n; ++j) {
+        const int64_t v = mb.processedOrLedger.valueAt(row, j);
+        if (ledgerCanonicalId(v) == exprId || ledgerOriginalId(v) == exprId)
+            return true;
+    }
+    return false;
+}
+
+void ExpressionAnalyzer::recordProcessedOr(Memory& mb, NameId origId,
+    NameId valId)
+{
+    assert(origId != 0 && valId != 0
+        && "recordProcessedOr: both ids must be minted by the door path");
+    // The scope-name view is read by the canonicalization only, before the
+    // possible mint inside — no span outlives the mint (I-3).
+    const NameId canonId =
+        canonicalOrIdAtScope(mb, origId, mb.nameMap.decodeView(valId));
+    mb.processedOrLedger.insertSorted(valId, packInt32Pair(canonId, origId),
+        [](int64_t a, int64_t b) { return a < b; });
+}
+
+void ExpressionAnalyzer::clearProcessedOr(Memory& mb, NameId origId,
+    NameId valId)
+{
+    assert(origId != 0 && valId != 0
+        && "clearProcessedOr: both ids must be minted");
+    const int32_t row = mb.processedOrLedger.lookup(valId);
+    if (row == 0) return;   // defined already-cleared state
+    const int32_t n = mb.processedOrLedger.runLen(row);
+
+    const unsigned slot = (g_currentCoreId >= 0)
+        ? static_cast<unsigned>(g_currentCoreId)
+        : genScratchArenas().slotCount() - 1;
+    ScratchArena& gArena = genScratchArenas().forSlot(slot);
+    const ArenaOffset mark = gArena.cursor();
+    int64_t* keep = reinterpret_cast<int64_t*>(gArena.resolve(gArena.alloc(
+        (n > 0 ? n : 1) * static_cast<int32_t>(sizeof(int64_t)),
+        static_cast<int32_t>(alignof(int64_t)))));
+    int32_t keepN = 0;
+    for (int32_t j = 0; j < n; ++j) {
+        const int64_t v = mb.processedOrLedger.valueAt(row, j);
+        if (ledgerOriginalId(v) != origId) keep[keepN++] = v;
+    }
+    if (keepN != n) {
+        mb.processedOrLedger.assignSet(valId, keep, keepN);
+    }
+    gArena.popTo(mark);
+}
+
+void ExpressionAnalyzer::recanonicalizeProcessedOrLedger(Memory& mb,
+    NameId valId)
+{
+    assert(valId != 0
+        && "recanonicalizeProcessedOrLedger: the scope id must be minted");
+    const int32_t row = mb.processedOrLedger.lookup(valId);
+    if (row == 0) return;   // no or processed at this scope: defined no-op
+    const int32_t n = mb.processedOrLedger.runLen(row);
+    if (n == 0) return;     // every row cleared: defined no-op
+
+    const unsigned slot = (g_currentCoreId >= 0)
+        ? static_cast<unsigned>(g_currentCoreId)
+        : genScratchArenas().slotCount() - 1;
+    ScratchArena& gArena = genScratchArenas().forSlot(slot);
+    const ArenaOffset mark = gArena.cursor();
+    int64_t* next = reinterpret_cast<int64_t*>(gArena.resolve(gArena.alloc(
+        n * static_cast<int32_t>(sizeof(int64_t)),
+        static_cast<int32_t>(alignof(int64_t)))));
+    const unsigned sSlot = (g_currentCoreId >= 0)
+        ? static_cast<unsigned>(g_currentCoreId)
+        : scratchArenas().slotCount() - 1;
+    ScratchArena& strArena = scratchArenas().forSlot(sSlot);
+    ScratchScope nameScope(strArena);
+    // Arena-held copy of the scope name: the per-row mint below may
+    // invalidate a bare NameMap view (I-3).
+    const StrSpan vView = mb.nameMap.decodeView(valId);
+    const ScratchString vHold =
+        ScratchString::copyFrom(strArena, vView.ptr, vView.len);
+    const StrSpan vName(vHold);
+    bool changed = false;
+    for (int32_t j = 0; j < n; ++j) {
+        const int64_t v = mb.processedOrLedger.valueAt(row, j);
+        const NameId origId = ledgerOriginalId(v);
+        const NameId canonId = canonicalOrIdAtScope(mb, origId, vName);
+        next[j] = packInt32Pair(canonId, origId);
+        if (canonId != ledgerCanonicalId(v)) changed = true;
+    }
+    if (changed) {
+        std::sort(next, next + n);
+        mb.processedOrLedger.assignSet(valId, next, n);
+    }
+    gArena.popTo(mark);
+}
+
+void ExpressionAnalyzer::revisitRejectedOrdis(StrSpan markedExpr,
+    Memory& memoryBlock,
+    StrSpan validityName)
+{
+    auto& rmo = memoryBlock.overallHashMemory.rejectedMapOrdis;
+
+    // Non-minting probe — a never-interned template was never parked; a
+    // key without a parked run is a defined miss.
+    int64_t revisitPk = 0;
+    if (!lookupTemplateKey(memoryBlock.templateInterner,
+            memoryBlock.nameMap, markedExpr, validityName, revisitPk)) {
+        return;
+    }
+    if (rmo.lookup(revisitPk) == 0) {
+        return;
+    }
+
+    // DEDICATED re-entrancy guard (never shared with revisitInProgress — a
+    // concurrent general revisit of the same packed key must not swallow an
+    // ordis wake).
+    if (memoryBlock.overallHashMemory.ordisRevisitInProgress.contains(revisitPk)) {
+        return;
+    }
+    memoryBlock.overallHashMemory.ordisRevisitInProgress.mint(revisitPk);
+
+    // Snapshot the parked cohort as VERBATIM blob copies on the gen scratch
+    // arena — copy BEFORE erase (the eraseBlobIf restructures the blob
+    // pool; the revisitRejected2 discipline). Erasing the whole key first
+    // also makes a legitimate re-park by the re-consumption below start
+    // from a clean slate.
+    const unsigned ordisSlot = (g_currentCoreId >= 0)
+        ? static_cast<unsigned>(g_currentCoreId)
+        : genScratchArenas().slotCount() - 1;
+    ScratchArena& gArena = genScratchArenas().forSlot(ordisSlot);
+    const ArenaOffset mark = gArena.cursor();
+    const RejectedOrdisRunSnapshot snap =
+        snapshotRejectedOrdisRun(rmo, revisitPk, gArena);
+    rmo.eraseBlobIf([revisitPk](int64_t k) { return k == revisitPk; });
+
+    for (int32_t r = 0; r < snap.count; ++r) {
+        const RejectedOrdisValueBlobView& v = snap.views[r];
+        // decodeView is I-3-safe across the loop: the sinks below mint
+        // nameMap + originInterner, never valueInterner, and the walked
+        // blob bytes are gen-arena copies.
+        const StrSpan parkedStmt =
+            memoryBlock.valueInterner.decodeView(v.orStatementId());
+        const int32_t lvN = v.levelCount();
+        int lvRun[256];
+        assert(lvN <= 256 && "parked ordis level run exceeds lvRun");
+        for (int32_t j = 0; j < lvN; ++j) lvRun[j] = v.levelAt(j);
+
+        // The un-know (maintainer-approved): the parked statement is a
+        // known local statement, so without this reset the Site F ancestor
+        // dedup would drop the re-deposit before the or consumption
+        // re-runs.
+        resetParkedOrStatementRegistries(memoryBlock, parkedStmt,
+                                         validityName);
+
+        // Re-deposit; the absorb re-runs the full or consumption (fresh
+        // probe, standing starter tie rule, K rules deduped, fresh-cohort
+        // guard). pre == post self-source equality1 mirrors the
+        // revisitRejected2 revival door; the statement's foundation origin
+        // already sits in exprOriginMap and D-49's cap-full preference
+        // protects it.
+        memoryBlock.mutatedThisBurst = true;
+        insertInternalStatement(memoryBlock.sameIterationInternalMail,
+            memoryBlock.nameMap, parkedStmt, validityName, lvRun, lvN);
+        if (parameters.trackHistory) {
+            OriginDep dep[1] = { { parkedStmt, validityName } };
+            addInternalMailOrigin(memoryBlock.sameIterationInternalMail,
+                memoryBlock.originInterner, parkedStmt, validityName,
+                OriginTag::equality1, dep, 1,
+                (parameters.compressor_mode
+                     ? parameters.compressor_max_origins_per_expr
+                     : parameters.max_origin_per_expr));
+        }
+    }
+
+    gArena.popTo(mark);
+
+    memoryBlock.overallHashMemory.ordisRevisitInProgress.erase(revisitPk);
+}
+
+void ExpressionAnalyzer::revisitRejectedOrdis2(StrSpan groundText,
+    Memory& memoryBlock,
+    StrSpan validityName)
+{
+    auto& rmo2 = memoryBlock.overallHashMemory.rejectedMapOrdis2;
+
+    // Non-minting probe — a never-interned ground text was never filed; a
+    // key without a parked run is a defined miss (a demand with no supply
+    // waits in admissionMapOrdis2 for a later deposit's route-(c) probe).
+    int64_t revisitPk = 0;
+    if (!lookupTemplateKey(memoryBlock.templateInterner,
+            memoryBlock.nameMap, groundText, validityName, revisitPk)) {
+        return;
+    }
+    if (rmo2.lookup(revisitPk) == 0) {
+        return;
+    }
+
+    // DEDICATED re-entrancy guard (never shared with ordisRevisitInProgress
+    // — a concurrent old-map wake of the same packed key must not swallow
+    // an ordis2 wake).
+    if (memoryBlock.overallHashMemory.ordis2RevisitInProgress.contains(revisitPk)) {
+        return;
+    }
+    memoryBlock.overallHashMemory.ordis2RevisitInProgress.mint(revisitPk);
+
+    // Snapshot the filed cohort as VERBATIM blob copies on the gen scratch
+    // arena — copy BEFORE erase (the eraseBlobIf restructures the blob
+    // pool; the revisitRejectedOrdis discipline). Erasing the whole key
+    // first also makes a legitimate re-park by the re-consumption below
+    // start from a clean slate; the or's entries under OTHER disjunct keys
+    // (and in rejectedMapOrdis) stay — a stale later wake re-deposits an
+    // already-open or, which the cohort bootstrap guard turns into a no-op,
+    // and scope wipe clears the rest at discharge.
+    const unsigned ordisSlot = (g_currentCoreId >= 0)
+        ? static_cast<unsigned>(g_currentCoreId)
+        : genScratchArenas().slotCount() - 1;
+    ScratchArena& gArena = genScratchArenas().forSlot(ordisSlot);
+    const ArenaOffset mark = gArena.cursor();
+    const RejectedOrdisRunSnapshot snap =
+        snapshotRejectedOrdisRun(rmo2, revisitPk, gArena);
+    rmo2.eraseBlobIf([revisitPk](int64_t k) { return k == revisitPk; });
+
+    for (int32_t r = 0; r < snap.count; ++r) {
+        const RejectedOrdisValueBlobView& v = snap.views[r];
+        // decodeView is I-3-safe across the loop: the sinks below mint
+        // nameMap + originInterner, never valueInterner, and the walked
+        // blob bytes are gen-arena copies.
+        const StrSpan parkedStmt =
+            memoryBlock.valueInterner.decodeView(v.orStatementId());
+        const int32_t lvN = v.levelCount();
+        int lvRun[256];
+        assert(lvN <= 256 && "filed ordis2 level run exceeds lvRun");
+        for (int32_t j = 0; j < lvN; ++j) lvRun[j] = v.levelAt(j);
+
+        // The un-know (the I-178 exception, same as the old-map wake): the
+        // parked statement is a known local statement, so without this
+        // reset the Site F ancestor dedup would drop the re-deposit before
+        // the or consumption re-runs.
+        resetParkedOrStatementRegistries(memoryBlock, parkedStmt,
+                                         validityName);
+
+        // Re-deposit; the absorb re-runs the full or consumption, whose
+        // route-(c) probe now reads the freshly-drained demand entry and
+        // opens (consuming it). pre == post self-source equality1 mirrors
+        // the revisitRejectedOrdis revival door.
+        memoryBlock.mutatedThisBurst = true;
+        insertInternalStatement(memoryBlock.sameIterationInternalMail,
+            memoryBlock.nameMap, parkedStmt, validityName, lvRun, lvN);
+        if (parameters.trackHistory) {
+            OriginDep dep[1] = { { parkedStmt, validityName } };
+            addInternalMailOrigin(memoryBlock.sameIterationInternalMail,
+                memoryBlock.originInterner, parkedStmt, validityName,
+                OriginTag::equality1, dep, 1,
+                (parameters.compressor_mode
+                     ? parameters.compressor_max_origins_per_expr
+                     : parameters.max_origin_per_expr));
+        }
+    }
+
+    gArena.popTo(mark);
+
+    memoryBlock.overallHashMemory.ordis2RevisitInProgress.erase(revisitPk);
+    // Demand consumption happens only at the route-(c) open (D-267),
+    // never here.
 }
 
 
@@ -7368,8 +9077,6 @@ void ExpressionAnalyzer::revisitRejected2(StrSpan markedExpr,
 // hashburst re-runs the full disintegration pipeline at the constituent's
 // original validity. Unlike revisitRejected2:
 //   * no addExprToMemoryBlock call (mailIn-only revival, linear),
-//   * no cleanAdmissionMap / admission-key erasure (user-specified —
-//     integration revival keeps the admission rule for future hits),
 //   * no revisitInProgress guard (no re-entry through addStatement).
 // The rejectedMapIntegration entry itself IS erased — the rejection is
 // resolved (the constituents have been handed to the revival channel).
@@ -7451,7 +9158,6 @@ void ExpressionAnalyzer::revisitRejectedIntegration2(StrSpan markedKey,
 
     gArena.popTo(mark);
 }
-
 
 
 // Remove "u_" prefixes that begin a token inside bracket lists, i.e. after '[' or ','
@@ -7536,6 +9242,7 @@ void ExpressionAnalyzer::updateAdmissionMapRecursion(StrSpan expression,
     // (D-172).
     const int64_t markedPk = mintTemplateKey(mb.templateInterner, mb.nameMap,
                                              StrSpan(markedExpr), validityName);
+
     {
         const uint8_t* stProbe =
             mb.overallHashMemory.admissionStatusMap.find(markedPk);
@@ -7578,6 +9285,12 @@ void ExpressionAnalyzer::updateAdmissionMapRecursion(StrSpan expression,
 
     for (int32_t admValIx = 0; admValIx < admPropSnap.count; ++admValIx) {
         const AdmissionValueBlobView& val = admPropSnap.views[admValIx];
+        // Ordis-only values never seed recursion propagation — they are
+        // cohort-opening demand evidence, invisible to general admission;
+        // the derived keys this walk inserts stay untagged by construction.
+        if (val.ordisByte() != 0) {
+            continue;
+        }
         // The value loop MINTS valueInterner (encode + insertAdmissionIdsBlob
         // grow its cold pages), so the value's decoded key elements AND its
         // remaining-arg members are COPIED ONCE onto the string arena and held
@@ -7755,7 +9468,9 @@ void ExpressionAnalyzer::updateAdmissionMapRecursion(StrSpan expression,
                         newOutputArg,
                         [](const StrSpan& a, const StrSpan& b) {
                             return compareSpans(a, b) < 0;
-                        })) continue;
+                        })) {
+                    continue;
+                }
 
                 // Condition: All other inputs MUST be in new remaining args.
                 bool allInputsPresent = true;
@@ -7771,7 +9486,9 @@ void ExpressionAnalyzer::updateAdmissionMapRecursion(StrSpan expression,
                     }
                 }
 
-                if (!allInputsPresent) continue;
+                if (!allInputsPresent) {
+                    continue;
+                }
 
                 // 8. Insert New Rule. Single-key marker map -> StrReplacement[1]
                 // (replaceKeysScratch byte-exact twin of ce::replaceKeysInString).
@@ -7802,16 +9519,8 @@ void ExpressionAnalyzer::updateAdmissionMapRecursion(StrSpan expression,
                 for (int32_t j = 0; j < newRemainingN; ++j)
                     bRemIds[j] = mb.valueInterner.encode(newRemaining[j]);
 
-                // consumed-skip (mirror drainAdmissionKeysAlgebra): never re-add a
-                // consumed key to admissionMap (would violate isAdmitted's
-                // admissionMap/consumedAdmissionKeys mutual-exclusion assert).
                 const int64_t newMarkedPk = mintTemplateKey(mb.templateInterner,
                     mb.nameMap, StrSpan(newMarkedExpr), validityName);
-                if (mb.overallHashMemory.consumedAdmissionKeys.contains(newMarkedPk)) {
-                    genArena.popTo(bMark);
-                    continue;
-                }
-
                 insertAdmissionIdsBlob(mb.overallHashMemory.admissionMap,
                                        newMarkedPk, val.depth(),
                                        val.sec(), val.flagByte() != 0,
@@ -7837,6 +9546,9 @@ void ExpressionAnalyzer::updateAdmissionMapRecursion(StrSpan expression,
                 // revisitRejected2 now takes StrSpan validityName; pass the span
                 // this scope already holds (no per-match std::string copy).
                 this->revisitRejected2(StrSpan(newMarkedExpr), mb, validityName);
+                // Ordis revival at the recursion-propagation key gain — a
+                // parked cohort matching the derived key wakes by mail.
+                this->revisitRejectedOrdis(StrSpan(newMarkedExpr), mb, validityName);
             }
         }
     }
@@ -7851,10 +9563,6 @@ void ExpressionAnalyzer::updateAdmissionMapRecursion(StrSpan expression,
 
 
 // filterConjecturesWithCE() — moved to filter.cpp.
-
-
-
-
 
 
 void ExpressionAnalyzer::activateZeroCondition(Memory& memoryBlock)
@@ -7930,6 +9638,20 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
 
     if (bodies.empty()) return;
 
+#if MEM_MEASUREMENT
+    // One iteration, one memory sample. Zeroing here (single-threaded, before
+    // any worker spawns) makes the fold below count each LB active in this
+    // iteration exactly once.
+    gl::mem_tracker::resetIteration();
+#endif
+
+    // Reduced-or closure for every or already in the registry (GL-binary
+    // load, external-theorem precompile, prior seams) BEFORE this
+    // iteration's bursts can flat-consume an or statement. Single-threaded
+    // here — workers spawn later (I-137); idempotent, so the per-iteration
+    // re-run costs one deduping registry scan.
+    preMintReducedOrs();
+
     const unsigned workers = logicalCores;
 
     // Active set at this cycle's start. The barriered phases run phase 1 / 2 / 3
@@ -7955,7 +9677,7 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
     // untouched: it is unswept this round, not deactivated, so the pager's sweep
     // window never includes it and it evicts and stays evicted at 4 GiB.
     const bool skipEnabled = parameters.enable_quiesce_skip
-        && !parameters.compressor_mode && !warmUpPhase;
+        && !parameters.compressor_mode && !ceFilteringActive && !warmUpPhase;
     int skipped = 0;
     for (Memory* b : bodies) {
         if (!(b && b->isActive)) continue;
@@ -7971,6 +9693,18 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
     }
     lastSweptCount = static_cast<int>(active.size());
     lastSkippedCount = skipped;
+
+#if RT_MEASUREMENT
+    // [RT phase measurement - file-bound, see .rt/burst_phases.log]
+    // Per-LB wall-time ledgers for this iteration, indexed like `active`:
+    // phase-1 sweep, phase-2 executor compute, phase-2 finalize, phase-3 sweep,
+    // plus a copy of the split-invariant submatch work for the report.
+    std::vector<int64_t> trapPh1Ns(active.size(), 0);
+    std::vector<int64_t> trapPh2Ns(active.size(), 0);
+    std::vector<int64_t> trapFinNs(active.size(), 0);
+    std::vector<int64_t> trapPh3Ns(active.size(), 0);
+    std::vector<int64_t> trapWork(active.size(), 0);
+#endif
 
     // Once-per-batch LB-size telemetry (this batch's first kernel barrier,
     // single-threaded): the active-LB count and the resident LBs' blocksHeld
@@ -8016,13 +9750,32 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
     // hashburst — the phase where a heavy LB's split gives it N executor threads.
     // `runPhase` is a local generic-lambda helper (Rule 18 exempt).
     auto runPhase = [&active, workers](std::atomic<std::size_t>& next,
-                                       auto&& body_fn) {
-        auto worker = [&active, &next, workers, &body_fn](unsigned coreId) {
+                                       auto&& body_fn
+#if RT_MEASUREMENT
+                                       , int64_t* perLbNs = nullptr
+#endif
+                                       ) {
+        auto worker = [&active, &next, workers, &body_fn
+#if RT_MEASUREMENT
+                       , perLbNs
+#endif
+                       ](unsigned coreId) {
             const unsigned cid = workers ? (coreId % workers) : 0U;
             for (;;) {
                 std::size_t i = next.fetch_add(1, std::memory_order_relaxed);
                 if (i >= active.size()) break;
+#if RT_MEASUREMENT
+                // [RT phase measurement] per-LB wall time; each index i
+                // is dispatched to exactly one worker, so the write is race-free.
+                const auto trapT0 = std::chrono::steady_clock::now();
+#endif
                 body_fn(*active[i], cid);
+#if RT_MEASUREMENT
+                if (perLbNs != nullptr)
+                    perLbNs[i] += std::chrono::duration_cast<
+                        std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now() - trapT0).count();
+#endif
             }
             };
         std::vector<std::thread> pool;
@@ -8031,23 +9784,103 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
         for (auto& th : pool) th.join();
         };
 
+#if PHASE13_DEEP_TIMING
+    std::vector<int64_t> phase1DetailRows(
+        static_cast<std::size_t>(workers) * kPhase13TimingSlotCount, 0);
+    std::vector<int64_t> phase3DetailRows(
+        static_cast<std::size_t>(workers) * kPhase13TimingSlotCount, 0);
+    static constexpr const char* phase13TimingLabels[] = {
+        "claim_load",
+        "burst_setup",
+        "routing_mail_pull",
+        "external_origin_absorb",
+        "external_statement_absorb",
+        "internal_origin_absorb",
+        "internal_statement_absorb",
+        "internal_mail_clear",
+        "apply_equivalence_classes",
+        "enrich_products_of_recursion",
+        "cleanup_expressions",
+        "discharge_contradiction",
+        "discharge_to_be_proved",
+        "discharge_contradiction_scopes",
+        "fill_mail_out",
+        "changed_classes_clear",
+        "routing_mail_cleanup",
+        "react_to_hypothesis",
+        "sanitize_to_be_proved",
+        "drain_disproved_goals",
+        "drain_dead_or_branches",
+        "freeze_resolved_or_branches",
+        "drain_pending_or_releases",
+        "wipe_subtrees",
+        "sweep_ancestor_known_rows",
+        "quiescence_and_dumps",
+        "release_claim"
+    };
+    static_assert(sizeof(phase13TimingLabels) / sizeof(phase13TimingLabels[0])
+                      == kPhase13TimingSlotCount,
+                  "Phase 1/3 timing labels must cover every slot");
+    const auto printPhase13Detail =
+        [workers](int phase, double barrierSeconds,
+                  const std::vector<int64_t>& rows) {
+            int64_t categorizedNs = 0;
+            diagnosticsLog() << "[PHASE13-DETAIL] phase=" << phase
+                      << " barrier_seconds=" << barrierSeconds;
+            for (std::size_t slot = 0; slot < kPhase13TimingSlotCount; ++slot) {
+                int64_t slotNs = 0;
+                for (unsigned worker = 0; worker < workers; ++worker) {
+                    slotNs += rows[static_cast<std::size_t>(worker)
+                                       * kPhase13TimingSlotCount
+                                   + slot];
+                }
+                categorizedNs += slotNs;
+                diagnosticsLog() << ' ' << phase13TimingLabels[slot] << "_worker_seconds="
+                          << static_cast<double>(slotNs) / 1e9;
+            }
+            diagnosticsLog() << " categorized_worker_seconds="
+                      << static_cast<double>(categorizedNs) / 1e9
+                      << std::endl;
+        };
+#endif
+
     // Phase 1 opens a working-set window over its dispatch cursor
     // (D-161, I-114): the steward
     // prefetches the upcoming LBs and, above the watermarks, drains the
     // deloadable rest. Every LB's handshake (claimAndLoadForWork) makes it
     // resident before its body and releases the claim after, so the steward
     // can reclaim it once done.
+    const auto phase1Started = std::chrono::steady_clock::now();
     {
         std::atomic<std::size_t> phase1Cursor{ 0 };
+#if PHASE13_DEEP_TIMING
+        phase13TimingRows = phase1DetailRows.data();
+        phase13TimingWorkers = workers;
+#endif
         steward->beginPhaseWindow(/*phase=*/1, &phase1Cursor, &active, workers,
                                   lbdeload::kDeloadDirectory);
         runPhase(phase1Cursor, [this](Memory& b, unsigned cid) {
             g_inParallelWorkerPhase = true;
             this->performElemPhase1(b, cid);
             g_inParallelWorkerPhase = false;
-        });
+        }
+#if RT_MEASUREMENT
+        , trapPh1Ns.data()
+#endif
+        );
         steward->endPhaseWindow();
+#if PHASE13_DEEP_TIMING
+        phase13TimingRows = nullptr;
+        phase13TimingWorkers = 0;
+#endif
     }
+    const double phase1IterationSeconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - phase1Started).count();
+
+    // The always-on Phase 2 measurement starts after the phase-1 barrier and
+    // stops before phase 3. It includes scheduler setup, processor or CUDA
+    // execution, projection/transfers, sealing, finalization, and split stats.
+    const auto phase2Started = std::chrono::steady_clock::now();
 
     // Phase 2 opens TWO working-set windows PER PASS
     // (D-196): an EXECUTOR window over the real dispatch
@@ -8087,23 +9920,20 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
     // which it has no tasks left. The merge is partition-independent (applyFiringRecords
     // sorts, D-117 / I-77), so which parts came from which round cannot matter.
     //
-    // The rule dimension (partitionAccepts / g_splitCount) is OFF on the main path
-    // (splitCount stays 1). disable_lb_split and the incubator run UNSPLIT; the CE
-    // filter is unaffected (its own splitCount=1 loop in filter.cpp).
+    // disable_lb_split and the incubator run UNSPLIT; the CE filter is unaffected
+    // (its own single-part loop in filter.cpp).
     struct ExecTask {
         Memory* lb;
         std::size_t li;          // index into `active`
-        int processID;           // 0 on the main path (rule dimension off)
-        int splitCount;          // 1 on the main path (partitionAccepts accepts all rules)
-        int partCount;           // concurrent parts of this LB this burst (= bucket count);
-                                 // sets g_isMultiPart in performElem2 (early-exit gate)
+        int partCount;           // concurrent parts of this LB this burst (= bucket count)
         bool produceOnly;        // a round-1 stump PRODUCER (runs produceExpressionStumps,
                                  // not performElem2); its buckets requeue for round 2
         SplitStumpRef stump;     // empty for an unsplit part; set for a bucket part
-        std::atomic<bool>* stop;
+        std::atomic<int64_t>* doomLine;  // the LB's shared packed (position, ordinal) stop line
         std::atomic<int>* partsLeft;
     };
-    const bool mainPath = parameters.lb_split && !parameters.disable_lb_split;
+    const bool mainPath = parameters.lb_split && !parameters.disable_lb_split
+        && !ceFilteringActive;
     // A straggler splits into logicalCores expression buckets; that is the only
     // split dimension now, so the whole-machine core count is the per-LB part
     // ceiling (Rule 19 -- a machine past the named constant stops HERE).
@@ -8113,11 +9943,12 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
 
     if (!active.empty()) {
     const std::size_t M = active.size();
-    // Per-LB phase-2 early-exit flags, EXTERNAL to the LB so the hashburst stays
-    // strictly read-only on it (I-66). One flag per LB, shared by all its parts;
-    // sized once so the &stopFlags[li] handed to tasks stay stable across passes
+    // Per-LB phase-2 early-exit doom lines, EXTERNAL to the LB so the hashburst
+    // stays strictly read-only on it (I-66). One packed (position, ordinal)
+    // atomic per LB, shared by all its parts and lowered only by CAS-min; sized
+    // once so the &doomLines[li] handed to tasks stay stable across passes
     // (the vector is never resized; std::atomic is not movable).
-    std::vector<std::atomic<bool>> stopFlags(M);
+    std::vector<std::atomic<int64_t>> doomLines(M);
     // Per-LB remaining-parts counter (working-set pager): each executor part
     // decrements it after sealing, and the part that drops it to zero releases the
     // LB's claim to Idle -- so an executor-done LB becomes deloadable immediately,
@@ -8135,11 +9966,96 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
     // for the split-ineffective self-control report.
     std::vector<int64_t> lbTotalSub(M, 0);
     std::vector<int64_t> lbMaxSub(M, 0);
+    // Doom-line latch: 1 when any of this LB's parts hit a burst early-exit
+    // (a burstDeactivates trigger) in ANY pass this iteration. An early-exited
+    // part stops at a timing-dependent overshoot past the published line in
+    // its own stream (I-191 protects the merged CONTENT, not the tallies), so
+    // a doomed LB's submatch tally is not a deterministic work figure — the
+    // straggler statistic below excludes it. Whether a doom trigger fires at
+    // all IS deterministic (the winning line's position is always reached by
+    // its part), so the exclusion keeps the split set a pure function of
+    // proof state (I-160). Latched after each pass's join because the
+    // per-pass doomLines reset would erase a pass-1 doom.
+    std::vector<char> lbDoomed(M, 0);
     // Diagnostics for the split-ineffective report: how many stump work items the
     // producer returned and how many buckets it dealt them into (1 = not really split).
     std::vector<int32_t> lbStumps(M, 0);
     std::vector<int32_t> lbBuckets(M, 1);
     std::vector<char> lbFinalized(M, 0);
+    std::vector<char> lbFiringRecordsCanonical(M, 0);
+    // Device-projection capacity census. The first executor task that claims an
+    // LB records its post-phase-1 read image once; split bucket siblings and a
+    // second pass see the same read-only LB and are collapsed by projectionCounted.
+    // Atomics make the observation race-free; addition and maximum are independent
+    // of which sibling wins the exchange. This telemetry never gates proof flow.
+    std::vector<std::atomic<uint8_t>> projectionCounted(M);
+    for (std::atomic<uint8_t>& counted : projectionCounted)
+        counted.store(0, std::memory_order_relaxed);
+    std::atomic<uint64_t> projectionLogicalBlocks{ 0 };
+    std::atomic<uint64_t> projectionStatements{ 0 };
+    std::atomic<uint64_t> projectionMaximumStatements{ 0 };
+    std::atomic<uint64_t> projectionNameRecords{ 0 };
+    std::atomic<uint64_t> projectionMaximumNameRecords{ 0 };
+    std::atomic<uint64_t> projectionNameBytes{ 0 };
+    std::atomic<uint64_t> projectionMaximumNameBytes{ 0 };
+    constexpr std::size_t kProjectionSemanticMetricCount = 20;
+    std::array<std::atomic<uint64_t>,
+               kProjectionSemanticMetricCount> projectionSemanticTotals;
+    std::array<std::atomic<uint64_t>,
+               kProjectionSemanticMetricCount> projectionSemanticMaximums;
+    for (std::size_t metric = 0;
+         metric < kProjectionSemanticMetricCount; ++metric) {
+        projectionSemanticTotals[metric].store(0, std::memory_order_relaxed);
+        projectionSemanticMaximums[metric].store(0, std::memory_order_relaxed);
+    }
+    constexpr std::size_t kTaskProjectionMetricCount = 4;
+    std::array<std::atomic<uint64_t>,
+               kTaskProjectionMetricCount> taskProjectionTotals;
+    std::array<std::atomic<uint64_t>,
+               kTaskProjectionMetricCount> taskProjectionMaximums;
+    for (std::size_t metric = 0;
+         metric < kTaskProjectionMetricCount; ++metric) {
+        taskProjectionTotals[metric].store(0, std::memory_order_relaxed);
+        taskProjectionMaximums[metric].store(0, std::memory_order_relaxed);
+    }
+    gpuRequestFilterCalls.store(0, std::memory_order_relaxed);
+    gpuProducerFilterCalls.store(0, std::memory_order_relaxed);
+    gpuFilterInputStatements.store(0, std::memory_order_relaxed);
+    gpuFilterOutputStatements.store(0, std::memory_order_relaxed);
+    gpuFilterMaximumInputStatements.store(0, std::memory_order_relaxed);
+    gpuFilterMaximumOutputStatements.store(0, std::memory_order_relaxed);
+    constexpr std::size_t kGpuGrowDepthCount =
+        ExecutionParameters::MAX_EXPRESSIONS + 1;
+    std::array<std::atomic<uint64_t>, kGpuGrowDepthCount>
+        gpuGrowAttemptsByDepth;
+    std::array<std::atomic<uint64_t>, kGpuGrowDepthCount>
+        gpuGrowFrontierByDepth;
+    std::array<std::atomic<uint64_t>, kGpuGrowDepthCount>
+        gpuGrowSubkeysByDepth;
+    std::array<std::atomic<uint64_t>, kGpuGrowDepthCount>
+        gpuGrowRequestsByDepth;
+    std::array<std::atomic<uint64_t>, kGpuGrowDepthCount>
+        gpuProducerAttemptsByDepth;
+    std::array<std::atomic<uint64_t>, kGpuGrowDepthCount>
+        gpuProducerSurvivorsByDepth;
+    for (std::size_t depth = 0; depth < kGpuGrowDepthCount; ++depth) {
+        gpuGrowAttemptsByDepth[depth].store(0, std::memory_order_relaxed);
+        gpuGrowFrontierByDepth[depth].store(0, std::memory_order_relaxed);
+        gpuGrowSubkeysByDepth[depth].store(0, std::memory_order_relaxed);
+        gpuGrowRequestsByDepth[depth].store(0, std::memory_order_relaxed);
+        gpuProducerAttemptsByDepth[depth].store(0, std::memory_order_relaxed);
+        gpuProducerSurvivorsByDepth[depth].store(0, std::memory_order_relaxed);
+    }
+    constexpr std::size_t kGpuEvaluationTotalCount = 15;
+    constexpr std::size_t kGpuEvaluationMaximumCount = 3;
+    std::array<std::atomic<uint64_t>, kGpuEvaluationTotalCount>
+        gpuEvaluationTotals;
+    std::array<std::atomic<uint64_t>, kGpuEvaluationMaximumCount>
+        gpuEvaluationMaximums;
+    for (std::atomic<uint64_t>& total : gpuEvaluationTotals)
+        total.store(0, std::memory_order_relaxed);
+    for (std::atomic<uint64_t>& maximum : gpuEvaluationMaximums)
+        maximum.store(0, std::memory_order_relaxed);
     // The stumps a producer task returns, copied off its sealed pages so those pages
     // go back to the pool at once. The bucket tasks point into these runs, so the
     // storage must outlive the pass: deque, never reallocated.
@@ -8148,8 +10064,6 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
     // Task build. A straggler (numberOfParts > 1, set last iteration by the stats
     // pass below) dispatches ONE producer task that enumerates the LB's expression
     // stumps; its buckets run in round 2. Every other LB dispatches ONE unsplit part.
-    // The rule dimension is off on the main path: splitCount stays 1 so
-    // partitionAccepts accepts every rule.
     std::vector<ExecTask> tasks;
     for (std::size_t li = 0; li < M; ++li) {
         Memory* b = active[li];
@@ -8159,9 +10073,9 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
         // one-shot: no prior burst for the stat to see). Consume the flag here.
         const bool straggler = mainPath && (b->numberOfParts > 1 || b->justActivated);
         b->justActivated = false;
-        tasks.push_back(ExecTask{ b, li, /*processID=*/0, /*splitCount=*/1,
+        tasks.push_back(ExecTask{ b, li,
             /*partCount=*/1, /*produceOnly=*/straggler, SplitStumpRef{},
-            &stopFlags[li], &partsRemaining[li] });
+            &doomLines[li], &partsRemaining[li] });
     }
 
     int passNo = 0;
@@ -8172,11 +10086,13 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
             && "phase-2 pass loop exceeded two rounds - a bucket part requeued");
 
         for (std::size_t li = 0; li < M; ++li) {
-            stopFlags[li].store(false, std::memory_order_relaxed);
+            doomLines[li].store(kNoDoomLine, std::memory_order_relaxed);
             partsRemaining[li].store(0, std::memory_order_relaxed);
         }
-        for (const ExecTask& t : tasks)
-            partsRemaining[t.li].fetch_add(1, std::memory_order_relaxed);
+        for (const ExecTask& t : tasks) {
+            if (phase2Backend == Phase2Backend::cpu || t.produceOnly)
+                partsRemaining[t.li].fetch_add(1, std::memory_order_relaxed);
+        }
 
         // This pass's page sets append to the store; `base` is where they start.
         const std::size_t base = pageStore.size();
@@ -8188,9 +10104,19 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
         std::vector<char> stumpBound(tasks.size(), 0);
         std::vector<int32_t> taskStumps(tasks.size(), 0);
         // Per-(LB, part) submatch tally: each worker reads g_growthMatchCount right
-        // after its performElem2 returns (the matches owned by this part, per
-        // partitionAccepts). See D-109.
+        // after its performElem2 returns (the submatches this part visited). See
+        // D-109.
         std::vector<int64_t> taskSubMatches(tasks.size(), 0);
+        // CUDA sealing emits one already-canonical chain per projected LB. The
+        // first task for that LB owns the page set; sibling tasks still retain
+        // their independent split-work counts but do not own duplicate chains.
+        std::vector<int32_t> gpuTaskIndices(tasks.size(), -1);
+        std::vector<char> gpuOutputOwners(tasks.size(), 0);
+#if RT_MEASUREMENT
+        // [RT phase measurement] per-task compute wall time (the
+        // produce/burst call only; claim/load IO excluded).
+        std::vector<int64_t> taskNs(tasks.size(), 0);
+#endif
         // Flat executor order for this pass's pager window: one entry per task.
         std::vector<Memory*> execOrder;
         execOrder.reserve(tasks.size());
@@ -8204,7 +10130,27 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
             steward->beginPhaseWindow(/*phase=*/2, &next, &execOrder, workers,
                                       lbdeload::kDeloadDirectory);
             auto worker = [this, &tasks, &pageStore, base, &stumpPages, &stumpBound,
-                           &taskStumps, &taskSubMatches, &next, workers,
+                            &taskStumps, &taskSubMatches,
+                            &projectionCounted, &projectionLogicalBlocks,
+                            &projectionStatements, &projectionMaximumStatements,
+                            &projectionNameRecords, &projectionMaximumNameRecords,
+                            &projectionNameBytes, &projectionMaximumNameBytes,
+                            &projectionSemanticTotals,
+                            &projectionSemanticMaximums,
+                            &taskProjectionTotals,
+                            &taskProjectionMaximums,
+                            &gpuGrowAttemptsByDepth,
+                            &gpuGrowFrontierByDepth,
+                            &gpuGrowSubkeysByDepth,
+                            &gpuGrowRequestsByDepth,
+                            &gpuProducerAttemptsByDepth,
+                            &gpuProducerSurvivorsByDepth,
+                            &gpuEvaluationTotals,
+                            &gpuEvaluationMaximums,
+#if RT_MEASUREMENT
+                           &taskNs,
+#endif
+                           &next, workers,
                            mainPath](unsigned coreId) {
                 const unsigned cid = workers ? (coreId % workers) : 0U;
                 // The phase-2 executor pool runs in parallel like phases 1/3, so
@@ -8217,29 +10163,109 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                     std::size_t i = next.fetch_add(1, std::memory_order_relaxed);
                     if (i >= tasks.size()) break;
                     const ExecTask& t = tasks[i];
+                    if (this->phase2Backend == Phase2Backend::cuda
+                        && !t.produceOnly) continue;
                     // Unified working-set handshake: claim this LB so the steward
                     // will not deload it under us, reloading if it is cold. A split
                     // sibling that already owns it returns immediately (resident).
                     steward->claimAndLoadForWork(*t.lb, /*phase=*/2,
                                                  lbdeload::kDeloadDirectory);
+                    if (projectionCounted[t.li].exchange(
+                            1, std::memory_order_relaxed) == 0) {
+                        const gpu::Phase2ProjectionUsage projectionUsage =
+                            gpu::measurePhase2ProjectionUsage(*t.lb, *this);
+                        const uint64_t statementCount =
+                            projectionUsage.statements;
+                        const uint64_t nameRecordCount =
+                            projectionUsage.nameRecords;
+                        const uint64_t nameByteCount = projectionUsage.nameBytes;
+                        projectionLogicalBlocks.fetch_add(
+                            1, std::memory_order_relaxed);
+                        projectionStatements.fetch_add(
+                            statementCount, std::memory_order_relaxed);
+                        projectionNameRecords.fetch_add(
+                            nameRecordCount, std::memory_order_relaxed);
+                        projectionNameBytes.fetch_add(
+                            nameByteCount, std::memory_order_relaxed);
+                        auto publishMaximum = [](std::atomic<uint64_t>& maximum,
+                                                 uint64_t value) {
+                            uint64_t observed = maximum.load(
+                                std::memory_order_relaxed);
+                            while (observed < value
+                                && !maximum.compare_exchange_weak(
+                                    observed, value,
+                                    std::memory_order_relaxed,
+                                    std::memory_order_relaxed)) {
+                            }
+                        };
+                        publishMaximum(
+                            projectionMaximumStatements, statementCount);
+                        publishMaximum(
+                            projectionMaximumNameRecords, nameRecordCount);
+                        publishMaximum(
+                            projectionMaximumNameBytes, nameByteCount);
+                        const uint64_t semanticValues[
+                            kProjectionSemanticMetricCount] = {
+                            projectionUsage.ruleStringRecords,
+                            projectionUsage.ruleStringBytes,
+                            projectionUsage.nameSlots,
+                            projectionUsage.byteMapViews,
+                            projectionUsage.byteMapEntries,
+                            projectionUsage.byteMapSlots,
+                            projectionUsage.byteKeyBytes,
+                            projectionUsage.blobRecords,
+                            projectionUsage.blobBytes,
+                            projectionUsage.reverseMapViews,
+                            projectionUsage.reverseMapEntries,
+                            projectionUsage.reverseMapSlots,
+                            projectionUsage.reverseKeyBytes,
+                            projectionUsage.reverseOwners,
+                            projectionUsage.podMapViews,
+                            projectionUsage.podMapEntries,
+                            projectionUsage.podMapSlots,
+                            projectionUsage.podRunValues,
+                            projectionUsage.mandatoryStatementKeys,
+                            projectionUsage.metadataBytes
+                        };
+                        for (std::size_t metric = 0;
+                             metric < kProjectionSemanticMetricCount; ++metric) {
+                            projectionSemanticTotals[metric].fetch_add(
+                                semanticValues[metric],
+                                std::memory_order_relaxed);
+                            publishMaximum(
+                                projectionSemanticMaximums[metric],
+                                semanticValues[metric]);
+                        }
+                    }
                     // The task's exclusive write window on its page set opens here
                     // and closes at the seal below -- the records' strings then cross
                     // the pool join read-only.
                     SealedPageSet& ps = pageStore[base + i];
                     ps.bind(&staticMemory());
+#if RT_MEASUREMENT
+                    // [RT phase measurement] compute wall time of this
+                    // task; index i belongs to exactly this worker (race-free).
+                    const auto trapT0 = std::chrono::steady_clock::now();
+#endif
+                    for (std::size_t depth = 0;
+                         depth < kGpuGrowDepthCount; ++depth) {
+                        g_gpuGrowAttemptsByDepth[depth] = 0;
+                        g_gpuGrowFrontierByDepth[depth] = 0;
+                        g_gpuGrowSubkeysByDepth[depth] = 0;
+                        g_gpuGrowRequestsByDepth[depth] = 0;
+                        g_gpuProducerAttemptsByDepth[depth] = 0;
+                        g_gpuProducerSurvivorsByDepth[depth] = 0;
+                    }
+                    g_gpuEvaluationUsage = GpuEvaluationUsage{};
                     if (t.produceOnly) {
                         // Round-1 stump PRODUCER: enumerate the whole LB's
-                        // expression stumps at g_splitCount == 1 (so the filter
-                        // accepts every rule), retaining terminal pre-stumps for
+                        // expression stumps, retaining terminal pre-stumps for
                         // recordable nodes replaced by a deeper level. It fires
                         // nothing and deposits nothing (ps stays empty); the
                         // classify deals all work items into buckets that run in
                         // round 2. Grow MORE stumps than buckets (a small multiple
                         // of logicalCores) so the round-robin deal evens out the
                         // buckets' grow-tree sizes.
-                        g_splitProcessID = 0;
-                        g_splitCount = 1;
-                        g_isMultiPart = false;
                         ps.seal();
                         stumpPages[i].bind(&staticMemory());
                         stumpBound[i] = 1;
@@ -8252,16 +10278,108 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                         // The producer's level column held this slot's gen arena;
                         // the stumps were copied onto the sealed pages, so nothing
                         // points into it — hand the blocks back now.
+                        assert(ruleStagings().slotIsEmpty(cid)
+                            && "producer exit: staged rule-index writes outlive their window");
                         genScratchArenas().forSlot(cid).releaseAll();
                     } else {
                         // A burst part: an unsplit LB, or one expression bucket of a
-                        // straggler. Runs to completion (no cap). partCount > 1 for a
-                        // bucket keeps the early-exit off (I-76 / g_isMultiPart).
-                        this->performElem2(*t.lb, cid, t.processID, t.splitCount,
-                                           t.partCount, t.stump, ps, *t.stop);
+                        // straggler. Runs to completion unless the LB's doom line
+                        // stops it at a deterministic stream position.
+                        const gpu::Phase2TaskProjectionUsage taskUsage =
+                            gpu::measurePhase2TaskProjectionUsage(
+                                *t.lb,
+                                static_cast<uint32_t>(t.stump.count),
+                                this->ceFilteringActive);
+                        const uint64_t taskValues[kTaskProjectionMetricCount] = {
+                            taskUsage.tasks, taskUsage.batches,
+                            taskUsage.terms, taskUsage.stumps
+                        };
+                        for (std::size_t metric = 0;
+                             metric < kTaskProjectionMetricCount; ++metric) {
+                            taskProjectionTotals[metric].fetch_add(
+                                taskValues[metric], std::memory_order_relaxed);
+                            uint64_t observed = taskProjectionMaximums[metric].load(
+                                std::memory_order_relaxed);
+                            while (observed < taskValues[metric]
+                                && !taskProjectionMaximums[metric].compare_exchange_weak(
+                                    observed, taskValues[metric],
+                                    std::memory_order_relaxed,
+                                    std::memory_order_relaxed)) {
+                            }
+                        }
+                        this->performElem2(*t.lb, cid, t.partCount, t.stump, ps,
+                                           *t.doomLine);
                         ps.seal();
                         taskSubMatches[i] = g_growthMatchCount;
                     }
+                    for (std::size_t depth = 0;
+                         depth < kGpuGrowDepthCount; ++depth) {
+                        gpuGrowAttemptsByDepth[depth].fetch_add(
+                            g_gpuGrowAttemptsByDepth[depth],
+                            std::memory_order_relaxed);
+                        gpuGrowFrontierByDepth[depth].fetch_add(
+                            g_gpuGrowFrontierByDepth[depth],
+                            std::memory_order_relaxed);
+                        gpuGrowSubkeysByDepth[depth].fetch_add(
+                            g_gpuGrowSubkeysByDepth[depth],
+                            std::memory_order_relaxed);
+                        gpuGrowRequestsByDepth[depth].fetch_add(
+                            g_gpuGrowRequestsByDepth[depth],
+                            std::memory_order_relaxed);
+                        gpuProducerAttemptsByDepth[depth].fetch_add(
+                            g_gpuProducerAttemptsByDepth[depth],
+                            std::memory_order_relaxed);
+                        gpuProducerSurvivorsByDepth[depth].fetch_add(
+                            g_gpuProducerSurvivorsByDepth[depth],
+                            std::memory_order_relaxed);
+                    }
+                    const uint64_t evaluationTotals[
+                        kGpuEvaluationTotalCount] = {
+                        g_gpuEvaluationUsage.requests,
+                        g_gpuEvaluationUsage.dependencyPassRequests,
+                        g_gpuEvaluationUsage.reverseOwners,
+                        g_gpuEvaluationUsage.candidateOwners,
+                        g_gpuEvaluationUsage.encodedHits,
+                        g_gpuEvaluationUsage.localValues,
+                        g_gpuEvaluationUsage.headRecords,
+                        g_gpuEvaluationUsage.markerRecords,
+                        g_gpuEvaluationUsage.demandRecords,
+                        g_gpuEvaluationUsage.generatedBytes,
+                        g_gpuEvaluationUsage.levelValues,
+                        g_gpuEvaluationUsage.originDependencies,
+                        g_gpuEvaluationUsage.markerKeys,
+                        g_gpuEvaluationUsage.markerRemainingArgs,
+                        g_gpuEvaluationUsage.markerArgs
+                    };
+                    for (std::size_t metric = 0;
+                         metric < kGpuEvaluationTotalCount; ++metric) {
+                        gpuEvaluationTotals[metric].fetch_add(
+                            evaluationTotals[metric],
+                            std::memory_order_relaxed);
+                    }
+                    const uint64_t evaluationMaximums[
+                        kGpuEvaluationMaximumCount] = {
+                        g_gpuEvaluationUsage.maximumReverseOwnersPerRequest,
+                        g_gpuEvaluationUsage.maximumCandidateOwnersPerRequest,
+                        g_gpuEvaluationUsage.maximumLocalValuesPerHit
+                    };
+                    for (std::size_t metric = 0;
+                         metric < kGpuEvaluationMaximumCount; ++metric) {
+                        uint64_t observed = gpuEvaluationMaximums[metric].load(
+                            std::memory_order_relaxed);
+                        while (observed < evaluationMaximums[metric]
+                            && !gpuEvaluationMaximums[metric].compare_exchange_weak(
+                                observed, evaluationMaximums[metric],
+                                std::memory_order_relaxed,
+                                std::memory_order_relaxed)) {
+                        }
+                    }
+#if RT_MEASUREMENT
+                    // [RT phase measurement]
+                    taskNs[i] = std::chrono::duration_cast<
+                        std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now() - trapT0).count();
+#endif
                     // Last part of this LB to finish releases its claim to Idle (all
                     // parts have sealed -> no part still reads it), so the steward may
                     // now deload it. The finalize re-claims + reloads it.
@@ -8286,12 +10404,1061 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
             steward->endPhaseWindow();
         }
 
+#ifdef GL_CUDA
+        if (phase2Backend == Phase2Backend::cuda) {
+            // Named audited capacity profiles (gpu/phase2_projection.hpp,
+            // gpu/phase2_cuda.hpp) replace direct numeric assignments here.
+            // The FTA shortcut keeps its compact measured image; every other
+            // anchor runs the broad full-run image. One process owns exactly
+            // one profile because the device owners below are static.
+            const bool mainRunCapacity = anchorInfo.name != "AnchorFTA";
+            const gpu::Phase2ProjectionProfile projectionProfile =
+                mainRunCapacity
+                    ? gpu::Phase2ProjectionProfile::fullRun
+                    : gpu::Phase2ProjectionProfile::ftaShortcut;
+            const gpu::Phase2ProjectionCapacity projectionCapacity =
+                gpu::phase2ProjectionCapacityFor(projectionProfile);
+            gpu::Phase2ProjectionCapacity projectionShardCapacity =
+                gpu::phase2ProjectionCapacityFor(
+                    gpu::Phase2ProjectionProfile::ftaShortcut);
+            if (mainRunCapacity) {
+                // Twelve construction workers share a dynamically claimed
+                // chunk. Each shard owns two average shares of every resident
+                // column so one data-heavy logical block cannot overflow its
+                // worker while the complete merged chunk still fits the device.
+                const auto constructionShardCeiling = [](uint32_t original,
+                    uint32_t complete) {
+                    return std::max(original,
+                        complete
+                                / gpu::kPhase2ProjectionConstructionShardShareDivisor
+                            + static_cast<uint32_t>(static_cast<bool>(complete
+                                % gpu::kPhase2ProjectionConstructionShardShareDivisor)));
+                };
+                projectionShardCapacity.logicalBlocks =
+                    constructionShardCeiling(
+                        projectionShardCapacity.logicalBlocks,
+                        projectionCapacity.logicalBlocks);
+                projectionShardCapacity.statements = constructionShardCeiling(
+                    projectionShardCapacity.statements,
+                    projectionCapacity.statements);
+                projectionShardCapacity.nameRecords = constructionShardCeiling(
+                    projectionShardCapacity.nameRecords,
+                    projectionCapacity.nameRecords);
+                projectionShardCapacity.nameBytes = constructionShardCeiling(
+                    projectionShardCapacity.nameBytes,
+                    projectionCapacity.nameBytes);
+                projectionShardCapacity.nameSlots = constructionShardCeiling(
+                    projectionShardCapacity.nameSlots,
+                    projectionCapacity.nameSlots);
+                projectionShardCapacity.ruleStringRecords =
+                    constructionShardCeiling(
+                        projectionShardCapacity.ruleStringRecords,
+                        projectionCapacity.ruleStringRecords);
+                projectionShardCapacity.ruleStringBytes =
+                    constructionShardCeiling(
+                        projectionShardCapacity.ruleStringBytes,
+                        projectionCapacity.ruleStringBytes);
+                projectionShardCapacity.byteMapViews =
+                    constructionShardCeiling(
+                        projectionShardCapacity.byteMapViews,
+                        projectionCapacity.byteMapViews);
+                projectionShardCapacity.byteMapEntries =
+                    constructionShardCeiling(
+                        projectionShardCapacity.byteMapEntries,
+                        projectionCapacity.byteMapEntries);
+                projectionShardCapacity.byteMapSlots =
+                    constructionShardCeiling(
+                        projectionShardCapacity.byteMapSlots,
+                        projectionCapacity.byteMapSlots);
+                projectionShardCapacity.byteKeyBytes =
+                    constructionShardCeiling(
+                        projectionShardCapacity.byteKeyBytes,
+                        projectionCapacity.byteKeyBytes);
+                projectionShardCapacity.blobRecords = constructionShardCeiling(
+                    projectionShardCapacity.blobRecords,
+                    projectionCapacity.blobRecords);
+                projectionShardCapacity.blobBytes = constructionShardCeiling(
+                    projectionShardCapacity.blobBytes,
+                    projectionCapacity.blobBytes);
+                projectionShardCapacity.reverseMapViews =
+                    constructionShardCeiling(
+                        projectionShardCapacity.reverseMapViews,
+                        projectionCapacity.reverseMapViews);
+                projectionShardCapacity.reverseMapEntries =
+                    constructionShardCeiling(
+                        projectionShardCapacity.reverseMapEntries,
+                        projectionCapacity.reverseMapEntries);
+                projectionShardCapacity.reverseMapSlots =
+                    constructionShardCeiling(
+                        projectionShardCapacity.reverseMapSlots,
+                        projectionCapacity.reverseMapSlots);
+                projectionShardCapacity.reverseKeyBytes =
+                    constructionShardCeiling(
+                        projectionShardCapacity.reverseKeyBytes,
+                        projectionCapacity.reverseKeyBytes);
+                projectionShardCapacity.reverseOwners =
+                    constructionShardCeiling(
+                        projectionShardCapacity.reverseOwners,
+                        projectionCapacity.reverseOwners);
+                projectionShardCapacity.podMapViews = constructionShardCeiling(
+                    projectionShardCapacity.podMapViews,
+                    projectionCapacity.podMapViews);
+                projectionShardCapacity.podMapEntries =
+                    constructionShardCeiling(
+                        projectionShardCapacity.podMapEntries,
+                        projectionCapacity.podMapEntries);
+                projectionShardCapacity.podMapSlots = constructionShardCeiling(
+                    projectionShardCapacity.podMapSlots,
+                    projectionCapacity.podMapSlots);
+                projectionShardCapacity.podRunValues =
+                    constructionShardCeiling(
+                        projectionShardCapacity.podRunValues,
+                        projectionCapacity.podRunValues);
+                projectionShardCapacity.mandatoryStatementKeys =
+                    constructionShardCeiling(
+                        projectionShardCapacity.mandatoryStatementKeys,
+                        projectionCapacity.mandatoryStatementKeys);
+                projectionShardCapacity.metadataBytes =
+                    constructionShardCeiling(
+                        projectionShardCapacity.metadataBytes,
+                        projectionCapacity.metadataBytes);
+            }
+
+            const gpu::Phase2TaskProjectionCapacity taskCapacity =
+                gpu::kPhase2TaskProjectionCapacity;
+            const gpu::Phase2FilterScheduleCapacity filterCapacity =
+                gpu::kPhase2FilterScheduleCapacity;
+            // A single split Gauss task family owns more than one million live
+            // breadth-frontier nodes. Growth and ordering therefore share one
+            // named accepted-event ceiling for the indivisible family.
+            const gpu::Phase2GrowthCapacity growthCapacity = mainRunCapacity
+                ? gpu::kFullRunPhase2GrowthCapacity
+                : gpu::kFtaShortcutPhase2GrowthCapacity;
+            const gpu::Phase2OrderingCapacity orderingCapacity = mainRunCapacity
+                ? gpu::kFullRunPhase2OrderingCapacity
+                : gpu::kFtaShortcutPhase2OrderingCapacity;
+            // Full-run incubator bursts materialize marker work at request scale;
+            // the shortcut profile retains its independently audited columns.
+            const gpu::Phase2EvaluationCapacity evaluationCapacity =
+                mainRunCapacity
+                    ? gpu::kFullRunPhase2EvaluationCapacity
+                    : gpu::kFtaShortcutPhase2EvaluationCapacity;
+
+            // High-volume gate counters remain isolated from proof flow and are
+            // disabled after fixing the production capacities from the census.
+            constexpr bool kCollectPhase2GrowthCensus = false;
+
+            // These owners initialize only on the first selected CUDA pass and
+            // retain every host and device allocation until process exit.
+            static const gpu::Phase2ProjectionProfile fixedProjectionProfile =
+                projectionProfile;
+            assert(fixedProjectionProfile == projectionProfile
+                && "CUDA Phase 2 static owners require one capacity profile "
+                   "per process");
+            constexpr std::size_t kGpuProjectionShardCount =
+                gpu::kPhase2ProjectionConstructionShardCount;
+            static gpu::Phase2ProjectionArena hostProjection(
+                projectionCapacity);
+            static std::array<gpu::Phase2ProjectionArena,
+                kGpuProjectionShardCount> projectionShards{
+                    gpu::Phase2ProjectionArena(projectionShardCapacity),
+                    gpu::Phase2ProjectionArena(projectionShardCapacity),
+                    gpu::Phase2ProjectionArena(projectionShardCapacity),
+                    gpu::Phase2ProjectionArena(projectionShardCapacity),
+                    gpu::Phase2ProjectionArena(projectionShardCapacity),
+                    gpu::Phase2ProjectionArena(projectionShardCapacity),
+                    gpu::Phase2ProjectionArena(projectionShardCapacity),
+                    gpu::Phase2ProjectionArena(projectionShardCapacity),
+                    gpu::Phase2ProjectionArena(projectionShardCapacity),
+                    gpu::Phase2ProjectionArena(projectionShardCapacity),
+                    gpu::Phase2ProjectionArena(projectionShardCapacity),
+                    gpu::Phase2ProjectionArena(projectionShardCapacity) };
+            static gpu::CudaPhase2ProjectionBuffer deviceProjection(
+                projectionCapacity);
+            static gpu::Phase2TaskProjectionArena hostTasks(taskCapacity);
+            static gpu::CudaPhase2TaskBuffer deviceTasks(taskCapacity);
+            static gpu::Phase2FilterScheduleArena filterSchedule(
+                filterCapacity);
+            static gpu::CudaPhase2FilterSortBuffer deviceFilter(
+                filterCapacity);
+            static gpu::Phase2GrowthScheduleArena growthSchedule(
+                growthCapacity.calls);
+            static gpu::CudaPhase2GrowthBuffer deviceGrowth(growthCapacity);
+            static gpu::CudaPhase2OrderingBuffer deviceOrdering(
+                orderingCapacity);
+            static gpu::CudaPhase2EvaluationBuffer deviceEvaluation(
+                evaluationCapacity);
+            static gpu::Phase2SealingArena sealing(evaluationCapacity);
+
+            static const bool fixedDeviceOwnershipReported = [&]() {
+                const uint64_t projectionBytes =
+                    deviceProjection.fixedAllocationBytes();
+                const uint64_t taskBytes = deviceTasks.fixedAllocationBytes();
+                const uint64_t filterBytes = deviceFilter.fixedAllocationBytes();
+                const uint64_t growthBytes = deviceGrowth.fixedAllocationBytes();
+                const uint64_t orderingBytes =
+                    deviceOrdering.fixedAllocationBytes();
+                const uint64_t evaluationBytes =
+                    deviceEvaluation.fixedAllocationBytes();
+                const uint64_t totalBytes = projectionBytes + taskBytes
+                    + filterBytes + growthBytes + orderingBytes
+                    + evaluationBytes;
+                diagnosticsLog() << "[GPU-PHASE2-MEMORY] projection_bytes="
+                    << projectionBytes
+                    << " task_bytes=" << taskBytes
+                    << " filter_bytes=" << filterBytes
+                    << " growth_bytes=" << growthBytes
+                    << " ordering_bytes=" << orderingBytes
+                    << " evaluation_bytes=" << evaluationBytes
+                    << " total_fixed_device_bytes=" << totalBytes << std::endl;
+                return true;
+            }();
+            static_cast<void>(fixedDeviceOwnershipReported);
+
+            // A full run can expose more state than shortcut's one projection.
+            // Keep every split LB's task family together and greedily fill a
+            // deterministic chunk against every fixed projection/task column.
+            // No projected state survives a chunk boundary.
+            const auto addProjectionUsage = [](
+                gpu::Phase2ProjectionUsage& total,
+                const gpu::Phase2ProjectionUsage& add) {
+                total.logicalBlocks += add.logicalBlocks;
+                total.statements += add.statements;
+                total.nameRecords += add.nameRecords;
+                total.nameBytes += add.nameBytes;
+                total.nameSlots += add.nameSlots;
+                total.ruleStringRecords += add.ruleStringRecords;
+                total.ruleStringBytes += add.ruleStringBytes;
+                total.byteMapViews += add.byteMapViews;
+                total.byteMapEntries += add.byteMapEntries;
+                total.byteMapSlots += add.byteMapSlots;
+                total.byteKeyBytes += add.byteKeyBytes;
+                total.blobRecords += add.blobRecords;
+                total.blobBytes += add.blobBytes;
+                total.reverseMapViews += add.reverseMapViews;
+                total.reverseMapEntries += add.reverseMapEntries;
+                total.reverseMapSlots += add.reverseMapSlots;
+                total.reverseKeyBytes += add.reverseKeyBytes;
+                total.reverseOwners += add.reverseOwners;
+                total.podMapViews += add.podMapViews;
+                total.podMapEntries += add.podMapEntries;
+                total.podMapSlots += add.podMapSlots;
+                total.podRunValues += add.podRunValues;
+                total.mandatoryStatementKeys += add.mandatoryStatementKeys;
+                total.metadataBytes += add.metadataBytes;
+            };
+            const auto projectionFits = [&projectionCapacity](
+                const gpu::Phase2ProjectionUsage& total,
+                const gpu::Phase2ProjectionUsage& add) {
+                return total.logicalBlocks + add.logicalBlocks
+                           <= projectionCapacity.logicalBlocks
+                    && total.statements + add.statements
+                           <= projectionCapacity.statements
+                    && total.nameRecords + add.nameRecords
+                           <= projectionCapacity.nameRecords
+                    && total.nameBytes + add.nameBytes
+                           <= projectionCapacity.nameBytes
+                    && total.nameSlots + add.nameSlots
+                           <= projectionCapacity.nameSlots
+                    && total.ruleStringRecords + add.ruleStringRecords
+                           <= projectionCapacity.ruleStringRecords
+                    && total.ruleStringBytes + add.ruleStringBytes
+                           <= projectionCapacity.ruleStringBytes
+                    && total.byteMapViews + add.byteMapViews
+                           <= projectionCapacity.byteMapViews
+                    && total.byteMapEntries + add.byteMapEntries
+                           <= projectionCapacity.byteMapEntries
+                    && total.byteMapSlots + add.byteMapSlots
+                           <= projectionCapacity.byteMapSlots
+                    && total.byteKeyBytes + add.byteKeyBytes
+                           <= projectionCapacity.byteKeyBytes
+                    && total.blobRecords + add.blobRecords
+                           <= projectionCapacity.blobRecords
+                    && total.blobBytes + add.blobBytes
+                           <= projectionCapacity.blobBytes
+                    && total.reverseMapViews + add.reverseMapViews
+                           <= projectionCapacity.reverseMapViews
+                    && total.reverseMapEntries + add.reverseMapEntries
+                           <= projectionCapacity.reverseMapEntries
+                    && total.reverseMapSlots + add.reverseMapSlots
+                           <= projectionCapacity.reverseMapSlots
+                    && total.reverseKeyBytes + add.reverseKeyBytes
+                           <= projectionCapacity.reverseKeyBytes
+                    && total.reverseOwners + add.reverseOwners
+                           <= projectionCapacity.reverseOwners
+                    && total.podMapViews + add.podMapViews
+                           <= projectionCapacity.podMapViews
+                    && total.podMapEntries + add.podMapEntries
+                           <= projectionCapacity.podMapEntries
+                    && total.podMapSlots + add.podMapSlots
+                           <= projectionCapacity.podMapSlots
+                    && total.podRunValues + add.podRunValues
+                           <= projectionCapacity.podRunValues
+                    && total.mandatoryStatementKeys
+                           + add.mandatoryStatementKeys
+                           <= projectionCapacity.mandatoryStatementKeys
+                    && total.metadataBytes + add.metadataBytes
+                           <= projectionCapacity.metadataBytes;
+            };
+            const auto addTaskUsage = [](
+                gpu::Phase2TaskProjectionUsage& total,
+                const gpu::Phase2TaskProjectionUsage& add) {
+                total.tasks += add.tasks;
+                total.batches += add.batches;
+                total.terms += add.terms;
+                total.stumps += add.stumps;
+            };
+            const auto taskFits = [&taskCapacity](
+                const gpu::Phase2TaskProjectionUsage& total,
+                const gpu::Phase2TaskProjectionUsage& add) {
+                return total.tasks + add.tasks <= taskCapacity.tasks
+                    && total.batches + add.batches <= taskCapacity.batches
+                    && total.terms + add.terms <= taskCapacity.terms
+                    && total.stumps + add.stumps <= taskCapacity.stumps;
+            };
+            const auto hashMemoryBit = [](gpu::DeviceHashMemoryKind memory) {
+                return 1u << static_cast<uint32_t>(memory);
+            };
+            const auto selectedHashMemoriesFor = [this, &hashMemoryBit](
+                const Memory& body) {
+                if (ceFilteringActive) {
+                    return hashMemoryBit(
+                        gpu::DeviceHashMemoryKind::overall);
+                }
+                uint32_t selected = 0;
+                if (!body.workingMemory.encodedMap.empty()
+                    && !body.intLocalEncodedStatements.empty()) {
+                    selected |= hashMemoryBit(
+                        gpu::DeviceHashMemoryKind::working);
+                }
+                if (!body.intLocalEncodedStatementsDelta.empty()
+                    || (!body.intExternalStatements.empty()
+                        && !body.intLocalEncodedStatements.empty())) {
+                    selected |= hashMemoryBit(
+                        gpu::DeviceHashMemoryKind::overall);
+                }
+                if (!body.localHashMemory.encodedMap.empty()
+                    && !body.intExternalStatements.empty()) {
+                    selected |= hashMemoryBit(
+                        gpu::DeviceHashMemoryKind::local);
+                }
+                if (!body.localHashMemoryDelta.encodedMap.empty()) {
+                    selected |= hashMemoryBit(
+                        gpu::DeviceHashMemoryKind::localDelta);
+                }
+                return selected;
+            };
+            std::vector<std::vector<std::size_t>> tasksByLogicalBlock(M);
+            std::vector<gpu::Phase2TaskProjectionUsage> cudaTaskUsages(
+                tasks.size());
+            std::vector<uint32_t> selectedHashMemoriesByLi(M, 0);
+            for (std::size_t taskPosition = 0;
+                 taskPosition < tasks.size(); ++taskPosition) {
+                const ExecTask& task = tasks[taskPosition];
+                if (task.produceOnly) continue;
+                cudaTaskUsages[taskPosition] =
+                    gpu::measurePhase2TaskProjectionUsage(
+                        *task.lb,
+                        static_cast<uint32_t>(task.stump.count),
+                        ceFilteringActive);
+                if (cudaTaskUsages[taskPosition].tasks != 0) {
+                    const uint32_t selected =
+                        selectedHashMemoriesFor(*task.lb);
+                    assert(selected != 0);
+                    if (selectedHashMemoriesByLi[task.li] == 0)
+                        selectedHashMemoriesByLi[task.li] = selected;
+                    else
+                        assert(selectedHashMemoriesByLi[task.li] == selected);
+                    tasksByLogicalBlock[task.li].push_back(taskPosition);
+                }
+            }
+            std::vector<std::vector<std::size_t>> cudaTaskChunks;
+            std::vector<std::size_t> cudaTaskChunk;
+            cudaTaskChunk.reserve(taskCapacity.tasks);
+            gpu::Phase2ProjectionUsage chunkProjectionUsage{};
+            gpu::Phase2TaskProjectionUsage chunkTaskUsage{};
+            gpu::Phase2ProjectionUsage passProjectionUsage{};
+            gpu::Phase2TaskProjectionUsage passTaskUsage{};
+            for (std::size_t taskPosition = 0;
+                 taskPosition < tasks.size(); ++taskPosition) {
+                const ExecTask& task = tasks[taskPosition];
+                if (task.produceOnly) continue;
+                std::vector<std::size_t>& family =
+                    tasksByLogicalBlock[task.li];
+                if (family.empty()) continue;
+                assert(task.lb->lbMemory.manager.resident()
+                    && "CUDA projection packing requires resident state");
+                const uint32_t selectedHashMemories =
+                    selectedHashMemoriesByLi[task.li];
+                assert(selectedHashMemories != 0);
+                const gpu::Phase2ProjectionUsage familyProjectionUsage =
+                    gpu::measurePhase2ProjectionUsage(
+                        *task.lb, *this, selectedHashMemories);
+                gpu::Phase2TaskProjectionUsage familyTaskUsage{};
+                for (const std::size_t familyTaskPosition : family) {
+                    addTaskUsage(familyTaskUsage,
+                        cudaTaskUsages[familyTaskPosition]);
+                }
+                if (!cudaTaskChunk.empty()
+                    && (!projectionFits(
+                            chunkProjectionUsage, familyProjectionUsage)
+                        || !taskFits(chunkTaskUsage, familyTaskUsage))) {
+                    cudaTaskChunks.push_back(std::move(cudaTaskChunk));
+                    cudaTaskChunk.clear();
+                    cudaTaskChunk.reserve(taskCapacity.tasks);
+                    chunkProjectionUsage = gpu::Phase2ProjectionUsage{};
+                    chunkTaskUsage = gpu::Phase2TaskProjectionUsage{};
+                }
+                assert(projectionFits(
+                           chunkProjectionUsage, familyProjectionUsage)
+                    && "one logical block's CUDA projection exceeds capacity");
+                assert(taskFits(chunkTaskUsage, familyTaskUsage)
+                    && "one logical block's CUDA task family exceeds capacity");
+                cudaTaskChunk.insert(
+                    cudaTaskChunk.end(), family.begin(), family.end());
+                addProjectionUsage(
+                    chunkProjectionUsage, familyProjectionUsage);
+                addTaskUsage(chunkTaskUsage, familyTaskUsage);
+                addProjectionUsage(
+                    passProjectionUsage, familyProjectionUsage);
+                addTaskUsage(passTaskUsage, familyTaskUsage);
+                family.clear();
+            }
+            if (!cudaTaskChunk.empty())
+                cudaTaskChunks.push_back(std::move(cudaTaskChunk));
+
+            diagnosticsLog() << "[GPU-PACKING] pass=" << passNo
+                      << " chunks=" << cudaTaskChunks.size()
+                      << " logical_blocks="
+                      << passProjectionUsage.logicalBlocks
+                      << " statements=" << passProjectionUsage.statements
+                      << " name_records=" << passProjectionUsage.nameRecords
+                      << " name_bytes=" << passProjectionUsage.nameBytes
+                      << " name_slots=" << passProjectionUsage.nameSlots
+                      << " rule_string_records="
+                      << passProjectionUsage.ruleStringRecords
+                      << " rule_string_bytes="
+                      << passProjectionUsage.ruleStringBytes
+                      << " byte_map_views="
+                      << passProjectionUsage.byteMapViews
+                      << " byte_map_entries="
+                      << passProjectionUsage.byteMapEntries
+                      << " byte_map_slots="
+                      << passProjectionUsage.byteMapSlots
+                      << " byte_key_bytes="
+                      << passProjectionUsage.byteKeyBytes
+                      << " blob_records="
+                      << passProjectionUsage.blobRecords
+                      << " blob_bytes=" << passProjectionUsage.blobBytes
+                      << " reverse_map_views="
+                      << passProjectionUsage.reverseMapViews
+                      << " reverse_map_entries="
+                      << passProjectionUsage.reverseMapEntries
+                      << " reverse_map_slots="
+                      << passProjectionUsage.reverseMapSlots
+                      << " reverse_key_bytes="
+                      << passProjectionUsage.reverseKeyBytes
+                      << " reverse_owners="
+                      << passProjectionUsage.reverseOwners
+                      << " pod_map_views="
+                      << passProjectionUsage.podMapViews
+                      << " pod_map_entries="
+                      << passProjectionUsage.podMapEntries
+                      << " pod_map_slots="
+                      << passProjectionUsage.podMapSlots
+                      << " pod_run_values="
+                      << passProjectionUsage.podRunValues
+                      << " mandatory_statement_keys="
+                      << passProjectionUsage.mandatoryStatementKeys
+                      << " metadata_bytes="
+                      << passProjectionUsage.metadataBytes
+                      << " tasks=" << passTaskUsage.tasks
+                      << " batches=" << passTaskUsage.batches
+                      << " terms=" << passTaskUsage.terms
+                      << " stumps=" << passTaskUsage.stumps
+                      << std::endl;
+
+            for (const std::vector<std::size_t>& cudaTaskPositions
+                 : cudaTaskChunks) {
+            const auto gpuPassStarted = std::chrono::steady_clock::now();
+            hostProjection.clear();
+            for (gpu::Phase2ProjectionArena& shard : projectionShards)
+                shard.clear();
+            hostTasks.clear();
+            filterSchedule.clear();
+            growthSchedule.clear();
+
+            std::vector<char> projectionSeen(M, 0);
+            std::vector<std::size_t> projectionLis;
+            std::vector<Memory*> projectionOrder;
+            std::vector<uint32_t> projectionSelectedHashMemories;
+            std::array<std::size_t, gpu::kMaxProjectedBlocksPerChunk>
+                outputTaskByBlock{};
+            for (const std::size_t taskPosition : cudaTaskPositions) {
+                const ExecTask& task = tasks[taskPosition];
+                if (projectionSeen[task.li] != 0) continue;
+                projectionSeen[task.li] = 1;
+                assert(projectionLis.size()
+                    < projectionCapacity.logicalBlocks);
+                projectionLis.push_back(task.li);
+                projectionOrder.push_back(task.lb);
+                assert(selectedHashMemoriesByLi[task.li] != 0);
+                projectionSelectedHashMemories.push_back(
+                    selectedHashMemoriesByLi[task.li]);
+                outputTaskByBlock[projectionLis.size() - 1] = taskPosition;
+                gpuOutputOwners[taskPosition] = 1;
+            }
+
+            if (!projectionOrder.empty()) {
+                std::vector<int32_t> projectedBlockByLi(M, -1);
+                std::atomic<std::size_t> projectionCursor{ 0 };
+                steward->beginPhaseWindow(
+                    /*phase=*/2, &projectionCursor, &projectionOrder,
+                    static_cast<unsigned>(kGpuProjectionShardCount),
+                    lbdeload::kDeloadDirectory);
+                std::array<std::array<uint32_t,
+                        gpu::kMaxProjectedBlocksPerChunk>,
+                    kGpuProjectionShardCount> shardBlockIndices{};
+                std::array<uint32_t, kGpuProjectionShardCount>
+                    shardBlockCounts{};
+                const auto projectionWorker = [this, &projectionCursor,
+                    &projectionOrder, &projectionSelectedHashMemories,
+                    &shardBlockIndices,
+                    &shardBlockCounts](std::size_t shardIndex) {
+                    gpu::Phase2ProjectionArena& shard =
+                        projectionShards[shardIndex];
+                    for (;;) {
+                        const std::size_t blockIndex = projectionCursor.fetch_add(
+                            1, std::memory_order_relaxed);
+                        if (blockIndex >= projectionOrder.size()) break;
+                        Memory* logicalBlock = projectionOrder[blockIndex];
+                        this->steward->claimAndLoadForWork(
+                            *logicalBlock, /*phase=*/2,
+                            lbdeload::kDeloadDirectory);
+                        const uint32_t localBlockIndex =
+                            static_cast<uint32_t>(shard.logicalBlocks.size());
+                        assert(localBlockIndex < shardBlockIndices[shardIndex].size());
+                        const gpu::DeviceLogicalBlockProjection projected =
+                            shard.appendLogicalBlock(
+                                *logicalBlock, *this,
+                                projectionSelectedHashMemories[blockIndex]);
+                        assert(projected.statementCount
+                            == static_cast<uint32_t>(
+                                logicalBlock->intEncodedStatements.size()));
+                        shardBlockIndices[shardIndex][localBlockIndex] =
+                            static_cast<uint32_t>(blockIndex);
+                        assert(logicalBlock->stewardClaim.load(
+                                   std::memory_order_relaxed)
+                               == static_cast<uint8_t>(
+                                      Memory::StewardClaim::WorkerOwned));
+                        logicalBlock->stewardClaim.store(
+                            static_cast<uint8_t>(Memory::StewardClaim::Idle),
+                            std::memory_order_release);
+                    }
+                    shardBlockCounts[shardIndex] =
+                        static_cast<uint32_t>(shard.logicalBlocks.size());
+                };
+                std::array<std::thread, kGpuProjectionShardCount>
+                    projectionThreads;
+                for (std::size_t shardIndex = 0;
+                     shardIndex < kGpuProjectionShardCount; ++shardIndex) {
+                    projectionThreads[shardIndex] = std::thread(
+                        projectionWorker, shardIndex);
+                }
+                for (std::thread& thread : projectionThreads) thread.join();
+                steward->endPhaseWindow();
+
+                std::array<gpu::DeviceLogicalBlockProjection,
+                    gpu::kMaxProjectedBlocksPerChunk>
+                    canonicalDescriptors{};
+                std::array<uint8_t, gpu::kMaxProjectedBlocksPerChunk>
+                    canonicalDescriptorSeen{};
+                std::size_t mergedBlockCount = 0;
+                for (std::size_t shardIndex = 0;
+                     shardIndex < kGpuProjectionShardCount; ++shardIndex) {
+                    const uint32_t destinationBlockOffset =
+                        hostProjection.appendShard(projectionShards[shardIndex]);
+                    assert(destinationBlockOffset == mergedBlockCount);
+                    for (uint32_t localBlockIndex = 0;
+                         localBlockIndex < shardBlockCounts[shardIndex];
+                         ++localBlockIndex) {
+                        const uint32_t blockIndex =
+                            shardBlockIndices[shardIndex][localBlockIndex];
+                        assert(blockIndex < projectionOrder.size());
+                        assert(canonicalDescriptorSeen[blockIndex] == 0);
+                        canonicalDescriptorSeen[blockIndex] = 1;
+                        canonicalDescriptors[blockIndex] =
+                            hostProjection.logicalBlocks[
+                                destinationBlockOffset + localBlockIndex];
+                    }
+                    mergedBlockCount += shardBlockCounts[shardIndex];
+                }
+                assert(mergedBlockCount == projectionOrder.size());
+                assert(hostProjection.logicalBlocks.size()
+                    == projectionOrder.size());
+                for (std::size_t blockIndex = 0;
+                     blockIndex < projectionOrder.size(); ++blockIndex) {
+                    assert(canonicalDescriptorSeen[blockIndex] == 1);
+                    hostProjection.logicalBlocks[blockIndex] =
+                        canonicalDescriptors[blockIndex];
+                    assert(projectedBlockByLi[projectionLis[blockIndex]] < 0);
+                    projectedBlockByLi[projectionLis[blockIndex]] =
+                        static_cast<int32_t>(blockIndex);
+                }
+                const auto gpuProjectionFinished =
+                    std::chrono::steady_clock::now();
+                deviceProjection.beginPhase2Upload(hostProjection);
+
+                std::vector<Memory*> scheduleOrder;
+                scheduleOrder.reserve(cudaTaskPositions.size());
+                for (const std::size_t taskPosition : cudaTaskPositions)
+                    scheduleOrder.push_back(tasks[taskPosition].lb);
+                std::atomic<std::size_t> scheduleCursor{ 0 };
+                steward->beginPhaseWindow(
+                    /*phase=*/2, &scheduleCursor, &scheduleOrder, 1,
+                    lbdeload::kDeloadDirectory);
+                std::size_t scheduleIndex = 0;
+                for (const std::size_t taskPosition : cudaTaskPositions) {
+                    const ExecTask& task = tasks[taskPosition];
+                    scheduleCursor.store(
+                        scheduleIndex, std::memory_order_relaxed);
+                    steward->claimAndLoadForWork(
+                        *task.lb, /*phase=*/2,
+                        lbdeload::kDeloadDirectory);
+                    const int32_t blockIndexSigned =
+                        projectedBlockByLi[task.li];
+                    assert(blockIndexSigned >= 0);
+                    const uint32_t blockIndex =
+                        static_cast<uint32_t>(blockIndexSigned);
+
+                    // Match the processor's hard staged-arrival invariant before
+                    // the device sees the immutable projection.
+                    for (int32_t index = 0;
+                         index < task.lb->intExternalStatements.size(); ++index) {
+                        const IntEncodedExpr& external =
+                            task.lb->intExternalStatements[index];
+                        if (external.maxIteration
+                            > parameters.maxIterationNumberVariable) continue;
+                        assert(task.lb->intKnownStatements.find(
+                                   StatementKey{
+                                       external.originalId,
+                                       external.validityId }) != nullptr
+                               && "a staged mail arrival must remain registered "
+                                  "before CUDA Phase 2 projection");
+                    }
+
+                    std::array<gpu::Phase2RequestBatchInput, 4> batches{};
+                    uint32_t batchCount = 0;
+                    if (ceFilteringActive) {
+                        assert(task.partCount == 1 && task.stump.count == 0);
+                        batches[0].kind =
+                            gpu::DeviceRequestBatchKind::counterExample;
+                        batches[0].memory =
+                            gpu::DeviceHashMemoryKind::overall;
+                        batchCount = 1;
+                    } else {
+                        if (!task.lb->workingMemory.encodedMap.empty()
+                            && !task.lb->intLocalEncodedStatements.empty()) {
+                            gpu::Phase2RequestBatchInput& input =
+                                batches[batchCount++];
+                            input.kind =
+                                gpu::DeviceRequestBatchKind::workingRules;
+                            input.memory = gpu::DeviceHashMemoryKind::working;
+                            input.terms[0].views[0] =
+                                gpu::DeviceMandatoryViewKind::local;
+                            input.terms[0].viewCount = 1;
+                            input.termCount = 1;
+                        }
+
+                        const bool hasNewThisBurst =
+                            !task.lb->intLocalEncodedStatementsDelta.empty()
+                            || (!task.lb->intExternalStatements.empty()
+                                && !task.lb->intLocalEncodedStatements.empty());
+                        if (hasNewThisBurst) {
+                            gpu::Phase2RequestBatchInput& input =
+                                batches[batchCount++];
+                            input.kind =
+                                gpu::DeviceRequestBatchKind::newThisBurst;
+                            input.memory = gpu::DeviceHashMemoryKind::overall;
+                            input.terms[0].views[0] =
+                                gpu::DeviceMandatoryViewKind::localDelta;
+                            input.terms[0].viewCount = 1;
+                            input.terms[1].views[0] =
+                                gpu::DeviceMandatoryViewKind::external;
+                            input.terms[1].views[1] =
+                                gpu::DeviceMandatoryViewKind::local;
+                            input.terms[1].viewCount = 2;
+                            input.termCount = 2;
+                        }
+
+                        if (!task.lb->localHashMemory.encodedMap.empty()
+                            && !task.lb->intExternalStatements.empty()) {
+                            gpu::Phase2RequestBatchInput& input =
+                                batches[batchCount++];
+                            input.kind = gpu::DeviceRequestBatchKind::
+                                localRulesWithMail;
+                            input.memory = gpu::DeviceHashMemoryKind::local;
+                            input.terms[0].views[0] =
+                                gpu::DeviceMandatoryViewKind::external;
+                            input.terms[0].viewCount = 1;
+                            input.termCount = 1;
+                        }
+
+                        if (!task.lb->localHashMemoryDelta.encodedMap.empty()) {
+                            gpu::Phase2RequestBatchInput& input =
+                                batches[batchCount++];
+                            input.kind =
+                                gpu::DeviceRequestBatchKind::localDeltaRules;
+                            input.memory = gpu::DeviceHashMemoryKind::localDelta;
+                        }
+                    }
+                    assert(batchCount > 0 && batchCount <= batches.size());
+                    const uint32_t selectedHashMemories =
+                        selectedHashMemoriesByLi[task.li];
+                    assert(selectedHashMemories != 0);
+                    for (uint32_t localBatch = 0;
+                         localBatch < batchCount; ++localBatch) {
+                        assert((selectedHashMemories
+                            & hashMemoryBit(batches[localBatch].memory)) != 0);
+                    }
+
+                    const uint32_t gpuTaskIndex =
+                        static_cast<uint32_t>(hostTasks.tasks.size());
+                    const uint32_t batchOffset =
+                        static_cast<uint32_t>(hostTasks.batches.size());
+                    hostTasks.appendTask(
+                        blockIndex, batches.data(), batchCount,
+                        task.stump.stumps,
+                        static_cast<uint32_t>(task.stump.count),
+                        task.stump.ordinal, task.stump.total,
+                        parameters.maxIterationNumberVariable,
+                        ceFilteringActive ? 1u : 0u);
+                    gpuTaskIndices[taskPosition] =
+                        static_cast<int32_t>(gpuTaskIndex);
+
+                    const uint32_t statementCount = hostProjection.
+                        logicalBlocks[blockIndex].statementCount;
+                    for (uint32_t localBatch = 0;
+                         localBatch < batchCount; ++localBatch) {
+                        const uint32_t filterCallIndex =
+                            static_cast<uint32_t>(filterSchedule.calls.size());
+                        filterSchedule.appendCall(
+                            blockIndex, batches[localBatch].memory,
+                            parameters.maxIterationNumberVariable,
+                            /*alsoAcceptFullKeys=*/1, statementCount);
+                        growthSchedule.appendCall(
+                            gpuTaskIndex, batchOffset + localBatch,
+                            filterCallIndex);
+                    }
+                    assert(task.lb->stewardClaim.load(
+                               std::memory_order_relaxed)
+                           == static_cast<uint8_t>(
+                                  Memory::StewardClaim::WorkerOwned));
+                    task.lb->stewardClaim.store(
+                        static_cast<uint8_t>(Memory::StewardClaim::Idle),
+                        std::memory_order_release);
+                    ++scheduleIndex;
+                    scheduleCursor.store(
+                        scheduleIndex, std::memory_order_relaxed);
+                }
+                assert(scheduleIndex == scheduleOrder.size());
+                steward->endPhaseWindow();
+
+                const auto gpuDeviceRouteStarted =
+                    std::chrono::steady_clock::now();
+                const double gpuPreparationSeconds =
+                    std::chrono::duration<double>(
+                        gpuDeviceRouteStarted - gpuPassStarted).count();
+                const double gpuProjectionSeconds =
+                    std::chrono::duration<double>(
+                        gpuProjectionFinished - gpuPassStarted).count();
+                const double gpuScheduleSeconds =
+                    std::chrono::duration<double>(
+                        gpuDeviceRouteStarted - gpuProjectionFinished).count();
+                const gpu::Phase2FilterClassCensus filterClassCensus =
+                    filterSchedule.measureClassReuse();
+
+                // Process-owned CUDA events measure the task upload, the deferred
+                // projection-upload join, and every semantic kernel through
+                // doom-prefix selection. The projection upload starts before host
+                // scheduling so complete Phase 2 timing captures their overlap.
+                static gpu::CudaPhase2DeviceTimer gpuDeviceTimer;
+                gpuDeviceTimer.start();
+
+                deviceTasks.upload(hostTasks);
+                deviceProjection.finishPhase2Upload();
+                const uint32_t retainedRows = deviceFilter.filterAndSort(
+                    deviceProjection, filterSchedule);
+                const gpu::Phase2GrowthResult growthResult =
+                    deviceGrowth.runRequestGrowth(
+                        deviceProjection, deviceTasks, deviceFilter,
+                        growthSchedule,
+                        gpu::DevicePhase2GrowthParameters{
+                            parameters.maxLenHypoKey,
+                            parameters.maxNumberSecondaryVariables,
+                            parameters.maxNumberSecondaryVariablesOrint,
+                            gpu::kDeviceGrowthProductionCooperativeSpan,
+                            kCollectPhase2GrowthCensus ? 2u : 0u });
+                const gpu::Phase2OrderingResult orderingResult =
+                    deviceOrdering.orderAndDeduplicate(
+                        deviceProjection, deviceTasks, deviceGrowth);
+                const gpu::Phase2EvaluationResult evaluationResult =
+                    deviceEvaluation.expandEvaluationWork(
+                        deviceProjection, deviceTasks, deviceGrowth,
+                        deviceOrdering);
+                const gpu::Phase2FiringExpressionResult firingResult =
+                    deviceEvaluation.materializeFiringExpressions(
+                        deviceProjection, deviceTasks, deviceGrowth,
+                        deviceOrdering);
+                assert(deviceEvaluation.orderFiringRecords(deviceProjection)
+                    == firingResult.firingRecordCount);
+                const uint32_t retainedFiringCount =
+                    deviceEvaluation.selectDoomPrefixes(deviceProjection);
+
+                const double gpuDeviceSeconds = gpuDeviceTimer.stopSeconds();
+                const auto gpuFinalizeStarted =
+                    std::chrono::steady_clock::now();
+                const double gpuDeviceRouteSeconds =
+                    std::chrono::duration<double>(
+                        gpuFinalizeStarted - gpuDeviceRouteStarted).count();
+
+                std::array<uint32_t, gpu::kMaxPhase2TasksPerChunk>
+                    taskSubkeyCounts{};
+                assert(deviceGrowth.downloadTaskSubkeyCounts(
+                           taskSubkeyCounts.data(),
+                           static_cast<uint32_t>(taskSubkeyCounts.size()))
+                       == hostTasks.tasks.size());
+                for (const std::size_t taskPosition : cudaTaskPositions) {
+                    assert(gpuTaskIndices[taskPosition] >= 0);
+                    taskSubMatches[taskPosition] = taskSubkeyCounts[
+                        static_cast<uint32_t>(gpuTaskIndices[taskPosition])];
+                }
+
+                std::array<int64_t, gpu::kMaxProjectedBlocksPerChunk>
+                    deviceDoomLines{};
+                assert(deviceEvaluation.downloadDoomLines(
+                           deviceDoomLines.data(),
+                           static_cast<uint32_t>(deviceDoomLines.size()))
+                       == projectionOrder.size());
+                std::array<SealedPageSet*, gpu::kMaxProjectedBlocksPerChunk>
+                    outputs{};
+                for (std::size_t blockIndex = 0;
+                     blockIndex < projectionOrder.size(); ++blockIndex) {
+                    const std::size_t taskPosition =
+                        outputTaskByBlock[blockIndex];
+                    SealedPageSet& pages = pageStore[base + taskPosition];
+                    pages.bind(&staticMemory());
+                    outputs[blockIndex] = &pages;
+                    const std::size_t li = projectionLis[blockIndex];
+                    doomLines[li].store(
+                        deviceDoomLines[blockIndex],
+                        std::memory_order_relaxed);
+                    lbFiringRecordsCanonical[li] = 1;
+                }
+                assert(sealing.downloadAndSeal(
+                           deviceEvaluation, hostProjection, firingResult,
+                           retainedFiringCount, outputs.data(),
+                           static_cast<uint32_t>(projectionOrder.size()))
+                       == retainedFiringCount);
+
+                const auto gpuPassFinished = std::chrono::steady_clock::now();
+                const double gpuFinalizeSeconds = std::chrono::duration<double>(
+                    gpuPassFinished - gpuFinalizeStarted).count();
+                const double gpuPassSeconds = std::chrono::duration<double>(
+                    gpuPassFinished - gpuPassStarted).count();
+                const gpu::Phase2ProjectionTiming& projectionTiming =
+                    hostProjection.timing;
+                assert(projectionTiming.logicalBlocks
+                    == projectionOrder.size());
+                constexpr double kNanosecondsPerSecond = 1000000000.0;
+                const double projectionWorkerCpuSeconds =
+                    static_cast<double>(
+                        projectionTiming.preflightNanoseconds
+                        + projectionTiming.statementNanoseconds
+                        + projectionTiming.nameNanoseconds
+                        + projectionTiming.ruleStringNanoseconds
+                        + projectionTiming.byteMapNanoseconds
+                         + projectionTiming.reverseMapNanoseconds
+                         + projectionTiming.podMapNanoseconds
+                         + projectionTiming.finalNanoseconds)
+                    / kNanosecondsPerSecond;
+                const double projectionMergeSeconds = static_cast<double>(
+                    projectionTiming.mergeNanoseconds) / kNanosecondsPerSecond;
+                diagnosticsLog() << "[GPU-PHASE2] pass=" << passNo
+                          << " logical_blocks=" << projectionOrder.size()
+                          << " tasks=" << hostTasks.tasks.size()
+                          << " batches=" << hostTasks.batches.size()
+                          << " filter_calls="
+                          << filterClassCensus.callCount
+                          << " filter_classes="
+                          << filterClassCensus.uniqueClassCount
+                          << " filter_duplicate_calls="
+                          << filterClassCensus.duplicateCallCount
+                          << " filter_class_rows="
+                          << filterClassCensus.uniqueExaminedRows
+                          << " filter_duplicate_rows="
+                          << filterClassCensus.duplicateExaminedRows
+                          << " filter_max_class_multiplicity="
+                          << filterClassCensus.maximumClassMultiplicity
+                          << " retained_rows=" << retainedRows
+                          << " maximum_frontier="
+                          << growthResult.maximumFrontierCount
+                          << " accepted_events="
+                          << growthResult.acceptedEventCount
+                          << " unique_requests="
+                          << orderingResult.uniqueRequestCount
+                          << " dependency_pass_requests="
+                          << evaluationResult.dependencyPassCount
+                          << " reverse_owners="
+                          << evaluationResult.reverseOwnerCount
+                          << " candidate_owners="
+                          << evaluationResult.candidateOwnerCount
+                          << " encoded_hits="
+                          << evaluationResult.encodedHitCount
+                          << " local_values="
+                          << evaluationResult.localValueCount
+                          << " firing_records="
+                          << firingResult.firingRecordCount
+                          << " retained_firing_records="
+                          << retainedFiringCount
+                          << " generated_bytes="
+                          << firingResult.generatedByteCount
+                          << " level_values="
+                          << firingResult.levelValueCount
+                          << " provenance_dependencies="
+                          << firingResult.originDependencyCount
+                          << " cooperative_nodes_peak="
+                          << growthResult.maximumCooperativeNodeCount
+                          << " growth_prefix_payload_peak="
+                          << growthResult.maximumPrefixPayloadValues
+                          << " growth_prefix_variables_peak="
+                          << growthResult.maximumPrefixVariableValues
+                          << " growth_prefix_secondary_peak="
+                          << growthResult.maximumPrefixSecondaryValues
+                          << " marker_keys=" << firingResult.markerKeyCount
+                          << " marker_remaining_args="
+                          << firingResult.markerRemainingArgCount
+                          << " marker_args=" << firingResult.markerArgCount;
+                for (uint32_t bucket = 0;
+                     bucket < gpu::kDeviceGrowthSpanBucketCount; ++bucket) {
+                    diagnosticsLog() << " growth_span_nodes_b" << bucket << "="
+                              << growthResult.spanNodeCounts[bucket]
+                              << " growth_span_candidates_b" << bucket << "="
+                              << growthResult.spanCandidateCounts[bucket];
+                }
+                for (uint32_t depth = 1;
+                     depth < gpu::kDeviceGrowthCensusDepthCount; ++depth) {
+                    const gpu::Phase2GrowthGateCensus& census =
+                        growthResult.gateDepthCounts[depth];
+                    diagnosticsLog() << " growth_d" << depth << "_attempts="
+                              << census.candidateAttempts
+                              << " growth_d" << depth << "_mandatory="
+                              << census.mandatoryReachable
+                              << " growth_d" << depth << "_validity="
+                              << census.validityComparable
+                              << " growth_d" << depth << "_hypothesis="
+                              << census.hypothesisCompatible
+                              << " growth_d" << depth << "_secondary="
+                              << census.secondaryCompatible
+                              << " growth_d" << depth << "_key_length="
+                              << census.keyLengthAllowed
+                              << " growth_d" << depth << "_subkey_present="
+                              << census.subkeyPresent
+                              << " growth_d" << depth << "_owner="
+                              << census.ownerSatisfied
+                              << " growth_d" << depth << "_whole="
+                              << census.wholeKeyPresent
+                              << " growth_d" << depth << "_terms="
+                              << census.termsSatisfied
+                              << " growth_d" << depth << "_events="
+                              << census.acceptedEvents
+                              << " growth_d" << depth << "_children="
+                              << census.children;
+                }
+                diagnosticsLog() << " prepare_seconds=" << gpuPreparationSeconds
+                          << " projection_seconds=" << gpuProjectionSeconds
+                          << " projection_worker_cpu_seconds="
+                          << projectionWorkerCpuSeconds
+                          << " projection_merge_seconds="
+                          << projectionMergeSeconds
+                          << " projection_preflight_seconds="
+                          << static_cast<double>(
+                                 projectionTiming.preflightNanoseconds)
+                                 / kNanosecondsPerSecond
+                          << " projection_statement_seconds="
+                          << static_cast<double>(
+                                 projectionTiming.statementNanoseconds)
+                                 / kNanosecondsPerSecond
+                          << " projection_name_seconds="
+                          << static_cast<double>(
+                                 projectionTiming.nameNanoseconds)
+                                 / kNanosecondsPerSecond
+                          << " projection_name_record_seconds="
+                          << static_cast<double>(
+                                 projectionTiming.nameRecordNanoseconds)
+                                 / kNanosecondsPerSecond
+                          << " projection_name_sort_seconds="
+                          << static_cast<double>(
+                                 projectionTiming.nameSortNanoseconds)
+                                 / kNanosecondsPerSecond
+                          << " projection_name_rank_seconds="
+                          << static_cast<double>(
+                                 projectionTiming.nameRankNanoseconds)
+                                 / kNanosecondsPerSecond
+                          << " projection_name_slot_seconds="
+                          << static_cast<double>(
+                                 projectionTiming.nameSlotNanoseconds)
+                                 / kNanosecondsPerSecond
+                          << " projection_rule_seconds="
+                          << static_cast<double>(
+                                 projectionTiming.ruleStringNanoseconds)
+                                 / kNanosecondsPerSecond
+                          << " projection_byte_map_seconds="
+                          << static_cast<double>(
+                                 projectionTiming.byteMapNanoseconds)
+                                 / kNanosecondsPerSecond
+                          << " projection_reverse_map_seconds="
+                          << static_cast<double>(
+                                 projectionTiming.reverseMapNanoseconds)
+                                 / kNanosecondsPerSecond
+                          << " projection_pod_map_seconds="
+                          << static_cast<double>(
+                                 projectionTiming.podMapNanoseconds)
+                                 / kNanosecondsPerSecond
+                          << " projection_final_seconds="
+                          << static_cast<double>(
+                                 projectionTiming.finalNanoseconds)
+                                 / kNanosecondsPerSecond
+                          << " schedule_seconds=" << gpuScheduleSeconds
+                          << " device_seconds=" << gpuDeviceSeconds
+                          << " device_route_seconds=" << gpuDeviceRouteSeconds
+                          << " finalize_seconds=" << gpuFinalizeSeconds
+                          << " route_seconds=" << gpuPassSeconds << std::endl;
+            }
+        }
+        }
+#else
+        assert(phase2Backend == Phase2Backend::cpu
+            && "the CUDA Phase 2 backend requires a CUDA build "
+               "(the Visual Studio project, or make USE_CUDA=1)");
+#endif
+
+        // Latch this pass's doom lines (post-join relaxed loads see the final
+        // CAS-min values) before the next pass's reset can erase them.
+        for (std::size_t li = 0; li < M; ++li)
+            if (doomLines[li].load(std::memory_order_relaxed) != kNoDoomLine)
+                lbDoomed[li] = 1;
+
         // ---- Classify every part, single-threaded: deal a producer's stumps into
         // buckets (requeue for round 2), or keep a burst part ----
         std::vector<ExecTask> nextTasks;
         for (std::size_t i = 0; i < tasks.size(); ++i) {
             const ExecTask& t = tasks[i];
             const std::size_t li = t.li;
+#if RT_MEASUREMENT
+            // [RT phase measurement] producer and burst parts both count.
+            trapPh2Ns[li] += taskNs[i];
+#endif
             SealedPageSet& ps = pageStore[base + i];
 
             // A round-1 PRODUCER. It fired nothing (ps is empty). Deal its stumps
@@ -8302,9 +11469,9 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                     // No statement survives the filter -> the LB's real burst would
                     // generate nothing either. Run it once, unsplit, this iteration
                     // (guarantees the burst happens; its work then feeds the stats).
-                    nextTasks.push_back(ExecTask{ t.lb, li, /*processID=*/0,
-                        /*splitCount=*/1, /*partCount=*/1, /*produceOnly=*/false,
-                        SplitStumpRef{}, &stopFlags[li], &partsRemaining[li] });
+                    nextTasks.push_back(ExecTask{ t.lb, li,
+                        /*partCount=*/1, /*produceOnly=*/false,
+                        SplitStumpRef{}, &doomLines[li], &partsRemaining[li] });
                     continue;
                 }
                 stumpStore.emplace_back();
@@ -8346,11 +11513,11 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                 for (NameId k = 0; k < buckets; ++k) {
                     const int32_t lo = bucketStart[static_cast<std::size_t>(k)];
                     const int32_t hi = bucketStart[static_cast<std::size_t>(k) + 1];
-                    nextTasks.push_back(ExecTask{ t.lb, li, /*processID=*/0,
-                        /*splitCount=*/1, /*partCount=*/buckets, /*produceOnly=*/false,
+                    nextTasks.push_back(ExecTask{ t.lb, li,
+                        /*partCount=*/buckets, /*produceOnly=*/false,
                         SplitStumpRef{ run.data() + lo,
                                        static_cast<NameId>(hi - lo), k, buckets },
-                        &stopFlags[li], &partsRemaining[li] });
+                        &doomLines[li], &partsRemaining[li] });
                 }
                 continue;
             }
@@ -8359,7 +11526,10 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
             // its submatch count to the LB's split-invariant TOTAL work (the straggler
             // classifier's input); lbMaxSub tracks the busiest single part for the
             // split-ineffective report.
-            keptParts[li].push_back(&ps);
+            if (phase2Backend == Phase2Backend::cpu
+                || gpuOutputOwners[i] != 0) {
+                keptParts[li].push_back(&ps);
+            }
             lbTotalSub[li] += taskSubMatches[i];
             if (taskSubMatches[i] > lbMaxSub[li]) lbMaxSub[li] = taskSubMatches[i];
         }
@@ -8384,7 +11554,12 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
             steward->beginPhaseWindow(/*phase=*/2, &nextLi, &toFinalize, workers,
                                       lbdeload::kDeloadDirectory);
             auto finalizeWorker = [this, &toFinalize, &finalizeLi, &keptParts,
-                                   &nextLi](unsigned tIdx) {
+                                   &doomLines, &lbFiringRecordsCanonical,
+                                   &nextLi
+#if RT_MEASUREMENT
+                                   , &trapFinNs
+#endif
+                                   ](unsigned tIdx) {
                 // The finalize pool runs in parallel like phases 1/3, so publish this
                 // worker's slot. The per-slot scratch / gen arenas reached deep in the
                 // drains must pick THIS worker's arena, not the single reserved slot
@@ -8405,12 +11580,32 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                     // Hand the LB's sealed part sets, in part order, to the finalize
                     // (applyFiringRecords reads each chain in append order, then
                     // sorts - the merge is partition- and pass-independent). Empty for
-                    // a phase-1-discharged LB: nothing deposits.
+                    // a phase-1-discharged LB: nothing deposits. The LB's final doom
+                    // line rides along: when a doom trigger fired, the finalize
+                    // merges only the winning part's chain. The pool has joined, so
+                    // this relaxed load sees the final CAS-min value.
                     const int count = static_cast<int>(keptParts[li].size());
                     assert(count <= kMaxSplitParts
                         && "LB part count exceeds kMaxSplitParts - raise the named "
                            "constant deliberately, never cap the split silently");
-                    this->performElemPhase2(*b, keptParts[li].data(), count);
+#if RT_MEASUREMENT
+                    // [RT phase measurement] finalize wall time; each li
+                    // is finalized by exactly one worker (race-free).
+                    const auto trapT0 = std::chrono::steady_clock::now();
+#endif
+                    const bool firingRecordsCanonical =
+                        lbFiringRecordsCanonical[li] != 0;
+                    this->performElemPhase2(
+                        *b, keptParts[li].data(), count,
+                        firingRecordsCanonical
+                            ? kNoDoomLine
+                            : doomLines[li].load(std::memory_order_relaxed),
+                        firingRecordsCanonical);
+#if RT_MEASUREMENT
+                    trapFinNs[li] += std::chrono::duration_cast<
+                        std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now() - trapT0).count();
+#endif
                     // Phase 2 is done with this LB: release the claim so the steward
                     // may reclaim it.
                     assert(b->stewardClaim.load(std::memory_order_relaxed)
@@ -8437,6 +11632,149 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
         tasks = std::move(nextTasks);
     }
 
+    // GPU capacity projections go to the common diagnostics log so the
+    // run log stays readable; one block per burst per batch.
+    std::ostream& gpuCapacityLog = diagnosticsLog();
+    gpuCapacityLog << "[GPU-CAPACITY] logical_blocks="
+              << projectionLogicalBlocks.load(std::memory_order_relaxed)
+              << " statements="
+              << projectionStatements.load(std::memory_order_relaxed)
+              << " maximum_statements_per_lb="
+              << projectionMaximumStatements.load(std::memory_order_relaxed)
+              << " name_records="
+              << projectionNameRecords.load(std::memory_order_relaxed)
+              << " maximum_name_records_per_lb="
+              << projectionMaximumNameRecords.load(std::memory_order_relaxed)
+              << " name_bytes="
+              << projectionNameBytes.load(std::memory_order_relaxed)
+              << " maximum_name_bytes_per_lb="
+              << projectionMaximumNameBytes.load(std::memory_order_relaxed)
+              << std::endl;
+    const auto semanticTotal = [&](std::size_t metric) {
+        return projectionSemanticTotals[metric].load(
+            std::memory_order_relaxed);
+    };
+    const auto semanticMaximum = [&](std::size_t metric) {
+        return projectionSemanticMaximums[metric].load(
+            std::memory_order_relaxed);
+    };
+    gpuCapacityLog << "[GPU-SEMANTIC-CAPACITY] rule_string_records="
+              << semanticTotal(0)
+              << " maximum_rule_string_records_per_lb=" << semanticMaximum(0)
+              << " rule_string_bytes=" << semanticTotal(1)
+              << " maximum_rule_string_bytes_per_lb=" << semanticMaximum(1)
+              << " name_slots=" << semanticTotal(2)
+              << " maximum_name_slots_per_lb=" << semanticMaximum(2)
+              << " byte_map_views=" << semanticTotal(3)
+              << " byte_map_entries=" << semanticTotal(4)
+              << " maximum_byte_map_entries_per_lb=" << semanticMaximum(4)
+              << " byte_map_slots=" << semanticTotal(5)
+              << " maximum_byte_map_slots_per_lb=" << semanticMaximum(5)
+              << " byte_key_bytes=" << semanticTotal(6)
+              << " maximum_byte_key_bytes_per_lb=" << semanticMaximum(6)
+              << " blob_records=" << semanticTotal(7)
+              << " maximum_blob_records_per_lb=" << semanticMaximum(7)
+              << " blob_bytes=" << semanticTotal(8)
+              << " maximum_blob_bytes_per_lb=" << semanticMaximum(8)
+              << " reverse_map_views=" << semanticTotal(9)
+              << " reverse_map_entries_upper=" << semanticTotal(10)
+              << " maximum_reverse_map_entries_upper_per_lb="
+              << semanticMaximum(10)
+              << " reverse_map_slots_upper=" << semanticTotal(11)
+              << " maximum_reverse_map_slots_upper_per_lb="
+              << semanticMaximum(11)
+              << " reverse_key_bytes_upper=" << semanticTotal(12)
+              << " maximum_reverse_key_bytes_upper_per_lb="
+              << semanticMaximum(12)
+              << " reverse_owners=" << semanticTotal(13)
+              << " maximum_reverse_owners_per_lb=" << semanticMaximum(13)
+              << " pod_map_views=" << semanticTotal(14)
+              << " pod_map_entries=" << semanticTotal(15)
+              << " maximum_pod_map_entries_per_lb=" << semanticMaximum(15)
+              << " pod_map_slots=" << semanticTotal(16)
+              << " maximum_pod_map_slots_per_lb=" << semanticMaximum(16)
+              << " pod_run_values=" << semanticTotal(17)
+              << " maximum_pod_run_values_per_lb=" << semanticMaximum(17)
+              << " mandatory_statement_keys=" << semanticTotal(18)
+              << " maximum_mandatory_statement_keys_per_lb="
+              << semanticMaximum(18)
+              << " metadata_bytes=" << semanticTotal(19)
+              << " maximum_metadata_bytes_per_lb=" << semanticMaximum(19)
+              << std::endl;
+    const auto taskTotal = [&](std::size_t metric) {
+        return taskProjectionTotals[metric].load(std::memory_order_relaxed);
+    };
+    const auto taskMaximum = [&](std::size_t metric) {
+        return taskProjectionMaximums[metric].load(std::memory_order_relaxed);
+    };
+    gpuCapacityLog << "[GPU-TASK-CAPACITY] tasks=" << taskTotal(0)
+              << " maximum_tasks_per_part=" << taskMaximum(0)
+              << " batches=" << taskTotal(1)
+              << " maximum_batches_per_part=" << taskMaximum(1)
+              << " terms=" << taskTotal(2)
+              << " maximum_terms_per_part=" << taskMaximum(2)
+              << " stumps=" << taskTotal(3)
+              << " maximum_stumps_per_part=" << taskMaximum(3)
+              << std::endl;
+    gpuCapacityLog << "[GPU-FILTER-CAPACITY] request_calls="
+              << gpuRequestFilterCalls.load(std::memory_order_relaxed)
+              << " producer_calls="
+              << gpuProducerFilterCalls.load(std::memory_order_relaxed)
+              << " input_statements="
+              << gpuFilterInputStatements.load(std::memory_order_relaxed)
+              << " maximum_input_statements_per_call="
+              << gpuFilterMaximumInputStatements.load(std::memory_order_relaxed)
+              << " output_statements="
+              << gpuFilterOutputStatements.load(std::memory_order_relaxed)
+              << " maximum_output_statements_per_call="
+              << gpuFilterMaximumOutputStatements.load(std::memory_order_relaxed)
+              << std::endl;
+    gpuCapacityLog << "[GPU-GROW-CAPACITY]";
+    for (std::size_t depth = 0; depth < kGpuGrowDepthCount; ++depth) {
+        gpuCapacityLog << " attempts_d" << depth << "="
+                  << gpuGrowAttemptsByDepth[depth].load(std::memory_order_relaxed)
+                  << " frontier_d" << depth << "="
+                  << gpuGrowFrontierByDepth[depth].load(std::memory_order_relaxed)
+                  << " subkeys_d" << depth << "="
+                  << gpuGrowSubkeysByDepth[depth].load(std::memory_order_relaxed)
+                  << " requests_d" << depth << "="
+                  << gpuGrowRequestsByDepth[depth].load(std::memory_order_relaxed)
+                  << " producer_attempts_d" << depth << "="
+                  << gpuProducerAttemptsByDepth[depth].load(
+                         std::memory_order_relaxed)
+                  << " producer_survivors_d" << depth << "="
+                  << gpuProducerSurvivorsByDepth[depth].load(
+                         std::memory_order_relaxed);
+    }
+    gpuCapacityLog << std::endl;
+    const auto evaluationTotal = [&](std::size_t metric) {
+        return gpuEvaluationTotals[metric].load(std::memory_order_relaxed);
+    };
+    const auto evaluationMaximum = [&](std::size_t metric) {
+        return gpuEvaluationMaximums[metric].load(std::memory_order_relaxed);
+    };
+    gpuCapacityLog << "[GPU-EVAL-CAPACITY] requests=" << evaluationTotal(0)
+              << " dependency_pass_requests=" << evaluationTotal(1)
+              << " reverse_owners=" << evaluationTotal(2)
+              << " maximum_reverse_owners_per_request="
+              << evaluationMaximum(0)
+              << " candidate_owners=" << evaluationTotal(3)
+              << " maximum_candidate_owners_per_request="
+              << evaluationMaximum(1)
+              << " encoded_hits=" << evaluationTotal(4)
+              << " local_values=" << evaluationTotal(5)
+              << " maximum_local_values_per_hit=" << evaluationMaximum(2)
+              << " head_records=" << evaluationTotal(6)
+              << " marker_records=" << evaluationTotal(7)
+              << " demand_records=" << evaluationTotal(8)
+              << " generated_bytes=" << evaluationTotal(9)
+              << " level_values=" << evaluationTotal(10)
+              << " origin_dependencies=" << evaluationTotal(11)
+              << " marker_keys=" << evaluationTotal(12)
+              << " marker_remaining_args=" << evaluationTotal(13)
+              << " marker_args=" << evaluationTotal(14)
+              << std::endl;
+
     // ---- End-of-iteration straggler classification (the split TRIGGER) ----
     // Set each LB's split for the NEXT iteration from this iteration's completed,
     // deterministic work totals. work(L) = sum of L's parts' submatch counts
@@ -8446,12 +11784,27 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
     // buckets next iteration, every other LB unsplit. Integer arithmetic only, over a
     // fixed-order single-threaded sweep -> the split set is a deterministic function
     // of proof state (two runs stay byte-identical). Recomputed every iteration, so an
-    // LB whose work falls back below the bar returns to unsplit.
+    // LB whose work falls back below the bar returns to unsplit. A doomed LB
+    // (burst early-exit) contributes NOTHING: its tally was cut at a
+    // timing-dependent overshoot, so folding it into T (or classifying it)
+    // would make the statistic — and any borderline straggler verdict —
+    // a race outcome.
     if (mainPath) {
         int64_t T = 0;
-        for (std::size_t li = 0; li < M; ++li) T += lbTotalSub[li];
+        for (std::size_t li = 0; li < M; ++li)
+            if (!lbDoomed[li]) T += lbTotalSub[li];
         const int64_t fairShare = T / static_cast<int64_t>(logicalCores);
+        // Split reports go to the common diagnostics log so the run log
+        // stays readable; one line per onset / self-control hit.
+        std::ostream& splitLog = diagnosticsLog();
         for (std::size_t li = 0; li < M; ++li) {
+            // An early-exited LB is discharging out of the grid: its cut
+            // tally is not comparable work and it never bursts again — the
+            // unsplit default is its final split state.
+            if (lbDoomed[li]) {
+                active[li]->numberOfParts = 1;
+                continue;
+            }
             const bool straggler = ExpressionAnalyzer::isStraggler(
                 lbTotalSub[li], T, static_cast<int>(logicalCores),
                 static_cast<int64_t>(parameters.min_split_work));
@@ -8462,36 +11815,148 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
             // the run log shows which LBs the trigger promoted. Pure observation ->
             // determinism intact.
             if (straggler && wasUnsplit)
-                std::cout << "[SPLIT] straggler: work=" << lbTotalSub[li]
-                          << " T=" << T
-                          << " parts=" << active[li]->numberOfParts
-                          << " lb=" << active[li]->exprKey() << "\n";
+                splitLog << "[SPLIT] straggler: work=" << lbTotalSub[li]
+                         << " T=" << T
+                         << " parts=" << active[li]->numberOfParts
+                         << " lb=" << active[li]->exprKey() << "\n";
             // Self-control report: a split LB whose busiest bucket is still a global
             // outlier has an irreducibly-serial core (a "runs and runs" induction LB)
             // that bucketing cannot subdivide. Pure observation -> determinism intact.
             if (straggler && lbMaxSub[li] > fairShare)
-                std::cout << "[SPLIT] ineffective: work=" << lbTotalSub[li]
-                          << " maxPart=" << lbMaxSub[li]
-                          << " buckets=" << lbBuckets[li]
-                          << " stumps=" << lbStumps[li]
-                          << " fairShare=" << fairShare
-                          << " lb=" << active[li]->exprKey() << "\n";
+                splitLog << "[SPLIT] ineffective: work=" << lbTotalSub[li]
+                         << " maxPart=" << lbMaxSub[li]
+                         << " buckets=" << lbBuckets[li]
+                         << " stumps=" << lbStumps[li]
+                         << " fairShare=" << fairShare
+                         << " lb=" << active[li]->exprKey() << "\n";
         }
     }
+#if RT_MEASUREMENT
+    // [RT phase measurement] carry the split-invariant work totals out
+    // to the post-phase-3 report (lbTotalSub is scoped to this block).
+    for (std::size_t li = 0; li < M; ++li) trapWork[li] = lbTotalSub[li];
+#endif
     }  // active non-empty
 
+    const double phase2IterationSeconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - phase2Started).count();
+    phase2CumulativeSeconds += phase2IterationSeconds;
+    ++phase2MeasuredIterations;
+    diagnosticsLog() << "[PHASE2-TIMING] backend="
+              << (phase2Backend == Phase2Backend::cuda ? "cuda" : "cpu")
+              << " iteration_seconds=" << phase2IterationSeconds
+              << " cumulative_seconds=" << phase2CumulativeSeconds
+              << " iterations=" << phase2MeasuredIterations
+              << " active_logical_blocks=" << active.size() << std::endl;
+#if RT_MEASUREMENT
+    gl::rt_tracker::addRtPhaseWallSeconds(2, phase2IterationSeconds);
+#endif
+
     // Phase 3 opens the same working-set window (all phases equivalent).
+    const auto phase3Started = std::chrono::steady_clock::now();
     {
         std::atomic<std::size_t> phase3Cursor{ 0 };
+#if PHASE13_DEEP_TIMING
+        phase13TimingRows = phase3DetailRows.data();
+        phase13TimingWorkers = workers;
+#endif
         steward->beginPhaseWindow(/*phase=*/3, &phase3Cursor, &active, workers,
                                   lbdeload::kDeloadDirectory);
         runPhase(phase3Cursor, [this](Memory& b, unsigned cid) {
             g_inParallelWorkerPhase = true;
             this->performElemPhase3(b, cid);
             g_inParallelWorkerPhase = false;
-        });
+        }
+#if RT_MEASUREMENT
+        , trapPh3Ns.data()
+#endif
+        );
         steward->endPhaseWindow();
+#if PHASE13_DEEP_TIMING
+        phase13TimingRows = nullptr;
+        phase13TimingWorkers = 0;
+#endif
     }
+    const double phase3IterationSeconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - phase3Started).count();
+    diagnosticsLog() << "[PHASE13-TIMING] phase1_seconds="
+              << phase1IterationSeconds
+              << " phase3_seconds=" << phase3IterationSeconds
+              << " active_logical_blocks=" << active.size() << std::endl;
+#if RT_MEASUREMENT
+    // Register this iteration's phase wall-clock with the RT aggregate so
+    // its header can state attributed worker-seconds against the single
+    // timeline (effective parallelism per phase).
+    gl::rt_tracker::addRtPhaseWallSeconds(1, phase1IterationSeconds);
+    gl::rt_tracker::addRtPhaseWallSeconds(3, phase3IterationSeconds);
+#endif
+#if PHASE13_DEEP_TIMING
+    printPhase13Detail(1, phase1IterationSeconds, phase1DetailRows);
+    printPhase13Detail(3, phase3IterationSeconds, phase3DetailRows);
+#endif
+
+#if MEM_MEASUREMENT
+    // Fold this iteration's per-worker rows into one coherent instant. Placed
+    // immediately after the phase-3 window closes and before the steward's
+    // discharge / deload work below, so the pool footprints it reads are the
+    // iteration's high-water rather than the post-eviction remainder.
+    gl::mem_tracker::commitIterationSample();
+#endif
+
+#if RT_MEASUREMENT
+    // [RT phase measurement - file-bound, see .rt/burst_phases.log]
+    // Per-iteration per-LB wall-time report: per-phase totals, then the top LBs
+    // by summed wall time with their FULL parentMemory chain (Rule 12 - the
+    // [SPLIT] lines print only the ambiguous leaf exprKey). Observation only.
+    //
+    // Written to `.rt/burst_phases.log`, never stdout: this is measurement the
+    // acceleration campaigns read, and the main run log stays free of it. The
+    // per-batch / per-section split lives beside it in `.rt/_aggregate_<tag>.log`.
+    if (mainPath && !active.empty()) {
+        auto trapSec = [](int64_t ns) {
+            return static_cast<double>(ns) / 1e9; };
+        std::filesystem::create_directories(".rt");
+        std::ofstream phaseLog(".rt/burst_phases.log", std::ios::app);
+        int64_t s1 = 0, s2 = 0, sf = 0, s3 = 0;
+        for (std::size_t li = 0; li < active.size(); ++li) {
+            s1 += trapPh1Ns[li]; s2 += trapPh2Ns[li];
+            sf += trapFinNs[li]; s3 += trapPh3Ns[li];
+        }
+        phaseLog << "[BURST-PH] ph1=" << trapSec(s1) << "s ph2=" << trapSec(s2)
+                  << "s fin=" << trapSec(sf) << "s ph3=" << trapSec(s3) << "s\n";
+        std::vector<std::size_t> trapOrder(active.size());
+        for (std::size_t li = 0; li < trapOrder.size(); ++li) trapOrder[li] = li;
+        std::sort(trapOrder.begin(), trapOrder.end(),
+            [&](std::size_t a, std::size_t b) {
+                const int64_t ta = trapPh1Ns[a] + trapPh2Ns[a]
+                                 + trapFinNs[a] + trapPh3Ns[a];
+                const int64_t tb = trapPh1Ns[b] + trapPh2Ns[b]
+                                 + trapFinNs[b] + trapPh3Ns[b];
+                return ta > tb; });
+        const std::size_t trapTopK =
+            std::min<std::size_t>(8, trapOrder.size());
+        for (std::size_t k = 0; k < trapTopK; ++k) {
+            const std::size_t li = trapOrder[k];
+            const int64_t tot = trapPh1Ns[li] + trapPh2Ns[li]
+                              + trapFinNs[li] + trapPh3Ns[li];
+            if (tot < 500000000LL) break;  // report only LBs >= 0.5 s
+            std::string chain;
+            for (const Memory* p = active[li]; p != nullptr;
+                 p = p->parentMemory) {
+                if (!chain.empty()) chain += " <- ";
+                const std::string key = p->exprKey();
+                chain += key.empty() ? std::string("(root)") : key;
+            }
+            phaseLog << "[RT-LB] tot=" << trapSec(tot)
+                      << "s ph1=" << trapSec(trapPh1Ns[li])
+                      << "s ph2=" << trapSec(trapPh2Ns[li])
+                      << "s fin=" << trapSec(trapFinNs[li])
+                      << "s ph3=" << trapSec(trapPh3Ns[li])
+                      << "s work=" << trapWork[li]
+                      << " chain=" << chain << "\n";
+        }
+    }
+#endif
 
     int64_t deloadableMailOutBytes = 0;
     for (const Memory* lb : bodies) {
@@ -8509,7 +11974,8 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
     // grid-build policy is fixed for the whole execution batch: any initially
     // dormant LB keeps full history and the matching global-id space even if it
     // later activates (I-162).
-    if (!parameters.compressor_mode && rollingMailHistoryEnabled) {
+    if (!parameters.compressor_mode && !ceFilteringActive
+        && rollingMailHistoryEnabled) {
         for (const Memory* lb : bodies) {
             assert(lb == nullptr || lb->mailIn.empty()
                 && "mail interner retirement requires every mailIn to be empty");
@@ -8534,7 +12000,7 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
     // this point rides the NEXT iteration's commit -- a one-iteration delay,
     // matching the old post-smashMail sendMail timing. The compressor's LBs are
     // flat and never registered, so it is gated out.
-    if (!parameters.compressor_mode) {
+    if (!parameters.compressor_mode && !ceFilteringActive) {
         // BARRIER SEAM WINDOW A (D-196): the commit sweep
         // is a linear walk over `bodies`, so it gets a dispatch-style pager
         // window like a phase — the planner prefetches ahead of the commit
@@ -8637,6 +12103,19 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
     // inconsistent premise set.
     this->drainSubtreeDeactivations();
 
+    // In-run OR-theorem construction (A16 Phase 2,
+    // D-266): fold this iteration's new proved
+    // rows into or theorems and queue their implication-compact broadcast
+    // on pendingCompactionQueue so the drain below ships them with this
+    // iteration's batch. Placed after the vacuous retraction sweep so a
+    // row retracted this iteration is never scanned as an or source.
+    this->constructOrTheoremsInRun();
+
+    // Pre-split merge directly after the or seam: an or theorem minted
+    // this window can license a merge in the same window, and the merged
+    // theorem's broadcast rides the compaction drain just below.
+    this->constructOrEliminationInRun();
+
     // Deferred compaction drain (D-76,
     // Option A). Single-threaded, post-pool.join(): sorting makes the
     // implication<N> allocation a deterministic function of the broadcast
@@ -8649,10 +12128,19 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
     std::sort(pendingCompactionQueue.begin(), pendingCompactionQueue.end());
     {
         std::map<int, Mail> compactionMailByCore;
+        // Incubator shape routing (D-332):
+        // the root's log is read by the anchor LB alone, so a nested rule
+        // (anchorOnlyRule false) is ALSO merged into the anchor LB's mailOut --
+        // the anchor's log reaches every LB below it, the root's log reaches
+        // the anchor LB itself.
+        std::map<int, Mail> nestedMailByCore;
+        Memory* const nestedStore = (parameters.incubator_mode && !pendingCompactionQueue.empty())
+            ? this->incubatorAnchorLb() : nullptr;
         for (const std::tuple<std::string, int, int>& e : pendingCompactionQueue)
         {
             const std::string& original = std::get<0>(e);
             const int cId = std::get<2>(e);
+            const bool nested = nestedStore != nullptr && !this->anchorOnlyRule(original);
             const std::string compactImpl = compileImplicationToCompact(original);
             // Level set MUST be empty. The implication rule always
             // deposits std::set<int>() for its levels.
@@ -8661,13 +12149,14 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
             // fires, the derived statement's levels are computed as the union
             // of the rule levels and the matching premises' levels. The
             // empty set keeps the derived levels equal to the premise-side
-            // union only, which is what the allLevelsInvolved discharge gate
-            // in prover.hpp::dischargeToBeProved expects
+            // union only, which is what the allLevelsInvolved registration
+            // verdict computed in prover.hpp::dischargeToBeProved expects
             // (size == memoryBlock.level + 1). Filling compactLevels with
             // {0, 1, ..., kySize} would inject an extra level into every
             // derived statement that fired against a mail-arrived rule,
-            // making size > level + 1 so the discharge gate returns false
-            // and the theorem is never promoted to globalTheoremList.
+            // making size > level + 1 so the sealed verdict turns false and
+            // the drain refuses appendGlobalTheorem — the goal still closes
+            // (closure is level-free), but the theorem is silently lost.
             std::set<int> compactLevels;
             ExpressionWithValidity compactEv(compactImpl, "main");
             Mail& m = compactionMailByCore[cId];
@@ -8726,6 +12215,20 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                     std::make_pair("compilation", std::vector<ExpressionWithValidity>{ ExpressionWithValidity(canonicalOriginal, "main") }),
                     (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
             }
+            if (nested) {
+                Mail& nm = nestedMailByCore[cId];
+                nm.statements.insert(std::make_pair(compactEv, compactLevels));
+                if (parameters.trackHistory) {
+                    // The same rows as the root batch (keyed by the compact).
+                    const auto oit = m.exprOriginMap.find(compactEv);
+                    assert(oit != m.exprOriginMap.end()
+                        && "deferred-compaction drain: the compact's compilation row must exist");
+                    for (const OriginLine& line : oit->second) {
+                        addOrigin(nm.exprOriginMap, compactEv, line,
+                            (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
+                    }
+                }
+            }
         }
         if (!compactionMailByCore.empty()) {
             steward->claimAndLoadForWork(this->body, /*phase=*/4,
@@ -8751,8 +12254,26 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                 static_cast<uint8_t>(Memory::StewardClaim::Idle),
                 std::memory_order_release);
         }
+        // Shape-routed nested compacts: the anchor LB's mailOut too (its log
+        // reaches every LB below it), under the anchor's claim.
+        if (!nestedMailByCore.empty()) {
+            assert(nestedStore != nullptr);
+            steward->claimAndLoadForWork(*nestedStore, /*phase=*/4,
+                                         lbdeload::kDeloadDirectory);
+            for (std::map<int, Mail>::iterator mit = nestedMailByCore.begin(); mit != nestedMailByCore.end(); ++mit) {
+                mergeBatchIntoMailOut(mit->second, *nestedStore);
+            }
+            nestedStore->stewardClaim.store(
+                static_cast<uint8_t>(Memory::StewardClaim::Idle),
+                std::memory_order_release);
+        }
     }
     pendingCompactionQueue.clear();
+
+    // The compaction drain registers fresh compacts; close the reduced-or
+    // closure again so any or it minted is covered before the next
+    // iteration's bursts (idempotent; D-268).
+    preMintReducedOrs();
 
         // Close the barrier seam window: the drains are done; the discharge
         // barrier block below quiesces the steward before reading any state.
@@ -8874,10 +12395,12 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                     static_cast<uint8_t>(Memory::StewardClaim::Idle),
                     std::memory_order_release);
                 b->dischargeStatementContent(dischargeScratch);
-                // Stamp the ordinal single-threaded now, before any later
-                // (steward) dump names the file.
-                b->ensureDeloadOrdinal();
-                pendingDischarge.push_back(b);
+                if (parameters.allow_ssd_deload) {
+                    // Stamp the ordinal single-threaded now, before any later
+                    // steward dump names the file.
+                    b->ensureDeloadOrdinal();
+                    pendingDischarge.push_back(b);
+                }
             }
         }
         // Hand the discharged list to the steward for the background
@@ -8887,6 +12410,7 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
         // continuously by the working-set pager (the phase windows), so the
         // barrier no longer mass-deloads active LBs; the pool stays the hard
         // bound and genuine exhaustion asserts in a phase, never here.
+        assert(parameters.allow_ssd_deload || pendingDischarge.empty());
         if (!pendingDischarge.empty()) {
             const int64_t totalBlocks = staticMemory().totalBlocks();
             const int64_t usedNow = staticMemory().blocksInUse();
@@ -8934,6 +12458,7 @@ void ExpressionAnalyzer::proveKernel(const std::vector<Memory*>& bodies) {
                       * static_cast<std::size_t>(workers),
             lbdeload::kDeloadDirectory);
     }
+
 }
 
 void ExpressionAnalyzer::removeExpressionFromMemoryBlock(StrSpan original, StrSpan validityName, Memory& mb, int state) {
@@ -8958,7 +12483,29 @@ void ExpressionAnalyzer::removeExpressionFromMemoryBlock(StrSpan original, StrSp
         };
         eraseIntRows(mb.intLocalEncodedStatements);
         eraseIntRows(mb.intLocalEncodedStatementsDelta);
-        eraseIntRows(mb.intEncodedStatements);
+        // intEncodedStatements erasures shift the positions the persistent
+        // per-class statement-index waterlines (eqClassSttmntIndexMapMap)
+        // point into — record each erased position and repair the
+        // waterlines, or equivalence-class application silently skips the
+        // rows that slid under a stale waterline. The exact-key admission
+        // gates keep (originalId, validityId) unique in the list, so the
+        // capture buffer is a loud Rule-19 tripwire, not a real capacity.
+        int32_t erasedPos[8];
+        int32_t erasedN = 0;
+        for (int32_t i = mb.intEncodedStatements.size(); i-- > 0; ) {
+            if (mb.intEncodedStatements[i].originalId == origId
+                && mb.intEncodedStatements[i].validityId == valId) {
+                assert(erasedN < 8
+                    && "removeExpressionFromMemoryBlock: duplicate (text, scope) rows exceed the erased-position capture");
+                erasedPos[erasedN++] = i;
+                mb.intEncodedStatements.erase(i);
+            }
+        }
+        if (erasedN > 0) {
+            // Collected back to front; the repair takes an ascending run.
+            std::sort(erasedPos, erasedPos + erasedN);
+            repairEqClassWaterlines(mb, erasedPos, erasedN);
+        }
     }
     else if (state == 1) {
         // Remove from the goal registry. The caller guarantees the goal is
@@ -8979,6 +12526,77 @@ void ExpressionAnalyzer::removeExpressionFromMemoryBlock(const EncodedExpression
     // interns nothing, so the id verdict — and the erase / discharge it drives —
     // is identical to reading encExpr.original / encExpr.validityName directly.
     removeExpressionFromMemoryBlock(StrSpan(encExpr.original), StrSpan(encExpr.validityName), mb, state);
+}
+
+/// @brief End-of-burst ancestor-known sweep: drop statement-LIST rows at
+///        non-main scopes whose text a strict ancestor knows
+///        (I-187).
+///
+/// @details
+/// Detection first, mutation second: one read-only pass over
+/// `intEncodedStatements` collects the packed `(originalId, validityId)`
+/// keys of every non-main row whose text `ancestorKnown` reports at a
+/// strict ancestor; the hits then drop in decoded-lex
+/// `(original, validity)` order (I-84) through
+/// `removeExpressionFromMemoryBlock(state=0)` — the statement lists only,
+/// registry rows surviving as tombstones. The decodeView spans handed to
+/// the removal door stay valid because the door only does non-minting
+/// lookups and `PagedVector` erases — no NameMap mint (I-3). Scratch
+/// (hit list on the page tier, sort index on the byte-bump tier) rides
+/// the per-slot gen-scratch arena, reclaimed before return. Full
+/// contract at the declaration.
+///
+/// @param body Owning LB; statement lists and waterlines mutated in place
+///             through the removal door.
+/// @invariant Registry rows are never erased here (I-58 / I-85).
+/// @see sweepAncestorKnownRows (decl) — placement and tombstone rationale.
+void ExpressionAnalyzer::sweepAncestorKnownRows(Memory& body) {
+    if (parameters.compressor_mode) return;
+    const unsigned slot = (g_currentCoreId >= 0)
+        ? static_cast<unsigned>(g_currentCoreId)
+        : genScratchArenas().slotCount() - 1;
+    ScratchArena& gArena = genScratchArenas().forSlot(slot);
+    const ArenaOffset sweepMark = gArena.cursor();
+    {
+        DirtyState hitsDirty = DirtyState::Clean;
+        PagedVector<int64_t> hits(&gArena, &hitsDirty);
+        for (int32_t i = 0; i < body.intEncodedStatements.size(); ++i) {
+            const NameId origId = body.intEncodedStatements[i].originalId;
+            const NameId valId = body.intEncodedStatements[i].validityId;
+            if (valId == NameMap::MAIN_ID) continue;
+            if (ancestorKnown(body, origId, valId, /*includeSelf=*/false)) {
+                hits.push_back(packStatementKey(origId, valId));
+            }
+        }
+        const int32_t hitN = hits.size();
+        if (hitN > 0) {
+            int32_t* idx = reinterpret_cast<int32_t*>(gArena.resolve(
+                gArena.alloc(hitN * static_cast<int32_t>(sizeof(int32_t)),
+                             static_cast<int32_t>(alignof(int32_t)))));
+            for (int32_t k = 0; k < hitN; ++k) idx[k] = k;
+            std::sort(idx, idx + hitN, [&](int32_t a, int32_t b) {
+                const StatementKey ka = Codec<StatementKey>::decode(hits[a]);
+                const StatementKey kb = Codec<StatementKey>::decode(hits[b]);
+                const int c = compareSpans(body.nameMap.decodeView(ka.orig),
+                                           body.nameMap.decodeView(kb.orig));
+                if (c != 0) return c < 0;
+                return compareSpans(body.nameMap.decodeView(ka.validity),
+                                    body.nameMap.decodeView(kb.validity)) < 0;
+            });
+            for (int32_t k = 0; k < hitN; ++k) {
+                const StatementKey key =
+                    Codec<StatementKey>::decode(hits[idx[k]]);
+                removeExpressionFromMemoryBlock(
+                    body.nameMap.decodeView(key.orig),
+                    body.nameMap.decodeView(key.validity),
+                    body, /*state=*/0);
+            }
+            // Quiescence (D-194): removals can cancel a genuine addition in
+            // the count diff — flag the mutation directly.
+            body.mutatedThisBurst = true;
+        }
+    }
+    gArena.popTo(sweepMark);
 }
 // Turn optimizations OFF for just this section
 //#pragma optimize("", off)
@@ -9327,8 +12945,10 @@ std::string ExpressionAnalyzer::compileImplicationToCompact(const std::string& i
 ///
 /// @param original The original expanded implication string as it enters the
 ///        mail channel at the call site.
-/// @param kySize `ky.size()` at the call site; the deferred pass rebuilds
-///        `compactLevels` as `0 .. kySize`.
+/// @param kySize `ky.size()` at the call site (0 for premise-chain-less
+///        callers); participates only in the drain's deterministic sort —
+///        the deposited level set is always empty (see the drain's
+///        level-set comment).
 /// @param coreId The broadcasting core id (no longer routes anything; the
 ///        deferred pass merges the compact deposit into the root's mailOut).
 /// @return void.
@@ -9796,30 +13416,53 @@ ScratchString ExpressionAnalyzer::expandSignature(StrSpan category,
         else if (elemN == 1) result = elements[0];
         else {
             // Rebuild nested !(&!(...) !(...)) from the flat disjunct list on `out`.
+            // Elements carry each disjunct's TRUE polarity, so a disjunct's
+            // conjunct form is its negation WITH double-negation cancellation:
+            // a negated element contributes its bare positive core, a positive
+            // element gains the '!' prefix. Byte-identical to the former
+            // blind-prefix builder for all-positive elements.
+            const auto negLen = [](const StrSpan& e) -> int32_t {
+                return (e.len > 0 && e.ptr[0] == '!') ? e.len - 1 : e.len + 1;
+            };
+            const auto putNeg = [](char* buf, int32_t at, const StrSpan& e) -> int32_t {
+                if (e.len > 0 && e.ptr[0] == '!') {
+                    std::memcpy(buf + at, e.ptr + 1, static_cast<size_t>(e.len - 1));
+                    return at + e.len - 1;
+                }
+                buf[at++] = '!';
+                std::memcpy(buf + at, e.ptr, static_cast<size_t>(e.len));
+                return at + e.len;
+            };
             const StrSpan e0 = elements[0];
             const StrSpan e1 = elements[1];
             StrSpan current;
             {
-                const int32_t n = 4 + e0.len + 1 + e1.len + 1;  // "!(&!" e0 "!" e1 ")"
+                const int32_t n = 3 + negLen(e0) + negLen(e1) + 1;  // "!(&" neg(e0) neg(e1) ")"
                 char* buf = out.allocBytes(n);
                 int32_t at = 0;
-                buf[at++] = '!'; buf[at++] = '('; buf[at++] = '&'; buf[at++] = '!';
-                std::memcpy(buf + at, e0.ptr, static_cast<size_t>(e0.len)); at += e0.len;
-                buf[at++] = '!';
-                std::memcpy(buf + at, e1.ptr, static_cast<size_t>(e1.len)); at += e1.len;
+                buf[at++] = '!'; buf[at++] = '('; buf[at++] = '&';
+                at = putNeg(buf, at, e0);
+                at = putNeg(buf, at, e1);
                 buf[at++] = ')';
                 assert(at == n);
                 current = StrSpan(buf, n);
             }
             for (int32_t i = 2; i < elemN; ++i) {
+                // The or-so-far is a DISJUNCT of the next level, so it
+                // enters the AND negated like any other disjunct — via
+                // putNeg's double-negation cancellation its `!(&…)` form
+                // contributes the bare positive `(&…)`:
+                // `!(&(&!D_1!D_2)!D_3)` = (D_1 ∨ D_2) ∨ D_3. Inserting
+                // `current` un-negated read as ¬(D_1 ∨ D_2) ∨ D_3 — the
+                // mirrored polarity defect flagged in D-260, live once
+                // ≥3-element ors are consumed in-run.
                 const StrSpan elem = elements[i];
-                const int32_t n = 3 + current.len + 1 + elem.len + 1;  // "!(&" current "!" elem ")"
+                const int32_t n = 3 + negLen(current) + negLen(elem) + 1;  // "!(&" neg(current) neg(elem) ")"
                 char* buf = out.allocBytes(n);
                 int32_t at = 0;
                 buf[at++] = '!'; buf[at++] = '('; buf[at++] = '&';
-                std::memcpy(buf + at, current.ptr, static_cast<size_t>(current.len)); at += current.len;
-                buf[at++] = '!';
-                std::memcpy(buf + at, elem.ptr, static_cast<size_t>(elem.len)); at += elem.len;
+                at = putNeg(buf, at, current);
+                at = putNeg(buf, at, elem);
                 buf[at++] = ')';
                 assert(at == n);
                 current = StrSpan(buf, n);
@@ -9963,16 +13606,585 @@ int32_t ExpressionAnalyzer::flattenOrLeaves(
     return outCount;
 }
 
+/// @brief Consume one ordered true-polarity disjunct cohort — the or
+///        machinery's whole downstream, shared by the compiled-or arm and
+///        the negated-AND De-Morgan door.
+///
+/// @details
+/// See the declaration for the full contract. The body is the former or-arm
+/// downstream of `disintegrateExprCore2`, extracted verbatim; the expansion
+/// history is inlined (the arm used the function-local
+/// `trackExpansionHistory` lambda) so the door — which runs before the
+/// lambda's definition point — shares it.
+///
+/// @param expr              Deposited expression (history antecedent).
+/// @param entSignature      u_-form cohort signature.
+/// @param orLeaves          Ordered disjunct spans at TRUE polarity.
+/// @param orLeafN           Leaf count.
+/// @param currentStatement  u_-stripped `collected` key.
+/// @param memoryBlock       Owning LB.
+/// @param collected         Product sink.
+/// @param validityName      Deposit scope.
+/// @param trackHistoryLocal History suppression flag.
+/// @param allowOrDisintegration Route (b) signal.
+/// @param orSeedLevels      Seed level run.
+/// @param orSeedLevelCount  Seed level count.
+/// @param allowOrProbe      Real-deposit flag.
+/// @param sArena            Caller's per-slot string scratch.
+/// @invariant LB-local writes only (I-28); registry reads via
+///            `compiledEntity` only.
+/// @see disintegrateExprCore2, flattenOrLeaves.
+void ExpressionAnalyzer::consumeOrLeavesCohort(StrSpan expr,
+    StrSpan entSignature,
+    const StrSpan* orLeaves, int32_t orLeafN,
+    StrSpan currentStatement,
+    Memory& memoryBlock,
+    CollectedArena& collected,
+    StrSpan validityName,
+    bool trackHistoryLocal,
+    bool allowOrDisintegration,
+    const int* orSeedLevels, int32_t orSeedLevelCount,
+    bool allowOrProbe,
+    ScratchArena& sArena,
+    WorkInstruction& instructions,
+    int iteration,
+    NewVarStore& newVarMap,
+    StrSpan parentWitness,
+    WitnessMetaStore* witnessMeta)
+{
+    // Check OR nesting depth — count existing "_(or" occurrences in validity name
+    int currentOrDepth = 0;
+    {
+        int32_t pos = 0;
+        while ((pos = findSpanFrom(validityName, StrSpan("_(or", 4), pos)) >= 0) {
+            ++currentOrDepth;
+            pos += 4;
+        }
+    }
+
+    // The expansion record and the K mutual-exclusion implications are
+    // emitted at EVERY OR depth: they are flat hash rules — the
+    // disjunctive-syllogism consumption of the OR — and create no
+    // scopes. Only the per-branch case-split below is gated on
+    // max_or_depth (D-211).
+    //
+    // Compute the OR's expanded De-Morgan form once; used as the
+    // disintegration origin for the K mutual-exclusion implications
+    // below, mirroring the &/existence pattern in trackExpansionHistory.
+    // See D-55.
+    const StrSpan entCategory("or", 2);
+    const ScratchString expandedOrSignature = expandSignature(
+        entCategory, entSignature, orLeaves, orLeafN, sArena);
+    // L3 span-record door. expandedOrSignature is a stable local; the
+    // per-branch KEY is u_-stripped onto sArena in the loop. The
+    // antecedent is loop-invariant, so the OriginDep is built once.
+    const OriginDep orDisDeps[1] = {
+        { StrSpan(expandedOrSignature), StrSpan(validityName) } };
+
+    // The K mutual-exclusion implications cite expandedOrSignature as
+    // their disintegration origin, which requires the matching
+    // expansion-origin record (expandedOrSignature -> deposited
+    // expression) to exist regardless of whether the per-branch
+    // case-split fires. Inlined trackExpansionHistory section 1: the
+    // paired mailOut write ships the record the statement delta cannot
+    // (the expansion conjunction never enters the delta).
+    if (parameters.trackHistory && trackHistoryLocal) {
+        const int expCap = (parameters.compressor_mode
+            ? parameters.compressor_max_origins_per_expr
+            : parameters.max_origin_per_expr);
+        const ScratchString exprClean = removeUPrefixScratch(sArena, StrSpan(expr));
+        const OriginDep expDeps[1] = { { StrSpan(exprClean), StrSpan(validityName) } };
+        addOriginEncoded(memoryBlock.exprOriginMap, memoryBlock.originInterner,
+            StrSpan(expandedOrSignature), StrSpan(validityName),
+            OriginTag::expansion, expDeps, 1, expCap);
+        memoryBlock.addMailOutOrigin(StrSpan(expandedOrSignature),
+            StrSpan(validityName), OriginTag::expansion, expDeps, 1, expCap);
+    }
+
+    // 1. The or implications — the K mutual-exclusion rules
+    //    (!d_0 & ... & !d_{i-1} & !d_{i+1} & ... & !d_{N-1}) -> d_i and, for a
+    //    registry or with k >= 3 leaves, the subset-exclusion rules (I-184,
+    //    D-269) — come from the or entity's compiled `implications` list
+    //    (D-309): one compact instance
+    //    `(implication<N>[args])` per rule, u_p -> instance argument p
+    //    positionally (repeated arguments are legal). Each instance is a
+    //    product STATEMENT of this cohort exactly like an `and` element: a
+    //    child of the or's key, registered at the parent scope, and
+    //    disintegrated through the implication branch of
+    //    `disintegrateExprCore2`, which expands it into the same full-bind
+    //    rule the on-the-spot construction produced (the compact's elements
+    //    through reconstructImplicationFullBindScratch) and writes the rule's
+    //    `expansion` origin citing the compact. The compact itself takes the
+    //    `disintegration` origin the rule carried (the verifier's
+    //    check_disintegration or branch expands it back). A De-Morgan door
+    //    cohort (`!(op[args])`, no or entity) keeps the on-the-spot K-rule
+    //    construction in the else branch.
+    const LogicalEntity* orLe = nullptr;
+    if (entSignature.len > 0 && entSignature.ptr[0] == '(') {
+        const LogicalEntity* cand =
+            compiledEntity(extractExpressionUniversalSpan(entSignature));
+        if (cand != nullptr && cand->category == "or") orLe = cand;
+    }
+    if (orLe != nullptr) {
+        assert(static_cast<int32_t>(orLe->implications.size())
+                == expectedOrImplicationCount(orLeafN)
+            && "consumeOrLeavesCohort: or-implication list incomplete (I-208)");
+        StrSpan sigArgs[ExecutionParameters::MAX_ARITY];
+        const int32_t sigN = getArgsSpans(StrSpan(orLe->signature), sigArgs,
+            ExecutionParameters::MAX_ARITY);
+        StrSpan instArgs[ExecutionParameters::MAX_ARITY];
+        const int32_t instN = getArgsSpans(entSignature, instArgs,
+            ExecutionParameters::MAX_ARITY);
+        assert(sigN == instN
+            && "consumeOrLeavesCohort: instance arity differs from the compiled or");
+        StrReplacement pairs[ExecutionParameters::MAX_ARITY];
+        for (int32_t p = 0; p < sigN; ++p) {
+            pairs[p].key = sigArgs[p];
+            pairs[p].value = instArgs[p];
+        }
+        const int maxOrigins = parameters.compressor_mode
+            ? parameters.compressor_max_origins_per_expr
+            : parameters.max_origin_per_expr;
+        // The instruction's marked goal is re-set by every
+        // prepareIntegrationCore call; copy it onto the arena first so the
+        // span never aliases the interner it is minted back into (I-3).
+        const StrSpan goalView = instructions.markedGoal();
+        const ScratchString goalCopy =
+            ScratchString::copyFrom(sArena, goalView.ptr, goalView.len);
+        for (const std::string& tmpl : orLe->implications) {
+            // Per-instance scope: the instance bytes live through the
+            // recursion (the WorkInstruction copies what it keeps).
+            ScratchScope instScope(sArena);
+            const ScratchString inst =
+                replaceKeysScratch(sArena, StrSpan(tmpl), pairs, sigN);
+            const ScratchString instClean =
+                removeUPrefixScratch(sArena, StrSpan(inst));
+            collected.insertChild(StrSpan(currentStatement), StrSpan(instClean));
+            if (parameters.trackHistory && trackHistoryLocal) {
+                // The compact takes the disintegration origin the rule
+                // carried (KEY u_-stripped: chapter rows surface u_-stripped
+                // expressions).
+                addOriginEncoded(memoryBlock.exprOriginMap,
+                    memoryBlock.originInterner, StrSpan(instClean),
+                    StrSpan(validityName), OriginTag::disintegration,
+                    orDisDeps, 1, maxOrigins);
+                // Paired `mailOut.exprOriginMap` write (D-274): the compact
+                // registers as a statement and rides the delta, and a
+                // receiver resolving its row needs the antecedent chain
+                // shipped alongside (the or's expansion record is pair-mailed
+                // above).
+                memoryBlock.addMailOutOrigin(StrSpan(instClean),
+                    StrSpan(validityName), OriginTag::disintegration,
+                    orDisDeps, 1, maxOrigins);
+            }
+            prepareIntegrationCore(StrSpan(inst), instructions, memoryBlock,
+                StrSpan(goalCopy));
+            disintegrateExprCore2(StrSpan(inst), instructions, memoryBlock,
+                iteration, collected, newVarMap, validityName,
+                trackHistoryLocal, allowOrDisintegration,
+                orSeedLevels, orSeedLevelCount, allowOrProbe,
+                parentWitness, witnessMeta);
+        }
+    }
+    else {
+        // De-Morgan door cohort: the K rules are built on the spot — the
+        // negated compound resolves to no or entity, so there is no compiled
+        // list (K rules only; the subset-exclusion family is registry-or
+        // only). Each is stamped with the `disintegration` origin pointing
+        // at the OR's expanded form so the proof graph can audit the K rules
+        // back to the originating OR (the verifier's De-Morgan branch
+        // rebuilds and verifies the exact shape).
+        for (int32_t i = 0; i < orLeafN; ++i) {
+            StrSpan premiseSpans[64];
+            std::size_t premiseCount = 0;
+            for (int32_t j = 0; j < orLeafN; ++j) {
+                if (j != i) {
+                    assert(premiseCount < 64 && "or-branch premise chain exceeds 64");
+                    // negateScratch, not prefixBang: a disjunct carries its
+                    // true polarity, so a negated leaf's exclusion premise is
+                    // its bare positive core, never a double negation.
+                    premiseSpans[premiseCount++] = negateScratch(sArena, orLeaves[j]);
+                }
+            }
+            const ScratchString impStr = reconstructImplicationFullBindScratch(
+                sArena, premiseSpans, static_cast<int>(premiseCount), orLeaves[i]);
+            collected.insertImpl(StrSpan(currentStatement), StrSpan(impStr), StrSpan(validityName));
+
+            if (parameters.trackHistory && trackHistoryLocal) {
+                // KEY u_-stripped (matches the &/existence pattern in
+                // trackExpansionHistory's section 2 — chapter rows
+                // surface u_-stripped expressions; the u_-prefixed form
+                // lives only in hash memory for unification).
+                const ScratchString impClean = removeUPrefixScratch(sArena, StrSpan(impStr));
+                int maxOrigins = parameters.compressor_mode
+                    ? parameters.compressor_max_origins_per_expr
+                    : parameters.max_origin_per_expr;
+                addOriginEncoded(memoryBlock.exprOriginMap, memoryBlock.originInterner, StrSpan(impClean), StrSpan(validityName), OriginTag::disintegration, orDisDeps, 1, maxOrigins);
+                // Paired `mailOut.exprOriginMap` write
+                // (D-274). The K mutual-exclusion
+                // implications are flat hash rules — never statements, never in
+                // the delta — so without this mirror a descendant that receives
+                // one of their fired heads by mail holds a citing row it cannot
+                // resolve (`buildStack` asserts). The antecedent
+                // `expandedOrSignature` record is itself pair-mailed above, so
+                // the receiver's chain closes.
+                memoryBlock.addMailOutOrigin(StrSpan(impClean),
+                    StrSpan(validityName), OriginTag::disintegration,
+                    orDisDeps, 1, maxOrigins);
+            }
+        }
+    }
+
+    // The per-branch case-split stays depth-gated: nested _ordis_
+    // scopes are the scope explosion max_or_depth exists to prevent.
+    // A depth-gated or neither opens nor parks (the single-layer
+    // contract): the K rules above are its whole consumption.
+    if (currentOrDepth < parameters.max_or_depth) {
+        // 2. TWO-ROUTE cohort opening (admission-based ordis; restores
+        //    the D-32 distinction the sequenced branch had overridden).
+        //    Route (b): the firing rule is a product of disintegration
+        //    (allowOrDisintegration — the threaded D-32 signal); such
+        //    heads open unconditionally, as in rungs 1+2. Route (a):
+        //    demand-driven — some disjunct's product template is
+        //    already an algebra admissionMap key (tagged or untagged;
+        //    the probe consults the admission maps ONLY, never the I-6
+        //    shape rule, and never consumes). Neither route: the
+        //    cohort PARKS in rejectedMapOrdis under its operator-based
+        //    product templates and revives by mail at admission key
+        //    gain. Probe and park run only for real deposits
+        //    (allowOrProbe); the hypothetical path neither opens nor
+        //    parks. The explosion protection is BOTH the demand filter
+        //    and the sequenced one-branch-at-a-time release below.
+
+        // Clean leaf forms, computed once for probe / park / bootstrap
+        // (byte-identical to the former per-leaf strip in the mint
+        // block; multiple spans under the enclosing scope).
+        ScratchString cleanHold[ExecutionParameters::MAX_INSTRUCTION_ELEMENTS];
+        StrSpan cleanLeaves[ExecutionParameters::MAX_INSTRUCTION_ELEMENTS];
+        for (int32_t i = 0; i < orLeafN; ++i) {
+            cleanHold[i] = removeUPrefixScratch(sArena, orLeaves[i]);
+            cleanLeaves[i] = StrSpan(cleanHold[i]);
+        }
+
+        // Product templates of leaf `li`, fed to `sink(StrSpan)` inside
+        // one scratch window: an existence disjunct yields its compiled
+        // definition body's witness facts with the witness slot in
+        // marker form (body instantiated in u_-form so the witness is
+        // the only non-u_ token — the listLastRemovedArgsLE
+        // discriminator, mirroring the real existence consumption); an
+        // operator-application disjunct yields itself; equalities (no
+        // writer can produce a matching demand), negated disjuncts
+        // (deferred by design), and non-operator cores yield nothing.
+        const auto forEachProductTemplate = [&](int32_t li, auto&& sink) {
+            const StrSpan cleanLeaf = cleanLeaves[li];
+            if (cleanLeaf.len > 0 && cleanLeaf.ptr[0] == '!') return;
+            if (isEquality(cleanLeaf)) return;
+            const StrSpan core = extractExpressionSpan(cleanLeaf);
+            const LogicalEntity* le = compiledEntity(core);
+            if (le != nullptr && le->category == "existence") {
+                ScratchScope tmplScope(sArena);
+                StrSpan sigArgs[ExecutionParameters::MAX_ARITY];
+                const int32_t sigN = getArgsSpans(StrSpan(le->signature),
+                    sigArgs, ExecutionParameters::MAX_ARITY);
+                StrSpan instArgs[ExecutionParameters::MAX_ARITY];
+                const int32_t instN = getArgsSpans(orLeaves[li], instArgs,
+                    ExecutionParameters::MAX_ARITY);
+                assert(sigN == instN
+                    && "ordis product template: existence instance arity "
+                       "differs from the compiled definition");
+                StrReplacement pairs[ExecutionParameters::MAX_ARITY];
+                for (int32_t a = 0; a < sigN; ++a) {
+                    pairs[a].key = sigArgs[a];
+                    pairs[a].value = instArgs[a];
+                }
+                ScratchString bodyHold[ExecutionParameters::MAX_INSTRUCTION_ELEMENTS];
+                StrSpan bodyElems[ExecutionParameters::MAX_INSTRUCTION_ELEMENTS];
+                int32_t bodyN = 0;
+                for (const std::string& rawElem : le->elements) {
+                    assert(bodyN < ExecutionParameters::MAX_INSTRUCTION_ELEMENTS
+                        && "ordis product template: body element count "
+                           "exceeds cap");
+                    bodyHold[bodyN] = replaceKeysScratch(sArena,
+                        StrSpan(rawElem), pairs, sigN);
+                    bodyElems[bodyN] = StrSpan(bodyHold[bodyN]);
+                    ++bodyN;
+                }
+                StrSpan witnesses[ExecutionParameters::MAX_ARITY];
+                const int32_t wN = listLastRemovedArgsLE(
+                    StrSpan("existence", 9), bodyElems, bodyN,
+                    witnesses, ExecutionParameters::MAX_ARITY);
+                assert(wN == 1
+                    && "ordis product template: existence definition must "
+                       "bind exactly one witness");
+                for (int32_t b = 0; b < bodyN; ++b) {
+                    const StrSpan bCore = extractExpressionSpan(bodyElems[b]);
+                    if (this->operators.find(std::string_view(bCore.ptr,
+                            static_cast<std::size_t>(bCore.len)))
+                        == this->operators.end()) {
+                        continue;
+                    }
+                    StrSpan bArgs[ExecutionParameters::MAX_ARITY];
+                    const int32_t bArgsN = getArgsSpans(bodyElems[b],
+                        bArgs, ExecutionParameters::MAX_ARITY);
+                    bool hasWitness = false;
+                    for (int32_t a = 0; a < bArgsN; ++a) {
+                        if (equalSpans(bArgs[a], witnesses[0])) {
+                            hasWitness = true;
+                            break;
+                        }
+                    }
+                    if (!hasWitness) continue;
+                    const ScratchString markedU = makeMarkedExprScratch(
+                        sArena, bodyElems[b], witnesses[0]);
+                    const ScratchString tmpl =
+                        removeUPrefixScratch(sArena, StrSpan(markedU));
+                    sink(StrSpan(tmpl));
+                }
+            } else if (this->operators.find(std::string_view(core.ptr,
+                           static_cast<std::size_t>(core.len)))
+                       != this->operators.end()) {
+                sink(cleanLeaf);
+            }
+        };
+
+        const bool routeB = allowOrDisintegration;
+        bool probeHit = false;
+        bool leafAdmitted[ExecutionParameters::MAX_INSTRUCTION_ELEMENTS] = {};
+        if (!routeB && allowOrProbe) {
+            for (int32_t i = 0; i < orLeafN; ++i) {
+                forEachProductTemplate(i, [&](StrSpan tmpl) {
+                    if (leafAdmitted[i]) return;
+                    // isAdmitted's prologue, read-only: non-minting
+                    // template probe + key presence. No updateAdmissionMap,
+                    // no status write.
+                    int64_t probePk = 0;
+                    if (lookupTemplateKey(memoryBlock.templateInterner,
+                            memoryBlock.nameMap, tmpl, validityName, probePk)
+                        && memoryBlock.overallHashMemory.admissionMap.lookup(
+                               probePk) != 0) {
+                        leafAdmitted[i] = true;
+                        probeHit = true;
+                    }
+                });
+            }
+        }
+        // Route (c) — ordis2 demand (D-267):
+        // per-leaf GROUND probe of admissionMapOrdis2 ONLY (never the
+        // algebra map — the compact-only branch-seed property depends on
+        // this path writing/reading no admission entry). A demand key's
+        // template half is a ground premise text, so the clean leaf is the
+        // exact probe (ground-to-ground byte equality through the template
+        // interner). Non-minting. Placed BEFORE the park in this chain, so
+        // the demand-first arrival order opens without ever parking.
+        bool demandHit = false;
+        bool leafDemand[ExecutionParameters::MAX_INSTRUCTION_ELEMENTS] = {};
+        if (!routeB && allowOrProbe
+            && !memoryBlock.overallHashMemory.admissionMapOrdis2.empty()) {
+            for (int32_t i = 0; i < orLeafN; ++i) {
+                int64_t demandPk = 0;
+                if (lookupTemplateKey(memoryBlock.templateInterner,
+                        memoryBlock.nameMap, cleanLeaves[i], validityName,
+                        demandPk)
+                    && memoryBlock.overallHashMemory.admissionMapOrdis2.lookup(
+                           demandPk) != 0) {
+                    leafDemand[i] = true;
+                    demandHit = true;
+                }
+            }
+        }
+        // No goals, no or branches (I-206): an LB whose
+        // goal registry is empty — any scope; evaluated at every open attempt,
+        // the registry empties mid-run — neither opens nor parks a cohort. The
+        // flat 1a rules above landed regardless.
+        const bool lbHasGoals = !memoryBlock.intToBeProved.empty();
+        const bool orAdmitted = lbHasGoals && (routeB || probeHit || demandHit);
+
+        if (orAdmitted) {
+            // 3. Cohort identity + bootstrap guard. Equal signatures
+            //    under different parents are independent case splits
+            //    (I-167). An existing count row means this exact cohort
+            //    is already scheduled (its branches live, pending,
+            //    retired, or converged) — a re-deposit of the same or
+            //    statement must NOT re-mint branch scopes or reset the
+            //    release sequence; the K mutual-exclusion implications
+            //    above were still (re-)emitted.
+            const ScratchString orSignature = removeUPrefixScratch(sArena, entSignature);  // e.g. "(or3[1,2,3])"
+            const int32_t orParentId =
+                memoryBlock.lbStateInterner.encode(validityName);
+            const int32_t orSigId =
+                memoryBlock.lbStateInterner.encode(StrSpan(orSignature));
+            const int32_t orCohortId = mintOrCohortId(
+                memoryBlock.lbStateInterner, orParentId, orSigId);
+            if (memoryBlock.orDisjunctCount.lookup(orCohortId) == 0) {
+                // Fresh cohort: register the FULL structural leaf count
+                // (convergence semantics unchanged — dead-branch
+                // retirement shrinks it in place, D-242), queue EVERY
+                // leaf, and stage the cohort for release. The bootstrap
+                // mints NO branch and sends NO mail: this code runs
+                // inside standardProcessing's internal-mail drain, and
+                // the drain's step-3 clear would wipe a seed inserted
+                // into the channel being drained. The end-of-burst
+                // drainPendingOrReleases — which runs AFTER that clear —
+                // performs the first release exactly like every later
+                // one (top-ranked disjunct, seed + origin on
+                // sameIterationInternalMail, absorbed next step).
+                memoryBlock.orDisjunctCount.insert(orCohortId, orLeafN);
+
+                // Route (a) / route (c) starter: the demand names WHICH
+                // branch carries the relevance — the matched disjunct
+                // opens first (ties among several matched fall to the
+                // standing ranking). Demand WINS over admission when both
+                // hit (maintainer decision): the demand-matched leaf is
+                // the one a starved rule is waiting to consume. Recorded
+                // as a one-shot side row consumed by
+                // drainPendingOrReleases; route (b) writes no row and
+                // starts at the top of the ranking.
+                int32_t starterLeafIx = -1;
+                if (!routeB) {
+                    const bool* pick = demandHit ? leafDemand : leafAdmitted;
+                    StrSpan admitted[ExecutionParameters::MAX_INSTRUCTION_ELEMENTS];
+                    int32_t admittedLeaf[ExecutionParameters::MAX_INSTRUCTION_ELEMENTS];
+                    int32_t admittedN = 0;
+                    for (int32_t i = 0; i < orLeafN; ++i) {
+                        if (pick[i]) {
+                            admitted[admittedN] = cleanLeaves[i];
+                            admittedLeaf[admittedN] = i;
+                            ++admittedN;
+                        }
+                    }
+                    assert(admittedN > 0
+                        && "route (a)/(c) cohort opened without a matched "
+                           "disjunct");
+                    StrSpan anchorArgs[ExecutionParameters::MAX_ARITY];
+                    const int32_t anchorArgN = collectAnchorArgs(
+                        memoryBlock, anchorArgs,
+                        ExecutionParameters::MAX_ARITY);
+                    starterLeafIx = admittedLeaf[pickTopOrDisjunct(
+                        admitted, admittedN, anchorArgs, anchorArgN)];
+                }
+
+                // "Opening consumes both" (D-267):
+                // each demand-matched leaf's entry leaves admissionMapOrdis2
+                // with this open. Runs on the single-threaded absorb seam;
+                // re-sweeps stay idempotent because the bootstrap guard
+                // above already gates re-deposits. The park side's entries
+                // were erased by the wake (or never existed on the
+                // demand-first order) — the pair self-liquidates.
+                if (demandHit) {
+                    for (int32_t i = 0; i < orLeafN; ++i) {
+                        if (!leafDemand[i]) continue;
+                        int64_t consumePk = 0;
+                        const bool present = lookupTemplateKey(
+                            memoryBlock.templateInterner, memoryBlock.nameMap,
+                            cleanLeaves[i], validityName, consumePk);
+                        assert(present
+                            && "demand-matched leaf lost its template key");
+                        (void)present;
+                        memoryBlock.overallHashMemory.admissionMapOrdis2
+                            .eraseBlobIf([consumePk](int64_t k) {
+                                return k == consumePk;
+                            });
+                    }
+                }
+
+                // Queue each leaf in the wrapped payload-body form (the
+                // orBookkeeping id convention). The clean strings ride
+                // the enclosing scope's byte-bump tier (fresh-string
+                // recipe: multiple spans under one scope).
+                for (int32_t i = 0; i < orLeafN; ++i) {
+                    const StrSpan cleanSpan = cleanLeaves[i];
+                    const int32_t wLen = cleanSpan.len + 2;
+                    char* wBuf = sArena.allocBytes(wLen);
+                    wBuf[0] = '(';
+                    if (cleanSpan.len > 0)
+                        std::memcpy(wBuf + 1, cleanSpan.ptr,
+                            static_cast<size_t>(cleanSpan.len));
+                    wBuf[wLen - 1] = ')';
+                    const int32_t wrappedId = memoryBlock.lbStateInterner
+                        .encode(StrSpan(wBuf, wLen));
+                    memoryBlock.orPendingBranches.insertSorted(orCohortId,
+                        wrappedId,
+                        DecodedIdLess{ &memoryBlock.lbStateInterner });
+                    if (i == starterLeafIx) {
+                        memoryBlock.orStarterPick.upsert(orCohortId,
+                                                         wrappedId);
+                    }
+                }
+                for (int32_t l = 0; l < orSeedLevelCount; ++l) {
+                    memoryBlock.orPendingLevels.insertSorted(orCohortId,
+                        orSeedLevels[l],
+                        [](int32_t a, int32_t b) { return a < b; });
+                }
+                memoryBlock.pendingOrReleases.mint(orCohortId);
+            }
+        } else if (lbHasGoals && allowOrProbe) {
+            // 4. PARK: no route admitted — file the cohort under each
+            //    operator-based disjunct product template at this
+            //    validity. Value = the clean or statement + the seed
+            //    level run (the complete reopening context; the key
+            //    carries the validity). The RMW dedups re-parks. No
+            //    park-time rendezvous is needed: the probe above just
+            //    missed synchronously, and every later admission key
+            //    gain passes a revisitRejectedOrdis seam.
+            const ScratchString orSignature =
+                removeUPrefixScratch(sArena, entSignature);
+            const int32_t parkStmtId =
+                memoryBlock.valueInterner.encode(StrSpan(orSignature));
+            const unsigned parkSlot = (g_currentCoreId >= 0)
+                ? static_cast<unsigned>(g_currentCoreId)
+                : genScratchArenas().slotCount() - 1;
+            ScratchArena& parkArena = genScratchArenas().forSlot(parkSlot);
+            for (int32_t i = 0; i < orLeafN; ++i) {
+                forEachProductTemplate(i, [&](StrSpan tmpl) {
+                    const int64_t parkPk = mintTemplateKey(
+                        memoryBlock.templateInterner, memoryBlock.nameMap,
+                        tmpl, validityName);
+                    insertRejectedOrdisIdsBlob(
+                        memoryBlock.overallHashMemory.rejectedMapOrdis,
+                        parkPk, parkStmtId,
+                        orSeedLevels, orSeedLevelCount,
+                        memoryBlock.valueInterner, parkArena);
+                });
+            }
+            // DUAL FILING (D-267): the same
+            // cohort additionally files in rejectedMapOrdis2 under each
+            // ELIGIBLE disjunct's clean GROUND text (polarity verbatim,
+            // I-175 — a negated compound files WITH its '!', because
+            // A15-family demands are minted negated) at this validity —
+            // the demand map's key language, so the drain's wake is a
+            // plain key rendezvous. The old filing above is untouched
+            // (I-178); only drainAdmissionKeysOrdis2 wakes this index.
+            for (int32_t i = 0; i < orLeafN; ++i) {
+                if (!ordis2KeyEligible(cleanLeaves[i])) continue;
+                const int64_t park2Pk = mintTemplateKey(
+                    memoryBlock.templateInterner, memoryBlock.nameMap,
+                    cleanLeaves[i], validityName);
+                insertRejectedOrdisIdsBlob(
+                    memoryBlock.overallHashMemory.rejectedMapOrdis2,
+                    park2Pk, parkStmtId,
+                    orSeedLevels, orSeedLevelCount,
+                    memoryBlock.valueInterner, parkArena);
+            }
+        }
+        // else: hypothetical-disintegration path — neither open nor park.
+    }
+    // else: max OR depth reached — K mutual-exclusion implications emitted above, no branch opening
+}
+
 void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
-    const WorkInstruction& instructions,
+    WorkInstruction& instructions,
     Memory& memoryBlock,
     int iteration,
     CollectedArena& collected,
     NewVarStore& newVarMap,
     StrSpan validityName,
-    CollectedArena& orBranchStatements,
     bool trackHistoryLocal,
-    bool allowOrDisintegration)
+    bool allowOrDisintegration,
+    const int* orSeedLevels,
+    int32_t orSeedLevelCount,
+    bool allowOrProbe,
+    StrSpan parentWitness,
+    WitnessMetaStore* witnessMeta)
 {
     // Capture startInt at the start of core() as reference
     int referenceStartInt = memoryBlock.startInt;
@@ -9983,8 +14195,8 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
     }
 
     // Per-slot string scratch for this level's leaf calculation strings; a
-    // ScratchScope frees them when this invocation returns. collected /
-    // orBranchStatements (the separate genScratchArenas page tier) hold interned
+    // ScratchScope frees them when this invocation returns. collected (the
+    // separate genScratchArenas page tier) holds interned
     // copies, so nothing this level builds needs to outlive it. Recursion nests
     // scopes by stack discipline -- an inner level allocates above this mark and
     // rewinds to its own, never touching these spans.
@@ -9993,13 +14205,6 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
         : scratchArenas().slotCount() - 1;
     ScratchArena& sArena = scratchArenas().forSlot(coreSlot);
     ScratchScope coreScope(sArena);
-    // "!" + s : a one-byte prefix (new bytes), built on the scratch arena.
-    const auto prefixBang = [&](const StrSpan& s) -> StrSpan {
-        char* b = sArena.allocBytes(1 + s.len);
-        b[0] = '!';
-        std::memcpy(b + 1, s.ptr, static_cast<size_t>(s.len));
-        return StrSpan(b, 1 + s.len);
-    };
 
     const ScratchString addedExpression = addMissingUScratch(sArena, StrSpan(expr));
     const StrSpan addedSpan(addedExpression);
@@ -10016,79 +14221,154 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
     ScratchString currentStatement;
     if (hit < 0) {
         // ---- Negated existence expansion ----
-        // !(existence2[args]) is not in instructions, but (existence2[args]) is.
-        // existence category encodes !(>[bound](left)!(right)), so:
-        //   !(existence2[args]) = !!(>[bound](left)!(right)) = (>[bound](left)!(right))
-        // which is an implication: from left derive !(right).
+        // existence category encodes !(>[bound](left)!(right)), so
+        //   !(existence<N>[args]) = (>[bound](left)!(right)):
+        // from left derive !right, and contrapositively from right derive
+        // !left. The inner existence is resolved through the REGISTRY —
+        // never through the prepared instruction: prepareIntegrationCore
+        // commits no entity for a negated compound input (its polarity
+        // guard), so the instruction is empty here.
         if (addedSpan.len >= 2 && addedSpan.ptr[0] == '!' && addedSpan.ptr[1] == '(') {
             const StrSpan innerExpr(addedSpan.ptr + 1, addedSpan.len - 1);
-            int32_t innerHit = -1;
-            for (int32_t ii = 0; ii < instructions.entityCount(); ++ii) {
-                if (equalSpans(instructions.signature(ii), innerExpr)) { innerHit = ii; break; }
-            }
-            if (innerHit >= 0
-                && equalSpans(instructions.category(innerHit), StrSpan("existence", 9))
-                && instructions.elemCount(innerHit) == 2) {
-                // elements[0] = left  (e.g. (in[pi_lev_0_X,u_1]))
-                // elements[1] = right (e.g. (in2[pi_lev_0_X,u_7,u_3]))
-                // The pi_lev_ bound variable must be replaced with a fresh integer
-                // so that renamingChain (which expects pure-integer changeables) works.
-                StrSpan boundVar;
-                for (int32_t ie = 0; ie < instructions.elemCount(innerHit); ++ie) {
-                    const StrSpan elem = instructions.elemAt(innerHit, ie);
-                    StrSpan eArgs[ExecutionParameters::MAX_ARITY];
-                    const int32_t eN = getArgsSpans(elem, eArgs, ExecutionParameters::MAX_ARITY);
-                    for (int32_t k = 0; k < eN; ++k) {
-                        if (!(eArgs[k].len >= 2 && eArgs[k].ptr[0] == 'u' && eArgs[k].ptr[1] == '_')) {
-                            boundVar = eArgs[k]; break;
-                        }
-                    }
-                    if (!boundVar.empty()) break;
+            const LogicalEntity* exLe =
+                compiledEntity(extractExpressionUniversalSpan(innerExpr));
+            if (exLe != nullptr && exLe->category == "existence"
+                && exLe->elements.size() == 2) {
+                // The two rules — left -> !right and right -> !left — come
+                // from the existence entity's compiled `implications` list
+                // (D-310): one compact instance
+                // `(implication<N>[args])` per rule, u_p -> the inner
+                // instance's argument p positionally. Each instance is a
+                // product STATEMENT of the negated existence exactly like an
+                // `and` element: a child of its key, registered at this
+                // scope, and disintegrated through the implication branch of
+                // this function, which expands it into the very rule the
+                // on-the-spot construction produced (the compact's elements
+                // through reconstructImplicationFullBindScratch — the bound
+                // variable is the registry's placeholder, as for every mailed
+                // compact) and writes the rule's `expansion` origin citing
+                // the compact. The compact itself takes the `expansion`
+                // origin the rule carried, citing the negated existence.
+                assert(static_cast<int32_t>(exLe->implications.size())
+                        == expectedExistenceImplicationCount(
+                               static_cast<int32_t>(exLe->elements.size()))
+                    && "negated-existence expansion: existence-implication list incomplete (I-209)");
+                StrSpan sigArgs[ExecutionParameters::MAX_ARITY];
+                const int32_t sigN = getArgsSpans(StrSpan(exLe->signature), sigArgs,
+                    ExecutionParameters::MAX_ARITY);
+                StrSpan instArgs[ExecutionParameters::MAX_ARITY];
+                const int32_t instN = getArgsSpans(innerExpr, instArgs,
+                    ExecutionParameters::MAX_ARITY);
+                assert(sigN == instN
+                    && "negated-existence expansion: instance arity differs from the compiled existence");
+                StrReplacement pairs[ExecutionParameters::MAX_ARITY];
+                for (int32_t p = 0; p < sigN; ++p) {
+                    pairs[p].key = sigArgs[p];
+                    pairs[p].value = instArgs[p];
                 }
-                char freshIntBuf[16];
-                const int freshIntLen = std::snprintf(freshIntBuf, sizeof(freshIntBuf), "%d",
-                              memoryBlock.startInt++);
-                const StrReplacement bvPair{ boundVar,
-                                             StrSpan(freshIntBuf, freshIntLen) };
-
-                const ScratchString left  = replaceKeysScratch(sArena, instructions.elemAt(innerHit, 0), &bvPair, 1);
-                const ScratchString right = replaceKeysScratch(sArena, instructions.elemAt(innerHit, 1), &bvPair, 1);
-                const StrSpan leftSpan(left), rightSpan(right);
-
-                // Two implications from !(>[bound](left)!(right)) = (>[bound](left)!(right)):
-                //   1) left -> !(right)
-                //   2) right -> !(left)
                 currentStatement = removeUPrefixScratch(sArena, addedSpan);
-
-                const ScratchString impl1 = reconstructImplicationFullBindScratch(sArena, &leftSpan, 1, prefixBang(rightSpan));
-                const ScratchString impl2 = reconstructImplicationFullBindScratch(sArena, &rightSpan, 1, prefixBang(leftSpan));
-                collected.insertImpl(StrSpan(currentStatement), StrSpan(impl1), StrSpan(validityName));
-                collected.insertImpl(StrSpan(currentStatement), StrSpan(impl2), StrSpan(validityName));
-
-                if (parameters.trackHistory && trackHistoryLocal) {
-                    int maxOrig = parameters.compressor_mode
-                        ? parameters.compressor_max_origins_per_expr
-                        : parameters.max_origin_per_expr;
-                    // Expansion origin: negated existence -> implications directly
-                    // (same pattern as other expansions: source expression -> products)
-                    // L3 span-record door. The "expansion" antecedent and the
-                    // two impl KEYs are u_-stripped onto sArena (removeUPrefix-
-                    // Scratch, the ScratchString twin), held as named locals so
-                    // the spans stay live across both door calls; the door mints
-                    // into originInterner, never sArena, so no span dangles (I-3).
-                    const ScratchString expClean = removeUPrefixScratch(sArena, StrSpan(expr));
-                    const ScratchString impl1Clean = removeUPrefixScratch(sArena, StrSpan(impl1));
-                    const ScratchString impl2Clean = removeUPrefixScratch(sArena, StrSpan(impl2));
-                    const OriginDep expDeps[1] = { { StrSpan(expClean), StrSpan(validityName) } };
-                    addOriginEncoded(memoryBlock.exprOriginMap, memoryBlock.originInterner,
-                        StrSpan(impl1Clean), StrSpan(validityName), OriginTag::expansion, expDeps, 1, maxOrig);
-                    addOriginEncoded(memoryBlock.exprOriginMap, memoryBlock.originInterner,
-                        StrSpan(impl2Clean), StrSpan(validityName), OriginTag::expansion, expDeps, 1, maxOrig);
-                    // mailOut.exprOriginMap writes retired (single-writer
-                    // policy; fillMailOut handles the outbound copy from
-                    // the delta).
+                const int maxOrig = parameters.compressor_mode
+                    ? parameters.compressor_max_origins_per_expr
+                    : parameters.max_origin_per_expr;
+                // Expansion antecedent: the negated existence, u_-stripped
+                // (chapter rows surface u_-stripped expressions), a named
+                // local so the span stays live across every door call; the
+                // doors mint into originInterner, never sArena (I-3).
+                const ScratchString expClean = removeUPrefixScratch(sArena, StrSpan(expr));
+                const OriginDep expDeps[1] = { { StrSpan(expClean), StrSpan(validityName) } };
+                // The instruction's marked goal is re-set by every
+                // prepareIntegrationCore call; copy it onto the arena first so
+                // the span never aliases the interner it is minted back into (I-3).
+                const StrSpan goalView = instructions.markedGoal();
+                const ScratchString goalCopy =
+                    ScratchString::copyFrom(sArena, goalView.ptr, goalView.len);
+                for (const std::string& tmpl : exLe->implications) {
+                    // Per-instance scope: the instance bytes live through the
+                    // recursion (the WorkInstruction copies what it keeps).
+                    ScratchScope instScope(sArena);
+                    const ScratchString inst =
+                        replaceKeysScratch(sArena, StrSpan(tmpl), pairs, sigN);
+                    const ScratchString instClean =
+                        removeUPrefixScratch(sArena, StrSpan(inst));
+                    collected.insertChild(StrSpan(currentStatement), StrSpan(instClean));
+                    if (parameters.trackHistory && trackHistoryLocal) {
+                        addOriginEncoded(memoryBlock.exprOriginMap,
+                            memoryBlock.originInterner, StrSpan(instClean),
+                            StrSpan(validityName), OriginTag::expansion,
+                            expDeps, 1, maxOrig);
+                        // Paired `mailOut.exprOriginMap` write (D-274): the
+                        // compact registers as a statement and rides the
+                        // delta; a receiver resolving its row needs the
+                        // antecedent chain shipped alongside.
+                        memoryBlock.addMailOutOrigin(StrSpan(instClean),
+                            StrSpan(validityName), OriginTag::expansion,
+                            expDeps, 1, maxOrig);
+                    }
+                    prepareIntegrationCore(StrSpan(inst), instructions, memoryBlock,
+                        StrSpan(goalCopy));
+                    disintegrateExprCore2(StrSpan(inst), instructions, memoryBlock,
+                        iteration, collected, newVarMap, validityName,
+                        trackHistoryLocal, allowOrDisintegration,
+                        orSeedLevels, orSeedLevelCount, allowOrProbe,
+                        parentWitness, witnessMeta);
                 }
 
+                return;
+            }
+        }
+
+        // ---- Negated-AND De-Morgan expansion (or-twin) ----
+        // !(op[args]) whose compiled definition body is an AND is a
+        // disjunction in De-Morgan clothing: !(& C1 .. Cn) = !C1 v .. v !Cn,
+        // with every disjunct at its TRUE polarity — a negated conjunct's
+        // disjunct is its bare positive core (negateScratch cancellation,
+        // I-175). The ordered leaves run the same consumption as a compiled
+        // or fact — K mutual-exclusion rules at this scope plus the
+        // two-route cohort machinery — with the negated compound itself as
+        // the cohort signature: no orN operator exists or is minted, the
+        // registry is only read (parallel-phase safe). The flat negated
+        // statement still registers through the ensureKey below, exactly as
+        // before; a leaf that is itself an or application re-disintegrates
+        // as an ordinary or fact when a branch asserts it.
+        if (addedSpan.len >= 2 && addedSpan.ptr[0] == '!' && addedSpan.ptr[1] == '(') {
+            const StrSpan negCore = extractExpressionUniversalSpan(addedSpan);
+            const LogicalEntity* negLe = compiledEntity(negCore);
+            if (negLe != nullptr && negLe->category == "and") {
+                const StrSpan innerInst(addedSpan.ptr + 1, addedSpan.len - 1);
+                StrSpan sigArgs[ExecutionParameters::MAX_ARITY];
+                const int32_t sigN = getArgsSpans(StrSpan(negLe->signature),
+                    sigArgs, ExecutionParameters::MAX_ARITY);
+                StrSpan instArgs[ExecutionParameters::MAX_ARITY];
+                const int32_t instN = getArgsSpans(innerInst, instArgs,
+                    ExecutionParameters::MAX_ARITY);
+                assert(sigN == instN
+                    && "negated-AND door: instance arity differs from the "
+                       "compiled definition");
+                StrReplacement pairs[ExecutionParameters::MAX_ARITY];
+                for (int32_t a = 0; a < sigN; ++a) {
+                    pairs[a].key = sigArgs[a];
+                    pairs[a].value = instArgs[a];
+                }
+                ScratchString leafHold[ExecutionParameters::MAX_INSTRUCTION_ELEMENTS];
+                StrSpan orLeaves[ExecutionParameters::MAX_INSTRUCTION_ELEMENTS];
+                int32_t orLeafN = 0;
+                for (const std::string& rawElem : negLe->elements) {
+                    assert(orLeafN < ExecutionParameters::MAX_INSTRUCTION_ELEMENTS
+                        && "negated-AND door: element count exceeds cap");
+                    leafHold[orLeafN] = replaceKeysScratch(sArena,
+                        StrSpan(rawElem), pairs, sigN);
+                    orLeaves[orLeafN] =
+                        negateScratch(sArena, StrSpan(leafHold[orLeafN]));
+                    ++orLeafN;
+                }
+                currentStatement = removeUPrefixScratch(sArena, addedSpan);
+                collected.ensureKey(StrSpan(currentStatement));
+                consumeOrLeavesCohort(expr, addedSpan, orLeaves, orLeafN,
+                    StrSpan(currentStatement), memoryBlock, collected,
+                    validityName, trackHistoryLocal, allowOrDisintegration,
+                    orSeedLevels, orSeedLevelCount, allowOrProbe, sArena,
+                    instructions, iteration, newVarMap, parentWitness,
+                    witnessMeta);
                 return;
             }
         }
@@ -10332,7 +14612,7 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
 
         // Recurse on all elements
         for (int32_t i = 0; i < entElemN; ++i) {
-            disintegrateExprCore2(entElems[i], instructions, memoryBlock, iteration, collected, newVarMap, validityName, orBranchStatements, trackHistoryLocal, allowOrDisintegration);
+            disintegrateExprCore2(entElems[i], instructions, memoryBlock, iteration, collected, newVarMap, validityName, trackHistoryLocal, allowOrDisintegration, orSeedLevels, orSeedLevelCount, allowOrProbe, parentWitness, witnessMeta);
         }
 
         // Use Lambda (Children tracked for AND)
@@ -10345,7 +14625,7 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
             entElemN, removedArgs, ExecutionParameters::MAX_KEY_SLOTS);
         if (removedN == 0) {
             for (int32_t i = 0; i < entElemN; ++i) {
-                disintegrateExprCore2(entElems[i], instructions, memoryBlock, iteration, collected, newVarMap, validityName, orBranchStatements, trackHistoryLocal, allowOrDisintegration);
+                disintegrateExprCore2(entElems[i], instructions, memoryBlock, iteration, collected, newVarMap, validityName, trackHistoryLocal, allowOrDisintegration, orSeedLevels, orSeedLevelCount, allowOrProbe, parentWitness, witnessMeta);
             }
             return;
         }
@@ -10424,9 +14704,11 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
             }
             renamed.setMarkedGoal(base.markedGoal());
 
-            // Recurse using the renamed instruction.
+            // Recurse using the renamed instruction. A nested existence
+            // reached through this path records THIS witness as its enclosing
+            // witness (the relay-selection parent chain).
             for (int32_t i = 0; i < entElemN; ++i) {
-                disintegrateExprCore2(renamedElemSpans[i], renamed, memoryBlock, iteration, collected, newVarMap, validityName, orBranchStatements, trackHistoryLocal, allowOrDisintegration);
+                disintegrateExprCore2(renamedElemSpans[i], renamed, memoryBlock, iteration, collected, newVarMap, validityName, trackHistoryLocal, allowOrDisintegration, orSeedLevels, orSeedLevelCount, allowOrProbe, newVar, witnessMeta);
             }
             };
 
@@ -10456,6 +14738,14 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
 
             memoryBlock.startInt++;
 
+            // Relay-selection metadata: this witness's spawning compact is the
+            // frame's instantiated existence (currentStatement); the enclosing
+            // witness is the recursion's parent. Appended BEFORE processPath so
+            // record order == newVarMap key order (the consumer asserts it).
+            if (witnessMeta != nullptr)
+                witnessMeta->append(StrSpan(newVar), StrSpan(currentStatement),
+                                    parentWitness);
+
             if (parameters.trackHistory && trackHistoryLocal)
             {
                 ScratchScope mhScope(sArena);
@@ -10484,6 +14774,12 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
 
             memoryBlock.startInt++;
 
+            // Relay-selection metadata — the int_ twin of the it_ append above
+            // (one existence's two witnesses share instance and parent).
+            if (witnessMeta != nullptr)
+                witnessMeta->append(StrSpan(newVar), StrSpan(currentStatement),
+                                    parentWitness);
+
             if (parameters.trackHistory && trackHistoryLocal)
             {
                 ScratchScope mhScope(sArena);
@@ -10504,178 +14800,19 @@ void ExpressionAnalyzer::disintegrateExprCore2(StrSpan expr,
         // OR disintegration: flatten every contiguous nested OR now, in this
         // call, then treat the ordered atomic leaves as one cohort. The outer
         // signature remains the cohort/provenance identity; no intermediate
-        // OR-valued branch is created for a later hashburst.
+        // OR-valued branch is created for a later hashburst. The whole
+        // downstream — expansion history, K mutual-exclusion rules, depth
+        // gate, two-route cohort machinery — lives in consumeOrLeavesCohort,
+        // shared with the negated-AND De-Morgan door.
         StrSpan orLeaves[ExecutionParameters::MAX_INSTRUCTION_ELEMENTS];
         const int32_t orLeafN = flattenOrLeaves(
             instructions, hit, orLeaves,
             ExecutionParameters::MAX_INSTRUCTION_ELEMENTS);
-
-        // Check OR nesting depth — count existing "_(or" occurrences in validity name
-        int currentOrDepth = 0;
-        {
-            int32_t pos = 0;
-            while ((pos = findSpanFrom(validityName, StrSpan("_(or", 4), pos)) >= 0) {
-                ++currentOrDepth;
-                pos += 4;
-            }
-        }
-
-        // The expansion record and the K mutual-exclusion implications are
-        // emitted at EVERY OR depth: they are flat hash rules — the
-        // disjunctive-syllogism consumption of the OR — and create no
-        // scopes. Only the per-branch case-split below is gated on
-        // max_or_depth (D-211).
-        //
-        // Compute the OR's expanded De-Morgan form once; used as the
-        // disintegration origin for the K mutual-exclusion implications
-        // below, mirroring the &/existence pattern in trackExpansionHistory.
-        // See D-55.
-        const ScratchString expandedOrSignature = expandSignature(
-            entCategory, entSignature, orLeaves, orLeafN, sArena);
-        // L3 span-record door. expandedOrSignature is a stable local; the
-        // per-branch KEY is u_-stripped onto sArena in the loop. The
-        // antecedent is loop-invariant, so the OriginDep is built once.
-        const OriginDep orDisDeps[1] = {
-            { StrSpan(expandedOrSignature), StrSpan(validityName) } };
-
-        // The K mutual-exclusion implications cite expandedOrSignature as
-        // their disintegration origin, which requires the matching
-        // expansion-origin record (expandedOrSignature -> compact OR name)
-        // to exist regardless of whether the per-branch case-split fires.
-        trackExpansionHistory(entCategory, entSignature, orLeaves, orLeafN, false);
-
-        // 1. Generate N implications: for each d_i, (!d_0 & ... & !d_{i-1} & !d_{i+1} & ... & !d_{N-1}) -> d_i
-        //    These go to collected (parent validity) for normal hash memory insertion.
-        //    Each is also stamped with `disintegration` origin pointing at the
-        //    OR's expanded form so the proof graph can audit the K rules back
-        //    to the originating OR (verifier check_disintegration's `or` branch
-        //    rebuilds and verifies the exact shape).
-        for (int32_t i = 0; i < orLeafN; ++i) {
-            StrSpan premiseSpans[64];
-            std::size_t premiseCount = 0;
-            for (int32_t j = 0; j < orLeafN; ++j) {
-                if (j != i) {
-                    assert(premiseCount < 64 && "or-branch premise chain exceeds 64");
-                    premiseSpans[premiseCount++] = prefixBang(orLeaves[j]);
-                }
-            }
-            const ScratchString impStr = reconstructImplicationFullBindScratch(
-                sArena, premiseSpans, static_cast<int>(premiseCount), orLeaves[i]);
-            collected.insertImpl(StrSpan(currentStatement), StrSpan(impStr), StrSpan(validityName));
-
-            if (parameters.trackHistory && trackHistoryLocal) {
-                // KEY u_-stripped (matches the &/existence pattern in
-                // trackExpansionHistory's section 2 — chapter rows
-                // surface u_-stripped expressions; the u_-prefixed form
-                // lives only in hash memory for unification).
-                const ScratchString impClean = removeUPrefixScratch(sArena, StrSpan(impStr));
-                int maxOrigins = parameters.compressor_mode
-                    ? parameters.compressor_max_origins_per_expr
-                    : parameters.max_origin_per_expr;
-                addOriginEncoded(memoryBlock.exprOriginMap, memoryBlock.originInterner, StrSpan(impClean), StrSpan(validityName), OriginTag::disintegration, orDisDeps, 1, maxOrigins);
-            }
-        }
-
-        // The per-branch case-split stays depth-gated: nested _ordis_
-        // scopes are the scope explosion max_or_depth exists to prevent.
-        if (currentOrDepth < parameters.max_or_depth) {
-            // 2. Check OR admission. Two paths (D-32, supersedes D-31):
-            //    (a) Sharper bypass — disintegrate when the caller asserts
-            //        allowOrDisintegration. This flag is set by
-            //        checkLocalEncodedMemoryStatic only when the firing
-            //        implication is itself a "product of disintegration"
-            //        (lmv.productOfDisintegration, stamped at install time
-            //        in addToHashMemory: at least one premise has an arg
-            //        starting with "u_"). Anchor-bound rules — whose chains
-            //        carry only concrete integer args — never trigger the
-            //        bypass, eliminating the runtime explosion observed
-            //        under D-31's broad implication-scope bypass.
-            //        Coupled with general disintegration in
-            //        addExprToMemoryBlock: doNotDisintegrate forces
-            //        allowOrDisintegration=false.
-            //    (b) The legacy orAdmissionSet fallback is gone with its
-            //        container (D-135): it had no
-            //        insert site anywhere (D-31), so the always-empty set
-            //        made the fallback loop constant-false — the flag IS
-            //        the whole gate.
-            const bool orAdmitted = allowOrDisintegration;
-
-
-            if (orAdmitted) {
-                // 3. Build compiled OR signature and register the disjunct
-                //    count for this exact (parent validity, OR signature)
-                //    cohort. Equal signatures under different parents are
-                //    independent case splits.
-                const ScratchString orSignature = removeUPrefixScratch(sArena, entSignature);  // e.g. "(or3[1,2,3])"
-                {
-                    // Set-or-insert (the operator[] = overwrite the cold
-                    // set-once insert forbids): a re-registered cohort keeps
-                    // its structural disjunct count.
-                    const int32_t orParentId =
-                        memoryBlock.lbStateInterner.encode(validityName);
-                    const int32_t orSigId =
-                        memoryBlock.lbStateInterner.encode(StrSpan(orSignature));
-                    const int32_t orCohortId = mintOrCohortId(
-                        memoryBlock.lbStateInterner, orParentId, orSigId);
-                    const int orCnt = orLeafN;
-                    const int32_t orSigRow =
-                        memoryBlock.orDisjunctCount.lookup(orCohortId);
-                    if (orSigRow != 0)
-                        memoryBlock.orDisjunctCount.setValueAt(orSigRow, orCnt);
-                    else
-                        memoryBlock.orDisjunctCount.insert(orCohortId, orCnt);
-                }
-
-                // (trackExpansionHistory hoisted above the orAdmitted gate —
-                //  see the K-implications block earlier in the OR case.)
-
-                // 4. Each disjunct becomes a statement with branch validity name
-                for (int32_t i = 0; i < orLeafN; ++i) {
-                    // Per-disjunct string-tier scope: cleanExpr / orPayload /
-                    // branchValidity are freed each iteration (mirroring the former
-                    // heap std::strings). orSignature is built above the loop, so
-                    // it survives every iteration's rewind.
-                    ScratchScope oiScope(sArena);
-                    const ScratchString cleanExpr = removeUPrefixScratch(sArena, orLeaves[i]);
-                    // orPayload = "ordis_" + orSignature + "_(" + cleanExpr + ")"
-                    // built explicit-length on the string tier.
-                    const StrSpan orSigSpan(orSignature), cleanSpan(cleanExpr);
-                    const int32_t opLen = 6 + orSigSpan.len + 2 + cleanSpan.len + 1;
-                    char* opBuf = sArena.allocBytes(opLen);
-                    int32_t opAt = 0;
-                    std::memcpy(opBuf + opAt, "ordis_", 6); opAt += 6;
-                    if (orSigSpan.len > 0) { std::memcpy(opBuf + opAt, orSigSpan.ptr, static_cast<size_t>(orSigSpan.len)); opAt += orSigSpan.len; }
-                    std::memcpy(opBuf + opAt, "_(", 2); opAt += 2;
-                    if (cleanSpan.len > 0) { std::memcpy(opBuf + opAt, cleanSpan.ptr, static_cast<size_t>(cleanSpan.len)); opAt += cleanSpan.len; }
-                    opBuf[opAt++] = ')';
-                    assert(opAt == opLen);
-                    const StrSpan orPayload(opBuf, opLen);
-
-                    NameId orParentId = memoryBlock.nameMap.encode(validityName);
-                    NameId orBranchId = memoryBlock.nameMap.encodePush(orParentId, orPayload);
-                    // copyFrom: the NEXT iteration's encode/encodePush mints NameMap,
-                    // so a raw decodeView would dangle (I-3); the copy rides sArena.
-                    const ScratchString branchValidity = ScratchString::copyFrom(sArena,
-                        memoryBlock.nameMap.decodeView(orBranchId).ptr,
-                        memoryBlock.nameMap.decodeView(orBranchId).len);
-
-                    // L3 span-record door. orSignature / cleanExpr / branchValidity
-                    // are stable locals -> span directly. The KEY spans also feed
-                    // orBranchStatements.
-                    const OriginDep orDisintDeps[1] = {
-                        { StrSpan(orSignature), StrSpan(validityName) } };
-                    if (trackHistoryLocal) {
-                        addOriginEncoded(memoryBlock.exprOriginMap, memoryBlock.originInterner, StrSpan(cleanExpr), StrSpan(branchValidity), OriginTag::orDisintegration, orDisintDeps, 1,
-                            (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
-                    }
-
-                    orBranchStatements.insertImpl(StrSpan(), StrSpan(cleanExpr),
-                                                  StrSpan(branchValidity));
-                }
-            }
-            // else: OR not admitted — implications already emitted above, branches skipped
-        }
-        // else: max OR depth reached — K mutual-exclusion implications emitted above, no branch opening
+        consumeOrLeavesCohort(expr, entSignature, orLeaves, orLeafN,
+            StrSpan(currentStatement), memoryBlock, collected, validityName,
+            trackHistoryLocal, allowOrDisintegration,
+            orSeedLevels, orSeedLevelCount, allowOrProbe, sArena,
+            instructions, iteration, newVarMap, parentWitness, witnessMeta);
     }
     else {
         // Default fallback
@@ -10694,12 +14831,15 @@ ExpressionAnalyzer::disintegrateExpr2(StrSpan expr,
     StrSpan validityName,
     DisintProducts& out,
     bool trackHistoryLocal,
-    bool allowOrDisintegration)
+    bool allowOrDisintegration,
+    const int* orSeedLevels,
+    int32_t orSeedLevelCount,
+    bool allowOrProbe)
 {
     int savedStartInt = memoryBlock.startInt;
 
-    // collected / orBranchStatements are page-tier (allocPage) containers, so
-    // they ride genScratchArenas -- NOT scratchArenas, whose allocBytes string
+    // collected is a page-tier (allocPage) container, so
+    // it rides genScratchArenas -- NOT scratchArenas, whose allocBytes string
     // fill (prefixArgumentsWithU, below) would clobber a container page sharing
     // the slot when disintegration re-enters via the hypothetical / integration
     // paths (allocBytes targets pageHighWater()-1 and its ScratchScope rewind
@@ -10709,7 +14849,7 @@ ExpressionAnalyzer::disintegrateExpr2(StrSpan expr,
         : genScratchArenas().slotCount() - 1;
     CollectedArena collected(&genScratchArenas().forSlot(collSlot));
     NewVarStore newVarMap(&genScratchArenas().forSlot(collSlot));
-    CollectedArena orBranchStatements(&genScratchArenas().forSlot(collSlot));
+    WitnessMetaStore witnessMeta(&genScratchArenas().forSlot(collSlot));
     WorkInstruction instructions(&genScratchArenas().forSlot(collSlot));
 
     // String-tier scratch for the statified twins (prefixArgumentsWithUScratch /
@@ -10726,20 +14866,30 @@ ExpressionAnalyzer::disintegrateExpr2(StrSpan expr,
     // string tier (0% heap); consumed by prepareIntegrationCore / core2 / the
     // topLevelExprClean strip below.
     const ScratchString replExpr = prefixArgumentsWithUScratch(strArena, StrSpan(expr));
-    prepareIntegrationCore(StrSpan(replExpr), instructions, memoryBlock, expr);
+    {
+        RT_SCOPE_HERE("DISINT_PREPARE_CORE");
+        prepareIntegrationCore(StrSpan(replExpr), instructions, memoryBlock, expr);
+    }
 
     // The disintegration core now reads the arena WorkInstruction directly —
     // the former heap std::vector<LogicalEntity> bridge is gone.
-    disintegrateExprCore2(StrSpan(replExpr),
-        instructions,
-        memoryBlock,
-        iteration,
-        collected,
-        newVarMap,
-        validityName,
-        orBranchStatements,
-        trackHistoryLocal,
-        allowOrDisintegration);
+    {
+        RT_SCOPE_HERE("DISINT_CORE");
+        disintegrateExprCore2(StrSpan(replExpr),
+            instructions,
+            memoryBlock,
+            iteration,
+            collected,
+            newVarMap,
+            validityName,
+            trackHistoryLocal,
+            allowOrDisintegration,
+            orSeedLevels,
+            orSeedLevelCount,
+            allowOrProbe,
+            /*parentWitness=*/StrSpan(),
+            &witnessMeta);
+    }
 
     // finalStringStatements: membership + dedup ColdHashSet on the same per-slot
     // genScratchArenas page tier as collected (the admittedVars pattern). Iteration
@@ -10760,7 +14910,9 @@ ExpressionAnalyzer::disintegrateExpr2(StrSpan expr,
         if (finalStringStatements.count() == beforeN) return;  // already present
 
         collected.forImpls(s, [&](const StrSpan& original, const StrSpan& validity) {
-            out.implications.append(original, validity);
+            // `s` is the statement whose disintegration produced the rule —
+            // the carrier the install door records.
+            out.implications.append(original, validity, s);
         });
 
         // Recurse for every child
@@ -10827,13 +14979,13 @@ ExpressionAnalyzer::disintegrateExpr2(StrSpan expr,
             }
         });
         // forceDeep statements: append finalStringStatements (all at parent
-        // validity) + the OR branches straight to the channel; forEachSorted at
+        // validity) straight to the channel; forEachSorted at
         // the caller reproduces the former std::set<EWV> order byte-for-byte.
+        // (Sequenced or-disintegration: branch seeds ride
+        // sameIterationInternalMail from the OR case itself, not this
+        // channel — the absorb runs them through the full kernel pipeline.)
         for (int32_t id = 1; id <= finalStringStatements.count(); ++id)
             out.statements.append(finalStringStatements.keyAt(id), validityName);
-        orBranchStatements.forImpls(StrSpan(), [&](const StrSpan& o, const StrSpan& v) {
-            out.statements.append(o, v);
-        });
         // forceDeep has no admission pass: an expression with witnesses (any
         // existence) is not fully disintegrated here; an atomic (no witnesses) is.
         return newVarMap.empty();
@@ -10868,6 +15020,7 @@ ExpressionAnalyzer::disintegrateExpr2(StrSpan expr,
     const ScratchString topLevelExprClean = removeUPrefixScratch(strArena, StrSpan(replExpr));
 
     // Pass A: Unconditional Statements
+    RT_SCOPE_HERE("DISINT_PASSES_AB");
     collected.forEachKey([&](const StrSpan& stmt) {
         if (finalStringStatements.contains(stmt)) return;
 
@@ -10924,7 +15077,11 @@ ExpressionAnalyzer::disintegrateExpr2(StrSpan expr,
                         std::string_view(core.ptr, core.len)) != this->operators.end());
 
                     if (hasOperator) {
-                        if (isAdmitted(memoryBlock, StrSpan(ru), var, StrSpan(marked), validityName)) {
+                        // Ancestor-inclusive probe (D-288):
+                        // a fired input-slot demand key lands at
+                        // deeperOf(subkey constituents), which may be a strict
+                        // ancestor of this deposit's scope (ordis branch).
+                        if (isAdmittedIncludingAncestors(memoryBlock, StrSpan(ru), var, StrSpan(marked), validityName)) {
                             isVarAdmitted = true;
                             break;
                         }
@@ -10948,16 +15105,56 @@ ExpressionAnalyzer::disintegrateExpr2(StrSpan expr,
                                 sibSpans[sibN++] = StrSpan(removeUPrefixScratch(
                                     rArena, newVarMap.elemAt(varId, k)));
                             }
+                            // Level capture = frame ∪ registry
+                            // (D-327). The
+                            // compound's registry levels row is written by the
+                            // kernel's stmts-loop AFTER disintegrateExpr2
+                            // returns, so on a fresh local deposit the registry
+                            // lookup alone misses by construction and the
+                            // record would park level-empty — the revival
+                            // would then stamp the witness facts {-1}, hiding
+                            // the compound's real levels from every downstream
+                            // level union. The deposit's own levels are in
+                            // hand as orSeedLevels; a re-arrival's registry
+                            // row may carry levels the frame does not, so
+                            // merge both (ascending runs, non-negative tier
+                            // only — an all-non-derived park stays empty and
+                            // the addStatement door re-stamps {-1} at
+                            // revival).
                             int32_t levArr[256];
                             int32_t levN = 0;
                             {
+                                int32_t regArr[256];
+                                int32_t regN = 0;
                                 const int32_t compoundLvlsId2 = lookupStatementLevels(
                                     memoryBlock.intStatementLevelsMap, memoryBlock.nameMap,
                                     StrSpan(topLevelExprClean), validityName);
                                 if (compoundLvlsId2) {
-                                    levN = coldIntRunAt(
+                                    regN = coldIntRunAt(
                                         memoryBlock.intStatementLevelsMap,
-                                        compoundLvlsId2, levArr, 256);
+                                        compoundLvlsId2, regArr, 256);
+                                }
+                                int32_t ai = 0, bi = 0;
+                                while (ai < orSeedLevelCount && orSeedLevels[ai] < 0) ++ai;
+                                while (bi < regN && regArr[bi] < 0) ++bi;
+                                while (ai < orSeedLevelCount && bi < regN) {
+                                    assert(levN < 256 && "park level union exceeds levArr");
+                                    if (orSeedLevels[ai] < regArr[bi]) {
+                                        levArr[levN++] = orSeedLevels[ai++];
+                                    } else if (regArr[bi] < orSeedLevels[ai]) {
+                                        levArr[levN++] = regArr[bi++];
+                                    } else {
+                                        levArr[levN++] = orSeedLevels[ai++];
+                                        ++bi;
+                                    }
+                                }
+                                while (ai < orSeedLevelCount) {
+                                    assert(levN < 256 && "park level union exceeds levArr");
+                                    levArr[levN++] = orSeedLevels[ai++];
+                                }
+                                while (bi < regN) {
+                                    assert(levN < 256 && "park level union exceeds levArr");
+                                    levArr[levN++] = regArr[bi++];
                                 }
                             }
                             pendingRejections.addRejection(var, StrSpan(ru),
@@ -10967,8 +15164,7 @@ ExpressionAnalyzer::disintegrateExpr2(StrSpan expr,
                     }
                 }
                 // 2. Check for Integration Variable (int_...)
-                else if (matchIntLevId(var, classLevel, classId)) {
-                    if (isAdmittedIntegration(memoryBlock, StrSpan(ru), var, StrSpan(marked), validityName)) {
+                else if (matchIntLevId(var, classLevel, classId)) {                    if (isAdmittedIntegration(memoryBlock, StrSpan(ru), var, StrSpan(marked), validityName)) {
                         isVarAdmitted = true;
                         break;
                     }
@@ -10980,7 +15176,6 @@ ExpressionAnalyzer::disintegrateExpr2(StrSpan expr,
                                    memoryBlock.nameMap, StrSpan(marked), validityName, setPk)
                             && memoryBlock.overallHashMemory.admissionSetIntegration.contains(setPk);
                     }()) {
-                        cleanAdmissionMap(StrSpan(marked), validityName, memoryBlock);
                         isVarAdmitted = true;
                         break;
                     }
@@ -11119,7 +15314,6 @@ ExpressionAnalyzer::disintegrateExpr2(StrSpan expr,
     }
 
 
-
     // --- FIX: Commit Rejections Only for Never-Admitted Variables ---
     // Records are in lex-var-then-insertion order (Pass-B order); walk in order and
     // skip records whose var was admitted (in Pass B or the cascade).
@@ -11154,12 +15348,21 @@ ExpressionAnalyzer::disintegrateExpr2(StrSpan expr,
         // arrive first. Probe the admission map for this parked key's
         // demand; if it is already live, fire the revival now — whichever
         // side arrives second wakes the other. A consumed demand needs no
-        // wake: its constituent was admitted through another route.
+        // wake: its constituent was admitted through another route. The
+        // probe is VALUE-level (admissionRunHasRegularValue): an ordis-only
+        // key is cohort-opening demand evidence and must not wake the
+        // general rejectedMap.
         int64_t parkedPk = 0;
         if (lookupTemplateKey(memoryBlock.templateInterner, memoryBlock.nameMap,
-                              markedExprF, validityName, parkedPk)
-            && memoryBlock.overallHashMemory.admissionMap.lookup(parkedPk) != 0) {
-            revisitRejected2(markedExprF, memoryBlock, validityName);
+                              markedExprF, validityName, parkedPk)) {
+            const unsigned rdvSlot = (g_currentCoreId >= 0)
+                ? static_cast<unsigned>(g_currentCoreId)
+                : genScratchArenas().slotCount() - 1;
+            if (admissionRunHasRegularValue(
+                    memoryBlock.overallHashMemory.admissionMap, parkedPk,
+                    genScratchArenas().forSlot(rdvSlot))) {
+                revisitRejected2(markedExprF, memoryBlock, validityName);
+            }
         }
     }
 
@@ -11180,15 +15383,15 @@ ExpressionAnalyzer::disintegrateExpr2(StrSpan expr,
                                      memoryBlock.overallHashMemory, memoryBlock, validityName);
     }
 
-    // Append the normal statements (all at parent validity) + the OR branches
-    // (with their own branch validity names) straight to the channel; forEachSorted
+    // Append the normal statements (all at parent validity) straight to the
+    // channel; forEachSorted
     // at the caller reproduces the former std::set<EWV> order byte-for-byte.
     // out.implications is already filled by addToFinal.
+    // (Sequenced or-disintegration: branch seeds ride
+    // sameIterationInternalMail from the OR case itself, not this channel —
+    // the absorb runs them through the full kernel pipeline.)
     for (int32_t id = 1; id <= finalStringStatements.count(); ++id)
         out.statements.append(finalStringStatements.keyAt(id), validityName);
-    orBranchStatements.forImpls(StrSpan(), [&](const StrSpan& o, const StrSpan& v) {
-        out.statements.append(o, v);
-    });
 
     // fullDisintegrationHappened: true iff every existence inside the compound
     // got at least one ADMITTED witness. Group the witness vars in newVarMap by
@@ -11212,6 +15415,14 @@ ExpressionAnalyzer::disintegrateExpr2(StrSpan expr,
         ColdHashSet<BytesKeyStore> allSigs(&egArena, &egDirty);
         ColdHashSet<BytesKeyStore> coveredSigs(&egArena, &egDirty);
         ScratchArena& egStr = scratchArenas().forSlot(collSlot);
+
+        // Per-witness signature ids for the relay selection below (mint order,
+        // parallel to witnessMeta's records).
+        const int32_t wTotal = newVarMap.varCount();
+        int32_t* sigIdOf = (wTotal > 0)
+            ? reinterpret_cast<int32_t*>(egArena.resolve(
+                  egArena.alloc(wTotal * 4, 4)))
+            : nullptr;
 
         for (int32_t wid = 1; wid <= newVarMap.varCount(); ++wid) {
             const StrSpan witnessVar = newVarMap.varAt(wid);
@@ -11241,23 +15452,61 @@ ExpressionAnalyzer::disintegrateExpr2(StrSpan expr,
                 at += markers[i].len;
             }
             const StrSpan sigKey(sigBuf, sigLen);
-            allSigs.mint(sigKey);
+            sigIdOf[wid - 1] = allSigs.mint(sigKey);
             if (admittedVars.contains(witnessVar)) coveredSigs.mint(sigKey);
         }
         fullDisintegrationHappened = (allSigs.count() == coveredSigs.count());
+
+        // Relay selection (D-284): mark the HIGHEST
+        // uncovered existence groups — an uncovered group whose enclosing
+        // group is covered (or that is the top compound) relays its spawning
+        // compact; deeper uncovered groups ride inside it. The caller stages
+        // the compacts for flag-5 mail (local statuses only). witnessMeta is
+        // record-parallel to newVarMap's mint order (asserted).
+        if (!fullDisintegrationHappened && wTotal > 0) {
+            assert(witnessMeta.count() == wTotal
+                && "relay selection: witnessMeta out of step with newVarMap");
+            int32_t* parentIdx = reinterpret_cast<int32_t*>(egArena.resolve(
+                egArena.alloc(wTotal * 4, 4)));
+            for (int32_t i = 0; i < wTotal; ++i) {
+                assert(equalSpans(witnessMeta.witnessAt(i),
+                                  newVarMap.varAt(i + 1))
+                    && "relay selection: witnessMeta order mismatch");
+                const StrSpan parent = witnessMeta.parentAt(i);
+                if (parent.empty()) {
+                    parentIdx[i] = -1;
+                } else {
+                    const int32_t pid = newVarMap.lookupVar(parent);
+                    assert(pid != 0
+                        && "relay selection: enclosing witness not in newVarMap");
+                    parentIdx[i] = pid - 1;
+                }
+            }
+            bool* relayMask = reinterpret_cast<bool*>(egArena.resolve(
+                egArena.alloc(wTotal, 1)));
+            const int32_t selected = selectRelayWitnesses(sigIdOf, parentIdx,
+                wTotal,
+                [&](int32_t sid) {
+                    return coveredSigs.lookup(allSigs.keyAt(sid)) != 0;
+                },
+                relayMask);
+            if (selected > 0) {
+                // Dedup by spawning-compact instance (the it_/int_ pair of one
+                // existence selects together); the channel dedups on the
+                // composite key, so repeated appends are no-ops.
+                for (int32_t i = 0; i < wTotal; ++i) {
+                    if (relayMask[i])
+                        out.relayCompacts.append(witnessMeta.instanceAt(i),
+                                                 validityName);
+                }
+            }
+        }
     }
 
     // out.implications / out.statements are filled in place above (addToFinal +
     // the direct statement/OR-branch appends); nothing to copy here.
     return fullDisintegrationHappened;
 }
-
-
-
-
-
-
-
 
 
 // Turn optimizations OFF for just this section
@@ -11277,7 +15526,7 @@ void ExpressionAnalyzer::prove(int numberIterations,
     // scope's final barrier was never armed and is dropped here (the
     // kernel re-plans from live state at its next pressured barrier).
     stewardEvictionPlan.clear();
-    steward = std::make_unique<MemorySteward>();
+    steward = std::make_unique<MemorySteward>(parameters.allow_ssd_deload);
     // The worker count sizes the I/O executor pool (steward::ioThreadCountFor
     // — 4 executors at 32 workers).
     steward->start(logicalCores);
@@ -11343,6 +15592,12 @@ void ExpressionAnalyzer::prove(int numberIterations,
                   << "  active_bodies=" << activeBodies
                   << "  total_exprs=" << totalExprs << std::endl;
         std::cout.flush();
+        // Mirror the burst boundary into the diagnostics log so its telemetry
+        // lines stay attributable to their hashburst.
+        diagnosticsLog() << "--- hashburst " << it
+                         << " active_bodies=" << activeBodies
+                         << " total_exprs=" << totalExprs
+                         << " ---" << std::endl;
 
         // Publish the burst index so every RTTracker constructed by the
         // upcoming proveKernel captures it in its `.rt/<chain>.log`
@@ -11373,6 +15628,7 @@ void ExpressionAnalyzer::prove(int numberIterations,
         // the LB slab I-109/I-110).
         deactivateRecursively();
     }
+
 }
 
 // readSimpleFacts() and saveFilteredConjectures() — moved to filter.cpp.
@@ -11543,6 +15799,115 @@ void ExpressionAnalyzer::precompileStructuralOperators(std::string& theorem) {
 }
 
 
+/// @brief Alpha-variant test for a head-switched mirror — see the
+///        declaration's Doxygen block in `prover.hpp` for the full
+///        contract.
+///
+/// @details
+/// Implementation notes: the candidate bijection π comes from a
+/// simultaneous token walk over the two heads (token = `[A-Za-z0-9_]+`
+/// run; anything else is delimiter and must match byte-for-byte); the
+/// global verification applies π to each source chain link with the
+/// token-boundary `ce::replaceKeysInString` and compares the link
+/// multisets via one sort. Load-time / setup code — not on the statified
+/// burst paths, so heap containers are in contract here.
+///
+/// @param original The source conjecture (compiled form).
+/// @param mirror   Its `headSwitchOne` output (compiled form).
+/// @return True iff the mirror is an alpha-variant of the source.
+bool ExpressionAnalyzer::mirrorIsAlphaVariant(const std::string& original,
+                                              const std::string& mirror) const {
+    // 1. Disintegrate both sides.
+    std::vector<std::tuple<std::string, std::vector<std::string>,
+                           std::set<std::string>>> chainO, chainM;
+    const std::string headO =
+        ce::disintegrateImplication(original, chainO, coreExpressionMap);
+    const std::string headM =
+        ce::disintegrateImplication(mirror, chainM, coreExpressionMap);
+    if (chainO.size() != chainM.size()) return false;
+
+    // Bound-variable universe of the source (every binder-list entry).
+    std::set<std::string> bound;
+    for (const auto& link : chainO)
+        for (const std::string& v : std::get<1>(link)) bound.insert(v);
+
+    // 2. Candidate bijection from the token-aligned head pairing.
+    const auto isTokByte = [](char c) {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+            || (c >= '0' && c <= '9') || c == '_';
+    };
+    std::map<std::string, std::string> pi;     // source var -> mirror var
+    std::map<std::string, std::string> piInv;
+    {
+        std::size_t i = 0, j = 0;
+        while (i < headO.size() || j < headM.size()) {
+            const bool ta = i < headO.size() && isTokByte(headO[i]);
+            const bool tb = j < headM.size() && isTokByte(headM[j]);
+            if (ta != tb) return false;
+            if (!ta) {
+                if (i >= headO.size() || j >= headM.size()
+                    || headO[i] != headM[j]) return false;
+                ++i; ++j;
+                continue;
+            }
+            const std::size_t i0 = i, j0 = j;
+            while (i < headO.size() && isTokByte(headO[i])) ++i;
+            while (j < headM.size() && isTokByte(headM[j])) ++j;
+            const std::string tokO = headO.substr(i0, i - i0);
+            const std::string tokM = headM.substr(j0, j - j0);
+            const bool boundO = bound.count(tokO) != 0;
+            const bool boundM = bound.count(tokM) != 0;
+            if (tokO != tokM && (!boundO || !boundM)) return false;
+            if (boundO != boundM) return false;
+            if (boundO) {
+                const auto it = pi.find(tokO);
+                if (it != pi.end()) {
+                    if (it->second != tokM) return false;
+                } else {
+                    if (piInv.count(tokM)) return false;
+                    pi[tokO] = tokM;
+                    piInv[tokM] = tokO;
+                }
+            }
+        }
+    }
+    // Complete π to a permutation: untouched bound variables map to
+    // themselves (must not collide with an existing image).
+    for (const std::string& v : bound) {
+        if (pi.count(v)) continue;
+        if (piInv.count(v)) return false;
+        pi[v] = v;
+        piInv[v] = v;
+    }
+
+    // 3. Global verification: π-image of the source links == mirror links
+    //    as a multiset (premise + ordered bound-var list per link).
+    const char SEP = '\x01';
+    std::vector<std::string> imgO, keysM;
+    imgO.reserve(chainO.size());
+    keysM.reserve(chainM.size());
+    for (const auto& link : chainO) {
+        std::string key = ce::replaceKeysInString(std::get<0>(link), pi);
+        for (const std::string& v : std::get<1>(link)) {
+            key += SEP;
+            const auto it = pi.find(v);
+            key += (it != pi.end()) ? it->second : v;
+        }
+        imgO.push_back(std::move(key));
+    }
+    for (const auto& link : chainM) {
+        std::string key = std::get<0>(link);
+        for (const std::string& v : std::get<1>(link)) {
+            key += SEP;
+            key += v;
+        }
+        keysM.push_back(std::move(key));
+    }
+    std::sort(imgO.begin(), imgO.end());
+    std::sort(keysM.begin(), keysM.end());
+    return imgO == keysM;
+}
+
 std::string ExpressionAnalyzer::headSwitchOne(const std::string& theorem) const {
     // Stateless head-switch (contrapositive) construction.
     // Returns the rebuilt implication string if the chain has a negated,
@@ -11592,12 +15957,37 @@ std::string ExpressionAnalyzer::headSwitchOne(const std::string& theorem) const 
 }
 
 
+/// @brief Compile a batch of established theorems to compact rule carriers and
+///        store the batch ONCE in `store`'s mail log (declaration Doxygen in
+///        `prover.hpp` carries the full contract).
+///
+/// @details
+/// Disintegrate + rebuild each theorem in first-occurrence binder order (I-4),
+/// compile to its compact, deposit as a main-scope statement with an empty level
+/// set (I-51) plus the `originTag` / `compilation` origin rows; commit the batch
+/// into `store`'s log, self-inject `store.mailIn`, raise `store.hasWork`.
+/// Single-threaded, before any pull.
+///
+/// @param provedTheorems The theorems to seed (structural operators precompiled).
+/// @param originTag Origin tag of the seed rows.
+/// @param store The LB whose log stores the batch and whose inbox is self-injected.
+/// @param nestedStore When non-null, the store of every theorem `anchorOnlyRule`
+///        rejects (the anchor LB in incubator mode); null = no split.
+/// @see collectMailAncestors, incubatorAnchorLb, anchorOnlyRule.
 void ExpressionAnalyzer::broadcastTheorems(const std::vector<std::string>& provedTheorems,
-                                           const std::string& originTag) {
+                                           const std::string& originTag,
+                                           Memory& store,
+                                           Memory* nestedStore) {
     if (provedTheorems.empty()) return;
 
-    Mail broadcastMail;
+    // One batch per store; the compile order stays the list order (the
+    // implication<N> numbering is observable), only the destination differs.
+    Mail storeBatch;
+    Mail nestedBatch;
     for (const std::string& thOriginal : provedTheorems) {
+        const bool toNested = nestedStore != nullptr
+            && !this->anchorOnlyRule(thOriginal);
+        Mail& broadcastMail = toNested ? nestedBatch : storeBatch;
 
         // 1. Disintegrate the theorem to inspect its head
         std::vector<std::tuple<std::string, std::vector<std::string>, std::set<std::string>>> tempChain;
@@ -11674,37 +16064,175 @@ void ExpressionAnalyzer::broadcastTheorems(const std::vector<std::string>& prove
             // deposited level run becomes the installed rule's levels, so a
             // non-empty set injects an extra level into every statement derived
             // from that rule, making the derived level-set size exceed
-            // memoryBlock.level + 1. The allLevelsInvolved discharge gate in
-            // prover.hpp::dischargeToBeProved then refuses to promote the derived head to
-            // globalTheoremList: the fact enters intEncodedStatements but is never
-            // recorded as proved or broadcast.
+            // memoryBlock.level + 1. The allLevelsInvolved registration verdict
+            // sealed in prover.hpp::dischargeToBeProved then turns false and the
+            // drain refuses appendGlobalTheorem: the goal still closes (closure
+            // is level-free), but the derived head is never recorded as proved
+            // or broadcast.
             std::set<int> compactLevels;
             ExpressionWithValidity compactEv(compactImpl, "main");
             broadcastMail.statements.insert(std::make_pair(compactEv, compactLevels));
             if (parameters.trackHistory) {
+                // I-52: cite the binary's CANONICAL reconstruction, not the
+                // input finalTheorem. compileImplicationToCompact registers a
+                // normalized premise order (and dedups alpha-equivalent bodies
+                // to the first-seen entry), so finalTheorem's premise order
+                // can differ from the registered elements even for a single
+                // source; the verifier's check_compilation rebuilds from the
+                // binary, so the citation must be the same reconstruction.
+                // Mirror of the deferred-compaction drain in proveKernel.
+                const std::string compactCore = extractExpressionUniversalSpan(StrSpan(compactImpl)).toStdString();
+                auto cit = this->compiledExpressions.find(compactCore);
+                assert(cit != this->compiledExpressions.end()
+                    && "broadcastTheorems: compact form must resolve to a compiledExpressions entry");
+                const std::vector<std::string>& elems = cit->second.elements;
+                assert(!elems.empty()
+                    && "broadcastTheorems: implication entry must have at least one element (head)");
+                std::vector<std::string> canonicalKey(elems.begin(), elems.end() - 1);
+                const std::string& canonicalHead = elems.back();
+                const std::string canonicalOriginal = this->reconstructImplicationFullBind(canonicalKey, canonicalHead);
                 addOrigin(broadcastMail.exprOriginMap, compactEv,
-                    std::make_pair("compilation", std::vector<ExpressionWithValidity>{ ExpressionWithValidity(finalTheorem, "main") }),
+                    std::make_pair("compilation", std::vector<ExpressionWithValidity>{ ExpressionWithValidity(canonicalOriginal, "main") }),
                     (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
             }
         }
     }
 
-    // New mail system (D-137): store the broadcast ONCE in the
-    // root's log -- every descendant pulls it on the normal ancestor walk -- and
-    // self-inject the root, which has no ancestor to pull from. Replaces the old
-    // per-LB boxes broadcast. Single-threaded at LOAD, before any pull, so the
+    // New mail system (D-137): store the broadcast ONCE in `store`'s log --
+    // every LB that lists `store` among its mail ancestors pulls it on the
+    // normal ancestor walk -- and self-inject `store`, which never pulls its
+    // own log. `store` is the root sentinel (reaching every LB, or only the
+    // anchor LB in incubator mode -- collectMailAncestors) or, for an
+    // incubator batch's externals, the anchor LB (reaching the anchor LB and
+    // every LB below it). Single-threaded at LOAD, before any pull, so the
     // batch is in place for burst 1. broadcastMail carries only statements +
     // exprOriginMap, exactly what mergeBatchInto and commit keep.
-    mergeBatchIntoMailIn(broadcastMail, this->body.mailIn);
-    this->mailLog.commit(&this->body, std::move(broadcastMail));
-    // WAKE DOOR 5 (D-194): the seed batch self-injects the
-    // root's mailIn directly, so wake the root here; every descendant is woken
-    // by mailPeek on the next active-build (it sees the root's bumped commit
-    // count). A no-op on burst 1 (root born dirty), load-bearing for the
-    // between-warm-up-and-main broadcast where the root may have gone quiescent.
-    this->body.hasWork = true;
+    mergeBatchIntoMailIn(storeBatch, store.mailIn);
+    this->mailLog.commit(&store, std::move(storeBatch));
+    // WAKE DOOR 5 (D-194): the seed batch self-injects `store`'s mailIn
+    // directly, so wake it here; every reader of its log is woken by mailPeek
+    // on the next active-build (it sees the bumped commit count). A no-op on
+    // burst 1 (LBs born dirty), load-bearing for the between-warm-up-and-main
+    // broadcast where `store` may have gone quiescent.
+    store.hasWork = true;
+    // Shape-routed nested rules: the anchor LB's log (every LB below it) plus
+    // the anchor LB's own inbox.
+    if (nestedStore != nullptr && !nestedBatch.statements.empty()) {
+        mergeBatchIntoMailIn(nestedBatch, nestedStore->mailIn);
+        this->mailLog.commit(nestedStore, std::move(nestedBatch));
+        nestedStore->hasWork = true;
+    }
 
     std::cout << "Distributed knowledge to " << permanentBodies.size() << " memory blocks." << std::endl;
+}
+
+/// @brief Collect the mail ancestors an LB registers with `MailLog`, nearest
+///        first (declaration Doxygen in `prover.hpp` carries the full contract).
+///
+/// @details
+/// The whole `parentMemory` chain outside incubator mode; in incubator mode the
+/// walk stops at the anchor LB, so an LB strictly below it never lists the root
+/// sentinel and the root's log reaches only the anchor LB
+/// (D-332).
+///
+/// @param lb  The LB being registered.
+/// @param out Receives the ancestor list, nearest first (cleared first).
+void ExpressionAnalyzer::collectMailAncestors(const Memory* lb,
+                                              std::vector<const Memory*>& out) const {
+    assert(lb != nullptr && "collectMailAncestors: null LB");
+    out.clear();
+    bool stoppedAtAnchor = false;
+    for (const Memory* p = lb->parentMemory; p != nullptr; p = p->parentMemory) {
+        out.push_back(p);
+        if (parameters.incubator_mode && this->isAnchorLb(*p)) {
+            stoppedAtAnchor = true;
+            break;
+        }
+    }
+    // Incubator contract: every LB strictly below the anchor LB has the anchor
+    // LB on its chain (every incubator conjecture starts with the anchor
+    // premise). The root sentinel and the anchor LB itself walk to the root.
+    assert((!parameters.incubator_mode || stoppedAtAnchor
+            || lb->parentMemory == nullptr || this->isAnchorLb(*lb))
+        && "collectMailAncestors: incubator LB without an anchor LB on its chain");
+}
+
+/// @brief The anchor LB of an incubator grid -- the root sentinel's one anchor
+///        child (declaration Doxygen in `prover.hpp` carries the full contract).
+///
+/// @details
+/// Walks the root's children (`simpleMapStore.forEachChild`) and asserts exactly
+/// one child carries the anchor prefix.
+///
+/// @return The anchor LB (never null).
+Memory* ExpressionAnalyzer::incubatorAnchorLb() const {
+    assert(parameters.incubator_mode
+        && "incubatorAnchorLb: only an incubator grid has a single anchor LB");
+    Memory* anchorLb = nullptr;
+    int anchorChildren = 0;
+    this->simpleMapStore.forEachChild(&this->body,
+        [&](const StrSpan& /*key*/, Memory* child) {
+            if (this->isAnchorLb(*child)) {
+                anchorLb = child;
+                ++anchorChildren;
+            }
+        });
+    assert(anchorChildren == 1
+        && "incubatorAnchorLb: the root sentinel must have exactly one anchor child");
+    assert(anchorLb != nullptr);
+    return anchorLb;
+}
+
+/// @brief True iff an incubator-derived theorem's rule can only fire at the
+///        anchor LB (declaration Doxygen in `prover.hpp` carries the contract).
+///
+/// @details
+/// Single premise → true. Two premises → true iff the second premise is an
+/// operator application (not an equality, negation or implication) and the
+/// head is `(=[a,b])` with one side a non-anchor argument of that operator and
+/// the other side a `(1)`-typed anchor slot value. Otherwise false.
+///
+/// @param theorem The theorem text.
+/// @return True iff the rule is anchor-only.
+bool ExpressionAnalyzer::anchorOnlyRule(const std::string& theorem) const {
+    std::vector<std::tuple<std::string, std::vector<std::string>, std::set<std::string>>> chain;
+    const std::string head = ce::disintegrateImplication(theorem, chain, this->coreExpressionMap);
+    assert(!chain.empty() && "anchorOnlyRule: a theorem without premises");
+    // The first premise is an anchor: this batch's, or an earlier incubator
+    // batch's for a loaded theorem (the cross-anchor bridge conjecture
+    // `current anchor -> previous anchor` derives that premise at the anchor
+    // LB). The earlier anchor need not be a core expression of this batch.
+    const std::string& anchorPremise = std::get<0>(chain[0]);
+    assert(anchorPremise.rfind("(Anchor", 0) == 0
+        && "anchorOnlyRule: an incubator-derived theorem starts with an anchor premise");
+    if (chain.size() == 1) return true;
+    if (chain.size() != 2) return false;
+
+    const std::string& premise2 = std::get<0>(chain[1]);
+    const bool operatorPremise = premise2.size() > 2 && premise2[0] == '('
+        && premise2[1] != '=' && premise2[1] != '>';
+    if (!operatorPremise) return false;
+    if (head.rfind("(=[", 0) != 0) return false;
+    const std::vector<std::string> headArgs = ce::getArgs(head);
+    if (headArgs.size() != 2) return false;
+
+    // The anchor digits are the anchor's slot values that an equality can
+    // mention: every slot of an incubator anchor other than the carrier set
+    // and the function symbols, which are never equated. Reading the slot
+    // values off the premise (not the definition sets) keeps the rule valid
+    // for an earlier batch's anchor that this batch's configuration does not
+    // define.
+    const std::vector<std::string> anchorArgs = ce::getArgs(anchorPremise);
+    const std::set<std::string> anchorArgSet(anchorArgs.begin(), anchorArgs.end());
+    const std::set<std::string>& digits = anchorArgSet;
+    std::set<std::string> operatorOutputs;
+    for (const std::string& a : ce::getArgs(premise2)) {
+        if (anchorArgSet.count(a) == 0) operatorOutputs.insert(a);
+    }
+    const auto connects = [&](const std::string& x, const std::string& d) {
+        return operatorOutputs.count(x) != 0 && digits.count(d) != 0;
+    };
+    return connects(headArgs[0], headArgs[1]) || connects(headArgs[1], headArgs[0]);
 }
 
 // Turn optimizations OFF for just this section
@@ -11983,15 +16511,16 @@ void ExpressionAnalyzer::disintegrateExprHypothetically(StrSpan expr, Memory& me
 
     // 5. Find levels — caller-owned stack run; the sorted-unique union
     // (origin levels + the LB's own level) via insertLevelSorted covers
-    // both the miss-branch singleton and the unconditional insert.
+    // both the miss-branch singleton and the unconditional insert. The
+    // filtered read keeps the {-1} non-derived tier out of the union.
     int lvRun[256];
     int32_t lvN = 0;
     const int32_t originLvlsId = lookupStatementLevels(
         memoryBlock.intStatementLevelsMap, memoryBlock.nameMap, expr, validityName);
 
     if (originLvlsId) {
-        lvN = coldIntRunAt(memoryBlock.intStatementLevelsMap, originLvlsId,
-                           lvRun, 256);
+        lvN = coldIntRunNonNegAt(memoryBlock.intStatementLevelsMap, originLvlsId,
+                                 lvRun, 256);
     }
     lvN = insertLevelSorted(lvRun, lvN, memoryBlock.level, 256);
 
@@ -12084,68 +16613,127 @@ void ExpressionAnalyzer::disintegrateExprHypothetically(StrSpan expr, Memory& me
         }
     }
 
-    // 7. Register NEW STATEMENTS with NEW validity name
+    // 7. Deposit NEW STATEMENTS with NEW validity name on internal mail
 
-    // D25: the transient EncodedExpression is deleted — the statement bytes are a
-    // StrSpan over `stmt`, the validity a StrSpan over the D21 owned decode copy
-    // `newValidityName` (stable across the loop's mints; it rides its own
-    // std::string, not the NameMap pool). Span doors: lookupStatementFlags(StrSpan,
-    // StrSpan), encodeExpression(StrSpan, StrSpan, NameMap&), nameMap.encode(StrSpan)
-    // — same bytes -> same ids, same mint order (find-or-mint on identical bytes).
+    // The constituents ride sameIterationInternalMail — the absorb runs each
+    // through the full kernel pipeline (addStatement shape dispatch with the
+    // equality / negated-equality gateways' mirror pair registration, Site F
+    // ancestor dedup, equivalence classes), the same channel the or-branch
+    // seeds ([I-176](../../../docs/agentic_swdd/30_invariants.md#i-176)) and
+    // the ordis revival use. No direct registration here: a direct upsert
+    // cannot maintain the gateways' mirror pair invariant. stmtSpan aliases
+    // out.statements' storage and newVldSpan the owned decode copy
+    // `newValidityName`; the deposit's two flat encodes write only the names
+    // table, so neither span moves (I-3).
     out.statements.forEachSorted([&](StrSpan stmtSpan, StrSpan /*v*/) {
         const StrSpan newVldSpan(newValidityName);
-
-        const StatementFlags* stmtRow = lookupStatementFlags(
-            memoryBlock.intKnownStatements, memoryBlock.nameMap,
-            stmtSpan, newVldSpan);
-        if (stmtRow && stmtRow->registered) {
-            return; // Skip if already present
+        memoryBlock.mutatedThisBurst = true;
+        insertInternalStatement(memoryBlock.sameIterationInternalMail,
+            memoryBlock.nameMap, stmtSpan, newVldSpan, lvRun, lvN);
+        if (parameters.trackHistory) {
+            // Terminal `hypothesis` line — one tag, zero dependencies, at the
+            // hypo validity ONLY. Hypothesis constituents steer proof
+            // direction but are not part of any proof: no walk continues
+            // through this line, and it must never be written at the parent
+            // or main scope (the 2026-04-10 orphan-origin buildStack abort).
+            addInternalMailOrigin(memoryBlock.sameIterationInternalMail,
+                memoryBlock.originInterner, stmtSpan, newVldSpan,
+                OriginTag::hypothesis, nullptr, 0,
+                (parameters.compressor_mode
+                     ? parameters.compressor_max_origins_per_expr
+                     : parameters.max_origin_per_expr));
         }
-
-        { IntEncodedExpr ie = encodeExpression(stmtSpan, newVldSpan, memoryBlock.nameMap);
-          memoryBlock.intEncodedStatements.push_back(ie);
-          memoryBlock.intLocalEncodedStatements.push_back(ie);
-          memoryBlock.intLocalEncodedStatementsDelta.push_back(ie);
-          memoryBlock.intLocalEncodedStatementsSet.mint(
-              packStatementKey(ie.originalId, ie.validityId));
-          memoryBlock.intStatementLevelsMap.assignSetRange(
-              packStatementKey(ie.originalId, ie.validityId),
-              lvRun, lvRun + lvN); }
-        upsertStatementKey(memoryBlock.intKnownStatements, packStatementKey(
-            memoryBlock.nameMap.encode(stmtSpan),
-            memoryBlock.nameMap.encode(newVldSpan)),
-            /*local=*/true, /*registered=*/true, /*known=*/true);
     });
 }
 
 //#pragma optimize("", off)
 
-void ExpressionAnalyzer::prehandleAnchor(Memory* mb) {
+/// @brief Grid-wide axed-anchor pre-pass: walk the LB tree once; outside
+///        recursion subtrees every LB under the batch anchor mints its
+///        axed x-names into `intAxedVariables` AND registers its
+///        x-substituted anchor expression as a `{-1}`-tier statement with
+///        an `anchor handling` history line; recursion subtrees take one
+///        of two containment modes (set-only, or the anchor-numeral
+///        exception).
+///
+/// @details
+/// For each LB whose ancestor chain reaches the batch anchor LB, the pass
+/// collects every argument cited by the chain's exprKeys (the trace) and
+/// x-copies exactly the anchor's `(1)`-typed slots whose value appears in
+/// that trace: slot value `6` becomes `x6`, minted into the LB's
+/// `intAxedVariables`. The x-copy is the anchor-premise completion for
+/// rules whose element arguments collide with anchor slot values (the
+/// element-vs-anchor-slot collision, I-36 family); the minted axed set
+/// makes the containment checks — the `addExprToMemoryBlock` prologue,
+/// the `addStatement` door, and the orbit-commit refusal — drop every
+/// DERIVED x-citing deposit, so the copies never breed x-facts. The
+/// statement write is direct — deliberately bypassing those doors.
+///
+/// Recursion subtrees (D-272,
+/// I-188): a block-#1 root whose goal (the
+/// theorem head, queued verbatim at creation) cites a `(1)`-typed anchor
+/// slot value puts its whole subtree in the ANCHOR-NUMERAL EXCEPTION mode
+/// — untouched by this pass, so the ancestor's axed-anchor statement
+/// arriving by mail registers at the inert door and the historical
+/// premise-completion machinery runs there (anchor-numeral theorems such
+/// as unit-product need it). Every other recursion subtree — block-#2
+/// `_induction_` side-chains always included — is SET-ONLY: axed names
+/// minted, no statement, the mailed ancestor form refused at the armed
+/// door (a descendant's trace-accumulated axed set is a superset of its
+/// ancestors'), keeping those induction sub-blocks entirely x-free.
+///
+/// @param mb Subtree root to process; the sole production caller passes
+///           the grid root once per grid build (from `buildGrid`).
+/// @param axedMode Threaded subtree mode: 0 outside recursion subtrees,
+///                 1 set-only containment, 2 anchor-numeral exception
+///                 (see the mode comment in the body); callers pass 0.
+/// @invariant Registration is level-tier `{-1}` (definitional, not
+///            derived) and dedup-guarded by the `intKnownStatements`
+///            lookup, so re-walks never double-register.
+/// @see `addExprToMemoryBlock` — the axed-containment door; SwDD
+///      `20_core_concepts/06_anchors_and_scopes.md`.
+void ExpressionAnalyzer::prehandleAnchor(Memory* mb, int axedMode) {
     if (mb == nullptr) return;
-    if (mb->isPartOfRecursion)
-    {
-        return;
-    }
 
-    std::string anchorPrefix = "(" + this->anchorInfo.name;
-    bool isAnchorLB = (mb->exprKey().rfind(anchorPrefix, 0) == 0);
+    // Recursion-subtree mode, threaded down the walk (only subtree roots
+    // carry `isPartOfRecursion`):
+    //   0 — outside recursion subtrees: mint + register (full treatment).
+    //   1 — set-only containment: mint the axed names so the door refuses
+    //       every x-citing deposit (the mailed ancestor-form axed anchor
+    //       included); no statement. The subtree stays entirely x-free.
+    //   2 — anchor-numeral exception: the subtree is untouched — no mint,
+    //       no registration — so the ancestor's axed-anchor statement
+    //       arriving by mail registers at the inert door and the
+    //       historical premise-completion machinery runs inside this
+    //       grid's induction blocks. Chosen at a block-#1 recursion root
+    //       whose goal (the theorem head verbatim) cites a `(1)`-typed
+    //       anchor slot value; block-#2 roots (`_induction_` equality
+    //       side-chains) always take mode 1 — their synthetic
+    //       `(=[digitArg,zero])` goal cites the zero numeral by
+    //       construction, not because the theorem is about numerals.
+    int mode = axedMode;
+    const bool isSubtreeRoot = (axedMode == 0) && mb->isPartOfRecursion;
+    if (isSubtreeRoot) mode = 1;
 
-    // Skip processing for the Anchor LB itself, but allow recursion
-    if (!isAnchorLB) {
+    const bool isAnchorLB = this->isAnchorLb(*mb);
+
+    // Skip the body work for the Anchor LB itself; still recurse below.
+    // Mode-2 descendants skip it too — their whole subtree is untouched.
+    if (!isAnchorLB && mode != 2) {
 
         // 1. Trace the hierarchy to find the specific Anchor Key
         std::string anchorExprKey;
         Memory* current = mb;
-        std::set<std::string> traceVariables; // Added: Collect variables from trace
+        std::set<std::string> traceVariables; // Collect variables from trace
 
         while (current != nullptr) {
             if (!current->exprKey().empty()) {
                 // Check if this ancestor is the Anchor LB
-                if (current->exprKey().rfind(anchorPrefix, 0) == 0) {
+                if (this->isAnchorLb(*current)) {
                     anchorExprKey = current->exprKey();
                     break;
                 }
-                // Added: Collect variables from the current trace element's key
+                // Collect variables from the current trace element's key
                 std::vector<std::string> kArgs = ce::getArgs(current->exprKey());
                 traceVariables.insert(kArgs.begin(), kArgs.end());
             }
@@ -12157,23 +16745,24 @@ void ExpressionAnalyzer::prehandleAnchor(Memory* mb) {
             std::vector<std::string> args = ce::getArgs(anchorExprKey);
             std::map<std::string, std::string> replacementMap;
 
-            // 3. Create Replacement Map based on definitionSets == "(1)"
-            //    and save the new variables to intAxedVariables
+            // 3. Collect the (1)-typed slot VALUES and build the
+            //    replacement map (trace-guarded). Minting is deferred until
+            //    the subtree mode is final: a mode-2 root must stay
+            //    entirely untouched.
+            std::set<std::string> slotValues;
             for (const auto& [slot, pattern] : this->anchorInfo.definitionSets) {
                 if (pattern == "(1)") {
                     try {
                         int index = std::stoi(slot) - 1;
                         if (index >= 0 && index < static_cast<int>(args.size())) {
                             std::string originalVar = args[index];
+                            slotValues.insert(originalVar);
 
-                            // Added: Check if the variable exists in the trace
+                            // Check if the variable exists in the trace
                             if (traceVariables.find(originalVar) != traceVariables.end()) {
                                 // Only apply x-prefix if not already present
                                 if (originalVar.rfind("x", 0) != 0) {
-                                    std::string xVar = "x" + originalVar;
-                                    replacementMap[originalVar] = xVar;
-
-                                    mb->intAxedVariables.mint(mb->nameMap.encode(xVar));
+                                    replacementMap[originalVar] = "x" + originalVar;
                                 }
                             }
                         }
@@ -12184,8 +16773,50 @@ void ExpressionAnalyzer::prehandleAnchor(Memory* mb) {
                 }
             }
 
-            // 4. Create and Add the Anchor Expression using the map
-            if (!replacementMap.empty()) {
+            // 3b. Anchor-numeral exception: at a block-#1 recursion root,
+            //     scan the LB's own goals (the theorem head, queued
+            //     verbatim at recursion-block creation) for a (1)-typed
+            //     slot value cited as a whole token. A hit upgrades the
+            //     subtree to mode 2 (untouched).
+            if (isSubtreeRoot
+                && mb->exprKey().find("_induction_") == std::string::npos
+                && !slotValues.empty()) {
+                const auto citesSlotValue = [&slotValues](const std::string& text) {
+                    const auto isTok = [](char c) {
+                        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z')
+                            || (c >= 'A' && c <= 'Z') || c == '_';
+                    };
+                    size_t i = 0;
+                    while (i < text.size()) {
+                        if (!isTok(text[i])) { ++i; continue; }
+                        size_t j = i;
+                        while (j < text.size() && isTok(text[j])) ++j;
+                        if (slotValues.count(text.substr(i, j - i)) != 0)
+                            return true;
+                        i = j;
+                    }
+                    return false;
+                };
+                for (const DecodedToBeProvedRow& row :
+                     decodeToBeProvedSorted(mb->intToBeProved, mb->nameMap)) {
+                    if (citesSlotValue(row.original)) { mode = 2; break; }
+                }
+            }
+
+            // 3c. Mint the axed names (modes 0 and 1 — the armed door).
+            if (mode != 2) {
+                for (const auto& [originalVar, xVar] : replacementMap) {
+                    mb->intAxedVariables.mint(mb->nameMap.encode(xVar));
+                }
+            }
+
+            // 4. Create and Add the Anchor Expression using the map —
+            //    mode 0 only (D-272): mode-1
+            //    subtrees mint the axed set above but never hold the
+            //    axed-anchor statement, so no x-citing firing can exist
+            //    there; mode-2 subtrees receive the ancestor's form by
+            //    mail instead.
+            if (!replacementMap.empty() && mode == 0) {
                 std::string replacedAnchor = ce::replaceKeysInString(anchorExprKey, replacementMap);
 
                 EncodedExpression enc(replacedAnchor, "main");
@@ -12194,9 +16825,11 @@ void ExpressionAnalyzer::prehandleAnchor(Memory* mb) {
                 const StatementFlags* anchorRow = lookupStatementFlags(
                     mb->intKnownStatements, mb->nameMap,
                     enc.original, enc.validityName);
-                if (!(anchorRow && anchorRow->registered)) {
+                if (anchorRow == nullptr) {
 
-                    const int lv0[1] = { 0 };
+                    // Anchors are definitional, not derived — the {-1}
+                    // non-derived tier, transparent to level accounting.
+                    const int lv0[1] = { -1 };
 
                     { IntEncodedExpr ie = encodeExpression(enc, mb->nameMap);
                       mb->intEncodedStatements.push_back(ie);
@@ -12210,7 +16843,7 @@ void ExpressionAnalyzer::prehandleAnchor(Memory* mb) {
                     upsertStatementKey(mb->intKnownStatements, packStatementKey(
                         mb->nameMap.encode(enc.original),
                         mb->nameMap.encode(enc.validityName)),
-                        /*local=*/true, /*registered=*/true, /*known=*/true);
+                        /*local=*/true);
 
                     // L3 span-record door. The "anchor handling" antecedent
                     // (the original anchor expression `anchorExprKey`) and the
@@ -12219,25 +16852,23 @@ void ExpressionAnalyzer::prehandleAnchor(Memory* mb) {
                     const StrSpan pMain("main", 4);
                     const OriginDep pDeps[1] = { { StrSpan(anchorExprKey), pMain } };
                     addOriginEncoded(mb->exprOriginMap, mb->originInterner, StrSpan(replacedAnchor), pMain, OriginTag::anchorHandling, pDeps, 1, (parameters.compressor_mode ? parameters.compressor_max_origins_per_expr : parameters.max_origin_per_expr));
-                    // Also push the history line into mailOut so it propagates
-                    // to descendant LBs — recursion blocks (isPartOfRecursion=true)
-                    // are skipped at the top of this function and never register
-                    // the axed anchor as a statement themselves, but implication
-                    // firings inside them can still cite the axed anchor as an
-                    // ingredient (the form is generated by hash propagation from
-                    // this LB). Without the mailed history line, buildStack would
-                    // crash with "no origin found" when walking back through that
-                    // ingredient. We do not register the axed anchor as a
-                    // statement on recursion LBs (see top-of-function early
-                    // return) — only the history line travels.
+                    // The history line is written locally on the same LB
+                    // that registers the statement, so buildStack resolves
+                    // any firing that cites the axed anchor as an
+                    // antecedent. The statement also rides the Delta into
+                    // mailOut, but every descendant's axed set is a superset
+                    // of this LB's (the trace accumulates down the chain), so
+                    // the mailed copy is refused at descendant doors rather
+                    // than re-registered — recursion subtrees in particular
+                    // never hold it (D-272).
                 }
             }
         }
     }
 
-    // 5. Recurse into children
+    // 5. Recurse into children, threading the subtree mode
     simpleMapStore.forEachChild(mb, [&](const gl::StrSpan&, Memory* child) {
-        prehandleAnchor(child);
+        prehandleAnchor(child, mode);
     });
 }
 
@@ -12345,7 +16976,7 @@ void ExpressionAnalyzer::analyzeExpressions(const std::vector<std::string>& theo
     staticMemory().closeExtentFile();
     lbdeload::purgeDeloadDirectory(lbdeload::kDeloadDirectory);
     staticMemory().resetDeloadRegistry();
-    if (parameters.enable_extent_deload) {
+    if (parameters.allow_ssd_deload && parameters.enable_extent_deload) {
         // Preallocate 1.5x the pool: live extent bytes are the Dumped (non-
         // resident) LBs' slabs, so the extent legitimately exceeds pool size
         // (disk > RAM is the point of deload). Growth covers under-estimates.
@@ -12417,12 +17048,13 @@ void ExpressionAnalyzer::analyzeExpressions(const std::vector<std::string>& theo
         // &body included (it is pushed into permanentBodies at construction) --
         // is in permanentBodies and no LB is born after this point, so this
         // single pass covers every ancestor any pull will read.
+        // The ancestor list is the LB's whole chain outside incubator mode
+        // and stops at the anchor LB inside it (collectMailAncestors,
+        // D-332).
+        std::vector<const Memory*> ancestors;
         for (Memory* lb : permanentBodies) {
             if (!lb) continue;
-            std::vector<const Memory*> ancestors;
-            for (const Memory* p = lb->parentMemory; p != nullptr; p = p->parentMemory) {
-                ancestors.push_back(p);
-            }
+            this->collectMailAncestors(lb, ancestors);
             this->mailLog.registerLb(lb, ancestors);
         }
 
@@ -12462,10 +17094,24 @@ void ExpressionAnalyzer::analyzeExpressions(const std::vector<std::string>& theo
             this->precompileStructuralOperators(compiled);
             std::string mirror = headSwitchOne(compiled);
             if (mirror.empty()) continue;
+            // Normalize-recognize-skip (maintainer-designed): a mirror that
+            // is the SAME statement as its source up to bound-variable
+            // renaming (the totality shape — symmetric binder prefix with
+            // identical guards) would prove the identical theorem twice on
+            // its own conjecture grid. Recognize the alpha-variant and skip
+            // scheduling it; genuinely different mirrors (the Peano or0
+            // parents, predicate-swapping shapes) keep being scheduled so
+            // the pair or-construction stays intact.
+            if (mirrorIsAlphaVariant(compiled, mirror)) {
+                diagnosticsLog() << "[head-switch pre-emit] mirror is an "
+                             "alpha-variant of its source - skipped: "
+                          << conj << std::endl;
+                continue;
+            }
             if (seen.insert(mirror).second) mirrors.push_back(mirror);
         }
         if (!mirrors.empty()) {
-            std::cout << "[head-switch pre-emit] adding "
+            diagnosticsLog() << "[head-switch pre-emit] adding "
                       << mirrors.size() << " head-switched mirrors to the "
                       << "conjecture pool (was " << filteredConjectures.size()
                       << ")" << std::endl;
@@ -12518,7 +17164,13 @@ void ExpressionAnalyzer::analyzeExpressions(const std::vector<std::string>& theo
 
         if (!compiledProved.empty()) {
             std::cout << "Injecting " << compiledProved.size() << " proved theorems via broadcast..." << std::endl;
-            this->broadcastTheorems(compiledProved);
+            // Theorems proved by earlier batches: stored in the root's log
+            // (every LB outside incubator mode; only the anchor LB inside it --
+            // D-332). In incubator mode a
+            // nested rule (anchorOnlyRule false) goes to the anchor LB's log
+            // instead, so the premise LBs below the anchor receive it.
+            this->broadcastTheorems(compiledProved, "broadcast", this->body,
+                parameters.incubator_mode ? this->incubatorAnchorLb() : nullptr);
         }
 
         if (!externalTheorems.empty()) {
@@ -12529,9 +17181,22 @@ void ExpressionAnalyzer::analyzeExpressions(const std::vector<std::string>& theo
             for (auto& et : compiledExternals) {
                 this->precompileStructuralOperators(et);
             }
+            // Keep the compiled twins for the post-run registry export —
+            // base-form externals are registry-independent on the wire, but
+            // chapter citations carry these compiled forms.
+            this->precompiledExternalsExport = compiledExternals;
             std::cout << "Injecting " << compiledExternals.size()
                       << " external theorems via broadcast..." << std::endl;
-            this->broadcastTheorems(compiledExternals, "externally provided theorem");
+            // Externals are multi-premise pool lemmas that fire in the premise
+            // LBs below the anchor, so they must reach EVERY LB: in incubator
+            // mode the root's log has one reader (the anchor LB), hence the
+            // batch is stored in the anchor LB's log, which the anchor LB
+            // (self-injected) and every LB below it read.
+            Memory& externalsStore = parameters.incubator_mode
+                ? *this->incubatorAnchorLb()
+                : this->body;
+            this->broadcastTheorems(compiledExternals, "externally provided theorem",
+                                    externalsStore, nullptr);
         }
 
         if (remainingIterations > 0) {
@@ -12560,6 +17225,9 @@ void ExpressionAnalyzer::analyzeExpressions(const std::vector<std::string>& theo
 
         for (const auto& tpl : snapshot) {
             const std::string& theorem = std::get<0>(tpl);
+            // Zero-circulation contract: proved-not-broadcast rows never
+            // seed the export seam's or construction either.
+            if (std::get<1>(tpl) == "proved not broadcast") continue;
             std::string rebuilt = headSwitchOne(theorem);
             if (rebuilt.empty()) continue;
 
@@ -12604,15 +17272,6 @@ void ExpressionAnalyzer::analyzeExpressions(const std::vector<std::string>& theo
 }
 
 
-
-
-
-
-
-
-
-
-
 // ============================================================================
 // OR theorem construction
 // ============================================================================
@@ -12625,99 +17284,67 @@ std::string ExpressionAnalyzer::constructOrTheorem(
     std::string head1 = ce::disintegrateImplication(existenceThm, chain1, coreExpressionMap);
     std::string head2 = ce::disintegrateImplication(companionThm, chain2, coreExpressionMap);
 
-    // Existence theorem: chain has shared premises + negated premise (!a), head = !b (existence)
-    // Companion theorem: chain has shared premises + !b as premise, head = a
+    // Existence theorem: chain has shared premises + one or more binder-free
+    // negated premises (!d_1, !d_2, ...), head = the last disjunct.
 
-    // Find the negated premise in existence theorem (!a)
-    int negPremIdx = -1;
+    // Every binder-free negated premise is a disjunct of the OR:
+    // classically  !d_1 → (!d_2 → h)  ⟺  d_1 ∨ d_2 ∨ h, so the whole
+    // hypothesis chain folds into one n-ary OR head. A negated premise
+    // that binds variables cannot fold — its binder would orphan (the
+    // or head's arguments must be bound by the surviving premise links)
+    // — so it stays a shared premise.
+    std::vector<int> foldedIdxs;
     for (std::size_t i = 1; i < chain1.size(); ++i) {
         const std::string& prem = std::get<0>(chain1[i]);
-        if (!prem.empty() && prem[0] == '!') {
-            negPremIdx = (int)i;
-            break;
+        if (!prem.empty() && prem[0] == '!' && std::get<1>(chain1[i]).empty()) {
+            foldedIdxs.push_back((int)i);
         }
     }
-    if (negPremIdx < 0) return "";
+    if (foldedIdxs.empty()) return "";
 
-    // !a is chain1[negPremIdx], head1 = b (the existence, also negated)
-    // In !a -> b form: !a is the negated premise, b is the head
-    // OR = !(&(!a)(!b)) — but !a is already negated, and the head (b) is also !(>[...])
-    // So !b = remove the ! from b, giving (>[m](domain)(![body]))
-    // And !a is already the premise
-
-    // The OR form: shared_premises -> !(&(!a)(!b))
-    // !a = chain1[negPremIdx] (already negated)
-    // !b = strip ! from head1, which gives the universal form
-
-    std::string negA = std::get<0>(chain1[negPremIdx]);  // e.g., !(=[n,i0])
-    std::string negB;
-    if (!head1.empty() && head1[0] == '!') {
-        negB = head1.substr(1);  // strip outer !, e.g., (>[m](in[m,N])(![in2[m,n,s]]))
-    } else {
-        negB = "!" + head1;
+    // Build disjuncts in their TRUE polarity, chain order, head LAST.
+    // A premise disjunct is the un-negated form of its negated premise;
+    // the head enters VERBATIM — a negated head stays a negated disjunct.
+    // Registered or-elements carry each disjunct's real sign; every
+    // expansion negates elements with double-negation cancellation.
+    // Storing only the positive core would flip a negated disjunct's
+    // sign on round-trip and register a FALSE or theorem
+    // ((a=b) OR (c=d) instead of (a=b) OR !(c=d)).
+    std::vector<std::string> disjuncts;
+    disjuncts.reserve(foldedIdxs.size() + 1);
+    for (int idx : foldedIdxs) {
+        disjuncts.push_back(std::get<0>(chain1[idx]).substr(1));  // strip !
     }
+    disjuncts.push_back(head1);
 
-    // Build disjuncts (un-negated forms)
-    std::string disjA = negA.substr(1);  // strip ! from !(=[7,2]) → (=[7,2])
-    std::string disjB;
-    if (!negB.empty() && negB[0] == '!') {
-        disjB = negB.substr(1);  // strip ! from !(existence2[1,7,3]) → (existence2[1,7,3])
-    } else {
-        disjB = negB;
-    }
-
-    // Collect unique args from both disjuncts (ordered by first appearance)
+    // Collect unique args across all disjuncts (ordered by first appearance)
     std::vector<std::string> orArgs;
     {
         std::set<std::string> seen;
-        auto collectArgs = [&](const std::string& expr) {
-            for (const auto& a : ce::getArgs(expr)) {
+        for (const std::string& d : disjuncts) {
+            for (const auto& a : ce::getArgs(d)) {
                 if (seen.insert(a).second) orArgs.push_back(a);
-            }
-        };
-        collectArgs(disjA);
-        collectArgs(disjB);
-    }
-
-    // Register OR expression in compiledExpressions
-    std::string orCoreName = "or" + std::to_string(orCounter);
-    {
-        // Check if already registered with same elements
-        bool found = false;
-        for (const auto& [name, le] : compiledExpressions) {
-            if (le.category == "or" && le.elements.size() == 2) {
-                // Match elements after substituting u_ args
-                found = true;  // for now, assume unique
-                break;
             }
         }
     }
 
-    // Build signature: (or0[u_1,u_2,...])
-    std::string sigArgs;
+    // Build the u_-canonical elements FIRST — the ordered element list is
+    // the or-operator's registry identity.
     std::map<std::string, std::string> argToU;
     for (std::size_t i = 0; i < orArgs.size(); ++i) {
-        std::string u = "u_" + std::to_string(i + 1);
-        argToU[orArgs[i]] = u;
-        if (i > 0) sigArgs += ",";
-        sigArgs += u;
+        argToU[orArgs[i]] = "u_" + std::to_string(i + 1);
     }
-    std::string signature = "(" + orCoreName + "[" + sigArgs + "])";
+    std::vector<std::string> elems;
+    elems.reserve(disjuncts.size());
+    for (const std::string& d : disjuncts) {
+        elems.push_back(ce::replaceKeysInString(d, argToU));
+    }
 
-    // Build elements with u_ substitution
-    std::string elemA = ce::replaceKeysInString(disjA, argToU);
-    std::string elemB = ce::replaceKeysInString(disjB, argToU);
-
-    LogicalEntity orLe("or", {elemA, elemB}, signature,
-                       static_cast<int>(orArgs.size()));
-    compiledExpressions.insert(std::make_pair(orCoreName, orLe));
-
-    // Also register in coreExpressionMap for expandSignature/disintegration
-    ce::CoreExpressionConfig orCfg;
-    orCfg.arity = static_cast<int>(orArgs.size());
-    orCfg.signature = signature;
-    coreExpressionMap.insert(std::make_pair(orCoreName, orCfg));
-    orCounter++;
+    // Registry dedup-or-mint (I-23) through the one shared site. Exact
+    // element equality implies the identical u_-position mapping, so the
+    // instance args below line up with a reused signature.
+    const std::string orCoreName =
+        findOrMintOrOperator(elems, static_cast<int>(orArgs.size()));
 
     // Build compiled OR head: (or0[actual_args])
     std::string compiledOrHead = "(" + orCoreName + "[";
@@ -12727,12 +17354,21 @@ std::string ExpressionAnalyzer::constructOrTheorem(
     }
     compiledOrHead += "])";
 
-    std::cout << "OR compiled: !(&" << negA << negB << ") -> " << compiledOrHead << std::endl;
+    {
+        // Report the flat De Morgan base form: each disjunct negated with
+        // double-negation cancellation.
+        std::string negatedAnd = "!(&";
+        for (const std::string& d : disjuncts) {
+            negatedAnd += (!d.empty() && d[0] == '!') ? d.substr(1) : "!" + d;
+        }
+        negatedAnd += ")";
+        std::cout << "OR compiled: " << negatedAnd << " -> " << compiledOrHead << std::endl;
+    }
 
-    // Build the shared premises (everything except the negated premise)
+    // Build the shared premises (everything except the folded negated premises)
     std::vector<std::tuple<std::string, std::vector<std::string>, std::set<std::string>>> sharedChain;
     for (std::size_t i = 0; i < chain1.size(); ++i) {
-        if ((int)i == negPremIdx) continue;
+        if (std::binary_search(foldedIdxs.begin(), foldedIdxs.end(), (int)i)) continue;
         sharedChain.push_back(chain1[i]);
     }
 
@@ -12749,6 +17385,853 @@ std::string ExpressionAnalyzer::constructOrTheorem(
     }
 
     return result;
+}
+
+// Doxygen at the declaration (prover.hpp).
+std::string ExpressionAnalyzer::findOrMintOrOperator(
+    const std::vector<std::string>& elems, int arity, bool* mintedOut) {
+
+    if (mintedOut != nullptr) *mintedOut = false;
+
+    // Registry dedup (I-23): reuse an existing or-category entry whose
+    // ordered element list matches exactly — the same (elements, category)
+    // identity the binary load path keys repetitionExclusionMap on.
+    // Minting unconditionally would give the same OR structure a fresh
+    // name per constructing batch, and the verifier's registry comparison
+    // then fails on the operator name. compiledExpressions is name-ordered
+    // — the scan is deterministic.
+    for (const auto& [name, le] : compiledExpressions) {
+        if (le.category == "or" && le.elements == elems) {
+            return name;
+        }
+    }
+
+    const std::string orCoreName = "or" + std::to_string(orCounter);
+    std::string sigArgs;
+    for (int i = 0; i < arity; ++i) {
+        if (i > 0) sigArgs += ",";
+        sigArgs += "u_" + std::to_string(i + 1);
+    }
+    const std::string signature = "(" + orCoreName + "[" + sigArgs + "])";
+    LogicalEntity orLe("or", elems, signature, arity);
+    compiledExpressions.insert(std::make_pair(orCoreName, orLe));
+
+    // Also register in coreExpressionMap for expandSignature/disintegration.
+    ce::CoreExpressionConfig orCfg;
+    orCfg.arity = arity;
+    orCfg.signature = signature;
+    coreExpressionMap.insert(std::make_pair(orCoreName, orCfg));
+    orCounter++;
+
+    // Or mint hook: the K-rule compacts ride the or's entry
+    // (D-309); the subset-exclusion family is appended
+    // at the preMintReducedOrs seam once the reduced closure exists.
+    compileOrKRules(orCoreName);
+
+    if (mintedOut != nullptr) *mintedOut = true;
+    return orCoreName;
+}
+
+// Doxygen at the declaration (prover.hpp).
+void ExpressionAnalyzer::flattenRegistryOrLeaves(
+    const LogicalEntity& orLe, std::vector<std::string>& outLeaves) const {
+
+    assert(orLe.category == "or"
+        && "flattenRegistryOrLeaves: entity must be or-category");
+
+    int depth = 0;
+    const auto walk = [&](const LogicalEntity& node, const std::string& instance,
+                          const auto& self) -> void {
+        assert(depth < ExecutionParameters::MAX_INSTRUCTION_ELEMENTS
+            && "flattenRegistryOrLeaves: OR depth exceeds cap");
+        ++depth;
+        const std::vector<std::string> sigArgs = ce::getArgs(node.signature);
+        const std::vector<std::string> instArgs = ce::getArgs(instance);
+        assert(sigArgs.size() == instArgs.size()
+            && "flattenRegistryOrLeaves: instance arity differs from compiled or");
+        std::map<std::string, std::string> subst;
+        for (std::size_t a = 0; a < sigArgs.size(); ++a) {
+            subst[sigArgs[a]] = instArgs[a];
+        }
+        for (const std::string& rawElem : node.elements) {
+            const std::string elem = ce::replaceKeysInString(rawElem, subst);
+            const LogicalEntity* childLe =
+                (!elem.empty() && elem[0] == '(')
+                ? compiledEntity(extractExpressionUniversalSpan(StrSpan(elem)))
+                : nullptr;
+            if (childLe != nullptr && childLe->category == "or") {
+                self(*childLe, elem, self);
+            } else {
+                outLeaves.push_back(elem);
+            }
+        }
+        --depth;
+    };
+    walk(orLe, orLe.signature, walk);
+    assert(outLeaves.size() >= 2
+        && "flattenRegistryOrLeaves: or entity flattens to fewer than two leaves");
+}
+
+// Doxygen at the declaration (prover.hpp).
+int ExpressionAnalyzer::renumberULeaves(std::vector<std::string>& leaves,
+                                        std::vector<std::string>* orderOut) {
+    std::vector<std::string> order;
+    std::set<std::string> seen;
+    for (const std::string& d : leaves) {
+        for (const std::string& a : ce::getArgs(d)) {
+            assert(a.rfind("u_", 0) == 0
+                && "renumberULeaves: registry leaf argument is not a u_ token");
+            if (seen.insert(a).second) order.push_back(a);
+        }
+    }
+    if (orderOut != nullptr) *orderOut = order;
+    std::map<std::string, std::string> ren;
+    for (std::size_t i = 0; i < order.size(); ++i) {
+        ren[order[i]] = "u_" + std::to_string(i + 1);
+    }
+    for (std::string& d : leaves) {
+        d = ce::replaceKeysInString(d, ren);
+    }
+    return static_cast<int>(order.size());
+}
+
+// Doxygen at the declaration (prover.hpp).
+void ExpressionAnalyzer::preMintReducedOrs() {
+    std::vector<std::string> work;
+    std::set<std::string> queued;
+    for (const auto& [name, le] : compiledExpressions) {
+        if (le.category == "or" && queued.insert(name).second) {
+            work.push_back(name);
+        }
+    }
+    for (std::size_t w = 0; w < work.size(); ++w) {
+        const LogicalEntity* le = compiledEntity(StrSpan(work[w]));
+        assert(le != nullptr && le->category == "or"
+            && "preMintReducedOrs: queued name must resolve to an or entity");
+        std::vector<std::string> leaves;
+        flattenRegistryOrLeaves(*le, leaves);
+        const int k = static_cast<int>(leaves.size());
+        assert(k <= ExecutionParameters::kMaxReducedOrLeaves
+            && "preMintReducedOrs: or leaf count exceeds kMaxReducedOrLeaves");
+        if (k < 3) continue;
+        for (int i = 0; i < k; ++i) {
+            std::vector<std::string> reduced;
+            reduced.reserve(static_cast<std::size_t>(k) - 1);
+            for (int j = 0; j < k; ++j) {
+                if (j != i) reduced.push_back(leaves[j]);
+            }
+            const int arity = renumberULeaves(reduced);
+            bool minted = false;
+            const std::string rname =
+                findOrMintOrOperator(reduced, arity, &minted);
+            if (minted && queued.insert(rname).second) {
+                work.push_back(rname);
+            }
+        }
+    }
+
+    // Or-implication completion (D-309). Every or now
+    // has its reduced closure, so the subset-exclusion compacts can resolve
+    // their heads. Name-ordered snapshot (deterministic; the compiles insert
+    // implication entries into the same map). An or loaded from a binary
+    // written before the field existed compiles its K-rules here; any
+    // other or with an empty list is a missed mint hook.
+    std::vector<std::string> orNames;
+    for (const auto& [name, le] : compiledExpressions) {
+        if (le.category == "or") orNames.push_back(name);
+    }
+    for (const std::string& name : orNames) {
+        if (compiledEntity(StrSpan(name))->implications.empty()) {
+            assert(orsAwaitingImplications.count(name) == 1
+                && "preMintReducedOrs: an or minted without its K-rule compacts (missed mint hook)");
+            compileOrKRules(name);
+        }
+        const LogicalEntity* le = compiledEntity(StrSpan(name));
+        std::vector<std::string> leaves;
+        flattenRegistryOrLeaves(*le, leaves);
+        const int32_t k = static_cast<int32_t>(leaves.size());
+        if (k >= 3 && static_cast<int32_t>(le->implications.size()) == k) {
+            compileOrSubsetExclusions(name);
+        }
+        assert(static_cast<int32_t>(compiledEntity(StrSpan(name))->implications.size())
+                == expectedOrImplicationCount(k)
+            && "preMintReducedOrs: or-implication list incomplete after the closure seam");
+    }
+    orsAwaitingImplications.clear();
+
+    // Existence-implication completion (D-310):
+    // an existence loaded from a binary written before the field existed
+    // compiles its two compacts here; any other two-element existence with
+    // an empty list is a missed mint hook. Name-ordered snapshot (the
+    // compiles insert implication entries into the same map).
+    std::vector<std::string> exNames;
+    for (const auto& [name, le] : compiledExpressions) {
+        if (le.category == "existence") exNames.push_back(name);
+    }
+    for (const std::string& name : exNames) {
+        const int32_t elemCount = static_cast<int32_t>(
+            compiledEntity(StrSpan(name))->elements.size());
+        if (compiledEntity(StrSpan(name))->implications.empty()
+            && expectedExistenceImplicationCount(elemCount) > 0) {
+            assert(existencesAwaitingImplications.count(name) == 1
+                && "preMintReducedOrs: an existence minted without its implication compacts (missed mint hook)");
+            compileExistenceImplications(name);
+        }
+        assert(static_cast<int32_t>(compiledEntity(StrSpan(name))->implications.size())
+                == expectedExistenceImplicationCount(elemCount)
+            && "preMintReducedOrs: existence-implication list incomplete after the seam");
+    }
+    existencesAwaitingImplications.clear();
+}
+
+/// @brief Compile an or's K-rule compacts into its `implications` list.
+/// @details Doxygen contract at the declaration (prover.hpp).
+/// @param orName Registry name of an or-category entity.
+/// @see `compileOrSubsetExclusions`, `preMintReducedOrs`.
+void ExpressionAnalyzer::compileOrKRules(const std::string& orName) {
+    const auto it = compiledExpressions.find(orName);
+    assert(it != compiledExpressions.end() && it->second.category == "or"
+        && "compileOrKRules: name must resolve to an or entity");
+    // Already carrying its list (registry reuse / reload re-registration):
+    // a defined state, not a failure.
+    if (!it->second.implications.empty()) return;
+
+    std::vector<std::string> leaves;
+    flattenRegistryOrLeaves(it->second, leaves);
+    const std::size_t k = leaves.size();
+    const std::size_t arity = ce::getArgs(it->second.signature).size();
+
+    std::vector<std::string> compacts;
+    compacts.reserve(k);
+    for (std::size_t i = 0; i < k; ++i) {
+        std::vector<std::string> premises;
+        premises.reserve(k - 1);
+        for (std::size_t j = 0; j < k; ++j) {
+            // negate, not a blind "!" prefix: a disjunct carries its true
+            // polarity, so a negated leaf's exclusion premise is its bare
+            // positive core (I-175).
+            if (j != i) premises.push_back(negate(leaves[j]));
+        }
+        const std::string rule = reconstructImplicationFullBind(premises, leaves[i]);
+        const std::string compact = prefixArgumentsWithU(compileImplicationToCompact(rule));
+        // Every leaf occurs in every K-rule, so the compact spans the or's
+        // full token set — its argument list is a permutation of the or's
+        // signature tokens.
+        assert(ce::getArgs(compact).size() == arity
+            && "compileOrKRules: K-rule compact does not span the or's tokens");
+        compacts.push_back(compact);
+    }
+    // Re-find: the compiles above insert implication entries into the same
+    // map (node-stable, but the re-fetch is the honest form).
+    compiledExpressions.find(orName)->second.implications = std::move(compacts);
+}
+
+/// @brief Append an or's subset-exclusion compacts to its `implications`
+///        list, after the K-rules.
+/// @details Doxygen contract at the declaration (prover.hpp).
+/// @param orName Registry name of an or-category entity with 3 ≤ k leaves.
+/// @see `compileOrKRules`, `preMintReducedOrs`.
+void ExpressionAnalyzer::compileOrSubsetExclusions(const std::string& orName) {
+    const auto it = compiledExpressions.find(orName);
+    assert(it != compiledExpressions.end() && it->second.category == "or"
+        && "compileOrSubsetExclusions: name must resolve to an or entity");
+    std::vector<std::string> leaves;
+    flattenRegistryOrLeaves(it->second, leaves);
+    const int32_t k = static_cast<int32_t>(leaves.size());
+    assert(k >= 3 && k <= ExecutionParameters::kMaxReducedOrLeaves
+        && "compileOrSubsetExclusions: leaf count outside [3, kMaxReducedOrLeaves]");
+    assert(static_cast<int32_t>(it->second.implications.size()) == k
+        && "compileOrSubsetExclusions: precondition — the list holds exactly the K-rules");
+    const std::size_t arity = ce::getArgs(it->second.signature).size();
+
+    std::vector<std::string> compacts;
+    // j = 1..k-2 excluded disjuncts; size-j index subsets in lexicographic
+    // order — the disintegrator's enumeration (consumeOrLeavesCohort 1b).
+    for (int32_t exclN = 1; exclN <= k - 2; ++exclN) {
+        int32_t sel[ExecutionParameters::kMaxReducedOrLeaves];
+        for (int32_t s = 0; s < exclN; ++s) sel[s] = s;
+        for (;;) {
+            bool exclMask[ExecutionParameters::kMaxReducedOrLeaves] = {};
+            for (int32_t s = 0; s < exclN; ++s) exclMask[sel[s]] = true;
+
+            // Survivors in parent order; u_-renumbered to the reduced or's
+            // registry identity, keeping the parent tokens' first-appearance
+            // order — the head's argument order (token u_<p> is parent
+            // signature position p).
+            std::vector<std::string> reduced;
+            for (int32_t j = 0; j < k; ++j) {
+                if (!exclMask[j]) reduced.push_back(leaves[j]);
+            }
+            std::vector<std::string> tokOrder;
+            renumberULeaves(reduced, &tokOrder);
+            std::vector<StrSpan> canon;
+            canon.reserve(reduced.size());
+            for (const std::string& r : reduced) canon.emplace_back(r);
+            const std::string* redName =
+                compiledOrByElements(canon.data(), static_cast<int32_t>(canon.size()));
+            assert(redName != nullptr
+                && "compileOrSubsetExclusions: reduced or missing (I-185 violated)");
+
+            std::string head = "(" + *redName + "[";
+            for (std::size_t s = 0; s < tokOrder.size(); ++s) {
+                if (s > 0) head += ',';
+                head += tokOrder[s];
+            }
+            head += "])";
+
+            std::vector<std::string> premises;
+            premises.reserve(static_cast<std::size_t>(exclN));
+            for (int32_t s = 0; s < exclN; ++s) premises.push_back(negate(leaves[sel[s]]));
+
+            const std::string rule = reconstructImplicationFullBind(premises, head);
+            const std::string compact = prefixArgumentsWithU(compileImplicationToCompact(rule));
+            // Excluded leaves + surviving head together cover every leaf, so
+            // the compact spans the or's full token set.
+            assert(ce::getArgs(compact).size() == arity
+                && "compileOrSubsetExclusions: compact does not span the or's tokens");
+            compacts.push_back(compact);
+
+            int32_t pos = exclN - 1;
+            while (pos >= 0 && sel[pos] == k - exclN + pos) --pos;
+            if (pos < 0) break;
+            ++sel[pos];
+            for (int32_t s = pos + 1; s < exclN; ++s) sel[s] = sel[s - 1] + 1;
+        }
+    }
+    std::vector<std::string>& list = compiledExpressions.find(orName)->second.implications;
+    list.insert(list.end(), compacts.begin(), compacts.end());
+}
+
+/// @brief Complete or-implication list length for @p k leaves.
+/// @details Doxygen contract at the declaration (prover.hpp).
+/// @param k The or's flattened leaf count.
+/// @return k for k < 3; 2^k − 2 for k ≥ 3.
+int32_t ExpressionAnalyzer::expectedOrImplicationCount(int32_t k) {
+    assert(k >= 2 && k <= ExecutionParameters::kMaxReducedOrLeaves
+        && "expectedOrImplicationCount: leaf count outside [2, kMaxReducedOrLeaves]");
+    if (k < 3) return k;
+    return (int32_t{ 1 } << k) - 2;
+}
+
+/// @brief Compile an existence's two implication compacts into its
+///        `implications` list.
+/// @details Doxygen contract at the declaration (prover.hpp).
+/// @param exName Registry name of an existence-category entity.
+/// @see `preMintReducedOrs`, `disintegrateExprCore2`.
+void ExpressionAnalyzer::compileExistenceImplications(const std::string& exName) {
+    const auto it = compiledExpressions.find(exName);
+    assert(it != compiledExpressions.end() && it->second.category == "existence"
+        && "compileExistenceImplications: name must resolve to an existence entity");
+    // Already carrying its list (registry reuse / reload re-registration):
+    // a defined state, not a failure.
+    if (!it->second.implications.empty()) return;
+    // Copies: the compiles below insert implication entries into the same
+    // map (node-stable, but the copy is the honest form).
+    const std::vector<std::string> elements = it->second.elements;
+    const std::size_t arity = ce::getArgs(it->second.signature).size();
+    // A non-[left, right] shape (test-only) carries no compacts — a defined
+    // state, the formula's zero.
+    if (expectedExistenceImplicationCount(static_cast<int32_t>(elements.size())) == 0) {
+        return;
+    }
+
+    std::vector<std::string> compacts;
+    compacts.reserve(2);
+    for (std::size_t i = 0; i < 2; ++i) {
+        // [0]: left -> !right; [1]: right -> !left. negate, not a blind "!"
+        // prefix: a negated element's negation is its bare positive core
+        // (I-175).
+        const std::vector<std::string> premises = { elements[i] };
+        const std::string head = negate(elements[1 - i]);
+        const std::string rule = reconstructImplicationFullBind(premises, head);
+        // The registry stores the bound variable as `1` — the very token
+        // compileImplicationToCompact's u_ strip produces from `u_1` — so
+        // it is renamed to the compiler's placeholder first (the same step
+        // the `!(>` compile branch takes).
+        const std::tuple<std::string, int, std::string> renamed =
+            renameLastRemoved(rule, this->variableCounter);
+        this->variableCounter++;
+        const std::string compact =
+            prefixArgumentsWithU(compileImplicationToCompact(std::get<0>(renamed)));
+        // Premise and head together carry every existence token (the bound
+        // variable is the only non-u_ argument), so the compact spans the
+        // existence's full arity.
+        assert(ce::getArgs(compact).size() == arity
+            && "compileExistenceImplications: compact does not span the existence's tokens");
+        compacts.push_back(compact);
+    }
+    // Re-find: the compiles above insert implication entries into the same
+    // map (node-stable, but the re-fetch is the honest form).
+    compiledExpressions.find(exName)->second.implications = std::move(compacts);
+}
+
+/// @brief Complete existence-implication list length for @p elemCount
+///        registry elements.
+/// @details Doxygen contract at the declaration (prover.hpp).
+/// @param elemCount The existence entity's element count.
+/// @return 2 for the `[left, right]` shape; 0 otherwise.
+int32_t ExpressionAnalyzer::expectedExistenceImplicationCount(int32_t elemCount) {
+    assert(elemCount >= 0
+        && "expectedExistenceImplicationCount: negative element count");
+    return elemCount == 2 ? 2 : 0;
+}
+
+/// @brief Construct every OR theorem licensed by the head-switch pairs
+/// against the CURRENT `globalTheoremList`, register each in the global
+/// registries, and report the parents it subsumes.
+///
+/// @details
+/// Walks `orPairsFromHeadSwitch` — one `(theorem, companion)` pair per
+/// proved theorem whose straightened shape carries a binder-free negated
+/// premise (`headSwitchOne`). A SINGLE proved direction licenses the
+/// disjunction: classically `!d_1 → (!d_2 → h)` is equivalent to
+/// `d_1 ∨ d_2 ∨ h`, and every other direction is derivable from it, so
+/// the companion's own proof is never required — it is recorded only as
+/// the or-theorem row's second parent reference.
+///
+/// A pair whose source theorem is no longer in `globalTheoremList` is
+/// skipped — compression pruning and vacuity retraction remove rows
+/// between the pair walk and this call, and both removals are defined
+/// pipeline states, not failures. Mirror pairs `(x, y)` and `(y, x)`
+/// describe the same disjunction; the canonical (min, max) disjunct-set
+/// dedup constructs it once.
+///
+/// @param consumedParents Out-parameter accumulating the proved parent
+///        theorems subsumed by a constructed OR; the caller drops them
+///        from the saved theorem files.
+/// @return The constructed OR theorems in compiled form, in pair order.
+/// @invariant Single-threaded seam — must run after `prove()` has joined.
+/// @see `constructOrTheorem` — per-pair OR builder.
+/// @see `headSwitchOne` — pair producer.
+std::vector<std::string> ExpressionAnalyzer::constructOrTheoremsFromPairs(
+    std::set<std::string>& consumedParents) {
+
+    std::vector<std::string> orTheorems;
+
+    std::unordered_set<std::string> provedSet;
+    for (const auto& t : this->globalTheoremList)
+        provedSet.insert(std::get<0>(t));
+
+    std::set<std::pair<std::string, std::string>> walkEmitted;
+
+    for (const auto& pr : this->orPairsFromHeadSwitch) {
+        const std::string& exist = pr.first;
+        const std::string& comp = pr.second;
+
+        // Source theorem pruned by compression or retracted as vacuous —
+        // a defined pipeline state; the pair no longer licenses an OR.
+        if (!provedSet.count(exist)) continue;
+
+        // (exist, comp) and (comp, exist) describe the same OR (mirror
+        // reformulations of one another). Canonicalize by lexicographically
+        // sorting the pair; a pair this walk already emitted is skipped
+        // outright (its first sighting consumed both parents).
+        const std::pair<std::string, std::string> pairKey(
+            std::min(exist, comp), std::max(exist, comp));
+        if (!walkEmitted.insert(pairKey).second) {
+            std::cout << "OR variant skipped (duplicate disjunct-set already constructed)"
+                      << std::endl;
+            continue;
+        }
+
+        // Cross-seam idempotence: an or built in-run is recovered from the
+        // shared ledger — reconstructing from THIS pair's side could mint
+        // the mirrored operator. A ledger miss constructs and registers as
+        // before. Either way the subsumption bookkeeping and the return
+        // vector fire, so the export caller still writes the or row and
+        // drops its parents from the saved files.
+        std::string orThm;
+        const auto built = orBuiltByPair.find(pairKey);
+        if (built != orBuiltByPair.end()) {
+            orThm = built->second;
+            std::cout << "OR theorem already constructed in-run: " << orThm << std::endl;
+        } else {
+            orThm = constructOrTheorem(exist, comp);
+            assert(!orThm.empty()
+                && "constructOrTheoremsFromPairs: pair source must carry a negated premise");
+            orBuiltByPair.emplace(pairKey, orThm);
+            if (appendGlobalTheorem(orThm, "or theorem", exist, comp)) {
+                this->fullTheoremList.emplace_back(orThm, "or theorem", exist, comp);
+                std::cout << "OR theorem constructed: " << orThm << std::endl;
+            }
+        }
+        orTheorems.push_back(orThm);
+
+        consumedParents.insert(exist);
+        std::cout << "  parent removed (subsumed by OR): " << exist << std::endl;
+        if (provedSet.count(comp)) {
+            consumedParents.insert(comp);
+            std::cout << "  parent removed (subsumed by OR): " << comp << std::endl;
+        }
+    }
+
+    return orTheorems;
+}
+
+/// @brief In-run OR-theorem construction and broadcast (A16 Phase 2).
+///
+/// @details
+/// See the declaration's Doxygen block in `prover.hpp` for the full
+/// contract. Implementation notes: the unscanned-row snapshot is taken
+/// under `theoremListMutex` and construction runs outside it —
+/// `appendGlobalTheorem` takes the same lock again, and
+/// `constructOrTheorem` touches only the compile registries, which no
+/// worker reads while the phase-4 barrier holds. Scan order is
+/// `globalTheoremList` append order, so the `or<N>` mint sequence is a
+/// deterministic function of the proof history.
+///
+/// @return Nothing.
+/// @invariant Single-threaded phase-4 barrier seam only.
+/// @see `constructOrTheoremsFromPairs` — the post-run export seam.
+void ExpressionAnalyzer::constructOrTheoremsInRun() {
+    // Compressor re-derivation is a redundancy probe whose theorem list
+    // must stay byte-identical to the run it audits; its ors are built by
+    // the export seam on the survivor list. Defined mode branch.
+    if (parameters.compressor_mode) return;
+
+    std::vector<std::string> newRows;
+    {
+        std::lock_guard<std::mutex> lock(theoremListMutex);
+        for (const auto& tpl : globalTheoremList) {
+            const std::string& thm = std::get<0>(tpl);
+            // Proved-not-broadcast rows never feed the or construction —
+            // the tier's contract is zero circulation; mark scanned so the
+            // row is settled, then skip.
+            if (std::get<1>(tpl) == "proved not broadcast") {
+                orInRunScannedRows.insert(thm);
+                continue;
+            }
+            if (orInRunScannedRows.insert(thm).second) newRows.push_back(thm);
+        }
+    }
+
+    for (const std::string& thm : newRows) {
+        const std::string companion = headSwitchOne(thm);
+        if (companion.empty()) continue;
+
+        // Canonical pair gate: a mirror row scanned later describes the
+        // SAME disjunction with mirrored element order — constructing it
+        // would double-mint or<N> (mirrored orders are distinct registry
+        // identities). The shared ledger makes the first-scanned side the
+        // one that builds.
+        const std::pair<std::string, std::string> pairKey(
+            std::min(thm, companion), std::max(thm, companion));
+        if (orBuiltByPair.count(pairKey)) continue;
+
+        const std::string orThm = constructOrTheorem(thm, companion);
+        assert(!orThm.empty()
+            && "constructOrTheoremsInRun: head-switched row must carry a negated premise");
+        orBuiltByPair.emplace(pairKey, orThm);
+
+        // String dedup: two DIFFERENT pairs can still fold to one or
+        // theorem; the second registers nothing and broadcasts nothing.
+        if (!appendGlobalTheorem(orThm, "or theorem", thm, companion)) continue;
+        this->fullTheoremList.emplace_back(orThm, "or theorem", thm, companion);
+        std::cout << "OR theorem constructed (in-run): " << orThm << std::endl;
+
+        // Broadcast like any proved implication: the deferred-compaction
+        // drain that follows this seam compiles the or theorem to its
+        // implication compact and merges it into the root's mailOut (empty
+        // level set; status-3 rule door at every receiver). A premise-free
+        // or theorem has no implication-compact shape — registry+list only.
+        if (startsWith(orThm, "(>[", 3)) {
+            recordPendingCompaction(orThm, /*kySize=*/0, /*coreId=*/-1);
+        }
+    }
+
+    // Close the reduced-or single-elimination closure over everything now
+    // registered (including the ors this seam just minted) so the
+    // single-exclusion emission's registry lookup can hard-assert on a
+    // miss (D-268). Idempotent.
+    preMintReducedOrs();
+}
+
+/// @brief Token-aligned variable unification (or-elimination comparator).
+///
+/// @details
+/// See the declaration's Doxygen block in `prover.hpp` for the full
+/// contract. Implementation notes: tokens are maximal `[A-Za-z0-9_]+`
+/// runs; every byte between tokens must match exactly, which keeps
+/// polarity literal (I-175 — a `!` on one side only fails the walk).
+/// A purely numeric token with value >= 9 is a bound non-anchor
+/// variable on BOTH sides or the walk fails; it binds through the
+/// caller-shared bijection. All other tokens compare byte-equal.
+///
+/// @return True iff the walk completes with a consistent bijection.
+bool ExpressionAnalyzer::alignOrEliminationExprs(const std::string& a,
+                                                 const std::string& b,
+                                                 std::map<std::string, std::string>& forward,
+                                                 std::map<std::string, std::string>& reverse) {
+    const auto isTokenChar = [](char c) {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+            || (c >= '0' && c <= '9') || c == '_';
+    };
+    const auto isBindableVar = [](const std::string& tok) {
+        for (char c : tok) {
+            if (c < '0' || c > '9') return false;
+        }
+        return !tok.empty() && (tok.size() > 1 || tok[0] > '8');
+    };
+
+    std::size_t i = 0;
+    std::size_t j = 0;
+    while (i < a.size() && j < b.size()) {
+        if (!isTokenChar(a[i]) || !isTokenChar(b[j])) {
+            if (a[i] != b[j]) return false;
+            ++i;
+            ++j;
+            continue;
+        }
+        std::size_t ie = i;
+        std::size_t je = j;
+        while (ie < a.size() && isTokenChar(a[ie])) ++ie;
+        while (je < b.size() && isTokenChar(b[je])) ++je;
+        const std::string ta = a.substr(i, ie - i);
+        const std::string tb = b.substr(j, je - j);
+
+        const bool bindA = isBindableVar(ta);
+        const bool bindB = isBindableVar(tb);
+        if (bindA != bindB) return false;
+        if (bindA) {
+            const auto fIt = forward.find(ta);
+            if (fIt != forward.end()) {
+                if (fIt->second != tb) return false;
+            } else {
+                if (reverse.count(tb)) return false;
+                forward.emplace(ta, tb);
+                reverse.emplace(tb, ta);
+            }
+        } else if (ta != tb) {
+            return false;
+        }
+        i = ie;
+        j = je;
+    }
+    return i == a.size() && j == b.size();
+}
+
+/// @brief License probe for the pre-split merge.
+///
+/// @details
+/// See the declaration's Doxygen block in `prover.hpp` for the full
+/// contract. Implementation notes: the row snapshot is taken under
+/// `theoremListMutex` and the scan runs outside it (the seam is
+/// single-threaded; the lock only orders against the append door's own
+/// locking discipline). Scan order is `globalTheoremList` append order,
+/// so the citation choice is a deterministic function of the proof
+/// history. The side-premise cover additionally requires every bound
+/// non-anchor variable of an or-theorem premise to be in the leaf
+/// bijection's domain — an or theorem whose premise mentions a variable
+/// its disjuncts do not bind is not fully instantiated by the guards
+/// and cannot license the merge.
+///
+/// @return The licensing or-theorem row, or "" (defined no-license).
+std::string ExpressionAnalyzer::findOrEliminationLicense(const std::string& guardA,
+                                                         const std::string& guardB,
+                                                         const std::vector<std::string>& commonChain) {
+    std::vector<std::string> rows;
+    {
+        std::lock_guard<std::mutex> lock(theoremListMutex);
+        rows.reserve(globalTheoremList.size());
+        for (const auto& tpl : globalTheoremList) rows.push_back(std::get<0>(tpl));
+    }
+
+    const std::set<std::string> commonSet(commonChain.begin(), commonChain.end());
+
+    const auto isTokenChar = [](char c) {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+            || (c >= '0' && c <= '9') || c == '_';
+    };
+    const auto occursAsToken = [&isTokenChar](const std::string& hay, const std::string& tok) {
+        std::size_t pos = 0;
+        while ((pos = hay.find(tok, pos)) != std::string::npos) {
+            const std::size_t end = pos + tok.size();
+            const bool leftOk = (pos == 0) || !isTokenChar(hay[pos - 1]);
+            const bool rightOk = (end >= hay.size()) || !isTokenChar(hay[end]);
+            if (leftOk && rightOk) return true;
+            ++pos;
+        }
+        return false;
+    };
+    const auto eachVarMapped = [&isTokenChar](const std::string& expr,
+                                              const std::map<std::string, std::string>& forward) {
+        std::size_t i = 0;
+        while (i < expr.size()) {
+            if (!isTokenChar(expr[i])) { ++i; continue; }
+            std::size_t ie = i;
+            while (ie < expr.size() && isTokenChar(expr[ie])) ++ie;
+            const std::string tok = expr.substr(i, ie - i);
+            bool numeric = true;
+            for (char c : tok) {
+                if (c < '0' || c > '9') { numeric = false; break; }
+            }
+            if (numeric && (tok.size() > 1 || tok[0] > '8') && !forward.count(tok)) {
+                return false;
+            }
+            i = ie;
+        }
+        return true;
+    };
+
+    for (const std::string& row : rows) {
+        std::vector<std::tuple<std::string, std::vector<std::string>, std::set<std::string>>> chain;
+        const std::string head = ce::disintegrateImplication(row, chain, coreExpressionMap);
+
+        const LogicalEntity* le = compiledEntity(extractExpressionUniversalSpan(StrSpan(head)));
+        if (le == nullptr || le->category != "or") continue;
+
+        std::vector<std::string> uLeaves;
+        flattenRegistryOrLeaves(*le, uLeaves);
+        if (uLeaves.size() != 2) continue;   // k=2 in the first build
+
+        // Instantiate the registry-canonical leaves with the head's args.
+        const std::vector<std::string> sigArgs = ce::getArgs(le->signature);
+        const std::vector<std::string> headArgs = ce::getArgs(head);
+        if (sigArgs.size() != headArgs.size()) continue;
+        std::map<std::string, std::string> subst;
+        for (std::size_t k = 0; k < sigArgs.size(); ++k) subst[sigArgs[k]] = headArgs[k];
+        const std::string leaf0 = ce::replaceKeysInString(uLeaves[0], subst);
+        const std::string leaf1 = ce::replaceKeysInString(uLeaves[1], subst);
+
+        for (int ordering = 0; ordering < 2; ++ordering) {
+            const std::string& g0 = (ordering == 0) ? guardA : guardB;
+            const std::string& g1 = (ordering == 0) ? guardB : guardA;
+            std::map<std::string, std::string> forward;
+            std::map<std::string, std::string> reverse;
+            if (!alignOrEliminationExprs(leaf0, g0, forward, reverse)) continue;
+            if (!alignOrEliminationExprs(leaf1, g1, forward, reverse)) continue;
+
+            bool covered = true;
+            for (const auto& link : chain) {
+                const std::string& prem = std::get<0>(link);
+                if (!eachVarMapped(prem, forward)) { covered = false; break; }
+                const std::string img = ce::replaceKeysInString(prem, forward);
+                if (commonSet.count(img)) continue;
+                if (startsWith(img, "(in[", 4)) {
+                    const std::vector<std::string> inArgs = ce::getArgs(img);
+                    if (!inArgs.empty()) {
+                        bool occurs = false;
+                        for (const std::string& c : commonChain) {
+                            if (occursAsToken(c, inArgs[0])) { occurs = true; break; }
+                        }
+                        if (occurs) continue;
+                    }
+                }
+                covered = false;
+                break;
+            }
+            if (covered) return row;
+        }
+    }
+    return std::string();
+}
+
+/// @brief In-run pre-split merge (or elimination).
+///
+/// @details
+/// See the declaration's Doxygen block in `prover.hpp` for the full
+/// contract. Implementation notes: the unscanned-row snapshot is taken
+/// under `theoremListMutex` and everything else runs outside it (the
+/// append door re-takes the lock). Rows appended by this drain are not
+/// scanned in the same drain (the or seam's snapshot idiom), so a
+/// merged theorem can become a variant of a later merge one iteration
+/// later — deterministic chaining. Pairs whose licensing or theorem
+/// has not been minted yet park on `orElimPendingPairs` and are
+/// re-probed every iteration in insertion order.
+///
+/// @return Nothing.
+/// @invariant Single-threaded phase-4 barrier seam only; no registry
+///            mints, no LB interaction.
+void ExpressionAnalyzer::constructOrEliminationInRun() {
+    // Same defined no-op as the or seam: the compressor's re-derivation
+    // must stay byte-identical to the run it audits.
+    if (parameters.compressor_mode) return;
+
+    std::vector<std::string> newRows;
+    {
+        std::lock_guard<std::mutex> lock(theoremListMutex);
+        for (const auto& tpl : globalTheoremList) {
+            const std::string& thm = std::get<0>(tpl);
+            if (orElimInRunScannedRows.insert(thm).second) newRows.push_back(thm);
+        }
+    }
+
+    // File new rows into the guard index; a second guard under one common
+    // key forms a candidate pair, parked for the license probe below.
+    for (const std::string& thm : newRows) {
+        std::vector<std::tuple<std::string, std::vector<std::string>, std::set<std::string>>> chain;
+        const std::string head = ce::disintegrateImplication(thm, chain, coreExpressionMap);
+        if (chain.size() < 2) continue;                    // a guard needs a shared premise before it
+        if (!std::get<1>(chain.back()).empty()) continue;  // pre-split guards are binder-free
+
+        const std::string& guard = std::get<0>(chain.back());
+        std::string key;
+        for (std::size_t k = 0; k + 1 < chain.size(); ++k) {
+            key += std::get<0>(chain[k]);
+            key += '\x01';
+        }
+        key += '\x02';
+        key += head;
+
+        std::vector<std::pair<std::string, std::string>>& entries = orElimGuardIndex[key];
+        for (const std::pair<std::string, std::string>& other : entries) {
+            if (other.second == guard) continue;
+            orElimPendingPairs.push_back({other.first, other.second, thm, guard});
+        }
+        entries.emplace_back(thm, guard);
+    }
+
+    // License probe over the parked pairs, insertion order. A pair leaves
+    // only by merging (or the append door's string dedup); a licenseless
+    // pair parks for a later iteration's or mints.
+    std::vector<std::array<std::string, 4>> stillPending;
+    stillPending.reserve(orElimPendingPairs.size());
+    for (const std::array<std::string, 4>& pending : orElimPendingPairs) {
+        const std::string& variantA = pending[0];
+        const std::string& guardA = pending[1];
+        const std::string& variantB = pending[2];
+        const std::string& guardB = pending[3];
+
+        const std::pair<std::string, std::string> pairKey(
+            std::min(variantA, variantB), std::max(variantA, variantB));
+        if (orElimBuiltByPair.count(pairKey)) continue;
+
+        // Rebuild the shared context from variant A — byte-identical on
+        // variant B by the guard-index key construction.
+        std::vector<std::tuple<std::string, std::vector<std::string>, std::set<std::string>>> chain;
+        const std::string head = ce::disintegrateImplication(variantA, chain, coreExpressionMap);
+        assert(chain.size() >= 2
+            && "constructOrEliminationInRun: parked variant lost its guard chain");
+        std::vector<std::string> commonChain;
+        commonChain.reserve(chain.size() - 1);
+        for (std::size_t k = 0; k + 1 < chain.size(); ++k) {
+            commonChain.push_back(std::get<0>(chain[k]));
+        }
+
+        const std::string license = findOrEliminationLicense(guardA, guardB, commonChain);
+        if (license.empty()) {
+            stillPending.push_back(pending);
+            continue;
+        }
+
+        const std::string merged = reconstructImplicationFullBind(commonChain, head);
+        orElimBuiltByPair.emplace(pairKey, merged);
+
+        // String dedup door: two different pre-split pairs can fold to one
+        // merged theorem; the second registers and broadcasts nothing.
+        if (!appendGlobalTheorem(merged, "or elimination", variantA, variantB)) continue;
+        this->fullTheoremList.emplace_back(merged, "or elimination", variantA, variantB);
+        orElimCitedOrByMerged.emplace(merged, license);
+        std::cout << "OR elimination merged (in-run): " << merged << std::endl;
+
+        // Broadcast like any proved implication via the deferred-compaction
+        // drain that follows this seam (empty level set at the drain; a
+        // premise-free result registers without broadcast).
+        if (startsWith(merged, "(>[", 3)) {
+            recordPendingCompaction(merged, /*kySize=*/0, /*coreId=*/-1);
+        }
+    }
+    orElimPendingPairs.swap(stillPending);
 }
 
 void ExpressionAnalyzer::checkOrCompletion(const std::string& provedTheorem, int coreId) {
@@ -12822,15 +18305,22 @@ std::string ExpressionAnalyzer::expandToBaseForm(const std::string& expr) const 
 
                     // Build expanded form based on category
                     std::string expanded;
-                    if (le.category == "or" && le.elements.size() == 2) {
-                        // Elements are positive disjuncts. OR = !(&!a!b).
+                    if (le.category == "or" && le.elements.size() >= 2) {
+                        // Elements carry each disjunct's true polarity;
+                        // negate() cancels a double negation, so a negated
+                        // disjunct contributes its bare positive core. The
+                        // inner AND is flat n-ary — the parser accepts any
+                        // conjunct count (anchor definition bodies parse
+                        // the same shape).
                         auto negate = [](const std::string& s) -> std::string {
                             if (!s.empty() && s[0] == '!') return s.substr(1);
                             return "!" + s;
                         };
-                        std::string a = ce::replaceKeysInString(le.elements[0], subst);
-                        std::string b = ce::replaceKeysInString(le.elements[1], subst);
-                        expanded = "!(&" + negate(a) + negate(b) + ")";
+                        expanded = "!(&";
+                        for (const auto& elem : le.elements) {
+                            expanded += negate(ce::replaceKeysInString(elem, subst));
+                        }
+                        expanded += ")";
                     } else if (le.category == "and") {
                         expanded = "(&";
                         for (const auto& elem : le.elements) {
@@ -12876,7 +18366,15 @@ std::string ExpressionAnalyzer::expandToBaseForm(const std::string& expr) const 
                         boundSubst[rawBoundVar] = freshVar;
                         std::string left = ce::replaceKeysInString(le.elements[0], boundSubst);
                         std::string right = ce::replaceKeysInString(le.elements[1], boundSubst);
-                        expanded = "!(>[" + freshVar + "]" + left + "!" + right + ")";
+                        // Negate the head element WITH double-negation
+                        // cancellation — a negated element contributes its
+                        // bare positive core; a blind '!' prefix would emit
+                        // a malformed !!(...) row that crashes any later
+                        // load of the base form.
+                        const std::string negRight =
+                            (!right.empty() && right[0] == '!')
+                                ? right.substr(1) : "!" + right;
+                        expanded = "!(>[" + freshVar + "]" + left + negRight + ")";
                     } else if (le.category == "implication") {
                         // (>[bound](premise)(head)) — elements has chain + head
                         // For now, reconstruct from elements

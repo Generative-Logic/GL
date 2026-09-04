@@ -1,0 +1,10 @@
+(preorder[1,5,6,9])	main	implication	(>[pi_lev_1_3](in[pi_lev_1_3,u_1])(>[](in3[u_6,pi_lev_1_3,u_9,u_5])(preorder[u_1,u_5,u_6,u_9])))	main	(in3[6,9_copy,9,5])	main	(in[9_copy,1])	main
+(>[pi_lev_1_3](in[pi_lev_1_3,u_1])(>[](in3[u_6,pi_lev_1_3,u_9,u_5])(preorder[u_1,u_5,u_6,u_9])))	main	reformulation for integration >[bound]	!(>[pi_lev_1_3](in[pi_lev_1_3,1])!(in3[6,pi_lev_1_3,9,5]))_integration_goal	main
+!(>[pi_lev_1_3](in[pi_lev_1_3,1])!(in3[6,pi_lev_1_3,9,5]))_integration_goal	main	expansion for integration	(preorder[1,5,6,9])_integration_goal	main
+(in3[6,9_copy,9,5])	main	implication	(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9](in[9,1])(>[10](=[9,10])(in3[6,9,10,5]))))	main	(=[9_copy,9])	main	(AnchorFTA[1,2,3,4,5,6,7,8])	main	(in[9_copy,1])	main
+(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9](in[9,1])(>[10](=[9,10])(in3[6,9,10,5]))))	main	theorem
+(=[9_copy,9])	main	symmetry of equality	(=[9,9_copy])	main
+(=[9,9_copy])	main	variable copy
+(AnchorFTA[1,2,3,4,5,6,7,8])	main	task formulation
+(in[9_copy,1])	main	equality1	(in[9,1])	main	(=[9,9_copy])	main
+(in[9,1])	main	task formulation

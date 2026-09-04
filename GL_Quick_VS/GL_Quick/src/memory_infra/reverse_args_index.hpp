@@ -110,7 +110,7 @@ namespace gl {
     ///            reload, captured verbatim by the raw image.
     /// @see `PagedHashIndex`, `HashMap::rebuildIndex`, `ColdHashSet`,
     ///      `remainingArgsNormalizedEncodedMap`, `insertRemainingArgsNormKey`,
-    ///      `wipeRemainingArgsForClosed`, D-199,
+    ///      D-199,
     ///      I-154.
     class ReverseArgsIndex {
     public:
@@ -191,8 +191,46 @@ namespace gl {
         /// @param normKeyBytes The probe NormKey's serialized bytes.
         /// @param sink         Invoked once per owning forward-map key id.
         /// @see @ref appendEdge, `checkLocalEncodedMemoryStatic`.
+        /// @brief Unlink one `(NormKey → forward key id)` edge — the removal
+        ///        twin of `appendEdge`.
+        ///
+        /// @details
+        /// Walks the NormKey's chain from its head and relinks the predecessor
+        /// (or the head cell) past the node carrying @p ownerKeyId. Both the
+        /// NormKey entry and the edge must exist (asserted — the caller removes
+        /// an edge it recorded at install, Rule 19). The unlinked node stays
+        /// in the two node columns as an unreachable hole: the index is derived
+        /// and rebuilt wholesale on every canonical reload (`rebuildReverseIndex`),
+        /// so holes never persist, and chain order is not observable (I-154).
+        /// The NormKey entry itself stays interned even when its chain is now
+        /// empty (an empty run answers exactly like an absent key).
+        ///
+        /// @param normKeyBytes The NormKey's serialized bytes (`Codec<NormKey>` form).
+        /// @param ownerKeyId   The forward-map key id whose run no longer holds it.
+        /// @invariant After the call `reverseIndexRunOf(normKeyBytes)` no longer
+        ///            yields @p ownerKeyId; every other edge is untouched.
+        /// @see `appendEdge`, `reverseIndexRunOf`, `rebuildReverseIndex`.
+        void removeEdge(StrSpan normKeyBytes, int32_t ownerKeyId) {
+            const int32_t entryId = normKeys_.lookup(normKeyBytes);
+            assert(entryId >= 1 && entryId <= headById_.size()
+                && "ReverseArgsIndex::removeEdge: the NormKey has no entry");
+            int32_t prev = -1;
+            for (int32_t node = headById_[entryId - 1]; node != -1;
+                 prev = node, node = nodeNext_[node]) {
+                if (nodeOwner_[node] != ownerKeyId) continue;
+                if (prev == -1) headById_.setAt(entryId - 1, nodeNext_[node]);
+                else nodeNext_.setAt(prev, nodeNext_[node]);
+                return;
+            }
+            assert(false && "ReverseArgsIndex::removeEdge: the edge is not in the chain");
+        }
+
         template <typename Sink>
         void reverseIndexRunOf(StrSpan normKeyBytes, Sink&& sink) const {
+            assert(!unbuilt_
+                && "reverseIndexRunOf on an index a read-only reload skipped "
+                   "rebuilding - that reload path promised no request "
+                   "generation would follow");
             const int32_t entryId = normKeys_.lookup(normKeyBytes);
             if (entryId == 0) return;
             assert(entryId >= 1 && entryId <= headById_.size()
@@ -227,11 +265,12 @@ namespace gl {
         /// @param scratch A per-slot scratch arena for `peekRecordBytes` page
         ///                straddles (cursor/popTo framed by the caller).
         /// @see @ref appendEdge, `HashMap::rebuildIndex`,
-        ///      `wipeRemainingArgsForClosed`.
+        ///      .
         template <typename ForwardMap>
         void rebuildReverseIndex(const ForwardMap& forward,
                                  ScratchArena& scratch) {
             clear();
+            unbuilt_ = false;
             const int32_t n = forward.count();
             for (int32_t id = 1; id <= n; ++id) {
                 const int32_t rl = forward.runLen(id);
@@ -260,6 +299,24 @@ namespace gl {
             derivedDirty_ = DirtyState::Clean;
         }
 
+        /// @brief Declare this index deliberately NOT rebuilt after a reload.
+        ///
+        /// @details
+        /// The read-only reload door (`Memory::ensureLoadedForRead`) skips the
+        /// canonical rebuild because its only consumers read origin history,
+        /// never the request-generation candidate probe. An index left in that
+        /// state is EMPTY, which is indistinguishable from "no NormKey was ever
+        /// recorded" — a silent wrong answer rather than a loud one. This flag
+        /// makes the difference explicit: @ref reverseIndexRunOf asserts on it,
+        /// so a future reader on that path fails at the probe instead of
+        /// quietly seeing an empty candidate set.
+        ///
+        /// Cleared by @ref rebuildReverseIndex, which restores the real content.
+        ///
+        /// @invariant Never set on any path that a burst can reach.
+        /// @see rebuildReverseIndex, Memory::reloadFromImage
+        void markUnbuilt() { unbuilt_ = true; }
+
         /// @brief Whether the index holds no recorded NormKeys.
         ///
         /// @return `true` when no NormKey has ever been recorded (or after
@@ -287,6 +344,10 @@ namespace gl {
         ///        `DirtyState*`. Declared FIRST so it outlives the containers
         ///        that reference it (destruction is reverse-declaration order).
         DirtyState derivedDirty_ = DirtyState::Clean;
+        /// @brief Set when a read-only reload skipped this index's rebuild, so
+        ///        an empty index reads as a bug rather than as a legitimate
+        ///        miss. See @ref markUnbuilt.
+        bool unbuilt_ = false;
         /// @brief The owning LB's arena (page/byte source).
         LbArena* arena_;
         /// @brief Distinct NormKey bytes -> dense entry id (`1..count()`); the

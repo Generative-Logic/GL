@@ -38,6 +38,7 @@ User-oriented SwDD — Chapter 11: CE filter & compressor.
       <ul>
         <li><a href="prover.html#life">Life of a run</a></li>
         <li><a href="prover.html#cycles">Cycles</a></li>
+        <li><a href="prover.html#cuda-filter-classes">CUDA filter classes</a></li>
         <li><a href="prover.html#enter">How a theorem enters</a></li>
         <li><a href="prover.html#status">Status modes</a></li>
         <li><a href="prover.html#deactivate">Deactivation cascade</a></li>
@@ -62,7 +63,7 @@ User-oriented SwDD — Chapter 11: CE filter & compressor.
         <li><a href="mechanisms.html#integ">Integration</a></li>
         <li><a href="mechanisms.html#branch">Branching &amp; contradiction</a></li>
         <li><a href="mechanisms.html#induct">Induction</a></li>
-        <li><a href="mechanisms.html#fan5">5-batch fan-out</a></li>
+        <li><a href="mechanisms.html#fan5">Request-generation fan-out</a></li>
         <li><a href="mechanisms.html#cascade">Pending-rejection cascade</a></li>
       </ul>
     </li>
@@ -85,6 +86,7 @@ User-oriented SwDD — Chapter 11: CE filter & compressor.
         <li><a href="memory.html#aggregate">LbMemory — the aggregate</a></li>
         <li><a href="memory.html#deload">Deload / reload</a></li>
         <li><a href="memory.html#scope">Scope</a></li>
+        <li><a href="memory.html#strings">String statification</a></li>
       </ul>
     </li>
     <li><a href="provenance.html">Provenance</a>
@@ -261,8 +263,8 @@ any candidate whose negation gets derived. Survivors enter the main prover.
   <text x="648" y="116" fill="#8B8FA5" font-size="9.5" text-anchor="middle">into main prover</text>
 
   <rect x="22" y="172" width="716" height="60" rx="9" fill="#1C1F2B" stroke="#3A3D4A"/>
-  <text x="380" y="194" fill="#F0E8DC" font-size="11" text-anchor="middle">Wall-clock note: CE filtering was historically ~80% of a Gauss run — since collapsed.</text>
-  <text x="380" y="212" fill="#8B8FA5" font-size="10" text-anchor="middle">It is no longer a bottleneck, and explicitly not an optimisation target.</text>
+  <text x="380" y="194" fill="#F0E8DC" font-size="11" text-anchor="middle">GPU-selected batches run these private checks through the CUDA Phase 2 route.</text>
+  <text x="380" y="212" fill="#8B8FA5" font-size="10" text-anchor="middle">Private candidate state stays disjoint; packed immutable columns may share storage.</text>
 </svg>
 <figcaption><b>The cheap test before the expensive proof.</b> A
 counterexample on five elements rules out a candidate forever; running it
@@ -280,10 +282,10 @@ engine would enumerate the entire Cartesian product. CE mode drops that
 requirement: the model is small enough that brute enumeration is cheap, and
 the goal is to surface <i>any</i> contradiction, including ones that don't
 ride a known fact.</li>
-<li><b>Same request generator, empty stump.</b> The one generator
-<code>generateEncodedRequestsStatic</code> runs here with an obligatory-stump
-length of 0, so it fires every rule against every fact instead of anchoring each
-request on a known local one.</li>
+<li><b>Same request generator, no mandatory fact.</b> The one generator
+<code>generateEncodedRequestsStatic</code> runs here with an empty list of
+mandatory facts, so it fires every rule against every fact instead of anchoring
+each request on a known local one.</li>
 </ul>
 <p>
 Apart from that, the LB tree, mail boundary, scope mechanics, and admission
@@ -292,7 +294,7 @@ mode a derived head is good news; in CE mode a derived contradiction is good
 news (and the candidate is discarded).
 </p>
 
-<h3>11.2.2 &nbsp;One burst per candidate, a pool over a queue</h3>
+<h3>11.2.2 &nbsp;One burst per candidate, processor queue or GPU batch</h3>
 <p>
 Each candidate gets exactly <strong>one hashburst</strong>
 (<code>numberIterationsConjectureFiltering</code> is 1 in every config): the
@@ -301,8 +303,13 @@ facts. A dedicated thread pool drains a global candidate queue — each worker
 takes the next candidate, checks it on its own throwaway copy of the fact base,
 and the instant one is refuted its burst stops early and the worker grabs the
 next. There is no batch barrier, so no core idles waiting on a slow candidate.
-The historical 80%-of-wall-clock cost (roughly halved by the pool) comes from the
-sheer candidate count, not any individual candidate's runtime.
+The processor backend uses that queue directly. A GPU-selected batch still
+constructs private single-use candidate blocks and disjoint contradiction slots,
+then sends bounded groups through the same CUDA filter, growth, ordering,
+evaluation, and sealing route as the main prover. Physical packing may share
+byte-identical immutable name and rule columns, but candidate mutations and
+verdict ownership never alias. The historical 80%-of-wall-clock cost came from
+the sheer candidate count, not any individual candidate's runtime.
 </p>
 
 <h3>11.2.3 &nbsp;Mirror refutation — one counterexample dooms both directions</h3>
@@ -468,9 +475,11 @@ derivable?”</i>
 
 <h3>11.5.1 &nbsp;Why the origin-record cap is different</h3>
 <p>
-Main-mode tracks <code>max_origin_per_expr=1</code> — one origin
-chain per derived expression, the minimal evidence needed for the proof graph.
-The compressor uses <code>compressor_max_origins_per_expr=30</code>. The reason: the compressor cares about
+Main-mode keeps up to <code>max_origin_per_expr=30</code> origin records per
+derived expression, in insertion order &mdash; at the cap the existing records win and
+nothing is displaced, so the kept prefix stays well-founded (each record's antecedents
+were recorded before it); the chapter walker chooses among them.
+The compressor's <code>compressor_max_origins_per_expr=30</code> matches it. The reason for a cap above one: the compressor cares about
 <i>which</i> theorems contributed to a derivation, not just <i>that</i> it
 derived. A larger cap lets Phase 2 see alternative dependency chains and
 preferentially eliminate the candidate that has the fewest unique uses across

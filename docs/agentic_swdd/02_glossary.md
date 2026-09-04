@@ -289,6 +289,12 @@ Incubator-only. An operator-equality theorem (e.g. `(=[+[a,b], c])`) is rewritte
 
 A theorem whose head is an `or<N>` node (disjunction). Distinct from [`or branch proven`](#or-branch-proven), which is the per-branch case-split bookkeeping row inside a proof; `or theorem` is the chapter-conclusion record for theorems whose statement IS an OR. Emitted as `<N>_or_theorem.txt`. Method label: `or theorem`.
 
+### pre-split (or elimination)
+
+The maintainer's standing method for a theorem needing a case split on a bound premise variable that the in-prover cohort machinery cannot open: state the two GUARD VARIANTS (the theorem plus one binder-free innermost guard premise each — e.g. `1≤b` and `b=0`) as ordinary flat pool rows, and DERIVE the unguarded theorem by classical or-elimination at the phase-4 drain seam (`constructOrEliminationInRun`), licensed by a proved or theorem whose two disjuncts are exactly the two guards. The derived row carries method label `or elimination` and a fabricated chapter `<N>_or_elimination.txt` citing both variants plus the licensing or theorem. The full theorem is never a pool conjecture (a pool copy would spin an LB the whole run for nothing); the variants are never subsumed. See [D-289](40_decisions.md#d-289) and the third unfair-advantage shape in `docs/fta_ladder/README.md`.
+
+A degenerate guard variant often has a mathematically redundant premise (13b's `a|b`), so its closure trips the D-278 level gate; such variants land in the **proved-not-broadcast tier** — method label `proved not broadcast`, a real direct-walk chapter, zero circulation (no reformulation, broadcast, or-seeding, compressor participation, or `theorems.txt` row) — and the merge consumes them as variants like any proved row. See [D-290](40_decisions.md#d-290).
+
 ### or branch proven
 
 OR-integration bookkeeping row. Records that one `_orint_` subproof has proved the parent OR goal through its selected disjunct. Row layout: `<or-expr> <parent-ns> or branch proven <selected-disjunct> <subproof-ns>`. The historical tag name says "branch", but this is not an `_ordis_` case-split row. Promoted to a first-class `TAG_CHECKERS` entry by [D-35](40_decisions.md#d-35) (previously claimed retired in the SwDD; the override path never existed and the prover always emitted the tag live). Checker: `check_or_branch_proven`.
@@ -321,7 +327,7 @@ The per-LB state object. Formerly called `BodyOfProves`. Defined at [`memory.hpp
 |---|---|
 | `exprKey` | The expression this LB is responsible for. |
 | `intKnownStatements` | Packed-key statement registry; per-row membership bits `registered` / `known`. |
-| `intStatementLevelsMap` | `packStatementKey(originalId, validityId) → std::set<int>`. Per-statement set of LB depths (`Memory::level`) whose state contributed to deriving that statement — anchor=0, child=1, grandchild=2, …. Read by the discharge gate `allLevelsInvolved`. See [`levels`](#levels). |
+| `intStatementLevelsMap` | `packStatementKey(originalId, validityId) → std::set<int>`. Per-statement set of LB depths (`Memory::level`) whose state contributed to deriving that statement — anchor=0, child=1, grandchild=2, …. Read by the `allLevelsInvolved` registration verdict (goal closure itself is level-free). See [`levels`](#levels). |
 | `overallHashMemory` | The local `HashMemory` — indexed implications + statements. |
 | `nameMap` | The `NameMap` instance (scope-name encoding). |
 | `stackOfValidity` | The scope stack for this LB. |
@@ -343,7 +349,7 @@ Value type in `HashMemory::encodedMap`. Fields: `value` (normalised conclusion t
 
 The inter-LB message buffer. Fields:
 
-- `statements` — list of `(ExpressionWithValidity, std::set<int>)` pairs to be delivered. The deposited level set MUST be empty per [I-51](30_invariants.md#i-51): mail-side levels propagate via the receiver's `addToHashMemory` → `LocalMemoryValue::levels`, and any non-empty deposit pollutes the union that the discharge gate `allLevelsInvolved` reads ([D-77](40_decisions.md#d-77)).
+- `statements` — list of `(ExpressionWithValidity, std::set<int>)` pairs to be delivered. The deposited level set MUST be empty per [I-51](30_invariants.md#i-51): mail-side levels propagate via the receiver's `addToHashMemory` → `LocalMemoryValue::levels`, and any non-empty deposit pollutes the union that the `allLevelsInvolved` registration verdict reads ([D-77](40_decisions.md#d-77)).
 - ~~`implications`~~ — retired ([D-78](40_decisions.md#d-78)). Was a list of tuples (chain, head, args, levels, theorem); levels field always empty. Implications now travel as the compact `(implication<N>[…])` form on `statements`.
 - `exprOriginMap` — provenance entries to merge into the recipient's origin map.
 
@@ -391,25 +397,27 @@ Pre-parsed form of an expression. Fields: `name`, `negation`, `arguments` (with 
 
 ### levels
 
-A `std::set<int>` attached to every deposited statement. **Each integer is the depth (`Memory::level`) of an LB whose state contributed to the derivation of the statement.** Level 0 is the anchor LB; level 1 is its direct child; level 2 is a grandchild; and so on. A statement gets level `k` in its set if any premise of its derivation was either installed at, or itself carried level `k`. The levels of a derived statement are computed as the union of every premise's levels (or the union of `(rule's installation levels) ∪ (premise levels)` when a hashmem rule fires).
+A `std::set<int>` attached to every deposited statement (run-form on the kernel chain, [I-136](30_invariants.md#i-136)). **Each integer is the depth (`Memory::level`) of an LB whose state contributed to the derivation of the statement.** Level 0 is the anchor LB; level 1 is its direct child; level 2 is a grandchild; and so on. A statement gets level `k` in its set if any premise of its derivation was either installed at, or itself carried level `k`. The levels of a derived statement are computed as the union of every premise's levels (or the union of `(rule's installation levels) ∪ (premise levels)` when a hashmem rule fires).
+
+A statement's stored levels row is NEVER empty ([I-182](30_invariants.md#i-182)): a NON-DERIVED statement — a loaded fact, an anchor, a broadcast theorem compact, an assumed premise element — carries the singleton `{-1}`, the non-derived tier. `-1` is transparent to level accounting (it never enters a derivation union and gates like the former empty run) and singleton-only (a run is exactly `{-1}` or all-values-≥0, never mixed).
 
 Not a monotonic counter. Not an admission ordering. The earlier glossary entry calling this `(newStatementLevel, newEqualityLevel)` was stale — corrected on the branch in the same commit that fixed [D-77](40_decisions.md#d-77).
 
-**Why it matters.** The discharge gate at `prover.cpp::addExprToMemoryBlock` (where a derived statement at v=main that matches a `toBeProved` goal is promoted to a proved theorem) reads the derived statement's `levels` and applies `allLevelsInvolved`:
+**Why it matters.** `prover.hpp::dischargeToBeProved` reads the derived statement's `levels` when a MAIN statement matches a `toBeProved` goal and computes the registration verdict `allLevelsInvolved`:
 
 ```cpp
-bool allLevelsInvolved = (addExpressionLevels.size() == static_cast<std::size_t>(memoryBlock.level + 1));
-if ((addExpressionLevels.size() == static_cast<std::size_t>(memoryBlock.level)) && addExpressionLevels.find(0) == addExpressionLevels.end())
+bool allLevelsInvolved = (lvN == memoryBlock.level + 1);
+if (lvN == memoryBlock.level && !has0)
     allLevelsInvolved = true;
 ```
 
-The primary branch (`size == level+1`) requires the derivation to have touched **exactly** every LB from the anchor (level 0) down to the producer (level = `memoryBlock.level`). The alternate branch (`size == level`, no level 0) covers derivations that ignore the anchor scope. If the levels set has even one extra element (e.g. a level the LB has no ancestor for), both branches fail, the gate returns false, and the derived statement is silently kept in `intEncodedStatements` without ever being promoted — the rule fires, the head materialises locally, but no theorem reaches `globalTheoremList`. See [G-46](50_gotchas.md#g-46) and the fix in [D-77](40_decisions.md#d-77).
+The primary branch (`lvN == level+1`) requires the derivation to have touched **exactly** every LB from the anchor (level 0) down to the producer (level = `memoryBlock.level`). The alternate branch (`lvN == level`, no level 0) covers derivations that ignore the anchor scope. Since [D-278](40_decisions.md#d-278) the verdict gates ONLY the global registration: goal CLOSURE (goal-row erase, scope wipes, twin retirement, deactivation) is level-free, and the verdict rides the sealed `UpdateGlobalDirectRec` to the post-join drain, which on false runs the lifecycle and refuses `appendGlobalTheorem`. A levels row with even one extra element (e.g. a level the LB has no ancestor for) fails both branches — the goal still closes, but no theorem reaches `globalTheoremList`. The contradiction-twin route seals its own verdict from the colliding pair's level-row union (excluding the twin's own level, the assumed seed's tier). See [G-46](50_gotchas.md#g-46) and the fix in [D-77](40_decisions.md#d-77).
 
 **Invariant for producer-side deposits.** Any mail deposit that ships a rule across LBs (`Mail::statements`, retired `Mail::implications`, or any future replacement) **must** use `std::set<int>` (empty) as the deposited level set. The receiver computes the rule's effective levels from its own scope on installation; the mail-side levels are NEVER additive into the derived-statement union. The tuple channel (deleted on this branch) historically used empty sets at every insert site (`prover.cpp:2149` etc.); the D-76 compact-form drain learned this the hard way. See [I-51](30_invariants.md#i-51).
 
 ### intStatementLevelsMap
 
-`std::unordered_map<int32_t, std::set<int>>` keyed by `packStatementKey(originalId, validityId)` — one entry per `(expression, validityName)` pair installed in the LB. Holds the per-statement `levels` set described above. Read by `prover.cpp::addExprToMemoryBlock` to compute `allLevelsInvolved` on every derived-statement deposit (packed probe when the int ids are in hand, the non-minting `lookupStatementLevels` otherwise); written by every site that constructs or updates a statement's level set (Anchor handling, rule firing, mail absorb, equivalence-class rewrites). Stored on `Memory`; never crosses LBs verbatim (the receiver re-builds its own per-statement entries from premise-side levels). The hashburst dump prints its section by decoding the keys and lex-sorting on `(original, validityName)` — byte-identical to the former `std::map<EncodedExpression, std::set<int>>` iteration order (Rule 14).
+`std::unordered_map<int32_t, std::set<int>>` keyed by `packStatementKey(originalId, validityId)` — one entry per `(expression, validityName)` pair installed in the LB. Holds the per-statement `levels` set described above. Read by `prover.hpp::dischargeToBeProved` to compute the `allLevelsInvolved` registration verdict (packed probe when the int ids are in hand, the non-minting `lookupStatementLevels` otherwise); written by every site that constructs or updates a statement's level set (Anchor handling, rule firing, mail absorb, equivalence-class rewrites). Stored on `Memory`; never crosses LBs verbatim (the receiver re-builds its own per-statement entries from premise-side levels). The hashburst dump prints its section by decoding the keys and lex-sorting on `(original, validityName)` — byte-identical to the former `std::map<EncodedExpression, std::set<int>>` iteration order (Rule 14).
 
 ### intKnownStatements
 
@@ -417,7 +425,7 @@ The packed-key statement registry of an LB: `packStatementKey(originalId, validi
 
 ### wholeExpressions
 
-Retired — the former string-keyed statement registry, folded into `intKnownStatements` as the `registered` membership bit ([D-128](40_decisions.md#d-128)). The hashburst dump still prints a `wholeExpressions` section, derived from the `registered` rows.
+Retired — the former string-keyed statement registry, folded into `intKnownStatements` ([D-128](40_decisions.md#d-128)); the interim `registered` membership bit and the dump's `wholeExpressions` section are retired too ([D-264](40_decisions.md#d-264)): row presence is the one membership.
 
 ### admission map
 
@@ -463,11 +471,11 @@ Defined at [`prover.hpp`](../GL_Quick_VS/GL_Quick/src/prover.hpp). Integration-s
 
 ### `revisitRejected2`
 
-Defined at [`prover.cpp`](../GL_Quick_VS/GL_Quick/src/prover.cpp). Algebra-side revival entry point — called after an admission-map insert to re-process rejected entries at that marker key. Snapshots, reconstructs expanded form, deposits body elements via `addExprToMemoryBlock`. Calls `cleanAdmissionMap` after use. Cyclic (can re-enter via `updateRejectedMap`); guarded by `revisitInProgress`.
+Defined at [`prover.cpp`](../GL_Quick_VS/GL_Quick/src/prover.cpp). Algebra-side revival entry point — called after an admission-map insert to re-process rejected entries at that marker key. Snapshots, reconstructs expanded form, deposits body elements via `addExprToMemoryBlock`. Does not consume the admission key ([I-200](30_invariants.md#i-200)). Cyclic (can re-enter via `updateRejectedMap`); guarded by `revisitInProgress`.
 
 ### `revisitRejectedIntegration2`
 
-Defined at [`prover.cpp`](../GL_Quick_VS/GL_Quick/src/prover.cpp) (near `revisitRejected2`). Integration-side counterpart. Called after `admissionMapIntegration` insert at `prover.hpp` (with u_-strip on the key) and after `admissionSetIntegration.insert` at `prover.cpp` (key already bare). Emits matching `rejectedMapIntegration` entries to `sameIterationInternalMail`. Does **not** call `addExprToMemoryBlock`; does **not** call `cleanAdmissionMap` ([I-22](30_invariants.md#i-22)).
+Defined at [`prover.cpp`](../GL_Quick_VS/GL_Quick/src/prover.cpp) (near `revisitRejected2`). Integration-side counterpart. Called after `admissionMapIntegration` insert at `prover.hpp` (with u_-strip on the key) and after `admissionSetIntegration.insert` at `prover.cpp` (key already bare). Emits matching `rejectedMapIntegration` entries to `sameIterationInternalMail`. Does **not** call `addExprToMemoryBlock`; leaves the admission entry live ([I-22](30_invariants.md#i-22)).
 
 ### `applyEquivalenceClassToRejectedMapIntegration`
 

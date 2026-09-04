@@ -1,0 +1,25 @@
+(strictOrder[N,+,v2,v1])	main	contradiction	!(preorder[N,+,v2,v1])	main	(preorder[N,+,v2,v1])	main	!(strictOrder[N,+,v2,v1])	main
+!(preorder[N,+,v2,v1])	main	implication	(>[]!(=[v2,v1])!(preorder[N,+,v2,v1]))	main	!(=[v2,v1])	main
+(>[]!(=[v2,v1])!(preorder[N,+,v2,v1]))	main	disintegration	!(&(preorder[N,+,v2,v1])!(=[v2,v1]))	main
+!(&(preorder[N,+,v2,v1])!(=[v2,v1]))	main	expansion	!(strictOrder[N,+,v2,v1])	main
+!(strictOrder[N,+,v2,v1])	main	task formulation
+!(=[v2,v1])	main	symmetry of inequality	!(=[v1,v2])	main
+!(=[v1,v2])	main	task formulation
+(preorder[N,+,v2,v1])	main	equality1	(preorder[N,+,v1,v1])	main	(=[v1,v2])	main
+(preorder[N,+,v1,v1])	main	equality1	(preorder[N,+,v1,v1_copy])	main	(=[v1_copy,v1])	main
+(preorder[N,+,v1,v1_copy])	main	implication	(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[w1](in[w1,N])(>[w2](=[w1,w2])(preorder[N,+,w1,w2]))))	main	(=[v1,v1_copy])	main	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	(in[v1,N])	main
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](in[v1,N])(>[v2](=[v1,v2])(preorder[N,+,v1,v2]))))	main	theorem
+(=[v1,v1_copy])	main	variable copy
+(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	task formulation
+(in[v1,N])	main	task formulation
+(=[v1_copy,v1])	main	symmetry of equality	(=[v1,v1_copy])	main
+(=[v1,v2])	main	equality2	(=[v1,v1_copy])	main	(=[v1_copy,v2])	main
+(=[v1_copy,v2])	main	implication	(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[w1,w2](preorder[N,+,w1,w2])(>[]!(strictOrder[N,+,w1,w2])(=[w1,w2]))))	main	!(strictOrder[N,+,v1_copy,v2])	main	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	(preorder[N,+,v1_copy,v2])	main
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](preorder[N,+,v1,v2])(>[]!(strictOrder[N,+,v1,v2])(=[v1,v2]))))	main	theorem
+!(strictOrder[N,+,v1_copy,v2])	main	equality1	!(strictOrder[N,+,v1,v2])	main	(=[v1,v1_copy])	main
+!(strictOrder[N,+,v1,v2])	main	task formulation
+(preorder[N,+,v1_copy,v2])	main	implication	(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[w1](in[w1,N])(>[w2](in[w2,N])(>[]!(preorder[N,+,w1,w2])(preorder[N,+,w2,w1])))))	main	!(preorder[N,+,v2,v1_copy])	main	(AnchorFTA[N,i0,s,+,*,i1,i2,id])	main	(in[v2,N])	main	(in[v1_copy,N])	main
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](in[v1,N])(>[v2](in[v2,N])(>[]!(preorder[N,+,v1,v2])(preorder[N,+,v2,v1])))))	main	theorem
+!(preorder[N,+,v2,v1_copy])	main	equality1	!(preorder[N,+,v2,v1])	main	(=[v1,v1_copy])	main
+(in[v2,N])	main	task formulation
+(in[v1_copy,N])	main	equality1	(in[v1,N])	main	(=[v1,v1_copy])	main

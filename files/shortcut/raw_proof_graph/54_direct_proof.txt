@@ -1,0 +1,12 @@
+(preorder[1,4,9,10])	main	implication	(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9](preorder[1,4,6,9])(>[10,11](in3[10,9,11,5])(preorder[1,4,10,11]))))	main	(AnchorFTA[1,2,3,4,5,6,7,8])	main	(in3[9,int_lev_1_1,10,5])	main	(preorder[1,4,6,int_lev_1_1])	main
+(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9](preorder[1,4,6,9])(>[10,11](in3[10,9,11,5])(preorder[1,4,10,11]))))	main	theorem
+(AnchorFTA[1,2,3,4,5,6,7,8])	main	task formulation
+(in3[9,int_lev_1_1,10,5])	main	disintegration	!(>[int_lev_1_1](in[int_lev_1_1,1])!(in3[9,int_lev_1_1,10,5]))	main
+!(>[int_lev_1_1](in[int_lev_1_1,1])!(in3[9,int_lev_1_1,10,5]))	main	expansion	(preorder[1,5,9,10])	main
+(preorder[1,5,9,10])	main	task formulation
+(preorder[1,4,6,int_lev_1_1])	main	implication	(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9,10](preorder[1,5,9,10])(>[](preorder[1,4,6,10])(preorder[1,4,6,9]))))	main	(AnchorFTA[1,2,3,4,5,6,7,8])	main	(preorder[1,4,6,10])	main	(preorder[1,5,int_lev_1_1,10])	main
+(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9,10](preorder[1,5,9,10])(>[](preorder[1,4,6,10])(preorder[1,4,6,9]))))	main	theorem
+(preorder[1,4,6,10])	main	task formulation
+(preorder[1,5,int_lev_1_1,10])	main	implication	(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9,10,11](in3[9,10,11,5])(preorder[1,5,10,11])))	main	(AnchorFTA[1,2,3,4,5,x6,7,8])	main	(in3[9,int_lev_1_1,10,5])	main
+(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9,10,11](in3[9,10,11,5])(preorder[1,5,10,11])))	main	theorem
+(AnchorFTA[1,2,3,4,5,x6,7,8])	main	anchor handling	(AnchorFTA[1,2,3,4,5,6,7,8])	main

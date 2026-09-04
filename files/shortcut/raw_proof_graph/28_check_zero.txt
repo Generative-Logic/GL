@@ -1,0 +1,2 @@
+(=[2,10])	main	symmetry of equality	(=[10,2])	main
+(=[10,2])	main	recursion

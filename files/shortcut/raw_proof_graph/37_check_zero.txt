@@ -1,0 +1,14 @@
+(=[6,10])	main	vacuous truth	(=[9,2])	main	!(=[9,2])	main	(=[9,2])	main
+(=[9,2])	main	recursion
+!(=[9,2])	main	symmetry of inequality	!(=[2,9])	main
+!(=[2,9])	main	implication	(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9,10](in3[9,10,6,5])!(=[2,10])))	main	(AnchorFTA[1,2,3,4,5,6,7,8])	main	(in3[10,9,6,5])	main
+(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9,10](in3[9,10,6,5])!(=[2,10])))	main	theorem
+(AnchorFTA[1,2,3,4,5,6,7,8])	main	task formulation
+(in3[10,9,6,5])	main	implication	(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[7,8,6,5])(in3[8,7,6,5])))	main	(AnchorPeano[1,2,3,4,5,6])	main	(in3[9,10,6,5])	main
+(AnchorPeano[1,2,3,4,5,6])	main	implication	(>[](NaturalNumbers[u_1,u_2,u_3,u_4,u_5])(>[](in2[u_2,u_6,u_3])(AnchorPeano[u_1,u_2,u_3,u_4,u_5,u_6])))	main	(NaturalNumbers[1,2,3,4,5])	main	(in2[2,6,3])	main
+(>[](NaturalNumbers[u_1,u_2,u_3,u_4,u_5])(>[](in2[u_2,u_6,u_3])(AnchorPeano[u_1,u_2,u_3,u_4,u_5,u_6])))	main	reformulation for integration and	(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))_integration_goal	main
+(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))_integration_goal	main	expansion for integration	(AnchorPeano[1,2,3,4,5,6])_integration_goal	main
+(NaturalNumbers[1,2,3,4,5])	main	disintegration	(&(&(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))(in2[6,7,3]))(identity[1,8]))	main
+(&(&(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))(in2[6,7,3]))(identity[1,8]))	main	expansion	(AnchorFTA[1,2,3,4,5,6,7,8])	main
+(in2[2,6,3])	main	disintegration	(&(&(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))(in2[6,7,3]))(identity[1,8]))	main
+(in3[9,10,6,5])	main	task formulation

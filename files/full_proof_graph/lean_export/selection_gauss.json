@@ -1,0 +1,37 @@
+{
+  "schema_version": 3,
+  "id": "gauss_live_30",
+  "theorem_id_prefix": "gauss_source",
+  "theorem_name_prefix": "Gauss source",
+  "theorem_list_sha256": "47930278DAB4E390E158EE85C207B87580C6DFFAF61AA75BF3D0C7190CBC6433",
+  "source_range": {
+    "first": 64,
+    "last": 93
+  },
+  "excluded_sources": [],
+  "certificate_dependencies": [
+    {
+      "id": "peano_live_64",
+      "certificate": "certificates/peano/certificate.json",
+      "certificate_sha256": "A63E0481848794DBDE9567DB277B8AB772727FC1D893C6096DC8643968CF1595",
+      "required_source_indices": [
+        0,
+        7,
+        13,
+        16,
+        18,
+        22,
+        33,
+        37,
+        40,
+        44,
+        52,
+        55,
+        56,
+        57,
+        58,
+        63
+      ]
+    }
+  ]
+}

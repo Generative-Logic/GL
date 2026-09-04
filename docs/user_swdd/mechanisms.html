@@ -38,6 +38,7 @@ User-oriented SwDD — Chapter 4: Proof mechanisms (reference-level).
       <ul>
         <li><a href="prover.html#life">Life of a run</a></li>
         <li><a href="prover.html#cycles">Cycles</a></li>
+        <li><a href="prover.html#cuda-filter-classes">CUDA filter classes</a></li>
         <li><a href="prover.html#enter">How a theorem enters</a></li>
         <li><a href="prover.html#status">Status modes</a></li>
         <li><a href="prover.html#deactivate">Deactivation cascade</a></li>
@@ -62,7 +63,7 @@ User-oriented SwDD — Chapter 4: Proof mechanisms (reference-level).
         <li><a href="mechanisms.html#integ">Integration</a></li>
         <li><a href="mechanisms.html#branch">Branching &amp; contradiction</a></li>
         <li><a href="mechanisms.html#induct">Induction</a></li>
-        <li><a href="mechanisms.html#fan5">5-batch fan-out</a></li>
+        <li><a href="mechanisms.html#fan5">Request-generation fan-out</a></li>
         <li><a href="mechanisms.html#cascade">Pending-rejection cascade</a></li>
       </ul>
     </li>
@@ -85,6 +86,7 @@ User-oriented SwDD — Chapter 4: Proof mechanisms (reference-level).
         <li><a href="memory.html#aggregate">LbMemory — the aggregate</a></li>
         <li><a href="memory.html#deload">Deload / reload</a></li>
         <li><a href="memory.html#scope">Scope</a></li>
+        <li><a href="memory.html#strings">String statification</a></li>
       </ul>
     </li>
     <li><a href="provenance.html">Provenance</a>
@@ -178,7 +180,7 @@ substrate; §4.2 is the core, traced end to end on a real Gauss theorem.</p>
       </ol>
     </li>
     <li><a href="#induct">4.5 &nbsp;Induction</a></li>
-    <li><a href="#fan5">4.6 &nbsp;The 5-batch fan-out, in depth</a></li>
+    <li><a href="#fan5">4.6 &nbsp;The request-generation fan-out, in depth</a></li>
     <li><a href="#cascade">4.7 &nbsp;The pending-rejection cascade</a></li>
   </ol>
 </div>
@@ -191,6 +193,12 @@ substrate; §4.2 is the core, traced end to end on a real Gauss theorem.</p>
 <p>
 <code>disintegrateExprCore2</code> splits an <code>and</code> / <code>existence</code>
 into its element expressions and recurses. No fresh variables, nothing to gate.
+A <i>negated</i> existence <code>!(existence&lt;N&gt;[…])</code> — “no witness exists” — is a universal in
+disguise and splits into its two <i>existence implications</i>, <code>left → !right</code> and
+<code>right → !left</code>. Like the OR's K rules (1a below) these are not built on the spot: the
+compiler stores them once on the existence's registry row as compact <code>implication&lt;N&gt;[u_…]</code>
+atoms over the existence's own tokens, and disintegration instantiates each compact as a product
+<i>statement</i> of the negated existence whose expansion IS the rule.
 </p>
 
 <h3 id="disint-b">4.1.2 &nbsp;Pass B — operator-aware</h3>
@@ -262,6 +270,19 @@ var sits in that slot. <b>Never widen this</b> (<b>I-6</b>). Widening to multi-i
 operators broke Gauss summation; the standalone never consults the admission map.</li>
 </ul>
 <p>
+The map-based path has two demand producers. Besides the classic
+output-slot markers, a premise-rich rule (four or more substantive premises)
+whose premise carries a variable at an operator <i>input</i> slot that also
+feeds the rule's head installs an <b>input-slot demand key</b>: when the
+other premises match live facts, the instantiated key demands exactly the
+witness shape an existence's disintegration would otherwise park. Because a
+fired key lands at the shallowest scope of its matched premises while the
+disintegration may run inside a case-split branch, the Pass-B probe checks
+the deposit scope <i>and its ancestor scopes</i> (never siblings). This is
+what lets an order fact like <i>x &le; y</i> surrender its additive witness
+inside an or-branch &mdash; the C8 difference-closure chain.
+</p>
+<p>
 Fail both → the variable is buffered in <code>pendingRejections</code> (algebra) /
 <code>pendingRejectionsIntegration</code> (integration). A cascade-admission loop
 retries; if it still can't admit, the rejection is committed (§4.2.2).
@@ -329,17 +350,54 @@ per-<code>validityName</code> (<code>Memory::equivalenceClassesMap</code>).
 sibling inequalities on each side <i>separately</i>; the full cross-product is
 deliberately not emitted (combinatorial, no new content). The expansion fires
 both when the negation arrives and when a class touching either argument
-forms or grows later — insertion order does not matter. The recorded proof
-step cites the justifying equality at the scope where that equality's own
-history entry lives (the class's scope or an ancestor of it), never at the
-rewritten negation's scope — inside an or-branch the branch-scope form would
-be unresolvable for the proof-graph walker, whose ancestor lift deliberately
-stops at branch boundaries.</li>
+forms or grows later — insertion order does not matter — and covers all three
+scope directions like every other class application: a class at the negation's
+scope or an ancestor emits at the negation's scope, and a class at a strict
+descendant (an or-branch) emits at the class's scope, so a negation known at
+an ancestor serves every deeper branch without a branch copy. The recorded
+proof step cites the justifying equality at the scope where that equality's
+own history entry lives (the class's scope, the negation's scope, or a shared
+ancestor), never blindly at the emission scope — inside an or-branch an
+unresolvable citation would strand the proof-graph walker, whose ancestor
+lift deliberately stops at branch boundaries.</li>
 <li><b>Scoped &amp; additive.</b> A class at scope <code>S</code> is
 visible at every descendant. Cross-scope application deposits at
 <code>deeperOf(class, expr)</code> and <b>never overwrites the ancestor original</b>;
 cross-scope merge copies ancestor members in but leaves the ancestor class read-only
-(<b>I-31</b>).</li>
+(<b>I-31</b>); after that absorption the merge re-scans its own scope and folds in every
+class that now shares a member with the merged class, so the classes at one scope stay
+pairwise disjoint. Every recorded class rewrite cites its justifying equality at
+the scope where that equality's history entry lives. This remains true when a
+branch class has absorbed equality content from an ancestor, so the proof-graph
+walker never receives a false branch-local dependency.</li>
+<li><b>Deposits canonical only.</b> The deposit door rewrites every
+non-goal, non-equality, non-anchor arrival to its class-canonical form under the
+classes at its own scope before anything else runs, and ends the deposit when
+that form is already known — one form per fact per scope enters, and the class
+multiplication regenerates the variants from it. Equalities stay raw (they define
+the classes and close literal goals), goals stay raw (the end-of-burst goal
+sanitize handles them), anchors stay raw (a scope identity).</li>
+<li><b>Rules canonical only.</b> Statements are multiplied across a class
+(every variant registered — hash fodder), but hash memory holds rules only for
+the canonical form of a compact implication: the rule-install loop
+canonicalizes a compact before installing it and expands the canonical form
+instead of a stale-named one (registered with an <code>equality1</code> row
+citing the compact and the equalities); a class that forms later removes the
+rules it made stale and expands the canonical form in the same apply. Removal
+is exact — every whole key, subkey, remaining-args edge and chain carries the
+full list of the rules that installed it, and a rule leaves by re-running its
+own key enumeration — and is finished once per apply.</li>
+<li><b>No descendant copies.</b> A statement known at a scope is fully
+visible at every descendant, so every registration door refuses a deposit
+whose expression an ancestor scope already knows — one shared ancestor-scan
+predicate guards the central add door, the statement door, the class-rewrite
+commit, and the negation expansion alike. The one direction no deposit-time
+gate can see (the ancestor row arriving <i>after</i> a legitimate descendant
+copy) is closed by an end-of-burst sweep that drops the descendant's
+statement-list rows while keeping its registry rows as tombstones. The
+statement population an or-branch adds to the search universe is therefore
+only what the branch itself genuinely derives — the dedup that collapsed the
+multiplicative-theorem induction blow-up.</li>
 </ul>
 
 <h3 id="admit-rev">4.2.5 &nbsp;The revival loop — a Gauss trace</h3>
@@ -347,14 +405,18 @@ cross-scope merge copies ancestor members in but leaves the ancestor class read-
 A parked rejection revives two ways: an <b>equivalence-class rewrite</b>
 (<code>applyEquivalenceClassToRejectedMapIntegration</code>) turns its variables into
 a shape that now matches an admission entry, or a <b>new admission key</b> arrives
-(<code>revisitRejectedIntegration2</code>) that matches the parked key. Either way the
-rewritten constituent (plus siblings) is emitted to <code>sameIterationInternalMail</code> and
-absorbed at the <i>top</i> of the next cycle with <b>full re-expansion</b>
-(<code>status=1</code>, not the legacy mail's <code>status=3</code>). Asymmetries vs
-the algebra side: integration revival does <i>not</i> call
-<code>cleanAdmissionMap</code> (the rule stays live for future matches — <b>I-22</b>)
-and does <i>not</i> cascade through <code>addExprToMemoryBlock</code> (linear path
-only).
+(<code>revisitRejectedIntegration2</code>) that matches the parked key. On a rewrite the
+hook first asks whether an admission entry for the rewritten key already exists at the
+park's scope: if not, the park is simply <b>re-keyed in place</b> under the rewritten
+key (every stored text rewritten, one <code>equality1</code> history row per rewritten
+product) and waits there for a key to arrive; if it does, the rewritten compound is
+emitted to <code>sameIterationInternalMail</code> and absorbed at the <i>top</i> of the
+next cycle with <b>full re-expansion</b> (<code>status=1</code>, not the legacy mail's
+<code>status=3</code>), so the normal admission decides. The one asymmetry vs the
+algebra side: integration revival does <i>not</i> cascade through
+<code>addExprToMemoryBlock</code> (linear path only). Neither side consumes the
+admission entry — an admission key is a demand template, and a demand is never
+spent by being met, so the rule stays live for future matches (<b>I-22</b>).
 </p>
 
 <figure>
@@ -366,13 +428,18 @@ only).
   <rect x="36" y="86" width="228" height="54" rx="8" fill="#262938" stroke="#B084EB"/><text x="150" y="107" fill="#B084EB" font-size="10.5" font-weight="bold" text-anchor="middle">equi-class rewrite</text><text x="150" y="125" fill="#8B8FA5" font-size="9" text-anchor="middle">applyEquivalenceClassTo…</text>
   <rect x="496" y="86" width="228" height="54" rx="8" fill="#262938" stroke="#B084EB"/><text x="610" y="107" fill="#B084EB" font-size="10.5" font-weight="bold" text-anchor="middle">new admission key</text><text x="610" y="125" fill="#8B8FA5" font-size="9" text-anchor="middle">revisitRejectedIntegration2</text>
   <path d="M150 140 L320 176" stroke="#B084EB" stroke-width="1.5" marker-end="url(#rv-ar)"/>
+  <text x="212" y="166" fill="#8B8FA5" font-size="8.5" text-anchor="middle">demanded: mail</text>
+  <path d="M100 140 L100 236 L36 236 L36 40 L300 40" fill="none" stroke="#B084EB" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#rv-ar)"/>
+  <text x="70" y="250" fill="#8B8FA5" font-size="8.5" text-anchor="middle">not demanded:</text>
+  <text x="70" y="262" fill="#8B8FA5" font-size="8.5" text-anchor="middle">re-keyed in place</text>
   <path d="M610 140 L440 176" stroke="#B084EB" stroke-width="1.5" marker-end="url(#rv-ar)"/>
   <rect x="270" y="178" width="220" height="46" rx="8" fill="#262938" stroke="#E879F9"/><text x="380" y="199" fill="#E879F9" font-size="10.5" font-weight="bold" text-anchor="middle">sameIterationInternalMail</text><text x="380" y="216" fill="#8B8FA5" font-size="9" text-anchor="middle">absorb top of next cycle, status=1</text>
   <path d="M490 201 L560 201 L560 240 L380 240 L380 226" fill="none" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#rv-ar)"/>
   <text x="635" y="205" fill="#EF9F27" font-size="10.5" font-weight="bold" text-anchor="middle">fires</text>
 </svg>
 <figcaption><b>Reject → rewrite → re-admit → fire.</b> The loop that turns “can't
-yet” into “done later”.</figcaption>
+yet” into “done later”; the dashed box is the scope rule of the key match, the dashed
+arrow the rewrite of an undemanded park back into the map under its new key.</figcaption>
 </figure>
 
 <div class="ex">
@@ -398,13 +465,17 @@ is stuck on this rung.</li>
 fires: the rmi key contains <span class="st">a=X</span>; rewrite →
 <span class="st">(in3[9,marker,b,4])</span>; probe
 <span class="st">admissionMapIntegration[(in3[u_9,marker,u_b,u_4])]</span> →
-<b>MATCH</b> (an earlier compound's integration template registered it). Emit to
-<code>sameIterationInternalMail</code>: primary <span class="st">(in3[9,int_lev_2_42,b,4])</span>
-and sibling <span class="st">(in[int_lev_2_42,1])</span>, each with an
-<span class="st">equality1</span> origin <span class="st">[pre, (=[a,9])]</span>.
-Erase the rmi entry; leave the admission entry.</li>
+<b>MATCH</b> (an earlier compound's integration template registered it), so this park
+is demanded: erase the rmi entry and mail the rewritten compound
+<span class="st">sequence[1,4,2,9,Y]</span> to <code>sameIterationInternalMail</code> with an
+<span class="st">equality1</span> origin <span class="st">[pre, (=[X,9])]</span>; leave the
+admission entry. (Had the probe missed, the entry would instead have been re-keyed in
+place to <span class="st">(in3[9,marker,b,4])</span> with its texts rewritten and an
+<span class="st">equality1</span> row <span class="st">[pre, (=[a,9])]</span> for the
+rewritten constituent, waiting for a key.)</li>
 <li><b>Cycle N+k+1 — absorb &amp; prove.</b> Top-of-burst absorb at
-<code>status=1</code> → <code>disintegrateExpr2</code> runs, the two atoms land at
+<code>status=1</code> → <code>disintegrateExpr2</code> re-expands the compound, the
+admission probe now matches, the two atoms land at
 <span class="st">v=main</span>, <code>updateAdmissionMapIntegration</code> fires on
 each, downstream integration picks them up, the enclosing
 <span class="st">sequence→sequence</span> implication's premise chain is now
@@ -462,6 +533,13 @@ An <code>or&lt;N&gt;</code> is a compiled disjunction (De Morgan:
 </p>
 
 <h3 id="branch-split">4.4.1 &nbsp;Splitting an OR</h3>
+<p>Two kinds of statement reach the splitter: a compiled OR fact, and — by
+De&nbsp;Morgan — the <em>negation of an AND-bodied operator</em>: an asserted
+<code>!(op[…])</code> whose definition body is a conjunction is the disjunction
+of its negated conjuncts (each at its true polarity, double negations
+cancelled), assembled at runtime with the negated statement itself serving as
+the cohort identity — no new operator is compiled. From here on both are
+consumed identically.</p>
 <p>Splitting first treats every contiguous nested OR as one logical level:
 <code>(D₁∨D₂)∨D₃</code> becomes the ordered leaf cohort
 <code>D₁, D₂, D₃</code> in the same cycle. The original outer compiled OR remains
@@ -473,16 +551,68 @@ disjunct <code>D_i</code>, the rule “if every other disjunct is false then
 <code>D_i</code>” (<code>K=2</code> collapses to <code>!A→B</code> /
 <code>!B→A</code>). <b>Unconditional</b>, and its <code>disintegration</code> origin
 is recorded <i>above</i> the admission gate so the OR stays auditable even if 1b is
-skipped.</li>
-<li><b>1b · one branch scope per disjunct.</b> <code>encodePush(…, "ordis_…")</code>,
-seeded with <code>D_i</code> asserted. The other disjuncts' negations are not
-seeded in <code>_ordis_</code>; the parent-scope rules from 1a remain inherited.
-Gated by the OR nesting cap (<code>max_or_depth</code> — branch scopes never nest
-beyond it; the 1a rules still emit at any depth) and by the OR-admission check:
-<code>allowOrDisintegration</code>, fed from <code>LocalMemoryValue::productOfDisintegration</code>
-— set iff the firing rule itself is a product of disintegration (a premise carries a
-<code>u_</code> arg). Anchor-bound theorems never trigger it; this is the narrowed
-form after D-31's broad version exploded.</li>
+skipped. Since the or-implications change the K rules (and the 1a′ family) are not built on the spot: the compiler stores them once on the OR's registry row as compact <code>implication&lt;N&gt;[u_…]</code> atoms over the OR's own tokens, and disintegration instantiates each compact positionally (repeated arguments allowed) as a product <i>statement</i> of the OR — registered at the parent scope, mailed like any statement — whose expansion IS the rule. The chapter shows compact ← disintegration ← OR, then rule ← expansion ← compact.</li>
+<li><b>1a′ · Single-exclusion implications (compiled-OR cohorts with K ≥ 3).</b>
+For each disjunct <code>D_i</code>, the rule “if <code>D_i</code> is false then
+the REST as a disjunction” — <code>!D_i → (D₁∨…∨D_{i−1}∨D_{i+1}∨…)</code> with a
+genuine reduced (K−1)-ary OR operator as its head, pre-registered at the
+single-threaded seams (never minted mid-burst). A K rule from 1a needs K−1
+negative facts to fire; this one fires on ONE — the step that turns a lone
+reductio seed into a live case split. Its fired heads never open branch scopes
+by themselves: the rule family is recognized by shape at every install and its
+disjunction heads always PARK in 1b's rejection buffer, opening only when a
+registered demand names one of the surviving disjuncts. Cohorts born from
+negated-conjunction sources keep the 1a-only behavior.</li>
+<li><b>1b · branch scopes, opened on demand, released one at a time.</b> A
+cohort opens on either of two routes: the firing rule is itself a product of
+an earlier disintegration (such heads open unconditionally), or some
+disjunct's <i>product template</i> — what the disjunct would contribute once
+split, e.g. an existence disjunct's witness fact with the witness slot marked
+— is already a registered admission demand. Everything else PARKS in a
+rejection buffer keyed by those product templates and wakes by mail the
+moment a matching demand registers, re-running the whole opening decision.
+(A dedicated demand route lets long operator-only rules that fail the regular
+admission gates register such demands, tagged so ordinary witness generation
+never sees them.) An open cohort mints ONLY one branch at creation — the
+admitted disjunct when a demand named it, otherwise the top-ranked one:
+disjuncts are ordered most structurally complicated first, bare equalities
+after, equalities carrying an anchor argument dead last. Each branch scope
+(<code>…_ordis_…</code>, interned by the deposit door from its seed) opens
+with <code>D_i</code> asserted as its seed (delivered through internal mail, so a compound disjunct
+decomposes like any statement); the remaining disjuncts wait in a pending
+queue. The next branch releases only when the live one <i>resolves</i> — it
+derives a goal the prover is trying to prove on that chain, or its asserted
+disjunct is refuted and the branch retires. A resolved branch does not keep
+working: once every goal on its chain is known at the branch or above, the
+end-of-burst freeze sweep <i>freezes</i> it — its scope and every scope below
+it stop feeding request generation, while every fact, bookkeeping row and
+history line stays (nothing is wiped, no goal is erased). And a logic block
+with no goals at all opens, parks and releases no or branch. Demand-gated opening plus one
+live branch per cohort is the explosion protection. The other disjuncts'
+negations are not seeded in <code>_ordis_</code>; the parent-scope rules from
+1a remain inherited. The OR nesting cap (<code>max_or_depth</code>) still
+bounds branch-scope depth; the 1a rules emit at any depth.</li>
+<li><b>0 · one equi form per scope — the or-uniqueness gate.</b> Upstream of
+1a and 1b, at the deposit door itself: when an <code>or&lt;N&gt;</code>
+statement arrives whose equivalence class already has a fully-processed
+representative at that scope — same operator, spellings equal under the same
+canonicalization the deposit door applies — the newcomer stays a
+<i>passive</i> statement. It registers and is multiplied by the equivalence
+classes like any fact, and nothing else happens: no rule emission, no cohort,
+no parking, on every arrival path. Each scope keeps a small ledger of the or
+statements it has fully processed; each entry carries the or's canonical
+spelling next to its original one and is re-keyed whenever an equality
+changes the classes at that scope, so the probe is a single lookup that
+stays correct as the classes grow. Paths that deliberately re-run an or's
+consumption (a parked or's revival, an equivalence-class rewrite of a parked
+or) clear the ledger row first. Two cohorts that opened <i>before</i> their
+spellings became equal are collapsed at the end of the burst: the one with
+the most statements already derived under its branch scopes survives, the
+others stop scheduling and their live branches are wiped — resolved branches
+and all history stay, and anything removed re-derives under the survivor.
+Without this gate, or processing was
+self-feeding: every new equi spelling of one or got the full consumption,
+which minted statements and equalities, which minted more spellings.</li>
 </ul>
 
 <figure>
@@ -493,14 +623,14 @@ form after D-31's broad version exploded.</li>
   <path d="M430 54 L560 84" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#or-ar)"/>
   <rect x="30" y="88" width="320" height="108" rx="9" fill="#1C1F2B" stroke="#5DCAA5"/>
   <text x="190" y="110" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">1a · K mutual-exclusion rules</text>
-  <text x="190" y="131" fill="#F0E8DC" font-size="10" text-anchor="middle">(¬D_others → D_i) at parent scope</text>
-  <text x="190" y="151" fill="#8B8FA5" font-size="9.5" text-anchor="middle">unconditional · always available</text>
+  <text x="190" y="131" fill="#F0E8DC" font-size="10" text-anchor="middle">(¬D_others → D_i) and, K≥3: (¬D_subset → OR of rest)</text>
+  <text x="190" y="151" fill="#8B8FA5" font-size="9.5" text-anchor="middle">unconditional · subset-exclusion heads always park</text>
   <text x="190" y="178" fill="#EF9F27" font-size="9.5" text-anchor="middle">disintegration origin hoisted above the gate</text>
   <rect x="410" y="88" width="320" height="108" rx="9" fill="#1C1F2B" stroke="#B084EB"/>
-  <text x="570" y="110" fill="#B084EB" font-size="12" font-weight="bold" text-anchor="middle">1b · branch scope per D_i</text>
-  <text x="570" y="131" fill="#F0E8DC" font-size="10" text-anchor="middle">D_i asserted in its branch scope</text>
-  <text x="570" y="151" fill="#8B8FA5" font-size="9.5" text-anchor="middle">gated by productOfDisintegration</text>
-  <text x="570" y="178" fill="#8B8FA5" font-size="9.5" text-anchor="middle">each branch then runs on its own</text>
+  <text x="570" y="110" fill="#B084EB" font-size="12" font-weight="bold" text-anchor="middle">1b · branch scopes, demand-gated + sequenced</text>
+  <text x="570" y="131" fill="#F0E8DC" font-size="10" text-anchor="middle">no demand → parked; starter D_i first, rest queued</text>
+  <text x="570" y="151" fill="#8B8FA5" font-size="9.5" text-anchor="middle">next releases when the live branch resolves · resolved → frozen</text>
+  <text x="570" y="178" fill="#8B8FA5" font-size="9.5" text-anchor="middle">equalities last · anchor-arg equalities dead last</text>
 </svg>
 <figcaption><b>One flat cohort, two outputs.</b> Nested OR syntax is recursively
 flattened before either side is emitted. The outer signature keeps the cohort
@@ -560,7 +690,7 @@ cannot cross into an equal signature under another parent.</figcaption>
 <p>Branches recombine in one of two shapes, detected by <code>classifyOrScope</code>:</p>
 <table>
 <tr><th><code>_orint_</code> — one branch proves</th><th><code>_ordis_</code> — all converge</th></tr>
-<tr><td>A single branch proves the goal's head. The proof may already exist at any ancestor of the goal; the shallowest known source supplies levels and provenance without being copied into the branch. The OR is emitted at the exact goal's parent scope — computed by peeling the last <code>_boundary_</code> segment off the goal name (not blindly <code>main</code>). <code>cleanUpOrIntegrationBranches</code> wipes only direct integration children with that exact parent and outer signature; equal signatures under another parent remain live.</td><td>Every branch independently reaches the same <code>C</code>. The cohort is the exact pair <code>(parent, original OR signature)</code>. <code>ordisMerge</code> books each deposit in <code>orBookkeeping[(C, cohort)] → set&lt;branch&gt;</code>; when the count hits <code>orDisjunctCount[cohort]</code>, <code>C</code> is promoted to that parent via <code>sameIterationInternalMail</code> and only the converged copy collapsed. Equal signatures under different parents never share branches; each cohort stays live for further convergences. A branch whose asserted disjunct is refuted at an ancestor is a dead branch — everything it derives is ex falso — and is retired at the end of the burst: subtree wiped, its entry dropped from every booked run, the cohort count reduced, and convergence re-checked over the survivors. A convergence of the shrunk cohort still accounts for every branch in the exported proof: each retired branch contributes its refutation as a reductio ingredient instead of a branch derivation, and the verifier checks both forms.</td></tr>
+<tr><td>A single branch proves the goal's head. The proof may already exist at any ancestor of the goal; the shallowest known source supplies levels and provenance without being copied into the branch. The OR is emitted at the exact goal's parent scope — computed by peeling the last <code>_boundary_</code> segment off the goal name (not blindly <code>main</code>). <code>cleanUpOrIntegrationBranches</code> wipes only direct integration children with that exact parent and outer signature; equal signatures under another parent remain live.</td><td>Every branch independently reaches the same <code>C</code>. The cohort is the exact pair <code>(parent, original OR signature)</code>. <code>ordisMerge</code> books each deposit in <code>orBookkeeping[(C, cohort)] → set&lt;branch&gt;</code>; when the count hits <code>orDisjunctCount[cohort]</code>, <code>C</code> is promoted to that parent via <code>sameIterationInternalMail</code> and only the converged copy collapsed. Equal signatures under different parents never share branches; each cohort stays live for further convergences. A branch whose asserted disjunct is refuted at an ancestor is a dead branch — everything it derives is ex falso — and is retired at the end of the burst: subtree wiped, its entry dropped from every booked run, the cohort count reduced, and convergence re-checked over the survivors. The equivalence-class machinery consults the same refutation evidence up front: a changed class living at or below a refuted branch is skipped rather than back-applied across the statement registry, since every rewrite it would produce dies with the branch in the same burst. A convergence of the shrunk cohort still accounts for every branch in the exported proof: each retired branch contributes its refutation as a reductio ingredient instead of a branch derivation, and the verifier checks both forms.</td></tr>
 </table>
 
 <h3 id="branch-contra">4.4.3 &nbsp;Full contradiction discharge</h3>
@@ -627,7 +757,7 @@ them.
   <path d="M270 102 L322 84" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ot-ar)"/>
   <rect x="324" y="52" width="180" height="46" rx="9" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/><text x="414" y="73" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">constructOrTheorem</text><text x="414" y="90" fill="#8B8FA5" font-size="9" text-anchor="middle">head = or&lt;N&gt;[args]</text>
   <path d="M504 75 L548 75" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ot-ar)"/>
-  <rect x="548" y="52" width="190" height="46" rx="9" fill="#262938" stroke="#5DCAA5"/><text x="643" y="73" fill="#F0E8DC" font-size="10.5" text-anchor="middle">OR kept · parents</text><text x="643" y="90" fill="#8B8FA5" font-size="9" text-anchor="middle">compressed out · dedup (D-55)</text>
+  <rect x="548" y="52" width="190" height="46" rx="9" fill="#262938" stroke="#5DCAA5"/><text x="643" y="73" fill="#F0E8DC" font-size="10.5" text-anchor="middle">OR kept · parents</text><text x="643" y="90" fill="#8B8FA5" font-size="9" text-anchor="middle">compressed out · dedup</text>
   <text x="380" y="140" fill="#8B8FA5" font-size="11" text-anchor="middle">Parents survive only as compressed-out artefacts — recoverable from the OR.</text>
 </svg>
 <figcaption><b>Constructed, not proved.</b> Assembled from the pair the prover
@@ -665,9 +795,9 @@ induction sound over the naturals.</figcaption>
 </figure>
 
 <!-- ===================== 4.6 ===================== -->
-<h2 id="fan5">4.6 &nbsp;The 5-batch fan-out, in depth</h2>
+<h2 id="fan5">4.6 &nbsp;The request-generation fan-out, in depth</h2>
 <p>
-Substrate §3.2.4 lists the five request-generation batches in summary. This
+Substrate §3.2.4 lists the request-generation batches in summary. This
 section walks each one with the question it answers and the concrete pool it
 draws from. Reading this end-to-end is the single biggest win for
 understanding what one cycle actually does inside a logic block.
@@ -676,56 +806,46 @@ understanding what one cycle actually does inside a logic block.
 <table>
 <tr><th>#</th><th>Question the batch answers</th><th>Rule pool</th><th>Mandatory-fact source</th></tr>
 <tr><td>1</td><td>“Did the rules I already know fire against the facts I already know?”</td><td><code>workingMemory</code> — rules recovered from external mail this burst; emptied and refilled every burst.</td><td>This LB's full local facts (cumulative).</td></tr>
-<tr><td>2</td><td>“Did the rules I already know fire against the facts I just produced this cycle?”</td><td><code>overallHashMemory</code> — rules inherited from ancestors plus everything this LB has ever installed.</td><td><code>localEncodedStatementsDelta</code> — this cycle's new facts only.</td></tr>
-<tr><td>3</td><td>“Did any pair-shaped rule fire on a mix of my facts and mail?”</td><td>Pair-matching rules (two-premise hash chains).</td><td>Cartesian: local facts × incoming mail.</td></tr>
+<tr><td>2+3</td><td>“Did the rules I already know fire on anything new this cycle — a fact I just produced, or a fact the mail brought that meets one of mine?”</td><td><code>overallHashMemory</code> — rules inherited from ancestors plus everything this LB has ever installed.</td><td>Two demands, either of which admits a request: this cycle's new local facts, <b>or</b> an incoming mail fact together with a local one.</td></tr>
 <tr><td>4</td><td>“Did the rules I own (not ancestral) fire on every fact the mail brought, broadly?”</td><td>This LB's local rules (<code>localHashMemory</code>).</td><td>All mail at <code>v=main</code>, with the locality gate <i>relaxed</i> — the rule is allowed to fire even if no local fact is among the matched premises.</td></tr>
 <tr><td>5</td><td>“Did the rules I just installed this cycle fire on every visible fact, broadly?”</td><td>Fresh local rules: <code>localHashMemoryDelta</code>.</td><td>Every visible fact — full Cartesian over the cumulative local + visible-ancestor facts, again with the locality gate relaxed.</td></tr>
 </table>
 
 <figure>
-<svg viewBox="0 0 760 280" role="img" aria-label="The 5 batches as a 2-D matrix: rule-pool freshness × fact-pool freshness">
+<svg viewBox="0 0 760 230" role="img" aria-label="The request-generation calls as a 2-D matrix: rule-pool freshness by fact-pool freshness">
   <defs><marker id="fn-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
   <text x="380" y="22" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">rule pool ↓ &nbsp;×&nbsp; fact pool →</text>
 
-  <line x1="170" y1="40" x2="170" y2="260" stroke="#3A3D4A"/>
+  <line x1="170" y1="40" x2="170" y2="200" stroke="#3A3D4A"/>
   <line x1="170" y1="60" x2="740" y2="60" stroke="#3A3D4A"/>
 
   <text x="100" y="100" fill="#8B8FA5" font-size="11">working / overall</text>
   <text x="100" y="160" fill="#8B8FA5" font-size="11">local + delta</text>
-  <text x="100" y="220" fill="#8B8FA5" font-size="11">pair matches</text>
 
   <text x="270" y="50" fill="#8B8FA5" font-size="11" text-anchor="middle">cumulative local facts</text>
-  <text x="450" y="50" fill="#8B8FA5" font-size="11" text-anchor="middle">delta local facts</text>
-  <text x="630" y="50" fill="#8B8FA5" font-size="11" text-anchor="middle">all visible / mail</text>
+  <text x="540" y="50" fill="#8B8FA5" font-size="11" text-anchor="middle">anything new this cycle</text>
 
   <rect x="190" y="76" width="158" height="46" rx="6" fill="#262938" stroke="#5DCAA5"/>
   <text x="269" y="98" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">1</text>
   <text x="269" y="114" fill="#8B8FA5" font-size="9" text-anchor="middle">working × local</text>
 
-  <rect x="370" y="76" width="158" height="46" rx="6" fill="#262938" stroke="#5DCAA5"/>
-  <text x="449" y="98" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">2</text>
-  <text x="449" y="114" fill="#8B8FA5" font-size="9" text-anchor="middle">overall × delta</text>
-
-  <rect x="550" y="76" width="180" height="46" rx="6" fill="#1C1F2B" stroke="#3A3D4A"/>
-  <text x="640" y="98" fill="#8B8FA5" font-size="11" text-anchor="middle">— (no entry)</text>
+  <rect x="370" y="76" width="360" height="46" rx="6" fill="#262938" stroke="#B084EB" stroke-width="2"/>
+  <text x="550" y="98" fill="#B084EB" font-size="12" font-weight="bold" text-anchor="middle">2 + 3 — one search, two demands</text>
+  <text x="550" y="114" fill="#8B8FA5" font-size="9" text-anchor="middle">overall × (new local fact, or mail fact meeting a local one)</text>
 
   <rect x="190" y="136" width="158" height="46" rx="6" fill="#1C1F2B" stroke="#3A3D4A"/>
-  <text x="269" y="158" fill="#8B8FA5" font-size="11" text-anchor="middle">— (no entry)</text>
+  <text x="269" y="162" fill="#8B8FA5" font-size="11" text-anchor="middle">— (no entry)</text>
 
-  <rect x="370" y="136" width="158" height="46" rx="6" fill="#1C1F2B" stroke="#3A3D4A"/>
-  <text x="449" y="158" fill="#8B8FA5" font-size="11" text-anchor="middle">— (no entry)</text>
-
-  <rect x="550" y="136" width="180" height="46" rx="6" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
-  <text x="640" y="158" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">4 &amp; 5</text>
-  <text x="640" y="174" fill="#8B8FA5" font-size="9" text-anchor="middle">broad locality gate off</text>
-
-  <rect x="190" y="196" width="540" height="46" rx="6" fill="#262938" stroke="#B084EB"/>
-  <text x="460" y="218" fill="#B084EB" font-size="12" font-weight="bold" text-anchor="middle">3 — pair matches across local × mail</text>
-  <text x="460" y="234" fill="#8B8FA5" font-size="9" text-anchor="middle">special-cased: pair-shaped rules need two premises in one fire</text>
+  <rect x="370" y="136" width="360" height="46" rx="6" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="550" y="158" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">4 &amp; 5</text>
+  <text x="550" y="174" fill="#8B8FA5" font-size="9" text-anchor="middle">broad — locality gate off</text>
 </svg>
-<figcaption><b>One block, five passes per cycle.</b> Batches 1–2 are tight
-(local-locality gate on); batches 4–5 are broad (gate off) so newly-mailed
-facts and freshly-installed rules can meet without waiting a cycle.</figcaption>
+<figcaption><b>One block, four passes per cycle.</b> Batch&nbsp;1 and the folded
+2+3 keep the local-locality gate on; batches 4–5 are broad (gate off) so
+newly-mailed facts and freshly-installed rules can meet without waiting a cycle.
+The folded call is one search over one fact universe: rather than pairing every
+candidate against every mandatory fact, it grows each candidate to a full rule
+match and then asks whether one of the two demands is inside it.</figcaption>
 </figure>
 
 <h3>4.6.1 &nbsp;Why batches 4 and 5 widen the gate</h3>

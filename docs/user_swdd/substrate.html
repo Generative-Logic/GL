@@ -38,6 +38,7 @@ User-oriented SwDD — Chapter 3: The substrate (reference-level).
       <ul>
         <li><a href="prover.html#life">Life of a run</a></li>
         <li><a href="prover.html#cycles">Cycles</a></li>
+        <li><a href="prover.html#cuda-filter-classes">CUDA filter classes</a></li>
         <li><a href="prover.html#enter">How a theorem enters</a></li>
         <li><a href="prover.html#status">Status modes</a></li>
         <li><a href="prover.html#deactivate">Deactivation cascade</a></li>
@@ -62,7 +63,7 @@ User-oriented SwDD — Chapter 3: The substrate (reference-level).
         <li><a href="mechanisms.html#integ">Integration</a></li>
         <li><a href="mechanisms.html#branch">Branching &amp; contradiction</a></li>
         <li><a href="mechanisms.html#induct">Induction</a></li>
-        <li><a href="mechanisms.html#fan5">5-batch fan-out</a></li>
+        <li><a href="mechanisms.html#fan5">Request-generation fan-out</a></li>
         <li><a href="mechanisms.html#cascade">Pending-rejection cascade</a></li>
       </ul>
     </li>
@@ -85,6 +86,7 @@ User-oriented SwDD — Chapter 3: The substrate (reference-level).
         <li><a href="memory.html#aggregate">LbMemory — the aggregate</a></li>
         <li><a href="memory.html#deload">Deload / reload</a></li>
         <li><a href="memory.html#scope">Scope</a></li>
+        <li><a href="memory.html#strings">String statification</a></li>
       </ul>
     </li>
     <li><a href="provenance.html">Provenance</a>
@@ -161,7 +163,7 @@ scope a fact is true in, and the compilation that makes hashing canonical.</p>
     <li><a href="#lb">3.1 &nbsp;Logic blocks</a>
       <ol><li><a href="#lb-tree">The block tree</a></li><li><a href="#lb-inside">Inside one block — the <code>Memory</code> fields</a></li><li><a href="#lb-life">Lifecycle &amp; per-core batching</a></li></ol></li>
     <li><a href="#hash">3.2 &nbsp;Hash engine</a>
-      <ol><li><a href="#hash-idea">Inference is a memory lookup</a></li><li><a href="#hash-store">The rule store — <code>HashMemory</code> &amp; <code>LocalMemoryValue</code></a></li><li><a href="#hash-cycle">The query-fire cycle</a></li><li><a href="#hash-local">A local rule, non-local facts — the 5-batch fan-out</a></li></ol></li>
+      <ol><li><a href="#hash-idea">Inference is a memory lookup</a></li><li><a href="#hash-store">The rule store — <code>HashMemory</code> &amp; <code>LocalMemoryValue</code></a></li><li><a href="#hash-cycle">The query-fire cycle</a></li><li><a href="#hash-local">A local rule, non-local facts — the request-generation fan-out</a></li></ol></li>
     <li><a href="#mail">3.3 &nbsp;Mail</a>
       <ol><li><a href="#mail-proto">The cycle-boundary protocol</a></li><li><a href="#mail-chan">The two channels</a></li><li><a href="#mail-gate">Main-only gate &amp; deferred collectors</a></li></ol></li>
     <li><a href="#scope">3.4 &nbsp;Scope &amp; validity</a>
@@ -303,10 +305,13 @@ Around it sit the admission and rejection maps (the subject of
 <tr><td><code>admissionMap</code></td><td>algebra admission template — <b><code>u_</code>-prefixed</b>. Consulted by <code>isAdmitted</code>.</td></tr>
 <tr><td><code>admissionMapIntegration</code></td><td>integration-side template — <b><code>u_</code>-prefixed</b>. Consulted by <code>isAdmittedIntegration</code>.</td></tr>
 <tr><td><code>admissionSetIntegration</code></td><td>secondary integration admission — <b>bare concrete, <code>repl_</code> preserved</b>. Pass&nbsp;B <code>int_</code> fallback.</td></tr>
-<tr><td><code>rejectedMap</code></td><td><code>it_</code> rejections — <b>bare concrete</b>. Revived by <code>revisitRejected2</code>.</td></tr>
-<tr><td><code>rejectedMapIntegration</code></td><td><code>int_</code> rejections — <b>bare concrete</b>. Revived by <code>revisitRejectedIntegration2</code>; rewritten by the equi-class helper.</td></tr>
+<tr><td><code>rejectedMap</code></td><td><code>it_</code> rejections — <b>bare concrete</b>. Revived by <code>revisitRejected2</code>: a park at the key's own scope is erased and revived there; a park at a strict <i>ancestor</i> of the key's scope is released into the key's scope and kept. An equi-class rewrite re-keys an undemanded park in place under its new key and mails only a demanded one.</td></tr>
+<tr><td><code>rejectedMapIntegration</code></td><td><code>int_</code> rejections — <b>bare concrete</b>. Revived by <code>revisitRejectedIntegration2</code> (same exact-scope / ancestor-scope rule); an equi-class rewrite re-keys an undemanded park in place under its new key and mails only a demanded one.</td></tr>
 <tr><td><code>varsInRejectedMapIntegrationKeys</code></td><td>monotonic cache of args appearing in any rmi key — fast class-overlap short-circuit (never shrinks).</td></tr>
-<tr><td><code>normalizedEncodedKeys</code> (+ subkey indices)</td><td>active key → owner-set of <code>(impl, scope)</code> — refcount-by-owner existence check; a key drops only when its owner-set empties.</td></tr>
+<tr><td><code>normalizedEncodedKeys</code></td><td>whole key → the list of the rules that installed it. Says a candidate is a complete request, by key presence alone (the owner list is never read on the hot path); a rule's removal deletes its owner, an owner-less key is erased at the end of the class apply; never scope-wiped (a stale key's request is skipped at the firing site).</td></tr>
+<tr><td><code>normalizedEncodedSubkeys</code></td><td>growable prefix → the growth probe's data (presence only below three premises, the owners' u_ signatures from three on) followed by the (owner, signature) pairs; a rule's removal deletes its owner and an orphaned signature, an owner-less subkey is erased; never scope-wiped (a stale subkey is a harmless over-approximation the whole-key check corrects). Says a candidate may still be extended.</td></tr>
+<tr><td><code>remainingArgsOwners</code> · <code>originals</code></td><td>the owner lists of the remaining-args edges and of the implication chains — the same rule: one owner per installing rule, removal deletes one owner, empty deletes the entry.</td></tr>
+<tr><td><code>copyOwners</code></td><td>the rules behind each multiplication copy: when multiplication is on, a rule installs one copy per surviving variable partition and two rules can share a copy text, so the index owner is the copy and this list says which rules still need it — a copy leaves with its last rule.</td></tr>
 </table>
 <table>
 <tr><th><code>LocalMemoryValue</code> field</th><th>Role</th></tr>
@@ -317,12 +322,54 @@ Around it sit the admission and rejection maps (the subject of
 <tr><td><code>validityName</code></td><td>the scope this rule is active in</td></tr>
 <tr><td><code>productOfDisintegration</code></td><td>true iff a premise has a <code>u_</code> arg; gates OR-disintegration. Stamped on <i>head</i> LMVs only.</td></tr>
 </table>
+<div class="note"><b>Installs are staged, maps are rewritten once.</b> A rule install
+produces hundreds of index records per copy (one per premise permutation and prefix).
+They are not written into the cold maps one by one — each in-place write would move
+the map's whole tail — but staged in a per-worker scratch structure for the
+duration of an absorb window (the mail absorbs, the equivalence-class apply, or a
+single seeding install). At the window's close every touched map is rebuilt once in
+key order with the staged records merged into their runs; the resulting bytes are
+exactly what the one-by-one writes would have produced, so nothing downstream sees a
+difference, and the scratch returns to the worker's free pages at the close. Every
+reader seam asserts the staging is empty. In the incubator, an external-mail rule reaches
+the overall and the per-burst working instance from one key build, every record staged
+to both.</div>
 <div class="note"><b>Two insert sites, one map.</b> <code>addToHashMemory</code> writes a
 <b>head-implication LMV</b> (fires when the chain hash-matches; full provenance) and,
-via <code>makeNormalizedKeysForAdmission</code>, a <b>marker LMV</b> (the premise with
-its output arg replaced by the literal <code>"marker"</code>; fires only during the
-Pass&nbsp;B <code>int_</code> admission probe; provenance fields empty). Any new LMV
-field must pick a site deliberately.</div>
+via <code>makeNormalizedKeysForAdmission</code>, a <b>derivative LMV</b> capable of
+firing when one non-anchor premise is missing. An anchored actual rule keeps its
+anchor in every derivative key; the anchor is context and is never selected as
+missing. Regular, OR-demand, and compound-demand eligibility still counts and
+qualifies only the same non-anchor premises as before.</div>
+
+<figure>
+<svg viewBox="0 0 760 210" role="img" aria-label="An anchored actual rule retains its anchor when extracting a derivative admission key">
+  <defs><marker id="anchor-key-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="14" y="25" width="240" height="82" rx="8" fill="#262938" stroke="#5DCAA5"/>
+  <text x="134" y="45" fill="#5DCAA5" font-size="11.5" font-weight="bold" text-anchor="middle">actual anchored rule</text>
+  <text x="134" y="66" fill="#F0E8DC" font-size="10" text-anchor="middle">AnchorFTA[1,…,8] + guard +</text>
+  <text x="134" y="83" fill="#F0E8DC" font-size="10" text-anchor="middle">preorder[1,4,6,9] + missing premise</text>
+  <text x="134" y="99" fill="#8B8FA5" font-size="9" text-anchor="middle">select one non-anchor premise as missing</text>
+  <path d="M254 66 L290 66" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#anchor-key-ar)"/>
+  <rect x="290" y="25" width="210" height="82" rx="8" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="395" y="45" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">derivative key</text>
+  <text x="395" y="66" fill="#F0E8DC" font-size="10" text-anchor="middle">AnchorFTA[1,…,8] + guard +</text>
+  <text x="395" y="83" fill="#F0E8DC" font-size="10" text-anchor="middle">preorder[1,4,6,9]</text>
+  <text x="395" y="99" fill="#8B8FA5" font-size="9" text-anchor="middle">normalize the complete retained key</text>
+  <path d="M500 66 L536 66" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#anchor-key-ar)"/>
+  <rect x="536" y="25" width="210" height="82" rx="8" fill="#262938" stroke="#B084EB"/>
+  <text x="641" y="45" fill="#B084EB" font-size="11.5" font-weight="bold" text-anchor="middle">slot relationship survives</text>
+  <text x="641" y="66" fill="#5DCAA5" font-size="10" text-anchor="middle">…preorder[1,4,6,9] ✓</text>
+  <text x="641" y="84" fill="#E879F9" font-size="10" text-anchor="middle">…preorder[1,4,2,9] ≠</text>
+  <text x="641" y="99" fill="#8B8FA5" font-size="9" text-anchor="middle">slot 6 cannot silently become slot 2</text>
+  <text x="380" y="145" fill="#F0E8DC" font-size="11" text-anchor="middle">Normalization itself is unchanged: it preserves equality classes and accepts consistent alpha-renaming.</text>
+  <text x="380" y="166" fill="#8B8FA5" font-size="10.5" text-anchor="middle">Without the retained anchor, the two preorder forms have the same one-expression normalized shape.</text>
+  <text x="380" y="187" fill="#8B8FA5" font-size="10.5" text-anchor="middle">The anchor supplies the missing positional context; no literal pinning or special request normalization is needed.</text>
+</svg>
+<figcaption><b>Retain context, then normalize normally.</b> The anchor makes an
+anchor-slot substitution observable in the hash key while ordinary variable
+renaming remains invisible.</figcaption>
+</figure>
 
 <h3 id="hash-cycle">3.2.3 &nbsp;The query-fire cycle</h3>
 <p>Per block, per cycle, inside the elementary step (the phase-2 hashburst):</p>
@@ -348,22 +395,27 @@ field must pick a site deliberately.</div>
 fresh-variable gate; step&nbsp;6 is the only exit from the block.</figcaption>
 </figure>
 
-<h3 id="hash-local">3.2.4 &nbsp;A local rule, non-local facts — the 5-batch fan-out</h3>
+<h3 id="hash-local">3.2.4 &nbsp;A local rule, non-local facts — the request-generation fan-out</h3>
 <p>
 A rule a block owns may fire on facts it does not own (inherited from an ancestor
-scope) — correct, not a leak. Request generation fans out over five batches pairing
-a rule pool with a mandatory-fact source; batches&nbsp;4&nbsp;and&nbsp;5 are
-deliberately <i>broad</i> so a freshly-installed rule still meets every visible fact,
-not only this cycle's.
+scope) — correct, not a leak. Request generation fans out over four calls pairing
+a rule pool with the fact a request has to be new because of. Each call builds a
+whole request first and only then checks that the fact is inside it. The one call
+that reads the overall rule pool covers two such demands at once, because both
+draw on the same facts and differ only in what they demand a request carry.
 </p>
 <table>
 <tr><th>#</th><th>Rule pool</th><th>Mandatory facts from</th><th>Local?</th></tr>
 <tr><td>1</td><td>mail-recovered rules</td><td>this block's local facts</td><td>✓</td></tr>
-<tr><td>2</td><td>overall rules</td><td>this cycle's new local facts</td><td>✓ delta</td></tr>
-<tr><td>3</td><td>pair matches</td><td>local × mail pairs</td><td>mixed</td></tr>
+<tr><td>2+3</td><td>overall rules</td><td>this cycle's new local facts, <b>or</b> incoming mail together with a local fact</td><td>mixed</td></tr>
 <tr><td>4</td><td>local rules</td><td><b>incoming mail (broad, v=main)</b></td><td>✗</td></tr>
-<tr><td>5</td><td>fresh local rules</td><td><b>all visible facts (broad)</b></td><td>✗</td></tr>
+<tr><td>5</td><td>fresh local rules</td><td><b>nothing is mandatory</b></td><td>✗</td></tr>
 </table>
+<p>
+Batch&nbsp;5 is the one that demands nothing. There the <i>rule</i> is what is new,
+and a rule installed this cycle has to meet every visible fact rather than only the
+facts that arrived with it — so every complete request over that pool is generated.
+</p>
 
 <!-- ===================== 3.3 MAIL ===================== -->
 <h2 id="mail">3.3 &nbsp;Mail</h2>
@@ -396,6 +448,24 @@ anything another LB produced in cycle N.</b> Storing each emission once — inst
 copying it into every descendant's inbox — is the point: the per-cycle staging storage
 drops from O(descendants) to O(1) (the retired push routing <code>sendMail</code> /
 per-core <code>boxes</code> / <code>smashMail</code> is deleted).
+</p>
+<p>
+<b>Incubator batches read the root's log with one block only.</b> Every incubator
+conjecture starts with the anchor premise, so the root sentinel has a single child
+— the anchor block, which holds every conjecture goal — and the incubator's own
+theorem rules are <i>anchor → head</i>: the anchor block fires them and mails the
+heads down. A block below the anchor therefore registers its mail ancestors only up
+to the anchor block, never the root, and the root's log (the in-run rule compacts
+and the theorems loaded from earlier incubator batches) is pulled by the anchor
+block alone. A nested incubator theorem whose rule needs a premise held only
+below the anchor is stored in the anchor block's log as well, so the premise
+blocks receive it. The externally provided pool lemmas are multi-premise and fire in the
+premise blocks below the anchor, so their seed batch is stored in the anchor
+block's log instead — every block below the anchor still receives them. The
+anchor block also relays the <i>history</i> of what it absorbs from the root's
+log (the compacts' compilation rows, the theorem rows) into its own outbox, so
+a block below it can still close every citation chain in its chapter; only the
+rule statements stop at the anchor.
 </p>
 
 <h3 id="mail-chan">3.3.2 &nbsp;The two channels</h3>
@@ -628,7 +698,7 @@ first-seen body. The <code>compilation</code> origin row's antecedent must
 therefore cite the canonical body via
 <code>reconstructImplicationFullBind(elements[:−1], elements[−1])</code>, not the
 raw expanded form the producer happened to queue — otherwise verifier
-chapter-citations would not match the binary's recorded shape (I-52).</li>
+chapter-citations would not match the binary's recorded shape.</li>
 <li><b>No defensive fallback.</b> An enqueued implication that fails to compact
 <i>asserts</i> at its origin; it never returns an empty/sentinel string. The
 prover treats every unexpected state as a bug to surface at its source, not a
@@ -637,10 +707,12 @@ of another compiled expression” invariant was retired by explicit decision —
 a nested implication is now a recursion-stop leaf, not an assert.</li>
 <li><b>Empty levels at deposit.</b> Every <code>Mail::statements</code> entry
 shipping a recovered rule deposits with an <i>empty</i> <code>std::set&lt;int&gt;</code>
-for the level set (I-51). A non-empty deposit silently breaks the
-<code>allLevelsInvolved</code> discharge gate at the receiver, suppressing the
-rule until levels overflow — a class of bug that surfaces as a contradiction-LB
-latency hang far away from the wrong deposit site.</li>
+for the level set. A non-empty deposit silently breaks the
+<code>allLevelsInvolved</code> registration verdict at the receiver — the goal
+still closes (goal lifecycle is level-free; only adding the theorem to the
+global proved list is level-gated), but the theorem is silently lost — a class
+of bug that surfaces as a missing theorem far away from the wrong deposit
+site.</li>
 </ul>
 
 <div class="key">
@@ -672,17 +744,19 @@ receiver's recovered rule.
   <rect x="558" y="58" width="180" height="60" rx="9" fill="#262938" stroke="#E879F9"/>
   <text x="648" y="80" fill="#E879F9" font-size="11" font-weight="bold" text-anchor="middle">(implication&lt;N&gt;[…])</text>
   <text x="648" y="98" fill="#8B8FA5" font-size="9" text-anchor="middle">+ compilation origin, v=main</text>
+  <text x="648" y="134" fill="#8B8FA5" font-size="9" text-anchor="middle">incubator batch: read by the anchor block only</text>
   <text x="380" y="156" fill="#8B8FA5" font-size="11" text-anchor="middle">Deferral is the determinism fix — the compile mutates global name state, so it runs after the join, sorted.</text>
 </svg>
 <figcaption><b>Compaction is deferred on purpose.</b> It is documentation prep, not
-inference — and doing it inline broke determinism.</figcaption>
+inference — and doing it inline broke determinism. The compact lands in the root's
+log; in an incubator batch that log is read by the anchor block only.</figcaption>
 </figure>
 
 <!-- ===================== 3.6 ===================== -->
 <h2 id="delta">3.6 &nbsp;Delta machinery — what one cycle added</h2>
 <p>
 Several mechanisms need to know, at the end of a cycle, <i>what changed</i>
-during that cycle — not the cumulative state. The 5-batch fan-out
+during that cycle — not the cumulative state. The request-generation fan-out
 (§<a href="#hash-local">3.2.4</a>) uses it to feed fresh local rules against
 fresh local facts; the deferred compaction queue uses it to know what
 implications need compact-form atoms; the chapter walker uses it for goal
@@ -730,7 +804,7 @@ every emission; only the delta is cleared.</figcaption>
 </figure>
 
 <div class="key">
-<b>The delta is what makes the 5-batch fan-out fast.</b> Without it, every
+<b>The delta is what makes the fan-out fast.</b> Without it, every
 cycle would have to scan the full cumulative store to find “rules installed
 since last cycle” — quadratic over a long run. With it, batches 2 and 5
 walk a vector of length equal to the cycle's emissions, typically a handful
@@ -753,19 +827,26 @@ into <code>pendingWipeScopes</code>; the burst boundary drains the queue and
 runs <code>wipeSubtree</code> once per queued entry. This is <b>I-50</b>.
 </p>
 <p>
-A <b>disproof</b> feeds the same queue from outside: when a primed
-contradiction block proves the negation of a parent goal, the theorem drain
-deposits the seed on the parent's disproved-goal inbox
+A <b>settled goal</b> feeds the same queue from outside: when a primed
+contradiction block emits a theorem, the theorem drain deposits its seed on
+the parent's settled-goal inbox
 (<code>pendingDisprovedGoals</code>, never-deloaded persistent memory, so the
 deposit works even while the parent is evicted). At the parent's next burst
 boundary, <code>drainDisprovedGoals</code> probes the seed against the
-parent's main goals; on a hit it erases the dead goal, queues every scope
-whose payload names that goal (the <code>&lt;goal&gt;_subproof_</code> and
+parent's main goals in both directions. A <b>disproof</b> hit (the seed
+itself is a goal) erases the dead goal, queues every scope whose payload
+names that goal (the <code>&lt;goal&gt;_subproof_</code> and
 hypothetical-disintegration shapes) for the subtree wipe, and additionally
 clears what a scope wipe cannot reach — the goal's preparation gates, its
 origin-history rows, orphaned internal-mail origins, and OR cohorts whose
-parent scope died. A miss is the benign twin case (the reductio twin proved
-the goal instead) and does nothing.
+parent scope died. A <b>proof</b> hit (the seed's negation is a goal — the
+emitted theorem's head is exactly that goal, so the reductio twin proved it)
+closes the goal the way an ordinary success does: the goal row is erased and
+its scopes queue for the wipe, but history, gates, and cohorts all stay —
+a proved goal's record is kept like any proved statement's. This proof-side
+closure is what releases a goal's block chain when the proof lives entirely
+inside a contradiction scope and the level-gated local discharge can never
+fire. A double miss (the goal already closed) does nothing.
 </p>
 
 <figure>

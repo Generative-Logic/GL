@@ -44,6 +44,8 @@
 #  endif
 #  include <windows.h>
 #  include <crtdbg.h>
+#  include <dbghelp.h>
+#  pragma comment(lib, "dbghelp.lib")
 #endif
 #ifdef USE_MIMALLOC
 #include <mimalloc.h>
@@ -51,14 +53,70 @@
 #include "run_modes.hpp"
 #include "conjecturer.hpp"
 #include "prover.hpp"
+#include "infra/rt_tracker.hpp"
+#include "infra/mem_tracker.hpp"
 #include "memory_infra/global_memory_manager.hpp"
 #include "tests/test_harness.hpp"
 
 namespace {
 
+#ifdef _WIN32
+/// @brief Write a full-memory minidump of the current process to
+///        `.debug/crashdumps/` on `SIGABRT` (an assert firing).
+///
+/// @details
+/// The LocalDumps registry policy captures dumps only for crashes that
+/// traverse Windows Error Reporting; the release CRT's `assert -> abort`
+/// terminates without reaching that hook (no `.dmp` despite
+/// `_CALL_REPORTFAULT`). This handler runs ON the aborting thread, so
+/// `MiniDumpWriteDump` records the exact faulting stack. It is
+/// re-entrancy-guarded, best-effort by design (a diagnostic writer must
+/// never mask the abort — the process still dies with the original
+/// signal), and permanent general crash plumbing: every assert, every
+/// batch (maintainer directive).
+///
+/// @param signalNumber The signal that fired (always `SIGABRT` here;
+///                     required by the `signal` handler signature).
+void writeAbortMinidump(int signalNumber) {
+    (void)signalNumber;
+    static volatile long alreadyDumping = 0;
+    if (InterlockedExchange(&alreadyDumping, 1) != 0) return;
+    // Flush every open stream first so buffered diagnostics (Rule-31 trap
+    // files, the run logs) survive the abort.
+    std::fflush(nullptr);
+    CreateDirectoryA(".debug", nullptr);
+    CreateDirectoryA(".debug\\crashdumps", nullptr);
+    char path[MAX_PATH];
+    std::snprintf(path, sizeof(path),
+                  ".debug\\crashdumps\\gl_quick_abort_%lu.dmp",
+                  static_cast<unsigned long>(GetCurrentProcessId()));
+    const HANDLE file = CreateFileA(path, GENERIC_WRITE, 0, nullptr,
+                                    CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,
+                                    nullptr);
+    if (file != INVALID_HANDLE_VALUE) {
+        MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), file,
+                          MiniDumpWithFullMemory, nullptr, nullptr, nullptr);
+        CloseHandle(file);
+    }
+}
+#endif
+
 } // namespace
 
 int main(int argc, char* argv[]) {
+#ifdef _WIN32
+    // Route assert/abort through Windows Error Reporting so the LocalDumps
+    // registry policy captures a full .dmp with the faulting stack (an
+    // abort otherwise fast-fails past WER and leaves only the text trace).
+    // Permanent diagnostic setting (maintainer directive): no abort message
+    // box, always report.
+    _set_abort_behavior(0, _WRITE_ABORT_MSG);
+    _set_abort_behavior(_CALL_REPORTFAULT, _CALL_REPORTFAULT);
+    // Self-written minidump on assert/abort: the LocalDumps policy misses
+    // the CRT abort path, so the SIGABRT handler writes the full dump itself
+    // with the faulting stack.
+    std::signal(SIGABRT, writeAbortMinidump);
+#endif
     // Whether this invocation is the --unit-tests gate. Suppresses the
     // mimalloc banner below so the console-summary contract documented
     // in `docs/agentic_swdd/_meta/testing.md` ("one line on success: N/N Unit tests
@@ -228,8 +286,59 @@ int main(int argc, char* argv[]) {
     // Default to IncubatorPeano for MSVS F5 debugging; full_run passes "Peano"/"Gauss" via argv
     std::string anchor_id = (argc > 1) ? std::string(argv[1]) : "Gauss";
 
+    // Optional batch-path file overrides (shortcut mode):
+    //   gl_quick.exe <Tag> [--conjectures-file <path>] [--externals-file <path>]
+    // --conjectures-file replaces the conjecture-list file, --externals-file
+    // the file external theorems are loaded from. Relative paths resolve
+    // against the project root inside fullRun. Anything else after the tag
+    // is a caller bug and asserts.
+    std::string conjecturesFile;
+    std::string externalsFile;
+    std::string phase2Backend;
+    bool phase2BackendSeen = false;
+    for (int i = 2; i < argc; ++i) {
+        const bool isConjectures =
+            std::strcmp(argv[i], "--conjectures-file") == 0;
+        const bool isExternals =
+            std::strcmp(argv[i], "--externals-file") == 0;
+        const bool isPhase2Backend =
+            std::strcmp(argv[i], "--phase2-backend") == 0;
+        assert((isConjectures || isExternals || isPhase2Backend)
+               && "unknown argument after the batch tag");
+        assert(i + 1 < argc && "batch-path flag missing its <path> value");
+        if (isConjectures) {
+            conjecturesFile = argv[++i];
+        } else if (isExternals) {
+            externalsFile = argv[++i];
+        } else {
+            assert(!phase2BackendSeen
+                   && "--phase2-backend must be supplied at most once");
+            phase2BackendSeen = true;
+            phase2Backend = argv[++i];
+            assert((phase2Backend == "cpu" || phase2Backend == "cuda")
+                   && "--phase2-backend requires cpu or cuda");
+        }
+    }
+
     // run_modes::quickRun();
-    run_modes::fullRun(anchor_id);
+    run_modes::fullRun(
+        anchor_id, conjecturesFile, externalsFile, phase2Backend);
+
+#if RT_MEASUREMENT
+    // Cross-burst RT aggregate for this batch process (one batch per
+    // gl_quick invocation). Trigger-independent — every burst's sections
+    // are folded in at tracker destruction; this writes the summary once
+    // at end of batch.
+    gl::rt_tracker::dumpRtAggregate(".rt/_aggregate_" + anchor_id + ".log");
+#endif
+
+#if MEM_MEASUREMENT
+    // Per-structure memory table for this batch process. The peak snapshot is
+    // whichever iteration held the most attributed bytes; percentages are that
+    // structure's share of that one instant.
+    gl::mem_tracker::dumpMemAggregate(".rt/_memory_" + anchor_id + ".log");
+    gl::mem_tracker::dumpMemHtml(".rt/_memory_" + anchor_id + ".html");
+#endif
 
     // Return memory to OS (mimalloc retains free pages by default)
 #ifdef USE_MIMALLOC

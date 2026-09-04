@@ -29,7 +29,14 @@
 ///        default off): with the flag ON, a positive anchor-category
 ///        statement carrying an axed x-copy name deposits; with the flag
 ///        at its default OFF, and for every other x-carrying deposit —
-///        non-anchor or negated anchor — the filter drops it.
+///        non-anchor or negated anchor — the filter drops it. Also covers
+///        the `prehandleAnchor` walk's recursion-subtree modes
+///        (D-272,
+///        I-188): set-only containment (axed
+///        names minted, no statement), the anchor-numeral exception (a
+///        block-#1 root whose goal cites a `(1)`-typed slot value leaves
+///        its subtree untouched), the `_induction_` block-#2 marker
+///        override, and full mint+register outside recursion subtrees.
 
 #include "test_harness.hpp"
 
@@ -72,7 +79,7 @@ namespace {
         const gl::StatementFlags* row = gl::lookupStatementFlags(
             lb.intKnownStatements, lb.nameMap, std::string(expr),
             std::string("main"));
-        return row != nullptr && row->known;
+        return row != nullptr;
     }
 }
 
@@ -126,4 +133,104 @@ TEST(axed_anchor_exception, axed_free_deposits_unaffected) {
     deposit(ea, *lb, "(in[7,1])");
 
     ASSERT_TRUE(knownAtMain(*lb, "(in[7,1])"));
+}
+
+namespace {
+    // Three-level premise chains whose keys cite anchor slot value 2 (i0),
+    // so prehandleAnchor's trace guard actually mints x2:
+    // root -> (AnchorPeano[...]) -> (in2[2,7,3]) -> (in2[7,8,3]).
+    // kConjNumeralHead's head cites slot value 2 (anchor-numeral-headed);
+    // kConjPlainHead's head cites elements only.
+    const char* kConjNumeralHead =
+        "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])"
+        "(>[7](in2[2,7,3])(>[8](in2[7,8,3])(=[2,8]))))";
+    const char* kConjPlainHead =
+        "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])"
+        "(>[7](in2[2,7,3])(>[8](in2[7,8,3])(=[7,8]))))";
+
+    gl::Memory* middleOf(gl::ExpressionAnalyzer& ea, const char* conj) {
+        ea.addTheoremToMemory(std::string(conj), ea.body, 0, false,
+                              ea.globalDependencies);
+        gl::Memory* anchorLB = ea.simpleMapStore.findChild(
+            &ea.body, "(AnchorPeano[1,2,3,4,5,6])");
+        ASSERT_TRUE(anchorLB != nullptr);
+        gl::Memory* middleLB =
+            ea.simpleMapStore.findChild(anchorLB, "(in2[2,7,3])");
+        ASSERT_TRUE(middleLB != nullptr);
+        return middleLB;
+    }
+
+    gl::Memory* deepOf(gl::ExpressionAnalyzer& ea, gl::Memory* middleLB) {
+        gl::Memory* deepLB =
+            ea.simpleMapStore.findChild(middleLB, "(in2[7,8,3])");
+        ASSERT_TRUE(deepLB != nullptr);
+        return deepLB;
+    }
+
+    bool axedHasX2(gl::Memory& lb) {
+        return lb.intAxedVariables.contains(lb.nameMap.encode("x2"));
+    }
+}
+
+TEST(axed_anchor_exception, set_only_recursion_subtree_mints_without_statement) {
+    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::Memory* middleLB = middleOf(ea, kConjPlainHead);
+    gl::Memory* deepLB = deepOf(ea, middleLB);
+    middleLB->isPartOfRecursion = true;
+
+    ea.prehandleAnchor(&ea.body);
+
+    ASSERT_TRUE(axedHasX2(*middleLB));
+    ASSERT_TRUE(axedHasX2(*deepLB));
+    ASSERT_FALSE(knownAtMain(*middleLB, "(AnchorPeano[1,x2,3,4,5,6])"));
+    ASSERT_FALSE(knownAtMain(*deepLB, "(AnchorPeano[1,x2,3,4,5,6])"));
+}
+
+TEST(axed_anchor_exception, prehandle_registers_statement_outside_recursion) {
+    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::Memory* middleLB = middleOf(ea, kConjNumeralHead);
+    gl::Memory* deepLB = deepOf(ea, middleLB);
+
+    ea.prehandleAnchor(&ea.body);
+
+    ASSERT_TRUE(axedHasX2(*middleLB));
+    ASSERT_TRUE(knownAtMain(*middleLB, "(AnchorPeano[1,x2,3,4,5,6])"));
+    ASSERT_TRUE(knownAtMain(*deepLB, "(AnchorPeano[1,x2,3,4,5,6])"));
+}
+
+TEST(axed_anchor_exception, numeral_headed_recursion_root_left_untouched) {
+    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::Memory* middleLB = middleOf(ea, kConjNumeralHead);
+    gl::Memory* deepLB = deepOf(ea, middleLB);
+    deepLB->isPartOfRecursion = true;
+
+    ea.prehandleAnchor(&ea.body);
+
+    ASSERT_FALSE(axedHasX2(*deepLB));
+    ASSERT_FALSE(knownAtMain(*deepLB, "(AnchorPeano[1,x2,3,4,5,6])"));
+    ASSERT_TRUE(knownAtMain(*middleLB, "(AnchorPeano[1,x2,3,4,5,6])"));
+}
+
+TEST(axed_anchor_exception, induction_marker_root_stays_set_only) {
+    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::Memory* middleLB = middleOf(ea, kConjNumeralHead);
+    gl::Memory* deepLB = deepOf(ea, middleLB);
+    deepLB->isPartOfRecursion = true;
+    deepLB->setExprKey("(in2[7,8,3])_induction_rec0_");
+
+    ea.prehandleAnchor(&ea.body);
+
+    ASSERT_TRUE(axedHasX2(*deepLB));
+    ASSERT_FALSE(knownAtMain(*deepLB, "(AnchorPeano[1,x2,3,4,5,6])"));
+}
+
+TEST(axed_anchor_exception, door_armed_on_set_only_recursion_lb) {
+    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::Memory* middleLB = middleOf(ea, kConjPlainHead);
+    middleLB->isPartOfRecursion = true;
+
+    ea.prehandleAnchor(&ea.body);
+    deposit(ea, *middleLB, "(in[x2,1])");
+
+    ASSERT_FALSE(knownAtMain(*middleLB, "(in[x2,1])"));
 }

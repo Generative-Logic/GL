@@ -250,15 +250,17 @@ namespace gl {
                 }
             }
 
-            // Origins and levels
+            // Origins and levels. Loaded facts are non-derived: they carry
+            // the {-1} tier (transparent to level accounting), not level 0 —
+            // no LB state contributed to them.
             TransientOrigin origin{};
             if (parameters.trackHistory) {
                 origin = TransientOrigin{ true, OriginTag::ceBuildingBlock, nullptr, 0 };
             }
-            const int lvl0[1] = { 0 };
+            const int lvlNonDerived[1] = { -1 };
 
             // LB0: +, *, s
-            for (const auto& s : simpleFacts) this->addExprToMemoryBlock(s, *lb0, 0, 4, lvl0, 1, origin, -1, -1, StrSpan("main", 4), false);
+            for (const auto& s : simpleFacts) this->addExprToMemoryBlock(s, *lb0, 0, 4, lvlNonDerived, 1, origin, -1, -1, StrSpan("main", 4), false);
         }
     }
 
@@ -423,27 +425,13 @@ namespace gl {
             // private interner, and always-resident pending bit together.
             ceBody.mailIn.clear();
             ceBody.clearMailOut();
-            // Registered-membership reset of the packed statement registry:
-            // the `registered` membership empties, `known` rows stay
-            // untouched (this teardown never reset the level-registry
-            // record).
-            {
-                // Keep only `known` rows, with `registered` cleared; drop the
-                // rest. The cold map has no value-aware erase, so snapshot the
-                // survivors, reset, and re-insert in id order.
-                std::vector<gl::StatementKey> keepKeys;
-                std::vector<gl::StatementFlags> keepVals;
-                for (int32_t i = 1; i <= ceBody.intKnownStatements.count(); ++i) {
-                    gl::StatementFlags f = ceBody.intKnownStatements.valueAt(i);
-                    if (!f.known) continue;
-                    f.registered = false;
-                    keepKeys.push_back(ceBody.intKnownStatements.decodeKey(i));
-                    keepVals.push_back(f);
-                }
-                ceBody.intKnownStatements.resetToFresh();
-                for (std::size_t i = 0; i < keepKeys.size(); ++i)
-                    ceBody.intKnownStatements.insert(keepKeys[i], keepVals[i]);
-            }
+            // Full statement-registry reset, paired with the levels-map reset
+            // above — the two containers tear down together (a row and its
+            // levels are one unit). `ceBody` is the CE root sentinel: no
+            // writer ever targets it, so this map is empty here and the
+            // former keep-known-rows loop it replaces was a no-op relict of
+            // the 2026-06 string/int container fold.
+            ceBody.intKnownStatements.resetToFresh();
             ceBody.eqClassSttmntIndexMapMap.resetToFresh();
             swap(ceBody.isActive, empty.isActive);
             swap(ceBody.isPartOfRecursion, empty.isPartOfRecursion);
@@ -493,83 +481,108 @@ namespace gl {
         for (std::size_t i = 0; i < conjectures.size(); ++i)
             (void)skeletonInterner().intern(std::to_string(i));
 
-        // Dedicated CE thread pool over a global conjecture work queue. A worker
-        // grabs the next conjecture, clones the facts template, installs the
-        // conjecture's rule, runs that conjecture's CE check to completion on its
-        // own single-owner LB (no batch barrier), records the result, throws the
-        // clone away, and grabs the next. Each CE LB is unshared, so its burst may
-        // write to it freely and stop the instant its contradiction fires.
         const unsigned workers = std::max(1u, logicalCores);
         // The CE filter runs exactly one hashburst per conjecture.
         assert(parameters.numberIterationsConjectureFiltering == 1
             && "CE filter does one hashburst per conjecture");
-        std::atomic<std::size_t> next{ 0 };
-        auto worker = [this, &conjectures, templateLB, &next](unsigned coreId) {
-            // Claim this worker's scratch slot for the WHOLE task. performElemPhase1
-            // publishes g_currentCoreId for the burst, but addConjectureForCEFiltering
-            // below already reaches the per-slot scratch arenas (via addToHashMemory
-            // -> makeNormalizedKeysForAdmission -> insertRemainingArgsNormKey, and
-            // disintegrateExpr2). Without this, the first conjecture on each worker
-            // runs with g_currentCoreId == -1, so every worker falls back to the
-            // shared slot slotCount()-1 and they race on one scratch arena's byte
-            // cursor (I-83 per-slot isolation; G-56, the same class the phase-2
-            // executor worker hit).
-            g_currentCoreId = static_cast<int>(coreId);
-            // The request-expr copies + keys ride the per-slot gen scratch arena
-            // inside performElem2 (released per task at its exit) — no per-thread
-            // TypedArena here.
-            for (;;) {
-                const std::size_t i = next.fetch_add(1, std::memory_order_relaxed);
-                if (i >= conjectures.size()) break;
-
-                Memory* lb = templateLB->cloneFactsTemplate(lbStore);
-                lb->parentMemory = &ceBody;
-                lb->setExprKey(std::to_string(i));
-                this->addConjectureForCEFiltering(conjectures[i], lb,
-                                                  static_cast<int>(i));
-
-                // One hashburst per conjecture: the burst checks whether the
-                // conjecture's negation immediately contradicts the fact base.
-                // burstDeactivates stops the burst the instant a refuting head
-                // fires; phase 3's dischargeContradiction records the refutation
-                // into contradictionTable and deactivates the LB.
-                this->performElemPhase1(*lb, coreId);
-                // Per-conjecture sealed pages (records + strings on one set):
-                // this worker is both producer
-                // and consumer (sequential phases), so the handoff degrades
-                // to seal-after-burst, free-after-apply.
-                SealedPageSet sealedPages;
-                sealedPages.bind(&staticMemory());
-                std::atomic<bool> stop{ false };
-                this->performElem2(
-                    *lb, coreId, /*processID=*/0, /*splitCount=*/1,
-                    /*partCount=*/1, SplitStumpRef{}, sealedPages, stop);
-                sealedPages.seal();
-                // The CE LB is single-use (deleted below) and runs UNSPLIT
-                // (splitCount=1), so no adaptive split decision applies (that lives
-                // in proveKernel's finalize, which the CE filter never enters).
-                // performElemPhase2 just applies this burst's firing records —
-                // one part set, consumed while Sealed; the staging vectors are
-                // cleared inside phase 2, before the free below.
-                SealedPageSet* onePart[1] = { &sealedPages };
-                this->performElemPhase2(*lb, onePart, 1);
-                this->performElemPhase3(*lb, coreId);
-                sealedPages.freePages();
-
-                lbStore.destroy(lb);              // single-use LB, thrown away
-            }
-        };
 
         const auto ceStart = std::chrono::high_resolution_clock::now();
-        std::vector<std::thread> pool;
-        pool.reserve(workers);
-        for (unsigned t = 0; t < workers; ++t) pool.emplace_back(worker, t);
-        for (auto& th : pool) th.join();
+        const double phase2Before = phase2CumulativeSeconds;
+        if (phase2Backend == Phase2Backend::cuda) {
+            // The CUDA projection owns fixed buffers sized for the measured main
+            // run. Sixteen Gauss fact clones remain below every fixed column
+            // ceiling while exposing enough independent CE tasks to fill the GPU.
+            constexpr std::size_t kCeCudaBatchSize = 16;
+            for (std::size_t begin = 0; begin < conjectures.size();
+                 begin += kCeCudaBatchSize) {
+                const std::size_t count = std::min(
+                    kCeCudaBatchSize, conjectures.size() - begin);
+                std::vector<Memory*> batch(count, nullptr);
+                std::atomic<std::size_t> nextClone{ 0 };
+                auto cloneWorker = [this, &conjectures, templateLB, begin, count,
+                                    &batch, &nextClone](unsigned coreId) {
+                    // addConjectureForCEFiltering reaches per-slot scratch before
+                    // phase 1 publishes a slot, so clone construction owns the
+                    // worker's scratch slot explicitly.
+                    g_currentCoreId = static_cast<int>(coreId);
+                    for (;;) {
+                        const std::size_t local = nextClone.fetch_add(
+                            1, std::memory_order_relaxed);
+                        if (local >= count) break;
+                        const std::size_t conjectureIndex = begin + local;
+                        Memory* lb = templateLB->cloneFactsTemplate(lbStore);
+                        lb->parentMemory = &ceBody;
+                        lb->setExprKey(std::to_string(conjectureIndex));
+                        this->addConjectureForCEFiltering(
+                            conjectures[conjectureIndex], lb,
+                            static_cast<int>(conjectureIndex));
+                        batch[local] = lb;
+                    }
+                };
+                std::vector<std::thread> pool;
+                const unsigned cloneWorkers = static_cast<unsigned>(
+                    std::min<std::size_t>(workers, count));
+                pool.reserve(cloneWorkers);
+                for (unsigned t = 0; t < cloneWorkers; ++t)
+                    pool.emplace_back(cloneWorker, t);
+                for (std::thread& thread : pool) thread.join();
+                for (Memory* lb : batch)
+                    assert(lb != nullptr && "CUDA CE batch clone was not built");
+
+                // prove() supplies the resident-only steward and sends all CE
+                // Phase 2 tasks through the selected CUDA backend in one sweep.
+                prove(/*numberIterations=*/1, batch);
+                for (Memory* lb : batch) lbStore.destroy(lb);
+            }
+        }
+        else {
+            // CPU fallback: independent single-owner clones run through the
+            // established direct one-conjecture Phase 1/2/3 path.
+            std::atomic<std::size_t> next{ 0 };
+            auto worker = [this, &conjectures, templateLB, &next](unsigned coreId) {
+                g_currentCoreId = static_cast<int>(coreId);
+                for (;;) {
+                    const std::size_t i = next.fetch_add(
+                        1, std::memory_order_relaxed);
+                    if (i >= conjectures.size()) break;
+
+                    Memory* lb = templateLB->cloneFactsTemplate(lbStore);
+                    lb->parentMemory = &ceBody;
+                    lb->setExprKey(std::to_string(i));
+                    this->addConjectureForCEFiltering(
+                        conjectures[i], lb, static_cast<int>(i));
+
+                    this->performElemPhase1(*lb, coreId);
+                    SealedPageSet sealedPages;
+                    sealedPages.bind(&staticMemory());
+                    std::atomic<int64_t> doomLine{ kNoDoomLine };
+                    this->performElem2(
+                        *lb, coreId, /*partCount=*/1, SplitStumpRef{}, sealedPages,
+                        doomLine);
+                    sealedPages.seal();
+                    SealedPageSet* onePart[1] = { &sealedPages };
+                    this->performElemPhase2(*lb, onePart, 1,
+                        doomLine.load(std::memory_order_relaxed));
+                    this->performElemPhase3(*lb, coreId);
+                    sealedPages.freePages();
+
+                    lbStore.destroy(lb);
+                }
+            };
+            std::vector<std::thread> pool;
+            pool.reserve(workers);
+            for (unsigned t = 0; t < workers; ++t)
+                pool.emplace_back(worker, t);
+            for (std::thread& thread : pool) thread.join();
+        }
         const auto ceElapsed =
             std::chrono::duration<double>(
                 std::chrono::high_resolution_clock::now() - ceStart).count();
         std::cout << "CE filter: " << conjectures.size() << " conjectures, "
-                  << workers << " workers, " << ceElapsed << "s" << std::endl;
+                  << workers << " workers, backend="
+                  << (phase2Backend == Phase2Backend::cuda ? "cuda" : "cpu")
+                  << ", phase2=" << (phase2CumulativeSeconds - phase2Before)
+                  << "s, overall=" << ceElapsed << "s" << std::endl;
         std::cout.flush();
 
         // Extra explicit cleanup “as if between batches” (no-op if already clean)

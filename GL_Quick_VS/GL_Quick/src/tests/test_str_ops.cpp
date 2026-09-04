@@ -103,16 +103,17 @@ namespace {
             static_cast<int32_t>(pairs.size())) == ref;
     }
 
-    /// @brief Mirror of `canonicalizeUnderClasses`' statified substitution
-    ///        build: each member / canonical name is copied onto the string
-    ///        scratch arena (the `ScratchString` local dies each iteration but
-    ///        its span persists until the arena rewinds), several members share
-    ///        one canonical value, and the `StrReplacement` run rides a
-    ///        contiguous byte-bump arena allocation — the result must be
-    ///        byte-identical to the former `std::map` + `ce::replaceKeysInString`.
-    ///        Members carry distinct keys (equivalence classes at one validity
-    ///        are disjoint, so no duplicate-key last-write-wins case arises).
-    bool canonicalizeSubstTwinMatches(
+    /// @brief The statified substitution build every equivalence-class
+    ///        rewrite uses: each member / canonical name is copied onto the
+    ///        string scratch arena (the `ScratchString` local dies each
+    ///        iteration but its span persists until the arena rewinds),
+    ///        several members share one canonical value, and the
+    ///        `StrReplacement` run rides a contiguous byte-bump arena
+    ///        allocation — the result must be byte-identical to the former
+    ///        `std::map` + `ce::replaceKeysInString`. Members carry distinct
+    ///        keys (equivalence classes at one validity are disjoint, so no
+    ///        duplicate-key last-write-wins case arises).
+    bool scratchSubstTwinMatches(
         gl::ScratchArena& sArena, gl::ScratchArena& gArena,
         const std::string& source,
         const std::vector<std::pair<std::string, std::string>>& members) {
@@ -145,29 +146,29 @@ namespace {
     }
 }
 
-TEST(str_ops, canonicalize_under_classes_subst_twin) {
+TEST(str_ops, scratch_subst_run_twin) {
     gl::GlobalMemoryManager m;
     m.init(kStrOpsTestCfg);
     gl::ScratchArena sA; sA.bind(&m);
     gl::ScratchArena gA; gA.bind(&m);
 
     // Empty class set: expression returned unchanged.
-    ASSERT_TRUE(canonicalizeSubstTwinMatches(sA, gA, "(=[a,b])", {}));
+    ASSERT_TRUE(scratchSubstTwinMatches(sA, gA, "(=[a,b])", {}));
     // Single member -> canonical.
-    ASSERT_TRUE(canonicalizeSubstTwinMatches(
+    ASSERT_TRUE(scratchSubstTwinMatches(
         sA, gA, "(in2[int_lev_0_X,v1,s])", { { "int_lev_0_X", "i0" } }));
     // Several members share ONE canonical value (the many->one shape a single
     // equivalence class produces).
-    ASSERT_TRUE(canonicalizeSubstTwinMatches(
+    ASSERT_TRUE(scratchSubstTwinMatches(
         sA, gA, "(p[int_lev_0,int_lev_1,int_lev_2])",
         { { "int_lev_0", "a" }, { "int_lev_1", "a" }, { "int_lev_2", "a" } }));
     // Two classes' worth of members, distinct canonicals, greedy-longest
     // overlap (v1 vs v, w1 vs w).
-    ASSERT_TRUE(canonicalizeSubstTwinMatches(
+    ASSERT_TRUE(scratchSubstTwinMatches(
         sA, gA, "(p[v1,v,w1,w])",
         { { "v1", "X" }, { "v", "Y" }, { "w1", "P" }, { "w", "Q" } }));
     // No key present in the source: unchanged.
-    ASSERT_TRUE(canonicalizeSubstTwinMatches(
+    ASSERT_TRUE(scratchSubstTwinMatches(
         sA, gA, "(in[absent])", { { "int_lev_0", "z" } }));
 }
 
@@ -627,6 +628,42 @@ TEST(str_ops, single_distinct_int_lev_scan_matches_regex_oracle) {
     ASSERT_TRUE(std::string(myVar.ptr, static_cast<size_t>(myVar.len)) == "int_lev_5_6");
 }
 
+// allIntLevLevelsBelow — the parent-level mail-gate predicate matches a regex
+// oracle that extracts every int_lev token's level and requires all of them
+// strictly below the bound. std::regex lives in the TEST only. Covers: no
+// tokens (vacuously true), single parent-level, own-level (equal -> false),
+// deeper-than-bound, mixed parent+own, duplicates, multi-digit levels, bound
+// 0, and a mid-buffer slice with live tail bytes.
+TEST(str_ops, all_int_lev_levels_below_matches_regex_oracle) {
+    static const std::regex kInt(R"(int_lev_(\d+)_\d+)");
+    const auto oracle = [&](const std::string& s, int32_t bound) -> bool {
+        for (std::sregex_iterator i(s.begin(), s.end(), kInt), e; i != e; ++i)
+            if (std::stoll((*i)[1].str()) >= bound) return false;
+        return true;
+    };
+    const std::pair<std::string, int32_t> cases[] = {
+        { "(=[x,zero])", 3 },                       // none -> true
+        { "", 1 },                                  // empty -> true
+        { "(in[int_lev_1_1,1])", 2 },               // parent level -> true
+        { "(in[int_lev_2_1,1])", 2 },               // own level -> false
+        { "(in[int_lev_3_1,1])", 2 },               // deeper -> false
+        { "(g[int_lev_1_1,int_lev_2_1])", 3 },      // both parent -> true
+        { "(g[int_lev_1_1,int_lev_2_1])", 2 },      // mixed -> false
+        { "(g[int_lev_1_1,int_lev_1_1])", 2 },      // duplicates parent -> true
+        { "(g[int_lev_10_2,int_lev_9_1])", 11 },    // multi-digit levels -> true
+        { "(g[int_lev_10_2,int_lev_9_1])", 10 },    // multi-digit boundary -> false
+        { "(in[int_lev_0_1,1])", 0 },               // bound 0 -> false
+    };
+    for (const auto& c : cases) {
+        ASSERT_EQ(gl::allIntLevLevelsBelow(gl::StrSpan(c.first), c.second),
+                  oracle(c.first, c.second));
+    }
+    // Mid-buffer slice with live tail bytes: span covers "int_lev_5_6" only.
+    const std::string buf = "QQint_lev_5_6ZZ";
+    ASSERT_TRUE(gl::allIntLevLevelsBelow(gl::StrSpan(buf.data() + 2, 11), 6));
+    ASSERT_TRUE(!gl::allIntLevLevelsBelow(gl::StrSpan(buf.data() + 2, 11), 5));
+}
+
 // containsItLevPrefixShape — existence verdict matches regex_search over
 // it_\d+_lev_\d+_. std::regex lives in the TEST only.
 TEST(str_ops, contains_it_lev_prefix_matches_regex_oracle) {
@@ -977,8 +1014,12 @@ TEST(prover, integration_builder_result_survives_post_return_rewind) {
     }
 }
 
-// sortOriginalChainIndex reproduces the originals-snapshot std::sort order.
-TEST(prover, sort_original_chain_index_matches_std_sort) {
+// sortOriginalChainIndex yields the ids in ID ORDER (1..count) — the
+// registry's deterministic insertion order. The decoded-lex sort it once
+// carried is retired (maintainer directive 2026-09-01): it existed only to
+// reproduce the pre-statification snapshot's byte order and cost 35% of all
+// phase-1/3 runtime.
+TEST(prover, sort_original_chain_index_yields_id_order) {
     gl::ExpressionAnalyzer ea("Peano");
     gl::Memory mem;
 
@@ -998,22 +1039,11 @@ TEST(prover, sort_original_chain_index_matches_std_sort) {
     const int32_t count = mem.overallHashMemory.originals.count();
     ASSERT_EQ(count, static_cast<int32_t>(chains.size()));
 
-    // Oracle: the originalChains snapshot + std::sort.
-    std::vector<std::vector<std::string>> oracle;
-    for (int32_t oi = 1; oi <= count; ++oi)
-        oracle.push_back(gl::decodeValueVector(
-            mem.overallHashMemory.originals.decodeKey(oi).ids, mem.ruleInterner));
-    std::sort(oracle.begin(), oracle.end());
-
     std::vector<int32_t> out(static_cast<size_t>(count));
     const int32_t n = ea.sortOriginalChainIndex(mem, out.data(), count);
     ASSERT_EQ(n, count);
-    for (int32_t k = 0; k < n; ++k) {
-        const std::vector<std::string> got = gl::decodeValueVector(
-            mem.overallHashMemory.originals.decodeKey(out[static_cast<size_t>(k)]).ids,
-            mem.ruleInterner);
-        ASSERT_TRUE(got == oracle[static_cast<size_t>(k)]);
-    }
+    for (int32_t k = 0; k < n; ++k)
+        ASSERT_EQ(out[static_cast<size_t>(k)], k + 1);
 }
 
 // prefixArgumentsWithUScratch == prefixArgumentsWithU: u_-prefix EVERY arg

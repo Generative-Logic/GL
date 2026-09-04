@@ -38,6 +38,7 @@ User-oriented SwDD — Chapter 10: Reformulation & head switch.
       <ul>
         <li><a href="prover.html#life">Life of a run</a></li>
         <li><a href="prover.html#cycles">Cycles</a></li>
+        <li><a href="prover.html#cuda-filter-classes">CUDA filter classes</a></li>
         <li><a href="prover.html#enter">How a theorem enters</a></li>
         <li><a href="prover.html#status">Status modes</a></li>
         <li><a href="prover.html#deactivate">Deactivation cascade</a></li>
@@ -62,7 +63,7 @@ User-oriented SwDD — Chapter 10: Reformulation & head switch.
         <li><a href="mechanisms.html#integ">Integration</a></li>
         <li><a href="mechanisms.html#branch">Branching &amp; contradiction</a></li>
         <li><a href="mechanisms.html#induct">Induction</a></li>
-        <li><a href="mechanisms.html#fan5">5-batch fan-out</a></li>
+        <li><a href="mechanisms.html#fan5">Request-generation fan-out</a></li>
         <li><a href="mechanisms.html#cascade">Pending-rejection cascade</a></li>
       </ul>
     </li>
@@ -85,6 +86,7 @@ User-oriented SwDD — Chapter 10: Reformulation & head switch.
         <li><a href="memory.html#aggregate">LbMemory — the aggregate</a></li>
         <li><a href="memory.html#deload">Deload / reload</a></li>
         <li><a href="memory.html#scope">Scope</a></li>
+        <li><a href="memory.html#strings">String statification</a></li>
       </ul>
     </li>
     <li><a href="provenance.html">Provenance</a>
@@ -169,7 +171,7 @@ between sound (main) and unsound (incubator) reformulation.</p>
     <li><a href="#back">10.5 &nbsp;Back-reformulation — the incubator-only path</a></li>
     <li><a href="#contra">10.6 &nbsp;Contradiction-theorem reconstruction</a></li>
     <li><a href="#orthm">10.7 &nbsp;OR-theorem assembly</a></li>
-    <li><a href="#methods">10.8 &nbsp;The five method tags</a></li>
+    <li><a href="#methods">10.8 &nbsp;The seven method tags</a></li>
     <li><a href="#fail">10.9 &nbsp;Failure modes</a></li>
   </ol>
 </div>
@@ -494,25 +496,37 @@ After discharge it is cleared and the normal lifecycle resumes.
 A theorem whose <i>head</i> is an OR is not proved by the prover directly —
 proving a disjunction by forward inference would require choosing one of the
 disjuncts, which is the case-analysis the prover deliberately avoids. The
-trick is to look for a <b>mutually-exclusive pair</b> of proved theorems:
-<code>!A → B</code> and <code>!B → A</code>. Together, those two readings
-say “at least one of A, B holds” — which is exactly <code>A ∨ B</code>.
+trick is to read a proved theorem of the shape <code>!A → B</code> as what it
+classically is: “at least one of A, B holds” — exactly <code>A ∨ B</code>.
+The reading is n-ary: a whole hypothesis chain of negated premises folds into
+one head, <code>!D₁ → (!D₂ → … → D_k)</code> becoming
+<code>D₁ ∨ D₂ ∨ … ∨ D_k</code> — every binder-free negated premise is a
+disjunct (in chain order, un-negated), the old head is the last disjunct
+(kept verbatim, so a negated head stays a negated disjunct). The trichotomy
+chain <code>¬(a&lt;b) → (¬(a=b) → b&lt;a)</code> assembles into the full
+three-branch <code>a&lt;b ∨ a=b ∨ b&lt;a</code>.
+A <b>single proved direction licenses the OR</b>; the companion reading
+<code>!B → A</code> is its contrapositive (with double negation eliminated,
+which the prover's reductio discharge already commits it to) and need not be
+proved separately. When both directions of a mirror pair happen to be proved,
+they license the same OR once.
 </p>
 
 <figure>
 <svg viewBox="0 0 760 220" role="img" aria-label="OR-theorem assembly from a mutex pair">
   <defs><marker id="ot-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
   <rect x="40" y="38" width="220" height="40" rx="7" fill="#262938" stroke="#5DCAA5"/>
-  <text x="150" y="62" fill="#F0E8DC" font-size="11" text-anchor="middle">parent A: ¬D_a → D_b</text>
-  <rect x="40" y="92" width="220" height="40" rx="7" fill="#262938" stroke="#5DCAA5"/>
-  <text x="150" y="116" fill="#F0E8DC" font-size="11" text-anchor="middle">parent B: ¬D_b → D_a</text>
+  <text x="150" y="62" fill="#F0E8DC" font-size="11" text-anchor="middle">parent A: ¬D₁ → (… → D_k)</text>
+  <rect x="40" y="92" width="220" height="40" rx="7" fill="#262938" stroke="#5DCAA5" stroke-dasharray="4 3"/>
+  <text x="150" y="109" fill="#8B8FA5" font-size="10.5" text-anchor="middle">parent B: head-switched companion</text>
+  <text x="150" y="124" fill="#8B8FA5" font-size="8.5" text-anchor="middle">(companion — derivable, not required)</text>
 
   <path d="M260 60 L312 78"  stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ot-ar)"/>
   <path d="M260 112 L312 94" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ot-ar)"/>
 
   <rect x="312" y="58" width="200" height="60" rx="9" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
   <text x="412" y="80" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">constructOrTheorem</text>
-  <text x="412" y="98" fill="#F0E8DC" font-size="10" text-anchor="middle">head = or&lt;N&gt;[D_a, D_b]</text>
+  <text x="412" y="98" fill="#F0E8DC" font-size="10" text-anchor="middle">head = or&lt;N&gt;[D₁, …, D_k]</text>
   <text x="412" y="134" fill="#8B8FA5" font-size="9" text-anchor="middle">pair canonicalised to (min,max) in fullRun's OR-construction loop</text>
 
   <path d="M512 88 L548 88" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#ot-ar)"/>
@@ -520,7 +534,7 @@ say “at least one of A, B holds” — which is exactly <code>A ∨ B</code>.
   <rect x="548" y="58" width="190" height="60" rx="9" fill="#262938" stroke="#5DCAA5"/>
   <text x="643" y="80" fill="#F0E8DC" font-size="11" font-weight="bold" text-anchor="middle">OR theorem kept</text>
   <text x="643" y="98" fill="#8B8FA5" font-size="9.5" text-anchor="middle">parents → compressed_out</text>
-  <text x="643" y="114" fill="#8B8FA5" font-size="9" text-anchor="middle">D-55 dedup keeps the OR alive</text>
+  <text x="643" y="114" fill="#8B8FA5" font-size="9" text-anchor="middle">one OR per disjunct set; proved parents subsumed</text>
 
   <text x="380" y="172" fill="#8B8FA5" font-size="11" text-anchor="middle">The OR <i>subsumes</i> the pair: the pair is recoverable from the OR.</text>
   <text x="380" y="188" fill="#8B8FA5" font-size="11" text-anchor="middle">Keeping both the OR and the parents would clutter the theorem corpus without adding mathematics.</text>
@@ -539,11 +553,70 @@ the same logical pair, the disjunct set is canonicalised by sorting:
 canonicalised, each unordered pair maps to exactly one OR theorem.
 </p>
 
+<h3>10.7.2 &nbsp;The pre-split merge — or elimination</h3>
+<p>
+The assembly above <i>creates</i> disjunctions; a second construction seam
+<i>consumes</i> one. When a conjecture needs a case split on one of its own
+premise variables — divisibility antisymmetry splits on <code>b = 0</code>
+versus <code>1 ≤ b</code> — the pool carries the two <b>guard variants</b> as
+ordinary flat rows: the same theorem with one extra premise each, one per
+case, the guard written as the innermost premise. Both prove flat, with no
+case machinery at all. After the OR-construction loop,
+<code>constructOrEliminationInRun</code> scans the proved list for pairs that
+are identical except for that one innermost guard, and looks for a proved OR
+theorem whose disjuncts match the two guards under a single variable
+renaming, polarity included. When the license exists, the merged theorem —
+the guard premise dropped — is <b>derived</b> and registered under the method
+<code>or elimination</code>, citing both variants and the licensing OR:
+classical or-elimination, with the OR theorem serving as the coverage
+certificate that the two cases exhaust. The full theorem is never a pool row
+(a pool copy would spin a logic block all run waiting on a merge that cannot
+fire before both variants prove). The variants keep their list rows and
+chapters but leave every proved-theorems artifact — they are graph support
+for the merged representative, which the compressor judges alone. A pair
+whose license is not yet minted parks and re-probes each iteration.
+</p>
+
+<figure>
+<svg viewBox="0 0 760 210" role="img" aria-label="Pre-split merge: two guard variants and an OR license derive the unguarded theorem">
+  <defs><marker id="oe-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="40" y="22" width="230" height="36" rx="7" fill="#262938" stroke="#5DCAA5"/>
+  <text x="155" y="44" fill="#F0E8DC" font-size="10.5" text-anchor="middle">variant A: chain ∧ guard₁ → H</text>
+  <rect x="40" y="66" width="230" height="36" rx="7" fill="#262938" stroke="#5DCAA5"/>
+  <text x="155" y="88" fill="#F0E8DC" font-size="10.5" text-anchor="middle">variant B: chain ∧ guard₂ → H</text>
+  <rect x="40" y="120" width="230" height="36" rx="7" fill="#262938" stroke="#5DCAA5" stroke-dasharray="4 3"/>
+  <text x="155" y="137" fill="#8B8FA5" font-size="10" text-anchor="middle">license: proved OR</text>
+  <text x="155" y="150" fill="#8B8FA5" font-size="9.5" text-anchor="middle">guard₁ ∨ guard₂ (typing-conditioned)</text>
+
+  <path d="M270 40 L318 74"  stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#oe-ar)"/>
+  <path d="M270 84 L318 88"  stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#oe-ar)"/>
+  <path d="M270 138 L318 104" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#oe-ar)"/>
+
+  <rect x="318" y="62" width="212" height="60" rx="9" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/>
+  <text x="424" y="84" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">constructOrEliminationInRun</text>
+  <text x="424" y="102" fill="#F0E8DC" font-size="10" text-anchor="middle">one-premise difference + license</text>
+  <text x="424" y="138" fill="#8B8FA5" font-size="9" text-anchor="middle">runs right after OR construction, same drain seam</text>
+
+  <path d="M530 92 L566 92" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#oe-ar)"/>
+
+  <rect x="566" y="62" width="172" height="60" rx="9" fill="#262938" stroke="#5DCAA5"/>
+  <text x="652" y="84" fill="#F0E8DC" font-size="11" font-weight="bold" text-anchor="middle">merged: chain → H</text>
+  <text x="652" y="102" fill="#8B8FA5" font-size="9.5" text-anchor="middle">method: or elimination</text>
+  <text x="652" y="116" fill="#8B8FA5" font-size="9" text-anchor="middle">cites A, B + the OR</text>
+
+  <text x="380" y="180" fill="#8B8FA5" font-size="11" text-anchor="middle">The variants stay proved rows with chapters — graph support — but leave every proved-theorems artifact.</text>
+  <text x="380" y="196" fill="#8B8FA5" font-size="11" text-anchor="middle">Derivation, not proof: no logic block ever holds the merged theorem as a goal.</text>
+</svg>
+<figcaption><b>Or-elimination as a constructor.</b> Two flat proofs plus a
+proved disjunction derive the case-split theorem; the case split itself never
+runs.</figcaption>
+</figure>
+
 <!-- ===================== 10.8 ===================== -->
-<h2 id="methods">10.8 &nbsp;The five method tags</h2>
+<h2 id="methods">10.8 &nbsp;The seven method tags</h2>
 <p>
 Every entry in <code>global_theorem_list.txt</code> carries a
-<code>method</code> tag that names how the theorem was obtained. The five
+<code>method</code> tag that names how the theorem was obtained. The seven
 values are exclusive and cover every emission path.
 </p>
 
@@ -554,6 +627,8 @@ values are exclusive and cover every emission path.
 <tr><td><code>reformulated statement</code></td><td>A head-switch-reachable form whose proof was found via reformulation rather than direct fire — the row form changed structurally.</td><td><code>_check_reformulation</code> against the real GL binary.</td></tr>
 <tr><td><code>incubator back reformulation</code></td><td>An incubator-only reformulation step (§10.5); the incubator deliberately weakens preconditions to harvest facts, so it is unsound in general.</td><td><code>check_incubator_back_reformulation</code> — the witness-elimination rewrite is now checked structurally by content: the direct form must be the cited existence source with its witness eliminated through the trailing equality. (The check certifies the rewrite step, not the harvested fact's global soundness.)</td></tr>
 <tr><td><code>or theorem</code></td><td>An OR head assembled from a mutex pair (§10.7).</td><td><code>or theorem</code> check — the verifier validates the parents and the disjunct canonicalisation.</td></tr>
+<tr><td><code>or elimination</code></td><td>Merged from a guard-variant pair under a proved OR license (§10.7.2) — the case-split theorem derived without running the split.</td><td><code>or elimination</code> check — the verifier re-detects the one-premise difference, re-aligns the OR's disjuncts against the two guards (polarity included), and resolves all three citations.</td></tr>
+<tr><td><code>proved not broadcast</code></td><td>A closure whose derivation did not consume every stated premise — sound, but weaker than the row it closes, so it is recorded with a full chapter and never circulated: no broadcast, no compressor participation, no <code>theorems.txt</code> row. Its one consumer is the pre-split merge (§10.7.2), which may cite it as a guard variant. If a circulating derivation of the same theorem later registers, it upgrades the row in place.</td><td>The direct-family chapter walk, under its own chapter kind.</td></tr>
 </table>
 
 <div class="key">

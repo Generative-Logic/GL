@@ -54,11 +54,17 @@ namespace gl {
     ///
     /// @details
     /// Replaces the heap `std::vector<std::pair<NameId, EquivalenceClass>>`.
-    /// `changedClassesThisStep` is written only by `standardProcessing`
-    /// (single-threaded phase-1/3; phase 2 is read-only on the LB, I-66/I-74) and
-    /// emptied every elementary step, so it is empty at every deload / compaction
-    /// boundary — it deloads as an empty container and is **dischargeable** (not
-    /// in `survivesDischarge`). It rides the LB's per-LB `LbArena`
+    /// `changedClassesThisStep` is written by `updateEquivalenceClasses` at
+    /// the single-threaded seams — `standardProcessing` phase-1/3 (phase 2 is
+    /// read-only on the LB, I-66/I-74), LB seeding, and the post-join barrier
+    /// deposits — and cleared ONLY at `standardProcessing`'s tail (Step 7),
+    /// after its consumers have read it. A seeding- or barrier-minted delta
+    /// therefore survives across bursts (and across a deload / reload — the
+    /// paged columns deload like any cold container) until the LB's next
+    /// `standardProcessing` call consumes it. It is **dischargeable** (not
+    /// in `survivesDischarge`): a discharged LB never applies classes again
+    /// (I-112), so a pending delta dies with it by design.
+    /// It rides the LB's per-LB `LbArena`
     /// (`LbMemory::manager`, passed in — NOT owned) with the LB's REAL
     /// deload-`dirty`, and stores its entries as parallel paged columns: one
     /// validity id per entry, plus a blob CSR (`blobStarts_` + `blobPool_`)
@@ -70,8 +76,9 @@ namespace gl {
     /// `LbMemory::visitContainers` at the reserved base so it deloads / reloads /
     /// releases like any other cold container.
     ///
-    /// @invariant Single-threaded (phase-1/3 `standardProcessing`) access; empty
-    ///            at every deload / compaction boundary.
+    /// @invariant Single-threaded seam access only (`standardProcessing`
+    ///            phase-1/3, LB seeding, post-join barrier deposits); may hold
+    ///            pending deltas across deload / compaction boundaries.
     /// @see serializeEquivalenceClass, ColdMail, `PagedVector`.
     struct ChangedClassesBuffer {
         /// @brief One validity id per delta entry.

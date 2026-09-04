@@ -141,7 +141,7 @@ namespace tests {
             const unsigned logicalCores =
                 std::max(1u, std::thread::hardware_concurrency());
             initScratchArenas(logicalCores + 1);
-            initGenScratchArenas(logicalCores);
+            initGenScratchArenas(logicalCores + 1);   // same shape as the analyzer's init (reserved slot)
         }
 
         // Per-test detail goes to `.debug/unit_tests.log` so the console

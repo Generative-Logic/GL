@@ -37,7 +37,7 @@
 namespace gl {
 
     /// @brief Reserved deload tag-block base for `LbMemory::mailOut`.
-    /// @details Eight facets occupy `base+0..7`; the append-only deload
+    /// @details Ten facets occupy `base+0..9`; the append-only deload
     ///          directory reserves the full 50-tag block `755..804`.
     constexpr uint32_t kMailOutDeloadBase = 755u;
 
@@ -55,10 +55,15 @@ namespace gl {
     /// phase 1 fills and absorbs it under the destination LB's worker claim,
     /// then its self-owned arena returns every block immediately.
     ///
-    /// Eight facets form one append-only tag band: string lengths and bytes;
+    /// Ten facets form one append-only tag band: string lengths and bytes;
     /// statement-key lengths and bytes; origin keys, run starts, blob starts,
-    /// and blob bytes. The mailbox deliberately has no disintegration-signal
-    /// column because cross-LB mail serializes only statements and origins.
+    /// and blob bytes; statement-flag keys and values. The mailbox has no
+    /// disintegration-signal column (internal-channel-only); the statement-flag
+    /// side column carries the cross-LB per-statement flag (flag 5 = "external,
+    /// may be disintegrated", packed with the witness-generation stamp) keyed by
+    /// the packed `(expression id, validity id)` pair — a side column, never
+    /// part of the statement set key, so set identity and deposit ordering are
+    /// untouched.
     ///
     /// @invariant All ids in `statements_` and `origins_`, including dependency
     ///            ids, belong to this instance's `strings_` table.
@@ -79,6 +84,12 @@ namespace gl {
         TypedColdBlobMap<int64_t, IntMailOrigin>::RunStartsView originsRunStarts;
         TypedColdBlobMap<int64_t, IntMailOrigin>::BlobStartsView originsBlobStarts;
         TypedColdBlobMap<int64_t, IntMailOrigin>::BlobPoolView originsBlobPool;
+        /// @brief Per-statement flag side column — packed
+        ///        `(expression id, validity id)` key (ids in `strings_`) to the
+        ///        `packMailStatementFlag` value (flag code + generation stamp).
+        TypedColdMap<int64_t, int32_t> statementFlags_;
+        TypedColdMap<int64_t, int32_t>::KeysView statementFlagsKeys;
+        TypedColdMap<int64_t, int32_t>::ValuesView statementFlagsValues;
 
         /// @brief Bind the dedicated string table and the two mail columns to
         ///        one LB's deloadable arena.
@@ -100,7 +111,10 @@ namespace gl {
               originsKeys(&origins_.inner()),
               originsRunStarts(&origins_.inner()),
               originsBlobStarts(&origins_.inner()),
-              originsBlobPool(&origins_.inner()) {}
+              originsBlobPool(&origins_.inner()),
+              statementFlags_(arena, dirty),
+              statementFlagsKeys(&statementFlags_.inner()),
+              statementFlagsValues(&statementFlags_.inner()) {}
 
         DeloadableMailOut(const DeloadableMailOut&) = delete;
         DeloadableMailOut& operator=(const DeloadableMailOut&) = delete;
@@ -143,6 +157,35 @@ namespace gl {
             statements_.mint(key);
         }
 
+        /// @brief Set one outgoing statement's flag — the cross-LB side-column
+        ///        write door (private-interner ids).
+        ///
+        /// @details On a hit the stored value is folded through
+        /// `mergeMailStatementFlag` (flag 5 wins, iterations min-merge over
+        /// real generations) so repeated markings are order-free and
+        /// deterministic; on a miss the packed value inserts directly. The
+        /// caller interns `(original, validityName)` into `strings_` and packs
+        /// the pair via `packOriginKey` (the `Memory::setMailOutStatementFlag`
+        /// wrapper), matching the `ColdMail::setDisintegrationSignal`
+        /// caller-packs convention. Absent key ⇒ flag none at the receiver.
+        ///
+        /// @param key       The packed `(expression id, validity id)` pair
+        ///                  (ids in `strings_`).
+        /// @param flagCode  The flag code (`kMailStatementFlag*`).
+        /// @param iteration The sender disintegration's witness-generation
+        ///                  stamp; -1 = none.
+        void setStatementFlag(int64_t key, int32_t flagCode,
+            int32_t iteration) {
+            const int32_t packed = packMailStatementFlag(flagCode, iteration);
+            const int32_t id = statementFlags_.lookup(key);
+            if (id != 0) {
+                statementFlags_.upsert(key,
+                    mergeMailStatementFlag(statementFlags_.valueAt(id), packed));
+                return;
+            }
+            statementFlags_.upsert(key, packed);
+        }
+
         /// @brief Whether the statements column is empty.
         /// @return `true` when no outgoing statement is stored.
         bool statementsEmpty() const { return statements_.count() == 0; }
@@ -165,6 +208,7 @@ namespace gl {
         void clear() {
             statements_.resetToFresh();
             origins_.resetToFresh();
+            statementFlags_.resetToFresh();
             strings_.resetToFresh();
         }
 
@@ -175,6 +219,7 @@ namespace gl {
         void release() {
             statements_.release();
             origins_.release();
+            statementFlags_.release();
             strings_.release();
         }
 
@@ -193,13 +238,13 @@ namespace gl {
         }
 
         /// @brief Approximate live bytes in the private interner and columns.
-        /// @return Sum of live bytes reported by all three cold stores.
+        /// @return Sum of live bytes reported by all four cold stores.
         int64_t liveBytes() const {
             return strings_.liveBytes() + statements_.liveBytes()
-                + origins_.liveBytes();
+                + origins_.liveBytes() + statementFlags_.liveBytes();
         }
 
-        /// @brief Enumerate the eight deload facets from a reserved base tag.
+        /// @brief Enumerate the ten deload facets from a reserved base tag.
         ///
         /// @details String facets precede every id-bearing column so reload
         /// restores the private id space before any consumer can decode it.
@@ -220,6 +265,8 @@ namespace gl {
             visit(base + 5u, self.originsRunStarts);
             visit(base + 6u, self.originsBlobStarts);
             visit(base + 7u, self.originsBlobPool);
+            visit(base + 8u, self.statementFlagsKeys);
+            visit(base + 9u, self.statementFlagsValues);
         }
 
         /// @brief Enumerate mutable deload facets.

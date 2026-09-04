@@ -124,8 +124,11 @@ namespace gl {
 
         // ---- 1. Prepare N independent Logic Blocks ----
 
-        // Compressor deposits are all level {0} — one shared stack run.
+        // Rule installs and goals keep level {0}; loaded premise STATEMENTS
+        // are non-derived and carry the {-1} tier (transparent to level
+        // accounting — the statement-levels contract).
         const int lvl0Run[1] = { 0 };
+        const int lvlNonDerived[1] = { -1 };
 
         for (size_t i = 0; i < N; ++i) {
             const std::string& theorem = all_theorems[i];
@@ -159,14 +162,19 @@ namespace gl {
                     false, analyzer.parameters.minNumOperatorsKey,
                     StrSpan("implication", 11), false, StrSpan(rule));
 
-                // `registered` only: the rule load marks the theorem as a
-                // registered statement of the scratch LB without admitting it
-                // to the level registry (the Site F dedup record stays blind
-                // to it, as the proof engine expects).
-                upsertStatementKey(lb->intKnownStatements,
-                    packStatementKey(lb->nameMap.encode(rule),
-                                     lb->nameMap.encode("main")),
-                    /*local=*/true, /*registered=*/true, /*known=*/false);
+                // The rule load's statement row rides the one presence
+                // convention: a row with its paired {-1} (non-derived)
+                // levels. Site F stays blind to it in compressor mode (the
+                // scan is compiled out there), so the proof engine's view is
+                // unchanged.
+                {
+                    const int64_t pkRule = packStatementKey(
+                        lb->nameMap.encode(rule), lb->nameMap.encode("main"));
+                    lb->intStatementLevelsMap.assignSetRange(
+                        pkRule, lvlNonDerived, lvlNonDerived + 1);
+                    upsertStatementKey(lb->intKnownStatements, pkRule,
+                        /*local=*/true);
+                }
             }
 
             // Split the target theorem into premises + head
@@ -187,7 +195,7 @@ namespace gl {
 
                 const TransientOrigin origin{ true, OriginTag::premise, nullptr, 0 };
                 analyzer.addExprToMemoryBlock(
-                    premise, *lb, -1, 1, lvl0Run, 1, origin, -1, -1, StrSpan("main", 4), false);
+                    premise, *lb, -1, 1, lvlNonDerived, 1, origin, -1, -1, StrSpan("main", 4), false);
             }
 
             // Set head as proof goal

@@ -35,6 +35,18 @@
 
 namespace gl {
 
+    /// @brief Construct a working-set steward with an explicit SSD policy.
+    ///
+    /// @details
+    /// Stores the immutable policy used by every lifecycle and paging entry
+    /// point. Resident-only mode still arbitrates worker ownership through the
+    /// claim word but never launches I/O threads or permits a deload operation.
+    ///
+    /// @param allowSsdDeload Whether LB images may be written to SSD.
+    /// @invariant Resident-only mode never produces a deload image.
+    MemorySteward::MemorySteward(bool allowSsdDeload)
+        : allowSsdDeload_(allowSsdDeload) {}
+
     /// @brief Has a worker been parked on a claim past the stuck deadline?
     ///
     /// @details
@@ -76,6 +88,10 @@ namespace gl {
     void MemorySteward::start(unsigned workers) {
         assert(!running_ && "MemorySteward::start on a running steward");
         stopRequested_ = false;
+        if (!allowSsdDeload_) {
+            running_ = true;
+            return;
+        }
         const unsigned ioThreads =
             steward::ioThreadCountFor(workers, steward::kIoThreadsOverride);
         ioScratch_.clear();
@@ -97,6 +113,13 @@ namespace gl {
     /// lost). Defined no-op when never started.
     void MemorySteward::stop() {
         if (!running_) return;
+        if (!allowSsdDeload_) {
+            assert(!busy_ && !runRequested_ && highCount_ == 0
+                   && lowCount_ == 0 && ioBusy_ == 0
+                && "resident-only steward accumulated I/O work");
+            running_ = false;
+            return;
+        }
         {
             std::lock_guard<std::mutex> lock(mutex_);
             assert(!busy_ && !runRequested_
@@ -126,6 +149,8 @@ namespace gl {
     /// @param directory The deload directory (production: `.deload`).
     void MemorySteward::installDischargeWork(std::vector<Memory*> lbs,
                                              const std::string& directory) {
+        assert(allowSsdDeload_
+            && "resident-only steward cannot install SSD discharge work");
         std::lock_guard<std::mutex> lock(mutex_);
         assert(!busy_ && !runRequested_
             && "installDischargeWork on a non-quiesced steward");
@@ -145,6 +170,8 @@ namespace gl {
     /// @param directory The deload directory (production: `.deload`).
     void MemorySteward::installEvictionWork(std::vector<Memory*> victims,
                                             const std::string& directory) {
+        assert(allowSsdDeload_
+            && "resident-only steward cannot install SSD eviction work");
         std::lock_guard<std::mutex> lock(mutex_);
         assert(evictionWork_.empty()
             && "installEvictionWork over an unconsumed eviction plan");
@@ -159,6 +186,8 @@ namespace gl {
     ///          coalesce (legal while a pass runs — the loop re-checks
     ///          for work after every pass).
     void MemorySteward::wake() {
+        assert(allowSsdDeload_
+            && "resident-only steward cannot wake an I/O drain");
         {
             std::lock_guard<std::mutex> lock(mutex_);
             assert((!work_.empty() || !evictionWork_.empty())
@@ -247,6 +276,7 @@ namespace gl {
     void MemorySteward::prefetchHead(const std::vector<Memory*>* order,
                                      std::size_t count,
                                      const std::string& directory) {
+        if (!allowSsdDeload_) return;
         assert(order != nullptr);
         const int64_t blockBytes =
             static_cast<int64_t>(staticMemory().blockBytes());
@@ -304,6 +334,7 @@ namespace gl {
     /// `static_pool_bytes` exhaustion assert, never a silent wait. The chosen
     /// LB and the timing are unobservable (deload is content-invisible).
     bool MemorySteward::evictOneForReload(const std::string& directory) {
+        if (!allowSsdDeload_) return false;
         const std::atomic<std::size_t>* cursor;
         const std::vector<Memory*>* order;
         unsigned workers;
@@ -349,6 +380,13 @@ namespace gl {
                                             const std::string& directory) {
         assert(phase >= 1 && phase <= 4
             && "claimAndLoadForWork phase out of range (4 = barrier seam)");
+        if (!allowSsdDeload_) {
+            assert(lb.lbMemory.manager.resident()
+                && "resident-only steward observed a deloaded LB");
+            assert(lb.stewardClaim.load(std::memory_order_acquire)
+                    != static_cast<uint8_t>(Memory::StewardClaim::Dumped)
+                && "resident-only steward observed a Dumped claim");
+        }
         const auto waitStart = std::chrono::steady_clock::now();
         // Nanoseconds elapsed since a steady-clock stamp (lambda local to a
         // covered function — Rule 18 exempt).
@@ -384,7 +422,7 @@ namespace gl {
         // force the valve with a small injected pool. This live blocksInUse
         // read is a sanctioned pager read (I-114) — content-invisible relief,
         // never a deload-SET decision (I-106).
-        {
+        if (allowSsdDeload_) {
             const int64_t total = pressurePool().totalBlocks();
             const int64_t freeBlocks = total - pressurePool().blocksInUse();
             if (freeBlocks < reserveBlocks_ / steward::kEmergencyFloorDivisor)
@@ -399,6 +437,16 @@ namespace gl {
                 lb.stewardClaim.load(std::memory_order_acquire);
             if (c == static_cast<uint8_t>(
                     Memory::StewardClaim::WorkerOwned)) {
+                // Phase 2: split siblings share one read-only LB (I-83), so a
+                // sibling's claim returns on the part's WorkerOwned. Every
+                // other phase WRITES the LB, and only the holder itself may
+                // re-enter (a seam drain re-claiming what it holds): a foreign
+                // holder is two writers on one LB — I-122, Rule 19.
+                assert((phase == 2
+                        || lb.claimHolder.load(std::memory_order_acquire)
+                               == std::this_thread::get_id())
+                    && "claimAndLoadForWork: an LB held WorkerOwned by another "
+                       "thread outside phase 2 - two writers on one LB");
                 // A part claimed AND fully loaded it — WorkerOwned is published
                 // only after the load completes (below), so a split sibling
                 // reading here sees a fully-loaded LB, never a half-rebuilt
@@ -476,6 +524,10 @@ namespace gl {
                     }
                     // Publish ready ONLY now (release): a sibling spinning on
                     // Busy sees WorkerOwned and may read the fully-loaded LB.
+                    // The holder identity travels with the claim (I-122): the
+                    // release-store below publishes it together with the state.
+                    lb.claimHolder.store(std::this_thread::get_id(),
+                                         std::memory_order_relaxed);
                     lb.stewardClaim.store(
                         static_cast<uint8_t>(
                             Memory::StewardClaim::WorkerOwned),
@@ -594,6 +646,7 @@ namespace gl {
     void MemorySteward::maintainWorkingSet(
         const std::atomic<std::size_t>* cursor,
         const std::vector<Memory*>* order, unsigned workers) {
+        if (!allowSsdDeload_) return;
         const std::size_t cur = cursor->load(std::memory_order_relaxed);
         const std::size_t n = order->size();
         const int64_t blockBytes =

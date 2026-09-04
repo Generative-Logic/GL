@@ -220,6 +220,18 @@
 	"output_args": [],
 	"max_size_expression": 4
   },
+  "strictOrder": {
+    "arity": 4,
+    "definition_sets": {
+      "1": ["P(1)", false], "2": ["P(x(1)(x(1)(1)))", false], "3": ["(1)", true], "4": ["(1)", true]
+    },
+    "full_mpl": "strictOrder.mpl",
+	"short_mpl": "(strictOrder[N,+,n,m])",
+	"max_count_per_conjecture": 0,
+	"input_args": ["n", "m"],
+	"output_args": [],
+	"max_size_expression": 4
+  },
   "identity": {
 	"arity": 2,
     "definition_sets": {
@@ -287,6 +299,25 @@
     },
     "full_mpl": "AnchorGauss.mpl",
 	"short_mpl": "(AnchorGauss[N,i0,s,+,*,i1,i2,id])",
+	"max_count_per_conjecture": 0,
+	"input_args": [],
+	"output_args": [],
+	"max_size_expression": 6
+  },
+  "AnchorFTA": {
+    "arity": 8,
+    "definition_sets": {
+      "1": ["P(1)", true],
+      "2": ["(1)", true],
+      "3": ["P(x(1)(1))", true],
+      "4": ["P(x(1)(x(1)(1)))", true],
+      "5": ["P(x(1)(x(1)(1)))", true],
+	  "6": ["(1)", true],
+	  "7": ["(1)", true],
+	  "8": ["P(x(1)(1))", true]
+    },
+    "full_mpl": "AnchorFTA.mpl",
+	"short_mpl": "(AnchorFTA[N,i0,s,+,*,i1,i2,id])",
 	"max_count_per_conjecture": 0,
 	"input_args": [],
 	"output_args": [],

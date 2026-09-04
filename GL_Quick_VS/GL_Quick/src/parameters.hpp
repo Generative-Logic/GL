@@ -44,6 +44,29 @@
 // Mirrors the `GL_DISINT_PROFILE` convention used in `compiler.hpp`.
 #define RT_MEASUREMENT 0
 
+// Diagnostic-only Phase 1 / Phase 3 internal attribution. Each phase worker
+// writes elapsed nanoseconds into its own cache line-free row; the barrier
+// folds and prints those rows after the join. The resulting category totals
+// are summed worker wall time, deliberately kept separate from the complete
+// phase barrier wall. No prover decision reads these measurements. Off by
+// default like RT_MEASUREMENT and MEM_MEASUREMENT.
+#define PHASE13_DEEP_TIMING 0
+
+// When 1, every logical block's end-of-burst size is polled per statified
+// container and folded into one process-wide table, the memory counterpart of
+// the RT section table. Each active LB is sampled at the end of
+// `performElemPhase3` (it is claimed and resident there — a deloaded container
+// asserts on `size()`, so an idle LB is unpollable by construction), the
+// per-worker rows are folded at the end-of-iteration barrier together with the
+// four pool footprints, the scratch registries and the derived indexes, and the
+// whole vector is snapshotted whenever its grand total sets a new high-water.
+// `main.cpp` writes the peak snapshot once at end of batch to
+// `.rt/_memory_<tag>.log`, with each structure's share of that peak. Pure
+// telemetry: nothing in the prover reads it, and no deload or steward decision
+// depends on it (I-106 / Rule 16). When 0, every call site compiles to nothing.
+// See `docs/agentic_swdd/_meta/memory_measurement.md`.
+#define MEM_MEASUREMENT 0
+
 
 #include <cstdint>
 
@@ -136,11 +159,11 @@ namespace gl {
         // raises numberOfParts and no producer task is dispatched, so each LB
         // runs one phase-2 part. The flag replaces the former hard incubator
         // exclusion (the gate no longer consults incubator_mode): a batch opts
-        // out per config instead. The incubator configs whose grids are
-        // thousands of small LBs set false (the per-part request-generation
-        // setup is redundant there); IncubatorGauss3 sets true so its heavy
-        // rung LBs split. Distinct from disable_lb_split, which stays the
-        // diagnostic / RT-profiling switch. Config key: lb_split.
+        // out per config instead. Every production incubator config enables
+        // the split so a heavy LB can use the same statistics-driven straggler
+        // policy as a main batch; the trigger leaves balanced small LBs
+        // unsplit. Distinct from disable_lb_split, which stays the diagnostic /
+        // RT-profiling switch. Config key: lb_split.
         bool lb_split = true;
 
         // --- LB-split growth factor (UNUSED) ---
@@ -208,12 +231,17 @@ namespace gl {
         // work this iteration exceeds BOTH the idle-core fair-share (T / logicalCores)
         // AND this floor. It is the per-bucket setup break-even -- each of the
         // logicalCores buckets re-pays the fixed setup (filterIntEncodedStatements +
-        // the obligatory-stump builders over the whole statement universe), so below
+        // the obligatory-stump builder over the whole statement universe), so below
         // the point where a bucket's share of the work exceeds that setup, splitting
         // cannot pay off. This is the ONLY tunable knob of the split trigger (the
-        // fan-out is logicalCores, not a config number). Default conservative.
+        // fan-out is logicalCores, not a config number).
+        //
+        // The submatch tally it is compared against counts grow-search nodes only:
+        // the pairing merge that used to add one count per (base candidate, stump)
+        // attempt is gone with the mandatory-containment control, so the same
+        // proof reaches a far smaller total than it did under the merge.
         // Config key: min_split_work.
-        int min_split_work = 20000;
+        int min_split_work = 5000;
 
         // NOTE: maxNumberHashRequests / second_split_submatch_cap /
         // fixed_number_splits / split_fallback_ratio above are UNUSED on the main
@@ -242,6 +270,21 @@ namespace gl {
         // pre-extent behaviour) for A/B comparison. Default true on the branch.
         // Config key: enable_extent_deload.
         bool enable_extent_deload = true;
+
+        // Per-batch Phase 2 execution policy. The processor route is the
+        // default for every run (a customer PC needs no GPU); `main.py --GPU`
+        // passes `--phase2-backend cuda` to every batch, and a config may pin
+        // one batch to CUDA by setting this true. A selected CUDA route that
+        // finds its device, driver or runtime missing asserts — no fallback.
+        bool use_gpu = false;
+
+        // Per-batch permission for the working-set steward to write LB images
+        // to SSD. Backend-derived at prover construction: a processor batch
+        // keeps this default and pages; CUDA and SSD deload are intentionally
+        // mutually exclusive, so a CUDA batch derives false (resident-only
+        // steward). A config may still set false to pin a processor batch
+        // resident. Config key: allow_ssd_deload.
+        bool allow_ssd_deload = true;
 
         bool trackHistory = true;
         int inductionMaxAdmissionDepth = 1;
@@ -616,6 +659,101 @@ namespace gl {
         ///      `drainDeferredAncestorAdmissions`, `isAdmitted`.
         static constexpr int32_t MAX_ADMISSION_REM_ARGS = 256;
 
+        /// @brief Minimum operator-expression count (head included, anchors
+        ///        excluded) for the ordis-only admission qualification route.
+        ///
+        /// @details
+        /// A rule failing the regular (A)/(B)/(C) admission gates still
+        /// installs `ordisOnly`-tagged marker keys iff every non-anchor
+        /// element and the head are operator applications and their count
+        /// reaches this bound. 4 is the maintainer-confirmed boundary: the
+        /// A15 carrier (corpus row 34, 3 premises + head) passes exactly at
+        /// it. The documented tightening knob if the route proves too loose
+        /// is the head-gate of the design's decision 8, not this number.
+        ///
+        /// @see `ExpressionAnalyzer::ordisRouteQualifies` — the consumer.
+        static constexpr int32_t kOrdisMinOperatorExpressions = 4;
+
+        /// @brief Minimum argument count for an expression to enter the
+        ///        ordis2 demand/park key language
+        ///        (D-267).
+        ///
+        /// @details
+        /// Filters equalities (2 args) and `in2`-style membership facts
+        /// (3 args) out of both halves of the pair — demand for equalities
+        /// would be minted by half the pool and sweep constantly. The
+        /// order compacts `preorder` / `strictOrder` (4 args) pass. Shared
+        /// by the demand slot filter and the park-side disjunct filing so
+        /// the two key populations can never diverge.
+        ///
+        /// @see `ExpressionAnalyzer::ordis2KeyEligible` — the one consumer.
+        static constexpr int32_t kOrdis2DemandMinArity = 4;
+
+        /// @brief Minimum NON-anchor premise count (qualifying slot
+        ///        included) for a rule to install ordis2 demand variants
+        ///        (D-267, maintainer-set
+        ///        2026-08-10).
+        ///
+        /// @details
+        /// Without it, every rule with any qualifying ≥4-arg compound slot
+        /// installs demand-marker families across all LBs — the first
+        /// post-fix acceptance run's RT explosion. 4 admits exactly the
+        /// premise-rich consumer shape B8 needs (B5: strictOrder slot +
+        /// preorder guard + two products) and excludes the short rules
+        /// whose demand traffic is pure fan-out.
+        ///
+        /// @see `ExpressionAnalyzer::ordis2DemandSlotQualifies` — the one
+        ///      consumer.
+        static constexpr int32_t kOrdis2DemandMinPremises = 4;
+
+        /// @brief Minimum NON-anchor premise count for a rule to install
+        ///        UNTAGGED input-slot demand variants
+        ///        (D-288).
+        ///
+        /// @details
+        /// The algebra twin of `kOrdis2DemandMinPremises`, guarding the
+        /// input-slot demand pass against the same fan-out the ordis2 gate
+        /// was set for: without it every short rule with a head-linked
+        /// confined input slot installs marker families across all LBs. 4
+        /// admits the premise-rich witness-consumer shape C8 needs (the
+        /// difference-transport rule: three product/sum premises binding
+        /// the slot's other args, the slot itself carrying the witness)
+        /// and excludes the short introduction rules.
+        ///
+        /// @see `ExpressionAnalyzer::inputSlotDemandSlotQualifies` — the one
+        ///      consumer.
+        static constexpr int32_t kInputSlotDemandMinPremises = 4;
+
+        /// @brief Ceiling on one registered or-operator's FLATTENED leaf
+        ///        count for the reduced-or pre-mint closure.
+        ///
+        /// @details
+        /// `preMintReducedOrs` registers the single-elimination closure of
+        /// every registered pool or (k reduced (k-1)-ary operators per
+        /// k-ary or, recursively). The closure size grows combinatorially
+        /// in k, so a runaway leaf count must fail loudly at the pre-mint
+        /// seam, not silently flood the registry. The current pool tops
+        /// out at k = 3 (trichotomy); 8 leaves headroom above that. A
+        /// firing assert names this constant — widen with evidence, never
+        /// soften (Rule 19).
+        ///
+        /// @see `ExpressionAnalyzer::preMintReducedOrs` — the consumer.
+        static constexpr int32_t kMaxReducedOrLeaves = 8;
+
+        /// @brief Rule-19 tripwire on the subset-exclusion detector's
+        ///        per-registry-entry embed search.
+        ///
+        /// @details
+        /// `isSubsetExclusionInstall` matches one registry or's flattened
+        /// leaf list against the head's leaves plus the premise negations
+        /// by a backtracking embed walk. The true worst case at
+        /// `kMaxReducedOrLeaves = 8` is orders of magnitude below this
+        /// cap; a firing assert means a contract break (runaway
+        /// unification, an oversized flat entity), never a tuning knob.
+        ///
+        /// @see `ExpressionAnalyzer::isSubsetExclusionInstall` — the consumer.
+        static constexpr int32_t kSubsetExclusionEmbedCap = 4096;
+
         /// @brief Ceiling on the ENTRY count of one admission-integration key's
         ///        nested instruction map — sizes the caller-owned `int32_t[]`
         ///        run that `ArenaIntegrationMap::sortedIndices(out, cap)` fills.
@@ -735,7 +873,7 @@ namespace gl {
     struct RTMeasurementParameters {
         // Online dump fires once a single elementary step has been running
         // this many wall-clock seconds without returning.
-        static constexpr int RT_TIME_TRIGGER_SECONDS = 120;
+        static constexpr int RT_TIME_TRIGGER_SECONDS = 5;
 
         // Section rows below this share of the call's total elapsed
         // self-time are folded into the trailing "other sections each
@@ -746,10 +884,52 @@ namespace gl {
         // top-N view.
         static constexpr int RT_MIN_PERCENTAGE = 0;
 
-        // Maximum number of distinct section labels per call. Stack-only
-        // storage; no `new` / `malloc` (the no-heap convention carried by
-        // I-95, successor of I-13's removed `ChunkPool`).
-        static constexpr int RT_MAX_SECTIONS = 64;
+        // Maximum number of distinct (label, parent) section rows per call.
+        // Stack-only storage; no `new` / `malloc` (the no-heap convention
+        // carried by I-95, successor of I-13's removed `ChunkPool`). Sized
+        // for the phase-1/3 atomic split: the standardProcessing absorb and
+        // the deposit-door tree open one row per (label, parent) pair, and
+        // the external/internal absorb parents double the door rows; the
+        // hash-memory install scopes (HM_*) open under every install caller
+        // (four door targets, the integration prepare, the compact re-expands),
+        // which is what pushed the row count past 192; the atomic install
+        // dissection (per-permutation key build / per-subkey write / the
+        // cold-writer interiors / the CSR store) multiplies those rows by
+        // the four hash-memory targets and the admission passes, hence
+        // 4096. Heap-backed per tracker since then (`rt_tracker.hpp`).
+        static constexpr int RT_MAX_SECTIONS = 4096;
+
+        // Capacity of the open-scope stack — the DYNAMIC nesting depth,
+        // distinct from the distinct-row cap above. Re-entrant call chains
+        // (the deposit door re-entering itself through class-update
+        // products) push one frame per nested scope even though recursion
+        // collapsing re-uses the section rows, so this is sized for deep
+        // recursion. Exceeding it trips a Rule-19 assert.
+        static constexpr int RT_MAX_OPEN_DEPTH = 1024;
+    };
+
+    // Memory-size measurement tunables — only consulted when
+    // MEM_MEASUREMENT == 1. See `docs/agentic_swdd/_meta/memory_measurement.md`
+    // and the `#define MEM_MEASUREMENT` block at the top of this file.
+    struct MemMeasurementParameters {
+        // Size of the per-tag byte table. One slot per `LbMemory::ContainerTag`
+        // value, including the reserved band holes and the retired tags — the
+        // tag IS the index, so the table is sized by the highest tag plus one
+        // and never by the count of live containers. Appending a tag past this
+        // ceiling trips a Rule-19 assert naming this constant.
+        static constexpr int MEM_TAG_SPACE = 1024;
+
+        // Number of worker slots the per-slot accumulator rows are sized for.
+        // Each row is MEM_TAG_SPACE int64 counters, so the whole accumulator is
+        // MEM_MAX_SLOTS * MEM_TAG_SPACE * 8 bytes of static storage and no heap.
+        // Must be at least the run's `logicalCores`; an out-of-range slot
+        // asserts rather than wrapping into a neighbour's row.
+        static constexpr int MEM_MAX_SLOTS = 64;
+
+        // Structure rows below this share of the peak grand total are folded
+        // into a single trailing "(N structures each < M %)" line. 0 shows
+        // every row, matching RT_MIN_PERCENTAGE's default.
+        static constexpr int MEM_MIN_PERCENTAGE = 0;
     };
 
 }

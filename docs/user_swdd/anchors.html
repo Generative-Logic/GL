@@ -38,6 +38,7 @@ User-oriented SwDD — Chapter 9: Anchors & types.
       <ul>
         <li><a href="prover.html#life">Life of a run</a></li>
         <li><a href="prover.html#cycles">Cycles</a></li>
+        <li><a href="prover.html#cuda-filter-classes">CUDA filter classes</a></li>
         <li><a href="prover.html#enter">How a theorem enters</a></li>
         <li><a href="prover.html#status">Status modes</a></li>
         <li><a href="prover.html#deactivate">Deactivation cascade</a></li>
@@ -62,7 +63,7 @@ User-oriented SwDD — Chapter 9: Anchors & types.
         <li><a href="mechanisms.html#integ">Integration</a></li>
         <li><a href="mechanisms.html#branch">Branching &amp; contradiction</a></li>
         <li><a href="mechanisms.html#induct">Induction</a></li>
-        <li><a href="mechanisms.html#fan5">5-batch fan-out</a></li>
+        <li><a href="mechanisms.html#fan5">Request-generation fan-out</a></li>
         <li><a href="mechanisms.html#cascade">Pending-rejection cascade</a></li>
       </ul>
     </li>
@@ -85,6 +86,7 @@ User-oriented SwDD — Chapter 9: Anchors & types.
         <li><a href="memory.html#aggregate">LbMemory — the aggregate</a></li>
         <li><a href="memory.html#deload">Deload / reload</a></li>
         <li><a href="memory.html#scope">Scope</a></li>
+        <li><a href="memory.html#strings">String statification</a></li>
       </ul>
     </li>
     <li><a href="provenance.html">Provenance</a>
@@ -225,9 +227,8 @@ known type. That treatment is what the rest of this chapter unpacks.
 <!-- ===================== 9.2 ===================== -->
 <h2 id="three">9.2 &nbsp;The four current anchors</h2>
 <p>
-Four anchors are live in the codebase; a fifth (<code>AnchorFTA</code>) is
-specified per FTA-ladder rung. They differ in slot count and in which kinds of
-mathematics they commit to.
+Five anchors are live in the codebase. They differ in slot count and in which
+kinds of mathematics they commit to.
 </p>
 
 <table>
@@ -236,10 +237,11 @@ mathematics they commit to.
 <tr><td><code>AnchorGauss</code></td><td>8 — <code>[N, i0, s, +, *, i1, i2, id]</code></td><td>Extends Peano with two more constants (i2, id). Drives the Gauss summation theorem and intermediate algebra.</td></tr>
 <tr><td><code>AnchorIncubator8</code></td><td>14 — <code>[N, i0, s, +, *, i1, i2, id, i3, i4, i5, i6, i7, i8]</code></td><td>The widest anchor (the original <code>AnchorIncubator</code>, renamed when the incubator anchor was split). Used by the wide incubator batches to produce ground-level facts. Many slots are unused in any individual theorem but available to the conjecturer's enumeration.</td></tr>
 <tr><td><code>AnchorIncubator3</code></td><td>9 — <code>[N, i0, s, +, *, i1, i2, id, i3]</code></td><td>The narrow incubator anchor (Gauss plus <code>i3</code>). Used by the AI3 incubator batches and the FTA-rung-1 batch, whose shorter successor chain generates only the i0–i3 facts it needs and so keeps the name-id count well within the mint ceiling.</td></tr>
+<tr><td><code>AnchorFTA</code></td><td>8 — <code>[N, i0, s, +, *, i1, i2, id]</code></td><td>A byte-copy of <code>AnchorGauss</code> under its own name. Drives the FTA-shortcut batch: the previously proved corpus keeps its Gauss/Peano anchors and is activated by two connection theorems (§9.8) that the prover proves itself.</td></tr>
 </table>
 
 <figure>
-<svg viewBox="0 0 760 260" role="img" aria-label="The four anchors as nested supersets of slots">
+<svg viewBox="0 0 760 260" role="img" aria-label="The anchor family as nested supersets of slots (AnchorFTA is a same-slot twin of AnchorGauss)">
   <rect x="40" y="40" width="660" height="200" rx="14" fill="#1C1F2B" stroke="#B084EB"/>
   <text x="62" y="60" fill="#B084EB" font-size="11" font-weight="bold">AnchorIncubator8 — 14</text>
 
@@ -419,23 +421,35 @@ that the axed expression is minimally specialised — adding fresh
 <code>x</code>-names only for slots the current LB actually mentions.
 </p>
 
-<h3>9.4.2 &nbsp;The recursion-LB special case</h3>
+<h3>9.4.2 &nbsp;Recursion subtrees — set-only containment, with the
+anchor-numeral exception</h3>
 <p>
-A recursion LB (an induction-hypothesis stub) gets an <i>early return</i>:
-<code>prehandleAnchor</code> does <i>not</i> register the axed-anchor
-expression as a statement on a recursion stub. Reason: an induction hypothesis
-must not see the axed variables as derivable facts; the induction would over-
-or under-fire. <b>But the history entry must still travel.</b> Without an
-<code>exprOriginMap</code> entry, an implication firing inside the recursion
-LB and citing the axed form as an antecedent leaves the chapter walker with
-no origin to chain to — <code>buildStack</code> asserts.
+A recursion subtree (induction-hypothesis stubs and everything below them)
+takes one of two modes, decided at its root. <b>Set-only (default):</b> the
+subtree mints the axed names — arming the containment door (9.4.3) — but
+<b>never registers the axed-anchor statement</b>: those induction sub-blocks
+stay entirely x-free. Because the trace (9.4.1) accumulates over the whole
+ancestor chain, a descendant's axed set is always a <i>superset</i> of its
+ancestors', so the parent-form x-anchor arriving by mail is refused instead
+of registering. <b>Anchor-numeral exception:</b> when the root's goal (the
+theorem head) cites an integer anchor-slot value — an anchor-numeral-headed
+theorem such as unit-product — the subtree is left untouched: no set, no
+statement, so the mailed parent form registers at the inert door and the
+historical premise-completion machinery runs inside that grid's induction
+blocks. Such theorems genuinely need it, even though their finished chapters
+cite no x-content: the x-machinery there is search scaffolding, not proof
+content.
 </p>
 <p>
-The mechanism: <code>prehandleAnchor</code> records the history line with a
-single <code>addOriginEncoded</code> to the local map on the producing LB. The
-standard cycle-boundary mail propagation carries that history line into
-descendants — including the recursion stub — so the recursion stub ends up with
-the origin recorded but the statement never installed.
+Historically the walk early-returned on ALL recursion stubs — no set, no
+statement. The statement was meant to stay off the stub, but the parent's
+axed-anchor statement rode the ordinary statement mail into the stub anyway,
+and because the stub's axed-name set was empty, the containment door was
+inert there: ordinary anchor rules fired on the imported x-anchor and bred
+hundreds of derived x-facts and x-instantiated rule twins inside the
+induction sub-blocks of <i>every</i> grid. The two-mode treatment confines
+that machinery to the anchor-numeral grids that need it and keeps every
+other induction sub-block x-free.
 </p>
 
 <h3>9.4.3 &nbsp;Containment, and the copied external anchor</h3>
@@ -505,28 +519,32 @@ event.</figcaption>
 <!-- ===================== 9.6 ===================== -->
 <h2 id="tag">9.6 &nbsp;The <code>anchor handling</code> proof-graph row</h2>
 <p>
-Each chapter contains <b>at most one</b> <code>anchor handling</code> row.
-The row is the bridge between the original anchor expression (with its
-declared slot names) and the axed form (with <code>_copy</code> rewrites).
+Each <code>anchor handling</code> row is the bridge between the original
+anchor expression (with its declared slot names) and one axed form (with
+<code>_copy</code> rewrites). The prover mints <b>one axed variant per
+logic block</b> — the copy set is a function of that block's premise
+path — so a chapter, which aggregates rows fired at several blocks of
+the proof, may legitimately carry <b>several</b> <code>anchor
+handling</code> rows, each rooting its own variant's copy variables.
 Example:
 </p>
 <pre><code>(AnchorPeano[N,0_copy,s,+,*,i1])    main    anchor handling    (AnchorPeano[N,i0,s,+,*,i1])    main</code></pre>
 <p>
 Read: the expression on the left (axed: <code>0_copy</code> in slot 2, i0's slot) was
 derived by anchor handling from the original (right). The verifier's
-<code>check_anchor_handling</code> validates three things:
+<code>check_anchor_handling</code> validates two things per row:
 </p>
 <ul class="inv">
 <li><b>Shape.</b> Both sides must be anchor atoms whose head matches.</li>
 <li><b>Type consistency.</b> Every substitution must respect the slot's
 declared type (see §9.3 / §9.7).</li>
-<li><b>Uniqueness.</b> At most one anchor-handling row per chapter.</li>
 </ul>
 <p>
-Following an <code>anchor handling</code> row, zero or more
-<code>anchor handling trace</code> rows record one step of the <code>_copy</code>
-substitution chain each. The verifier counts these but does not deeply
-validate them — they exist for human auditability.
+Separately, the chapter-level trace check collects every
+<code>_copy</code> variable minted by any of the chapter's anchor-handling
+rows and requires each of its uses to trace back, through the chapter's
+origin graph, to an anchor-handling row — a copy variable may enter the
+proof only through a documented copying event.
 </p>
 
 <!-- ===================== 9.7 ===================== -->
@@ -614,6 +632,15 @@ conjecturer output, so its outer binder need not follow the full-bind rule of
 §9.2.1 — <code>i2</code> and <code>id</code> stay free even though they appear
 in the <code>AnchorGauss</code> premise.
 </p>
+<p>
+The FTA-shortcut batch extends the same idea, with one difference: its two
+bridges are <i>proved, not supplied</i>. <code>AnchorFTA</code> is a same-slot
+twin of <code>AnchorGauss</code>, so the connection theorems
+<code>AnchorFTA &rarr; AnchorGauss</code> and
+<code>AnchorFTA &rarr; AnchorPeano</code> are pure slot projections; they sit
+at the top of the shortcut conjecture list, the prover closes them first, and
+the entire Gauss and Peano corpus then fires under the FTA grid through them.
+</p>
 
 <figure>
 <svg viewBox="0 0 760 200" role="img" aria-label="Cross-anchor bridge theorem connecting Peano and Gauss batches">
@@ -656,11 +683,14 @@ the anchor does not open a scope. Scopes open for hypothetical reasoning
 <h2 id="fail">9.9 &nbsp;Failure modes</h2>
 <dl class="terms">
 <dt>“buildStack asserts at validity=main, exprKey=(in2[rec0,7,3])”</dt>
-<dd>Most often: an axed-anchor expression reached a recursion LB without the
-history entry propagating. The <code>addOriginEncoded</code> write in
-<code>prehandleAnchor</code>, carried to the stub by mail, is the fix; if the
-history line never reaches the stub, the recursion chain breaks. <em>Check</em>:
-the producing non-recursion LB records the origin in its local map.</dd>
+<dd>Most often: an expression is cited as an antecedent on an LB whose
+<code>exprOriginMap</code> holds no entry for it. For axed-anchor citations:
+LBs outside recursion subtrees register the axed form and write the history
+line locally in <code>prehandleAnchor</code>; recursion subtrees hold no
+axed-anchor statement at all, so an axed-form citation inside one signals a
+containment-door bypass. <em>Check</em>: the citing LB's local map, and
+whether the cited expression's registration and its provenance rows traveled
+together.</dd>
 
 <dt>“Verifier reports anchor handling row count = 2 in chapter X”</dt>
 <dd>The chapter has two distinct anchor-handling expressions — almost always

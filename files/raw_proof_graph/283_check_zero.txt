@@ -1,8 +1,0 @@
-(=[7,8])	main	implication	(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[7,2,8,4])(>[](in[7,1])(=[7,8]))))	main	(AnchorPeano[1,2,3,4,5,6])	main	(in3[7,2,8,4])	main	(in[7,1])	main
-(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in3[7,2,8,4])(>[](in[7,1])(=[7,8]))))	main	theorem
-(AnchorPeano[1,2,3,4,5,6])	main	task formulation
-(in3[7,2,8,4])	main	equality1	(in3[2,7,8,4])	main	(=[2,7])	main	(=[7,2])	main
-(in3[2,7,8,4])	main	task formulation
-(=[2,7])	main	symmetry of equality	(=[7,2])	main
-(=[7,2])	main	recursion
-(in[7,1])	main	task formulation

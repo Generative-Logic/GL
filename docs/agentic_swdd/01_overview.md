@@ -80,8 +80,10 @@ A single GL run is entered via `python main.py`, which is a thin wrapper around 
                               │
                               ▼
               ┌──────────────────────────────────────┐
-              │  7.  HTML export                     │   generate_full_proof_graph.py
-              │      navigable hyperlinked proofs     │   files/full_proof_graph/*.html
+              │  7.  Lean export + HTML export       │   proof_export/live.py (with a Lean toolchain)
+              │      kernel-checked Lean twins,       │   files/full_proof_graph/lean_export/
+              │      navigable hyperlinked proofs     │   generate_full_proof_graph.py + lean_pages.py
+              │                                      │   files/full_proof_graph/*.html, chapter<N>_lean.html
               └──────────────────────────────────────┘
                               │
                               ▼
@@ -103,10 +105,10 @@ Multi-batch runs (IncubatorPeano → Peano → IncubatorGauss → main Gauss) lo
 
 | Path | Purpose |
 |---|---|
-| `main.py` | Top-level Python entry. Calls `run_modes.full_run`. |
-| `run_modes.py` → `full_run` | Orchestrates the full multi-batch pipeline. |
-| `run_modes.py` → `incubator_run` | Separate ground-level-facts pipeline (own config, own theorem storage, own CE tables — does not touch `files/theorems/`). |
-| `gl_quick.exe <tag>` | Native prover (single batch). Invoked as a subprocess by `run_modes.py`. |
+| `main.py` | Top-level Python entry. Calls `run_modes.full_run`, or `run_modes.shortcut_run` when invoked as `main.py --shortcut`. |
+| `run_modes.py` → `full_run` | Orchestrates the full multi-batch pipeline (incubator batches included — they run inside its per-tag loop with their own configs, theorem storage, and CE tables). |
+| `run_modes.py` → `shortcut_run` | FTA-shortcut pipeline ([D-248](40_decisions.md#d-248)): proves the hand-maintained conjecture list in `files/shortcut/theorems/` against the corpus snapshot loaded as external theorems; processed graph, HTML, and verifier report all land under `files/shortcut/`. Never touches `files/theorems/`. |
+| `gl_quick.exe <tag>` | Native prover (single batch). Invoked as a subprocess by `run_modes.py`. Optional batch-path flags `--conjectures-file <path>` / `--externals-file <path>` override the conjecture-list file and the external-theorems load file (shortcut mode). |
 | `gl_quick.exe --conjecture <tag>` | Conjecturer only — writes `files/theorems/conjectures.txt`. |
 | `gl_quick.exe --mirror-externals <tag>` | Rebuild `files/theorems/compressed_external_theorems.txt` without running the prover. |
 | `verifier.py` | External proof checker. Reads `files/processed_proof_graph/` + `files/GL_binaries/`. Emits a per-tag tally to stdout. |
@@ -142,6 +144,11 @@ files/
     global_theorem_list.txt                every theorem + its method + its reference
     external_theorems.txt                  raw + renamed external theorems for verifier
   full_proof_graph/    generated HTML (index.html + chapter<N>.html + tags.html)
+    chapter<N>_lean.html                   the chapter's Lean twin (only when the run exported to Lean)
+    lean_export/                           the run's Lean export: selections, certificates/, a Lake project
+                                           (GLExport/Generated/*.lean, manifests), kernel_check.log —
+                                           written by proof_export/live.py when a Lean toolchain is installed;
+                                           the shortcut's twin lives under files/shortcut/full_proof_graph/
 ```
 
 Artefacts under `files/raw_proof_graph/`, `files/processed_proof_graph/`, `files/full_proof_graph/`, `files/theorems/`, `files/GL_binaries/`, and `files/simple_facts/` are all run-output. Only `files/definitions/` and `files/config/` are user-authored input. `files/theorems/externally_provided_theorems.txt` is also user-authored (a durable input) — it is *not* emptied by a run.

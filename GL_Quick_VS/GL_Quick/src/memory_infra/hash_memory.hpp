@@ -33,6 +33,7 @@
 
 #include "typed_cold_map.hpp"
 #include "reverse_args_index.hpp"
+#include "rule_index_staging.hpp"
 
 #include <utility>
 
@@ -45,10 +46,13 @@ namespace gl {
     // memory.hpp), never inside this struct's own definition.
     struct LocalMemoryValue;
     struct OwnerSet;
+    struct RuleOwnerRec;
     struct AdmissionMapValue;
     struct IntegrationEntry;
     struct RejectedMapValue;
     struct RejectedMapIntegrationValue;
+    struct RejectedMapOrdisValue;
+    struct AdmissionMapOrdis2Value;
 
     /// @brief Deload tag-block bases for the four cold HashMemory instances —
     ///        their facets stream at base+0.., one 100-tag block each, past
@@ -97,49 +101,49 @@ namespace gl {
         // forward-map key ids whose stored run contains that NormKey. Rides the
         // LB's deloadable arena but is NEVER enrolled in visitContainers, NEVER
         // deloaded, NEVER dumped (I-117 pattern); maintained by appendEdge at the
-        // insertRemainingArgsNormKey installs, rebuilt on canonical reload +
-        // after wipeRemainingArgsForClosed, cleared at the canonical release
-        // seam, captured verbatim by the raw image (I-154).
+        // insertRemainingArgsNormKey installs, rebuilt on canonical reload,
+        // cleared at the canonical release seam, captured verbatim by the raw
+        // image (I-154). Never scope-wiped (the whole-key set is not either).
         // It inverts checkLocalEncodedMemoryStatic's candidate enumeration from
         // an O(keys) forward scan to one hash probe.
         ReverseArgsIndex remainingArgsReverseIndex;
-        // D-72 owner-set maps — the four "subkey" fast-rejection indices, now
-        // COLD blob maps (bytes key NormKey -> ONE OwnerSet blob per key: the
-        // whole codec'd value, run-length-1, whole-value replace on update). The
-        // value (`OwnerSet`) records every implication+scope that "birthed" the
-        // key as a packed composite id, plus the u_ literal signatures for the
-        // D-120 prune. Reads go through the no-alloc byte peek
-        // (ExpressionAnalyzer::ownerKeyAccepts -> peekRecordBytes + OwnerSetBlob),
-        // never a full decode; writes are RMW (ExpressionAnalyzer::
-        // mergeOwnerRecord). On impl-scope close the radical wipe drops owners
-        // matching the closed scope; if the owner-set empties, the key is dropped
-        // from the rebuild. Each map contributes 5 deload facets (key
+        // The two normalized-key indexes (I-49). normalizedEncodedKeys maps
+        // every whole key to the run of the rules that installed it
+        // (RuleOwnerRec, sorted-unique, addOwnerToRun via addWholeKeyOwner);
+        // the request generator's emission gate is a bare lookup
+        // (ExpressionAnalyzer::wholeKeyPresent). A rule's removal deletes its
+        // owner and an owner-less key is erased at the end of the apply
+        // (eraseEmptyRuns); never scope-wiped. Five deload facets: the key
+        // Lengths+Bytes at 5/6, the owner run's RunStarts+BlobStarts+BlobPool
+        // appended at 72..74 (append-only tags). normalizedEncodedSubkeys is
+        // the growable-subkey record map (bytes key NormKey -> ONE OwnerSet
+        // blob per key: the loose byte + the owners' u_ signatures for the
+        // D-120 growth prune + the owner list behind them, run-length-1,
+        // whole-value replace; read through the no-alloc byte peek
+        // subkeyUSatisfied -> peekRecordBytes + OwnerSetBlob, which never
+        // reaches the owner section; written by mergeSubkeySignatures /
+        // addShortSubkeyOwner; never scope-wiped; 5 deload facets: key
         // Lengths+Bytes, value RunStarts+BlobStarts+BlobPool).
-        TypedColdBlobMap<NormKey, OwnerSet> normalizedEncodedKeys;
-        TypedColdBlobMap<NormKey, OwnerSet>::LengthsView normalizedEncodedKeysLengths;
-        TypedColdBlobMap<NormKey, OwnerSet>::BytesView normalizedEncodedKeysBytes;
-        TypedColdBlobMap<NormKey, OwnerSet>::RunStartsView normalizedEncodedKeysRunStarts;
-        TypedColdBlobMap<NormKey, OwnerSet>::BlobStartsView normalizedEncodedKeysBlobStarts;
-        TypedColdBlobMap<NormKey, OwnerSet>::BlobPoolView normalizedEncodedKeysBlobPool;
+        TypedColdBlobMap<NormKey, RuleOwnerRec> normalizedEncodedKeys;
+        TypedColdBlobMap<NormKey, RuleOwnerRec>::LengthsView normalizedEncodedKeysLengths;
+        TypedColdBlobMap<NormKey, RuleOwnerRec>::BytesView normalizedEncodedKeysBytes;
+        TypedColdBlobMap<NormKey, RuleOwnerRec>::RunStartsView normalizedEncodedKeysRunStarts;
+        TypedColdBlobMap<NormKey, RuleOwnerRec>::BlobStartsView normalizedEncodedKeysBlobStarts;
+        TypedColdBlobMap<NormKey, RuleOwnerRec>::BlobPoolView normalizedEncodedKeysBlobPool;
         TypedColdBlobMap<NormKey, OwnerSet> normalizedEncodedSubkeys;
         TypedColdBlobMap<NormKey, OwnerSet>::LengthsView normalizedEncodedSubkeysLengths;
         TypedColdBlobMap<NormKey, OwnerSet>::BytesView normalizedEncodedSubkeysBytes;
         TypedColdBlobMap<NormKey, OwnerSet>::RunStartsView normalizedEncodedSubkeysRunStarts;
         TypedColdBlobMap<NormKey, OwnerSet>::BlobStartsView normalizedEncodedSubkeysBlobStarts;
         TypedColdBlobMap<NormKey, OwnerSet>::BlobPoolView normalizedEncodedSubkeysBlobPool;
-        TypedColdBlobMap<NormKey, OwnerSet> normalizedEncodedSubkeysMinusOne;
-        TypedColdBlobMap<NormKey, OwnerSet>::LengthsView normalizedEncodedSubkeysMinusOneLengths;
-        TypedColdBlobMap<NormKey, OwnerSet>::BytesView normalizedEncodedSubkeysMinusOneBytes;
-        TypedColdBlobMap<NormKey, OwnerSet>::RunStartsView normalizedEncodedSubkeysMinusOneRunStarts;
-        TypedColdBlobMap<NormKey, OwnerSet>::BlobStartsView normalizedEncodedSubkeysMinusOneBlobStarts;
-        TypedColdBlobMap<NormKey, OwnerSet>::BlobPoolView normalizedEncodedSubkeysMinusOneBlobPool;
-        TypedColdBlobMap<NormKey, OwnerSet> normalizedEncodedSubkeysMinusTwo;
-        TypedColdBlobMap<NormKey, OwnerSet>::LengthsView normalizedEncodedSubkeysMinusTwoLengths;
-        TypedColdBlobMap<NormKey, OwnerSet>::BytesView normalizedEncodedSubkeysMinusTwoBytes;
-        TypedColdBlobMap<NormKey, OwnerSet>::RunStartsView normalizedEncodedSubkeysMinusTwoRunStarts;
-        TypedColdBlobMap<NormKey, OwnerSet>::BlobStartsView normalizedEncodedSubkeysMinusTwoBlobStarts;
-        TypedColdBlobMap<NormKey, OwnerSet>::BlobPoolView normalizedEncodedSubkeysMinusTwoBlobPool;
         NameId maxKeyLength = 0;
+        // Raised by every owner removal (a rule leaving hash memory), consumed
+        // by ExpressionAnalyzer::eraseOwnerlessEntries at the end of the
+        // apply: the one compacting pass per owner map runs only on an
+        // instance that lost an owner since the last pass. Transient
+        // bookkeeping, never deloaded (a removal and its erasure sit inside
+        // one single-threaded seam).
+        bool ownerlessPending = false;
         // --- shared members (path-independent) ---
         // Implication chains (premises + head) as ruleInterner id vectors
         // (D-133). Written at install; iterated (decoded lex-sorted) by the
@@ -147,9 +151,42 @@ namespace gl {
         // chain once no LMV references it.
         // Statified COLD set (D-173): byte-key set,
         // one IdVecKey blob per chain. Two facets: key Lengths + Bytes.
-        TypedColdSet<IdVecKey> originals;
-        TypedColdSet<IdVecKey>::LengthsView originalsLengths;
-        TypedColdSet<IdVecKey>::BytesView originalsBytes;
+        // Owner lists (RuleOwnerRec run per chain): the same chain text can be
+        // installed by several rules (one per scope), so removal deletes one
+        // owner and erases the chain only when no owner is left. Five
+        // facets: key Lengths+Bytes at 51/52, the owner run's columns
+        // appended at 75..77.
+        TypedColdBlobMap<IdVecKey, RuleOwnerRec> originals;
+        TypedColdBlobMap<IdVecKey, RuleOwnerRec>::LengthsView originalsLengths;
+        TypedColdBlobMap<IdVecKey, RuleOwnerRec>::BytesView originalsBytes;
+        TypedColdBlobMap<IdVecKey, RuleOwnerRec>::RunStartsView originalsRunStarts;
+        TypedColdBlobMap<IdVecKey, RuleOwnerRec>::BlobStartsView originalsBlobStarts;
+        TypedColdBlobMap<IdVecKey, RuleOwnerRec>::BlobPoolView originalsBlobPool;
+        // Owner lists of the remaining-args index: one owner run per
+        // (arg-set, NormKey) EDGE of remainingArgsNormalizedEncodedMap, keyed
+        // by the edge's bytes (Int16SetKey bytes ++ NormKey bytes as one
+        // IdVecKey-shaped id run). The forward run itself stays a pure NormKey
+        // run (its readers and the derived reverse index are untouched); an
+        // edge whose owners run empty leaves the forward run and the reverse
+        // index. Five facets at 78..82.
+        TypedColdBlobMap<IdVecKey, RuleOwnerRec> remainingArgsOwners;
+        TypedColdBlobMap<IdVecKey, RuleOwnerRec>::LengthsView remainingArgsOwnersLengths;
+        TypedColdBlobMap<IdVecKey, RuleOwnerRec>::BytesView remainingArgsOwnersBytes;
+        TypedColdBlobMap<IdVecKey, RuleOwnerRec>::RunStartsView remainingArgsOwnersRunStarts;
+        TypedColdBlobMap<IdVecKey, RuleOwnerRec>::BlobStartsView remainingArgsOwnersBlobStarts;
+        TypedColdBlobMap<IdVecKey, RuleOwnerRec>::BlobPoolView remainingArgsOwnersBlobPool;
+        // Owner lists of the multiplication copies: one run per copy owner
+        // (the copy text's ruleInterner id + the install scope — the packed
+        // RuleOwner as eight key bytes) naming the RULES (recorded text id +
+        // scope, same packing) whose install produced that copy. Two rules
+        // can multiply into one copy text; the copy's index entries and LMVs
+        // leave only with its last rule (I-49). Five facets at 83..87.
+        TypedColdBlobMap<IdVecKey, RuleOwnerRec> copyOwners;
+        TypedColdBlobMap<IdVecKey, RuleOwnerRec>::LengthsView copyOwnersLengths;
+        TypedColdBlobMap<IdVecKey, RuleOwnerRec>::BytesView copyOwnersBytes;
+        TypedColdBlobMap<IdVecKey, RuleOwnerRec>::RunStartsView copyOwnersRunStarts;
+        TypedColdBlobMap<IdVecKey, RuleOwnerRec>::BlobStartsView copyOwnersBlobStarts;
+        TypedColdBlobMap<IdVecKey, RuleOwnerRec>::BlobPoolView copyOwnersBlobPool;
         // Packed (templateId, validityId) keys — template half from
         // Memory::templateInterner, validity half from Memory::nameMap
         // (D-132). Order-sensitive walks iterate
@@ -225,6 +262,22 @@ namespace gl {
         TypedColdBlobMap<int64_t, RejectedMapIntegrationValue>::RunStartsView rejectedMapIntegrationRunStarts;
         TypedColdBlobMap<int64_t, RejectedMapIntegrationValue>::BlobStartsView rejectedMapIntegrationBlobStarts;
         TypedColdBlobMap<int64_t, RejectedMapIntegrationValue>::BlobPoolView rejectedMapIntegrationBlobPool;
+        // Parked or-cohorts (the admission-based ordis polarity): an or head
+        // whose cohort-opening probe found no admission demand parks here,
+        // one entry per operator-based disjunct product template at the
+        // cohort parent's validity. Packed (templateId, validityId) keys —
+        // the SAME admission key space, so revival at key-gain is a direct
+        // probe. Values = RejectedMapOrdisValue (or statement + levels),
+        // canonical run under DecodedRejectedOrdisValueLess. Mirror contract
+        // with rejectedMap: same RMW / wipe / deload / dump discipline;
+        // NEVER written directly by the equi-class hook (I-37); the revival
+        // consumer revisitRejectedOrdis erases the consumed cohort. Four
+        // facets: key, run-starts, blob-starts, blob-pool.
+        TypedColdBlobMap<int64_t, RejectedMapOrdisValue> rejectedMapOrdis;
+        TypedColdBlobMap<int64_t, RejectedMapOrdisValue>::KeysView rejectedMapOrdisKeys;
+        TypedColdBlobMap<int64_t, RejectedMapOrdisValue>::RunStartsView rejectedMapOrdisRunStarts;
+        TypedColdBlobMap<int64_t, RejectedMapOrdisValue>::BlobStartsView rejectedMapOrdisBlobStarts;
+        TypedColdBlobMap<int64_t, RejectedMapOrdisValue>::BlobPoolView rejectedMapOrdisBlobPool;
         // Monotonically-growing cache of non-marker args that appear in any
         // rejectedMapIntegration key. Used by applyEquivalenceClassToRejectedMapIntegration
         // to short-circuit when an eq class has no overlap with any stored
@@ -267,13 +320,50 @@ namespace gl {
         // membership cache (never per-scope wiped). One facet: key.
         TypedColdSet<NameId> productsOfRecursionIds;
         TypedColdSet<NameId>::KeysView productsOfRecursionIdsKeys;
-        // Statified COLD set (D-172). One facet: key.
-        TypedColdSet<int64_t> consumedAdmissionKeys;
-        TypedColdSet<int64_t>::KeysView consumedAdmissionKeysKeys;
         // Statified COLD set (D-172). Re-entrant
         // revival guard (empty at barriers). One facet: key.
         TypedColdSet<int64_t> revisitInProgress;
         TypedColdSet<int64_t>::KeysView revisitInProgressKeys;
+        // Re-entrant guard for revisitRejectedOrdis — DEDICATED (never
+        // shared with revisitInProgress: a concurrent general revisit of
+        // the same packed key must not swallow an ordis wake). Empty at
+        // barriers. One facet: key.
+        TypedColdSet<int64_t> ordisRevisitInProgress;
+        TypedColdSet<int64_t>::KeysView ordisRevisitInProgressKeys;
+
+        // Ordis2 demand admission map (D-267):
+        // keyed by packed (templateId, validityId) where the template half
+        // is a GROUND compound premise text (the one missing premise of a
+        // rule that matched everything else); a parked or head in
+        // rejectedMapOrdis2 under the SAME key opens its cohort (route (c)),
+        // consuming both sides. Written only at the post-fixpoint drain;
+        // separate from the algebra and integration admission maps by
+        // design (incompatible key languages).
+        TypedColdBlobMap<int64_t, AdmissionMapOrdis2Value> admissionMapOrdis2;
+        TypedColdBlobMap<int64_t, AdmissionMapOrdis2Value>::KeysView admissionMapOrdis2Keys;
+        TypedColdBlobMap<int64_t, AdmissionMapOrdis2Value>::RunStartsView admissionMapOrdis2RunStarts;
+        TypedColdBlobMap<int64_t, AdmissionMapOrdis2Value>::BlobStartsView admissionMapOrdis2BlobStarts;
+        TypedColdBlobMap<int64_t, AdmissionMapOrdis2Value>::BlobPoolView admissionMapOrdis2BlobPool;
+
+        // Ordis2 park index — the rejected half of the pair
+        // (D-267): the SAME or heads that park in
+        // rejectedMapOrdis additionally file here under each eligible
+        // disjunct's clean GROUND text (polarity verbatim, I-175) at the
+        // cohort parent's validity — the demand map's key language, so the
+        // drain's wake is a plain key rendezvous. Value type REUSES
+        // RejectedMapOrdisValue (same semantic content: or statement id +
+        // seed levels), inheriting the whole codec family.
+        TypedColdBlobMap<int64_t, RejectedMapOrdisValue> rejectedMapOrdis2;
+        TypedColdBlobMap<int64_t, RejectedMapOrdisValue>::KeysView rejectedMapOrdis2Keys;
+        TypedColdBlobMap<int64_t, RejectedMapOrdisValue>::RunStartsView rejectedMapOrdis2RunStarts;
+        TypedColdBlobMap<int64_t, RejectedMapOrdisValue>::BlobStartsView rejectedMapOrdis2BlobStarts;
+        TypedColdBlobMap<int64_t, RejectedMapOrdisValue>::BlobPoolView rejectedMapOrdis2BlobPool;
+        // Re-entrant guard for revisitRejectedOrdis2 — DEDICATED (never
+        // shared with ordisRevisitInProgress: a concurrent old-map wake of
+        // the same packed key must not swallow an ordis2 wake). Empty at
+        // barriers. One facet: key.
+        TypedColdSet<int64_t> ordis2RevisitInProgress;
+        TypedColdSet<int64_t>::KeysView ordis2RevisitInProgressKeys;
 
         /// @brief Bind the rule store to the owning LB's arena + dirty flag.
         ///
@@ -316,21 +406,24 @@ namespace gl {
               normalizedEncodedSubkeysRunStarts(&normalizedEncodedSubkeys.inner()),
               normalizedEncodedSubkeysBlobStarts(&normalizedEncodedSubkeys.inner()),
               normalizedEncodedSubkeysBlobPool(&normalizedEncodedSubkeys.inner()),
-              normalizedEncodedSubkeysMinusOne(arena, dirty),
-              normalizedEncodedSubkeysMinusOneLengths(&normalizedEncodedSubkeysMinusOne.inner()),
-              normalizedEncodedSubkeysMinusOneBytes(&normalizedEncodedSubkeysMinusOne.inner()),
-              normalizedEncodedSubkeysMinusOneRunStarts(&normalizedEncodedSubkeysMinusOne.inner()),
-              normalizedEncodedSubkeysMinusOneBlobStarts(&normalizedEncodedSubkeysMinusOne.inner()),
-              normalizedEncodedSubkeysMinusOneBlobPool(&normalizedEncodedSubkeysMinusOne.inner()),
-              normalizedEncodedSubkeysMinusTwo(arena, dirty),
-              normalizedEncodedSubkeysMinusTwoLengths(&normalizedEncodedSubkeysMinusTwo.inner()),
-              normalizedEncodedSubkeysMinusTwoBytes(&normalizedEncodedSubkeysMinusTwo.inner()),
-              normalizedEncodedSubkeysMinusTwoRunStarts(&normalizedEncodedSubkeysMinusTwo.inner()),
-              normalizedEncodedSubkeysMinusTwoBlobStarts(&normalizedEncodedSubkeysMinusTwo.inner()),
-              normalizedEncodedSubkeysMinusTwoBlobPool(&normalizedEncodedSubkeysMinusTwo.inner()),
               originals(arena, dirty),
               originalsLengths(&originals.inner()),
               originalsBytes(&originals.inner()),
+              originalsRunStarts(&originals.inner()),
+              originalsBlobStarts(&originals.inner()),
+              originalsBlobPool(&originals.inner()),
+              remainingArgsOwners(arena, dirty),
+              remainingArgsOwnersLengths(&remainingArgsOwners.inner()),
+              remainingArgsOwnersBytes(&remainingArgsOwners.inner()),
+              remainingArgsOwnersRunStarts(&remainingArgsOwners.inner()),
+              remainingArgsOwnersBlobStarts(&remainingArgsOwners.inner()),
+              remainingArgsOwnersBlobPool(&remainingArgsOwners.inner()),
+              copyOwners(arena, dirty),
+              copyOwnersLengths(&copyOwners.inner()),
+              copyOwnersBytes(&copyOwners.inner()),
+              copyOwnersRunStarts(&copyOwners.inner()),
+              copyOwnersBlobStarts(&copyOwners.inner()),
+              copyOwnersBlobPool(&copyOwners.inner()),
               admissionMap(arena, dirty),
               admissionMapKeys(&admissionMap.inner()),
               admissionMapRunStarts(&admissionMap.inner()),
@@ -355,6 +448,11 @@ namespace gl {
               rejectedMapIntegrationRunStarts(&rejectedMapIntegration.inner()),
               rejectedMapIntegrationBlobStarts(&rejectedMapIntegration.inner()),
               rejectedMapIntegrationBlobPool(&rejectedMapIntegration.inner()),
+              rejectedMapOrdis(arena, dirty),
+              rejectedMapOrdisKeys(&rejectedMapOrdis.inner()),
+              rejectedMapOrdisRunStarts(&rejectedMapOrdis.inner()),
+              rejectedMapOrdisBlobStarts(&rejectedMapOrdis.inner()),
+              rejectedMapOrdisBlobPool(&rejectedMapOrdis.inner()),
               varsInRejectedMapIntegrationKeys(arena, dirty),
               varsInRejectedMapIntegrationKeysKeys(&varsInRejectedMapIntegrationKeys.inner()),
               varsInAdmissionMapKeys(arena, dirty),
@@ -366,10 +464,22 @@ namespace gl {
               admissionStatusMapValues(&admissionStatusMap.inner()),
               productsOfRecursionIds(arena, dirty),
               productsOfRecursionIdsKeys(&productsOfRecursionIds.inner()),
-              consumedAdmissionKeys(arena, dirty),
-              consumedAdmissionKeysKeys(&consumedAdmissionKeys.inner()),
               revisitInProgress(arena, dirty),
-              revisitInProgressKeys(&revisitInProgress.inner())
+              revisitInProgressKeys(&revisitInProgress.inner()),
+              ordisRevisitInProgress(arena, dirty),
+              ordisRevisitInProgressKeys(&ordisRevisitInProgress.inner()),
+              admissionMapOrdis2(arena, dirty),
+              admissionMapOrdis2Keys(&admissionMapOrdis2.inner()),
+              admissionMapOrdis2RunStarts(&admissionMapOrdis2.inner()),
+              admissionMapOrdis2BlobStarts(&admissionMapOrdis2.inner()),
+              admissionMapOrdis2BlobPool(&admissionMapOrdis2.inner()),
+              rejectedMapOrdis2(arena, dirty),
+              rejectedMapOrdis2Keys(&rejectedMapOrdis2.inner()),
+              rejectedMapOrdis2RunStarts(&rejectedMapOrdis2.inner()),
+              rejectedMapOrdis2BlobStarts(&rejectedMapOrdis2.inner()),
+              rejectedMapOrdis2BlobPool(&rejectedMapOrdis2.inner()),
+              ordis2RevisitInProgress(arena, dirty),
+              ordis2RevisitInProgressKeys(&ordis2RevisitInProgress.inner())
         {}
 
         // Arena-bound: non-copyable (an arena pointer must not be blindly
@@ -401,16 +511,18 @@ namespace gl {
             return encodedMap.liveBytes()
                  + normalizedEncodedKeys.liveBytes()
                  + normalizedEncodedSubkeys.liveBytes()
-                 + normalizedEncodedSubkeysMinusOne.liveBytes()
-                 + normalizedEncodedSubkeysMinusTwo.liveBytes()
                  + admissionMap.liveBytes()
                  + admissionStatusMap.liveBytes()
-                 + consumedAdmissionKeys.liveBytes()
                  + varsInAdmissionMapKeys.liveBytes()
                  + rejectedMap.liveBytes()
                  + revisitInProgress.liveBytes()
+                 + ordisRevisitInProgress.liveBytes()
+                 + admissionMapOrdis2.liveBytes()
+                 + rejectedMapOrdis2.liveBytes()
+                 + ordis2RevisitInProgress.liveBytes()
                  + admissionMapIntegration.liveBytes()
                  + rejectedMapIntegration.liveBytes()
+                 + rejectedMapOrdis.liveBytes()
                  + varsInAdmissionMapIntegrationKeys.liveBytes()
                  + varsInRejectedMapIntegrationKeys.liveBytes()
                  + admissionSetIntegration.liveBytes()
@@ -418,6 +530,8 @@ namespace gl {
                  + productsOfRecursionIds.liveBytes()
                  + originals.liveBytes()
                  + remainingArgsNormalizedEncodedMap.liveBytes()
+                 + remainingArgsOwners.liveBytes()
+                 + copyOwners.liveBytes()
                  + remainingArgsReverseIndex.liveBytes();
         }
 
@@ -433,16 +547,18 @@ namespace gl {
             encodedMap.release();
             normalizedEncodedKeys.release();
             normalizedEncodedSubkeys.release();
-            normalizedEncodedSubkeysMinusOne.release();
-            normalizedEncodedSubkeysMinusTwo.release();
             admissionMap.release();
             admissionStatusMap.release();
-            consumedAdmissionKeys.release();
             varsInAdmissionMapKeys.release();
             rejectedMap.release();
             revisitInProgress.release();
+            ordisRevisitInProgress.release();
+            admissionMapOrdis2.release();
+            rejectedMapOrdis2.release();
+            ordis2RevisitInProgress.release();
             admissionMapIntegration.release();
             rejectedMapIntegration.release();
+            rejectedMapOrdis.release();
             varsInAdmissionMapIntegrationKeys.release();
             varsInRejectedMapIntegrationKeys.release();
             admissionSetIntegration.release();
@@ -450,18 +566,21 @@ namespace gl {
             productsOfRecursionIds.release();
             originals.release();
             remainingArgsNormalizedEncodedMap.release();
+            remainingArgsOwners.release();
+            copyOwners.release();
             remainingArgsReverseIndex.clear();
         }
 
         void clear() {
             encodedMap.resetToFresh();
             remainingArgsNormalizedEncodedMap.resetToFresh();
+            remainingArgsOwners.resetToFresh();
+            copyOwners.resetToFresh();
             remainingArgsReverseIndex.clear();
             normalizedEncodedKeys.resetToFresh();
             normalizedEncodedSubkeys.resetToFresh();
-            normalizedEncodedSubkeysMinusOne.resetToFresh();
-            normalizedEncodedSubkeysMinusTwo.resetToFresh();
             maxKeyLength = 0;
+            ownerlessPending = false;
             originals.resetToFresh();
             admissionMap.resetToFresh();
             admissionMapIntegration.resetToFresh();
@@ -469,13 +588,17 @@ namespace gl {
             triggersForAdmissionSetIntegration.resetToFresh();
             rejectedMap.resetToFresh();
             rejectedMapIntegration.resetToFresh();
+            rejectedMapOrdis.resetToFresh();
             varsInRejectedMapIntegrationKeys.resetToFresh();
             varsInAdmissionMapKeys.resetToFresh();
             varsInAdmissionMapIntegrationKeys.resetToFresh();
             admissionStatusMap.resetToFresh();
             productsOfRecursionIds.resetToFresh();
-            consumedAdmissionKeys.resetToFresh();
             revisitInProgress.resetToFresh();
+            ordisRevisitInProgress.resetToFresh();
+            admissionMapOrdis2.resetToFresh();
+            rejectedMapOrdis2.resetToFresh();
+            ordis2RevisitInProgress.resetToFresh();
         }
 
         /// @brief Enumerate this instance's COLD (deload-visited) facets at
@@ -512,31 +635,21 @@ namespace gl {
             visit(base + 2u, self.encodedMapRunStarts);
             visit(base + 3u, self.encodedMapBlobStarts);
             visit(base + 4u, self.encodedMapBlobPool);
-            // The four owner-set maps: 5 facets each at base+5..24.
+            // The whole-key set: 2 facets at base+5..6 (base+7..9, its former
+            // value facets, are a hole); the subkey map: 5 facets at base+10..14.
+            // The minus-one / minus-two maps that held base+15..24 are deleted;
+            // the band keeps a hole there rather than renumbering the survivors.
             visit(base + 5u, self.normalizedEncodedKeysLengths);
             visit(base + 6u, self.normalizedEncodedKeysBytes);
-            visit(base + 7u, self.normalizedEncodedKeysRunStarts);
-            visit(base + 8u, self.normalizedEncodedKeysBlobStarts);
-            visit(base + 9u, self.normalizedEncodedKeysBlobPool);
             visit(base + 10u, self.normalizedEncodedSubkeysLengths);
             visit(base + 11u, self.normalizedEncodedSubkeysBytes);
             visit(base + 12u, self.normalizedEncodedSubkeysRunStarts);
             visit(base + 13u, self.normalizedEncodedSubkeysBlobStarts);
             visit(base + 14u, self.normalizedEncodedSubkeysBlobPool);
-            visit(base + 15u, self.normalizedEncodedSubkeysMinusOneLengths);
-            visit(base + 16u, self.normalizedEncodedSubkeysMinusOneBytes);
-            visit(base + 17u, self.normalizedEncodedSubkeysMinusOneRunStarts);
-            visit(base + 18u, self.normalizedEncodedSubkeysMinusOneBlobStarts);
-            visit(base + 19u, self.normalizedEncodedSubkeysMinusOneBlobPool);
-            visit(base + 20u, self.normalizedEncodedSubkeysMinusTwoLengths);
-            visit(base + 21u, self.normalizedEncodedSubkeysMinusTwoBytes);
-            visit(base + 22u, self.normalizedEncodedSubkeysMinusTwoRunStarts);
-            visit(base + 23u, self.normalizedEncodedSubkeysMinusTwoBlobStarts);
-            visit(base + 24u, self.normalizedEncodedSubkeysMinusTwoBlobPool);
             // Algebra admission subsystem (D-172):
             // admissionMap 4 facets at base+25..28, admissionStatusMap 2 at
-            // base+29..30, consumedAdmissionKeys 1 at base+31,
-            // varsInAdmissionMapKeys 1 at base+32. Rejection side: rejectedMap
+            // base+29..30, varsInAdmissionMapKeys 1 at base+32 (base+31 is
+            // permanently unused). Rejection side: rejectedMap
             // 4 facets at base+33..36, revisitInProgress 1 at base+37.
             visit(base + 25u, self.admissionMapKeys);
             visit(base + 26u, self.admissionMapRunStarts);
@@ -544,7 +657,6 @@ namespace gl {
             visit(base + 28u, self.admissionMapBlobPool);
             visit(base + 29u, self.admissionStatusMapKeys);
             visit(base + 30u, self.admissionStatusMapValues);
-            visit(base + 31u, self.consumedAdmissionKeysKeys);
             visit(base + 32u, self.varsInAdmissionMapKeysKeys);
             visit(base + 33u, self.rejectedMapKeys);
             visit(base + 34u, self.rejectedMapRunStarts);
@@ -582,6 +694,52 @@ namespace gl {
             visit(base + 55u, self.remainingArgsNormalizedEncodedMapRunStarts);
             visit(base + 56u, self.remainingArgsNormalizedEncodedMapBlobStarts);
             visit(base + 57u, self.remainingArgsNormalizedEncodedMapBlobPool);
+            // Parked or-cohorts (rejectedMapOrdis, the admission-based ordis
+            // polarity): 4 facets at base+58..61, appended — the band is
+            // append-only, key tag first so reload rebuilds the index before
+            // the parallel columns.
+            visit(base + 58u, self.rejectedMapOrdisKeys);
+            visit(base + 59u, self.rejectedMapOrdisRunStarts);
+            visit(base + 60u, self.rejectedMapOrdisBlobStarts);
+            visit(base + 61u, self.rejectedMapOrdisBlobPool);
+            // ordisRevisitInProgress re-entrancy guard: 1 facet at base+62.
+            visit(base + 62u, self.ordisRevisitInProgressKeys);
+            // Ordis2 demand admission map
+            // (D-267): 4 facets at base+63..66,
+            // appended per the band's append-only discipline (D-174).
+            visit(base + 63u, self.admissionMapOrdis2Keys);
+            visit(base + 64u, self.admissionMapOrdis2RunStarts);
+            visit(base + 65u, self.admissionMapOrdis2BlobStarts);
+            visit(base + 66u, self.admissionMapOrdis2BlobPool);
+            // Ordis2 park index + its revisit guard
+            // (D-267): 5 facets at base+67..71,
+            // appended per the band's append-only discipline (D-174).
+            visit(base + 67u, self.rejectedMapOrdis2Keys);
+            visit(base + 68u, self.rejectedMapOrdis2RunStarts);
+            visit(base + 69u, self.rejectedMapOrdis2BlobStarts);
+            visit(base + 70u, self.rejectedMapOrdis2BlobPool);
+            visit(base + 71u, self.ordis2RevisitInProgressKeys);
+            // Owner-run columns (append-only tags, after every older facet so
+            // the enumeration stays ascending): the whole-key owners at
+            // 72..74 and the chain owners at 75..77 extend the key facets
+            // visited at 5/6 and 51/52; the remaining-args edge owners are a
+            // whole map at 78..82, the multiplication-copy owners at 83..87.
+            visit(base + 72u, self.normalizedEncodedKeysRunStarts);
+            visit(base + 73u, self.normalizedEncodedKeysBlobStarts);
+            visit(base + 74u, self.normalizedEncodedKeysBlobPool);
+            visit(base + 75u, self.originalsRunStarts);
+            visit(base + 76u, self.originalsBlobStarts);
+            visit(base + 77u, self.originalsBlobPool);
+            visit(base + 78u, self.remainingArgsOwnersLengths);
+            visit(base + 79u, self.remainingArgsOwnersBytes);
+            visit(base + 80u, self.remainingArgsOwnersRunStarts);
+            visit(base + 81u, self.remainingArgsOwnersBlobStarts);
+            visit(base + 82u, self.remainingArgsOwnersBlobPool);
+            visit(base + 83u, self.copyOwnersLengths);
+            visit(base + 84u, self.copyOwnersBytes);
+            visit(base + 85u, self.copyOwnersRunStarts);
+            visit(base + 86u, self.copyOwnersBlobStarts);
+            visit(base + 87u, self.copyOwnersBlobPool);
         }
 
         template <typename Visitor>

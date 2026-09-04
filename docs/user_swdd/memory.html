@@ -38,6 +38,7 @@ User-oriented SwDD — Chapter 6: Static memory (statification).
       <ul>
         <li><a href="prover.html#life">Life of a run</a></li>
         <li><a href="prover.html#cycles">Cycles</a></li>
+        <li><a href="prover.html#cuda-filter-classes">CUDA filter classes</a></li>
         <li><a href="prover.html#enter">How a theorem enters</a></li>
         <li><a href="prover.html#status">Status modes</a></li>
         <li><a href="prover.html#deactivate">Deactivation cascade</a></li>
@@ -62,7 +63,7 @@ User-oriented SwDD — Chapter 6: Static memory (statification).
         <li><a href="mechanisms.html#integ">Integration</a></li>
         <li><a href="mechanisms.html#branch">Branching &amp; contradiction</a></li>
         <li><a href="mechanisms.html#induct">Induction</a></li>
-        <li><a href="mechanisms.html#fan5">5-batch fan-out</a></li>
+        <li><a href="mechanisms.html#fan5">Request-generation fan-out</a></li>
         <li><a href="mechanisms.html#cascade">Pending-rejection cascade</a></li>
       </ul>
     </li>
@@ -594,6 +595,14 @@ fragmented or which physical blocks they sat in. The dump <i>is</i> the canonica
 across runs and hosts. This is the format the <b>discharge</b> drain and the
 chapter-export reads use, where that comparability matters.
 </p>
+<p><b>GPU execution and SSD deload are mutually exclusive in the current
+software.</b> The SSD policy derives from the batch's backend at prover
+construction: a CUDA-selected batch derives <code>allow_ssd_deload</code> false
+and runs a resident-only steward, while a processor-selected batch keeps the
+default permission and pages through the working-set steward
+(<code>allow_ssd_deload: false</code> in a configuration pins a processor batch
+resident). This is a temporary execution-policy boundary, not a claim that a
+future GPU or MPU cannot use a cold tier.</p>
 <p>
 The working-set pager's <b>evictions</b> — the hot loop above — instead use a
 <b>raw arena image</b>: a near-memcpy byte copy of the LB's live memory pages,
@@ -656,7 +665,7 @@ couple, turning the eviction stream from metadata-bound back into copy-bound.
     <text x="653" y="88" fill="#F0E8DC" font-size="9.5" text-anchor="middle">pending queue (background dump)</text>
   </g>
   <path d="M653 106 L653 128 L94 128 L94 106" fill="none" stroke="#8B8FA5" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#dt-ar)"/>
-  <text x="380" y="122" fill="#8B8FA5" font-size="9.5" text-anchor="middle">.deload/ files — the steward pages the working set in/out across ALL three phases; workers reload on touch</text>
+  <text x="380" y="122" fill="#8B8FA5" font-size="9.5" text-anchor="middle">processor + SSD mode: the steward pages across all phases · current GPU mode: resident-only</text>
   <text x="380" y="156" fill="#8B8FA5" font-size="10" text-anchor="middle">Touching a deloaded container anywhere outside the enumerated reload points asserts.</text>
 </svg>
 <figcaption><b>RAM as a working-set cache.</b> The steward's planner plans and

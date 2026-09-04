@@ -429,7 +429,7 @@ namespace gl {
         ///
         /// @param vid A live vid.
         /// @return Pointer to `pageBytes()` bytes of page storage.
-        char* pageAt(int32_t vid) {
+        GL_FORCEINLINE char* pageAt(int32_t vid) {
             // Per-resolve asserts gated under GL_ARENA_PARANOID on this hottest
             // path for RT (the unit tests and the paranoid run arm them).
 #if GL_ARENA_PARANOID
@@ -446,7 +446,7 @@ namespace gl {
         ///
         /// @param vid A live vid.
         /// @return Const pointer to `pageBytes()` bytes of page storage.
-        const char* pageAt(int32_t vid) const {
+        GL_FORCEINLINE const char* pageAt(int32_t vid) const {
             // Per-resolve asserts gated under GL_ARENA_PARANOID on this hottest
             // path for RT (the unit tests and the paranoid run arm them).
 #if GL_ARENA_PARANOID

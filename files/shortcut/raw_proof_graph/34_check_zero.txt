@@ -1,0 +1,7 @@
+(=[6,9])	main	vacuous truth	(=[10,2])	main	!(=[10,2])	main	(=[10,2])	main
+(=[10,2])	main	recursion
+!(=[10,2])	main	symmetry of inequality	!(=[2,10])	main
+!(=[2,10])	main	implication	(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9,10](in3[9,10,6,5])!(=[2,10])))	main	(AnchorFTA[1,2,3,4,5,6,7,8])	main	(in3[9,10,6,5])	main
+(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9,10](in3[9,10,6,5])!(=[2,10])))	main	theorem
+(AnchorFTA[1,2,3,4,5,6,7,8])	main	task formulation
+(in3[9,10,6,5])	main	task formulation

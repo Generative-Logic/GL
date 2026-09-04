@@ -82,6 +82,7 @@ namespace gl {
     ///            asserts (one process, one shape).
     /// @see `ScratchArena`, `scratchArenas()` / `initScratchArenas()` (the
     ///      process-wide binding).
+
     class ScratchArenaRegistry {
     public:
         /// @brief Create `slotCount` cold scratch arenas bound to `global`.
@@ -123,6 +124,7 @@ namespace gl {
                    "logicalCores the registry was initialized with");
             return arenas_[slot];
         }
+
 
     private:
         std::deque<ScratchArena> arenas_;  // deque: stable element addresses
@@ -180,9 +182,14 @@ namespace gl {
     /// Thin forwarder to `genScratchArenas().init(&staticMemory(), ...)`; same
     /// idempotent-same-shape / assert-on-mismatch contract as
     /// `initScratchArenas`. Called by the `ExpressionAnalyzer` constructor right
-    /// after `initScratchArenas`, with the same `logicalCores` slot count.
+    /// after `initScratchArenas`, with the same `logicalCores + 1` slot count:
+    /// the last slot is the reserved single-threaded slot every
+    /// `g_currentCoreId == -1` caller resolves to (`currentGenSlot()`), so no
+    /// worker's arena or rule-index staging pool is ever shared with a
+    /// non-worker thread.
     ///
-    /// @param slotCount Number of worker slots (`logicalCores`).
+    /// @param slotCount Number of worker slots plus the reserved slot
+    ///                  (`logicalCores + 1`).
     void initGenScratchArenas(unsigned slotCount);
 
 }

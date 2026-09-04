@@ -88,9 +88,9 @@ Every `Config<Tag>.json` is a JSON object keyed by:
 - **`prohibited_combinations`** — array-of-arrays listing forbidden co-occurrences of predicates. Optional.
 - **`prohibited_heads`** — array of predicate names that may never be a head. Optional.
 - **`anchor_name`** — override for the implicit anchor derivation from filename. Optional. Read at [`prover.cpp`](../GL_Quick_VS/GL_Quick/src/prover.cpp).
-- **`theorems_folder`** — path override (incubator only). Optional. Read at [`run_modes.cpp`](../GL_Quick_VS/GL_Quick/src/run_modes.cpp).
+- **`theorems_folder`** — path override (incubator and shortcut configs). Optional. Read at [`run_modes.cpp`](../GL_Quick_VS/GL_Quick/src/run_modes.cpp).
 - **`background_theorems_folder`** — path override (incubator only). Optional. Read at [`run_modes.cpp`](../GL_Quick_VS/GL_Quick/src/run_modes.cpp).
-- **`raw_proof_graph_folder`** — path override (incubator only). Optional. Read at [`run_modes.cpp`](../GL_Quick_VS/GL_Quick/src/run_modes.cpp).
+- **`raw_proof_graph_folder`** — path override (incubator and shortcut configs). Optional. Read at [`run_modes.cpp`](../GL_Quick_VS/GL_Quick/src/run_modes.cpp).
 
 No JSON schema validation is enforced — unknown fields are silently ignored (see [Weaknesses](#weaknesses)).
 
@@ -215,7 +215,9 @@ Top-level `prover_parameters` object. Read at [`prover.cpp–162`](../GL_Quick_V
 | `min_split_work` | int | `20000` | The straggler trigger's ONLY tunable knob (the split fan-out is `logicalCores`, not a config number): an LB splits into `logicalCores` expression buckets next iteration only if its total submatch work this iteration exceeds BOTH the idle-core fair-share `T / logicalCores` AND this floor. The floor is the per-bucket setup break-even — each bucket re-pays `filterIntEncodedStatements` + the obligatory-stump builders over the whole statement universe — so below it splitting cannot pay off (it suppresses splitting a trivially cheap iteration). Consumed by `isStraggler`. See [D-201](40_decisions.md#d-201). |
 | `axed_anchor_exception` | bool | `false` | Gates the axed-variable deposit filter's positive-anchor exception ([D-234](40_decisions.md)): when true, a positive anchor-category statement carrying an axed x-copy name deposits, letting an anchor-bridge firing land the external anchor's x-form as a live statement. Default (and every shipped config) false — the live x-anchor opens the external anchor's rule universe at x-arguments and explodes the batch runtime. |
 | `disable_lb_split` | bool | `false` | Diagnostic / RT-profiling flag. When true, `proveKernel` runs every LB unsplit (one phase-2 part) so the per-call `RTTracker` homed in `performElem2` measures the LB's whole hashburst (one `.rt/<chain>.log` per LB). Default false leaves the production parallel path untouched. See [D-110](40_decisions.md#d-110), [I-59](30_invariants.md#i-59). |
-| `lb_split` | bool | `true` | The split master switch: when false, `proveKernel` excludes every LB of the batch from the statistics-driven split ([D-201](40_decisions.md#d-201)) — the gate is `mainPath = lb_split && !disable_lb_split`; `incubator_mode` is no longer consulted. Set false by `ConfigIncubatorPeano1/2` and `ConfigIncubatorGauss1/2` (thousands of small LBs whose per-part setup is redundant); set true by `ConfigIncubatorGauss3` (heavy rung LBs). Absent in `ConfigPeano`/`ConfigGauss` (default true). Independent of the diagnostic `disable_lb_split`. See [D-231](40_decisions.md#d-231). |
+| `lb_split` | bool | `true` | The split master switch: when false, `proveKernel` excludes every LB of the batch from the statistics-driven split ([D-201](40_decisions.md#d-201)) — the gate is `mainPath = lb_split && !disable_lb_split`; `incubator_mode` is no longer consulted. Every production incubator config sets true; the integer straggler trigger still leaves balanced small-LB grids unsplit and fans out only an LB above both fair-share and the setup floor. `ConfigPeano`/`ConfigGauss` omit the key and inherit true. Independent of the diagnostic `disable_lb_split`. See [D-231](40_decisions.md#d-231), [D-328](40_decisions.md#d-328). |
+| `use_gpu` | bool | `false` | Batch-owned Phase 2 execution policy. Absent a command-line override the processor route runs (the product default — a customer PC needs no GPU); a config may pin one batch to CUDA with `true`. `main.py --GPU` passes `--phase2-backend cuda` to every batch of the run, and `--phase2-backend cpu|cuda` remains the explicit oracle override. A CUDA-selected batch uses the same backend for its counterexample filter, and a CUDA route that finds device, driver or runtime missing asserts. See [D-329](40_decisions.md#d-329) and [D-338](40_decisions.md#d-338). |
+| `allow_ssd_deload` | bool | `true` | Batch-owned permission for the steward and extent path to deload LB state, derived at prover construction: CUDA plus SSD deload stays forbidden, so a CUDA batch derives false and runs the resident-only steward, while a processor batch keeps this default and pages; set false to pin a processor batch resident. See [D-330](40_decisions.md#d-330). |
 | `maxNumberHashRequests` | int | `40000` | **Unused** no-op field. Was the per-part submatch cap that triggered the split; retired when the trigger became statistics-driven and preemptive ([D-201](40_decisions.md#d-201)) — main-path bursts now run to completion. Retained only so existing config files keep parsing. |
 | `fixed_number_splits` | int | `20` | **Unused** no-op field. Was the rule-split escalation target / bucket count; the fan-out is now `logicalCores`. Retained only so existing config files keep parsing. See [D-201](40_decisions.md#d-201). |
 | `second_split_submatch_cap` | int | `10000` | **Unused** no-op field. Was the second cap of the retired two-cap rule→stump escalation. Retained only so existing config files keep parsing. See [D-201](40_decisions.md#d-201). |
@@ -238,7 +240,7 @@ Top-level `prover_parameters` object. Read at [`prover.cpp–162`](../GL_Quick_V
 |---|---|---|---|
 | `compressor_mode` | bool | `false` | True inside Phase 1 compressor LBs. Set by the compressor internally, not the config. |
 | `ban_disintegration` | bool | `false` | Gates **every disintegration-shaped path** in the prover: Pass B at [`prover.cpp`](../GL_Quick_VS/GL_Quick/src/prover.cpp), back-reformulation at [`prover.cpp`](../GL_Quick_VS/GL_Quick/src/prover.cpp), hypothetical disintegration at [`prover.cpp`](../GL_Quick_VS/GL_Quick/src/prover.cpp), necessity-for-equality-hypo at [`prover.cpp`](../GL_Quick_VS/GL_Quick/src/prover.cpp). The compressor sets this true during Phase 1. Also read by `run_modes::fullRun` to decide whether to skip the compressor entirely. Pre-2026-04-29 this gated only the latter three; on 2026-04-29 the `incubator_mode` Pass-B coupling was first redirected to a brief `allow_disintegration` flag and then collapsed into `ban_disintegration` ([I-7](30_invariants.md#i-7), [D-28](40_decisions.md#d-28)). |
-| `max_origin_per_expr` | int | `1` | Origin-record cap in normal prover runs. |
+| `max_origin_per_expr` | int | `30` (shipped configs) | Per-key origin-record cap in normal prover runs; at the cap existing rows win (I-216). |
 | `compressor_max_origins_per_expr` | int | `30` | Origin-record cap during Phase 1 hash bursts. |
 | `compressor_hash_bursts` | int | `15` | Number of hash bursts per Phase 1 LB. |
 
@@ -249,10 +251,11 @@ Top-level `prover_parameters` object. Read at [`prover.cpp–162`](../GL_Quick_V
 | `try_contradiction` | bool | `false` | Enables contradiction-attempt LBs for negative conjectures. Set by every incubator config and by both main configs (`ConfigPeano.json` / `ConfigGauss.json` — main-path activation, [D-213](40_decisions.md#d-213)). |
 | `try_contradiction_negated_head` | bool | `false` | Complement of `try_contradiction`: every registered conjecture also gets a reductio LB that assumes the negation of its head and proves the conjecture on a main-scope contradiction ([D-214](40_decisions.md#d-214)). Set by `ConfigIncubatorPeano2.json` and both main configs. |
 | `skip_ce_filter` | bool | `false` | Bypasses CE filtering. Incubator-only (the incubator produces the facts it would otherwise consume). |
-| `mirror_refutation` | bool | `true` | CE-filter mirror-refutation heuristic ([D-229](40_decisions.md#d-229)): a CE-refuted operator-only conjecture flips its `mirror_pairs.txt` partner to refuted too. Gates only the CE-filter flip pass — never a proof step. Set explicitly `true` in `ConfigPeano.json` / `ConfigGauss.json`. |
+| `mirror_refutation` | bool | `true` | CE-filter mirror-refutation heuristic ([D-229](40_decisions.md#d-229)): a CE-refuted operator-only conjecture flips its `mirror_pairs.txt` partner to refuted too. Gates only the CE-filter flip pass — never a proof step. Set explicitly `true` in `ConfigPeano.json` / `ConfigGauss.json` and `false` in `ConfigFTA.json`, whose hand-maintained shortcut list has no conjecturer-written `mirror_pairs.txt` and whose counterexample-filter iteration count is zero. |
 | `skip_eq_classes` | bool | `false` | Bypasses equivalence-class registration. *(Not yet covered in detail — see [OPEN-CFG-1](#open-questions).)* |
-| `incubator_mode` | bool | `false` | Used to be the master incubator flag. As of 2026-04-29 (see [D-27](40_decisions.md#d-27)) it **no longer** gates Pass B — that's `!ban_disintegration` per [I-7](30_invariants.md#i-7) — nor `multiplyImplication` — that's `allow_multiplication`. Still governs the head-already-registered short-circuit in `addTheoremToMemory`, integration reformulation at [`prover.cpp`](../GL_Quick_VS/GL_Quick/src/prover.cpp), the relaxed-tempArgs assert at [`prover.hpp`](../GL_Quick_VS/GL_Quick/src/prover.hpp), conjecturer repeat-arg / op-head reformulation / OR-generation suppression, and the compressor skip in `run_modes::fullRun`. |
+| `incubator_mode` | bool | `false` | Used to be the master incubator flag. As of 2026-04-29 (see [D-27](40_decisions.md#d-27)) it **no longer** gates Pass B — that's `!ban_disintegration` per [I-7](30_invariants.md#i-7) — nor `multiplyImplication` — that's `allow_multiplication`. Still governs the head-already-registered short-circuit in `addTheoremToMemory`, integration reformulation at [`prover.cpp`](../GL_Quick_VS/GL_Quick/src/prover.cpp), the relaxed-tempArgs assert at [`prover.hpp`](../GL_Quick_VS/GL_Quick/src/prover.hpp), conjecturer repeat-arg / op-head reformulation / OR-generation suppression, and the compressor skip in `run_modes::fullRun`. Also gates the mail-edge pruning: below the anchor LB no root edge is registered, so incubator-derived theorem rules reach only the anchor LB while the externals seed is stored in the anchor LB's log ([D-332](40_decisions.md#d-332)). |
 | `allow_multiplication` | bool | `false` | Gates `multiplyImplication` at [`prover.cpp`](../GL_Quick_VS/GL_Quick/src/prover.cpp). Replaces the older `incubator_mode` use; the `ceFilteringActive` carve-out is preserved (CE filter multiplies regardless). True for legacy incubator configs (multiplication preserved); false for main configs and `ConfigIncubatorGauss3.json` (the rung-1 AI3 batch, renamed from the older `ConfigIncubatorGauss1.json`). |
+| `skip_compression` | bool | `false` | Skips the post-proof compressor without any of `incubator_mode`'s prover-semantics side effects — proved theorems are appended to the configured theorems folder by `run_modes::fullRun`'s skip branch, and `saveProvedTheoremsFiltered`'s canonical `files/theorems/` write path is never reached. Read ONLY by `run_modes::fullRun`'s config sniff (not a `ProverParameters` member). Set by `ConfigFTA.json` ([D-248](40_decisions.md#d-248), renamed from `ConfigShortcut.json` by [D-249](40_decisions.md#d-249)). |
 
 ### Debug / observability fields
 
@@ -330,6 +333,7 @@ Which expressions appear in which config:
 | `AnchorGauss` | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `AnchorIncubator8` | — | — | ✓ | — | ✓ | — | — | ✓ |
 | `AnchorIncubator3` | — | — | — | ✓ | — | ✓ | ✓ | ✓ |
+| `AnchorFTA` | — | — | — | — | — | — | — | ✓ |
 | `NaturalNumbers` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `in` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `=` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -343,6 +347,7 @@ Which expressions appear in which config:
 | `limitSet` | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
 | `limitSequence` | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
 | `preorder` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `strictOrder` | — | — | — | — | — | — | — | ✓ |
 | `residual` | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `sequence` | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `split` | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -462,7 +467,8 @@ Which code reads which field.
 
 - Opens `Config<Tag>.json` independently.
 - Reads `theorems_folder`, `background_theorems_folder`, `raw_proof_graph_folder` path overrides.
-- Reads `prover_parameters.ban_disintegration` and `prover_parameters.incubator_mode` — to decide whether to skip the compressor.
+- Reads `prover_parameters.ban_disintegration`, `prover_parameters.incubator_mode`, and `prover_parameters.skip_compression` — to decide whether to skip the compressor.
+- After the config sniff, applies the optional command-line file overrides (`gl_quick.exe <Tag> --conjectures-file <path> --externals-file <path>`, parsed in [`main.cpp`](../GL_Quick_VS/GL_Quick/src/main.cpp)): they replace the conjecture-list file and the external-theorems load file; relative paths resolve against the project root ([D-248](40_decisions.md#d-248)).
 
 ### Python stages (`configuration_reader.py`)
 

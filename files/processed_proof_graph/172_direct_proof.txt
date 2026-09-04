@@ -1,0 +1,8 @@
+(in[i1,V1])	main	equality1	(in[i1_copy,V1])	main	(=[i1_copy,i1])	main
+(in[i1_copy,V1])	main	implication	(>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[w1,W1](interval[N,+,i0,w1,W1])(>[](interval[N,+,i0,i1,W1])(in[w1,W1]))))	main	(AnchorGauss[N,i0,s,+,*,i1,i2,id])	main	(interval[N,+,i0,i1,V1])	main	(interval[N,+,i0,i1_copy,V1])	main
+(>[N,i0,s,+,*,i1,i2,id](AnchorGauss[N,i0,s,+,*,i1,i2,id])(>[v1,V1](interval[N,+,i0,v1,V1])(>[](interval[N,+,i0,i1,V1])(in[v1,V1]))))	main	theorem
+(AnchorGauss[N,i0,s,+,*,i1,i2,id])	main	task formulation
+(interval[N,+,i0,i1,V1])	main	task formulation
+(interval[N,+,i0,i1_copy,V1])	main	equality1	(interval[N,+,i0,i1,V1])	main	(=[i1,i1_copy])	main
+(=[i1,i1_copy])	main	variable copy
+(=[i1_copy,i1])	main	symmetry of equality	(=[i1,i1_copy])	main

@@ -1,0 +1,5 @@
+(=[v1,v2])	main	implication	(>[](preorder[N,+,v1,v2])(=[v1,v2]))	main	(preorder[N,+,v1,v2])	main
+(>[](preorder[N,+,v1,v2])(=[v1,v2]))	main	disintegration	!(&(preorder[N,+,v1,v2])!(=[v1,v2]))	main
+!(&(preorder[N,+,v1,v2])!(=[v1,v2]))	main	expansion	!(strictOrder[N,+,v1,v2])	main
+!(strictOrder[N,+,v1,v2])	main	task formulation
+(preorder[N,+,v1,v2])	main	task formulation

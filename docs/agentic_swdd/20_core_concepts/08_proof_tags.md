@@ -29,7 +29,7 @@ Rest fields **alternate** `(expression, namespace)` pairs — i.e. `rest[0]` is 
 
 ## Tag index
 
-30 distinct tags + 30 `TAG_CHECKERS` registry entries (one entry per tag — no shared-checker alias; `equalize variable` was removed, only `multiplied from` is emitted). `compilation` was added (briefly 31 + 31); `mirrored from` was removed (D-112) — see [`10_pipeline/08_verifier.md`](../10_pipeline/08_verifier.md). Sorted alphabetically here; the verifier iterates in registry order.
+31 distinct tags + 31 `TAG_CHECKERS` registry entries (one entry per tag — no shared-checker alias; `equalize variable` was removed, only `multiplied from` is emitted). `compilation` was added; `mirrored from` was removed (D-112); `or elimination` was added for the pre-split merge ([D-289](../40_decisions.md#d-289)) — see [`10_pipeline/08_verifier.md`](../10_pipeline/08_verifier.md). Sorted alphabetically here; the verifier iterates in registry order.
 
 - [`anchor handling`](#anchor-handling) — pin raw bound-variable index to anchor-slot name.
 - [`compilation`](#compilation) — implication compiled to its compact `(implication<N>[…])` named form (ASIC-prep provenance).
@@ -49,6 +49,7 @@ Rest fields **alternate** `(expression, namespace)` pairs — i.e. `rest[0]` is 
 - [`or convergence`](#or-convergence) — all branches reached the same conclusion.
 - [`or disintegration`](#or-disintegration) — case split on an OR head.
 - [`or theorem`](#or-theorem) — an OR-shaped theorem was reached.
+- [`or elimination`](#or-elimination) — a theorem derived by the pre-split merge (guard-variant pair + licensing or theorem).
 - [`premise element`](#premise-element) — one specific premise cited during integration.
 - [`recursion`](#recursion) — induction-hypothesis step.
 - [`reformulated from`](#reformulated-from) — this theorem is a reformulation of the cited source.
@@ -128,6 +129,8 @@ Rest fields **alternate** `(expression, namespace)` pairs — i.e. `rest[0]` is 
 
 **Checker.** `check_contradiction` at [`verifier.py`](../../verifier.py). Accepts the row/seed relation in either polarity: the row's expression and the seed (`cleanOp`, rest[4]) must be exact negations of each other — `"!"+cleanOp` for a verbatim positive-seed LB, `cleanOp == "!"+expression` for a complement negated-seed LB ([D-214](../40_decisions.md#d-214)).
 
+**Scope-carrying reductio variant** (sequenced-ordis campaign; emitted by `dischargeContradictionScopes` and `ordisMerge`'s branch-contradiction refutation): exactly FOUR rest fields — `X` at the marked child scope (rest[0..1]) and `negate(X)` at the scope where it is known (rest[2..3]). The checker validates: the two are exact negations; rest[3] is rest[1] or one of its `_boundary_`-ancestors; `line.namespace` is rest[1] minus its last `_boundary_<payload>` segment; and `line.expression` negates the scope's assumption (the negated seed of a `contradiction_<!S>` payload verbatim, or the disjunct's negation for an `ordis_<sig>_(<disjunct>)` payload). The companion `task formulation` checker accepts the contradiction scope's own positive seed row at that scope; the `contradiction trace` meta-check traces the new shape to the child scope's own seed row.
+
 **Rest fields.** Origin chain — references the two contradicting expressions and the discharged assumption.
 
 **Context.** Each contradiction step has an associated `origin` (non-checker) category entry recording the derivation tree. The verifier's origin-trace loop at [`verifier.py–2706`](../../verifier.py) walks this chain.
@@ -153,6 +156,8 @@ Rest fields **alternate** `(expression, namespace)` pairs — i.e. `rest[0]` is 
 ```
 
 **Validation.** The LHS must be a constituent of the RHS according to the GL binary's `elements` list for the RHS's named expression.
+
+**Or-cohort rule rows.** For an or-category compact, the row's expression is a flat hash rule over the disjuncts, accepted in either of two shapes (`_check_or_disintegration_implication`): the K mutual-exclusion form — k−1 premises equal to the negations of the other disjuncts, head one disjunct — or the SUBSET-EXCLUSION form ([D-269](../40_decisions.md#d-269), `_check_or_subset_exclusion`): j premises (1 ≤ j ≤ k−2) equal, as a MULTISET, to the negations of the excluded disjuncts, and a reduced (k−j)-ary or-compact head whose flattened disjunct list embeds in the parent's as an order-preserving subsequence (k ≥ 3 parents only; the reduced operator is pre-minted by the producer). Negations use double-negation cancellation throughout (I-175).
 
 ---
 
@@ -436,6 +441,14 @@ Pre-D-36 the checker accepted only the expanded `!(&!(…))` form in `rest[0]` a
 
 ---
 
+## `or elimination`
+
+**Purpose.** The pre-split merge ([D-289](../40_decisions.md#d-289)): `line.expression` is a DERIVED theorem obtained by classical or-elimination from two previously proved guard variants — rows identical except one binder-free innermost guard premise — under a previously proved or theorem whose two disjuncts are exactly those guards. The row is the whole chapter (`<N>_or_elimination.txt`, fabricated by `generateRawProofGraph` like or-theorem chapters), with three citations: `rest[0]` variant A, `rest[2]` variant B, `rest[4]` the licensing or theorem.
+
+**Checker.** `check_or_elimination` at [`verifier.py`](../../verifier.py) — a full structural check, not a stub: all three citations resolve against the global theorem registry (exact / w-to-v revert / normalized); the variants disintegrate to equal heads and equal chains except the innermost premise (shared-map `_normalize_expr_list` comparison; the guards must differ); the merged claim equals the common chain plus head (normalized); the or theorem's head decodes through the GL binaries (`_or_disjuncts_from_compiled`, flattened) to exactly two leaves aligning with the two guards under ONE variable bijection with literal polarity (`_or_elim_align`, [I-175](../30_invariants.md#i-175)); and every or-theorem side premise is covered by the common premises (byte-present under the bijection, or a typing atom whose mapped variable occurs in a common premise). Origin-exempt (citations are proved theorems, not local rows); the exemption also enrolls all three citation cells in the theorem-usage acyclicity graph.
+
+---
+
 ## `premise element`
 
 **Purpose.** During integration, one specific premise of the source implication is called out as a dependency of the integrated step.
@@ -630,6 +643,10 @@ A non-zero `self-reference` count in the final tally is always a bug — it mean
 ## Retired tags (kept as `origin.first` labels, not in chapter rows)
 
 - `reaction to hypo`, `necessity for equality (hypo)`, `reformulation for integration` (old umbrella) — retired. Subsumed by `variable copy` and the three `reformulation for integration …` variants.
+
+## Internal-only labels (live in `exprOriginMap`, never in chapter rows)
+
+- `hypothesis` — terminal provenance (one tag, zero dependencies) of a hypothesis-scope constituent deposited by `disintegrateExprHypothetically` via internal mail, written at the `_hypo_` validity only. Hypothesis constituents steer proof direction but are not part of any proof; a `buildStack` emission assert guarantees the label never reaches a chapter row, so the verifier has no checker for it by design. See [D-259](../40_decisions.md#d-259).
 
 History (D-35, 2026-05-03). The tags `or branch proven` and `or branch assumption` were previously listed here as "retired but still written internally, overridden before export". The override never existed. FTA-rung-1 chapter rows carried the live tags, the verifier did not register them in `TAG_CHECKERS`, and they showed up as `<unknown:…>` failures in incubator runs. D-35 promotes both tags to first-class `TAG_CHECKERS` entries with full structural validation; see the per-tag sections above.
 

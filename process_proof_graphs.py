@@ -418,6 +418,12 @@ def _build_fname_list(theorems):
         elif method == "or theorem":
             fnames = [f"{idx}_or_theorem.txt"]
             idx += 1
+        elif method == "or elimination":
+            fnames = [f"{idx}_or_elimination.txt"]
+            idx += 1
+        elif method == "proved not broadcast":
+            fnames = [f"{idx}_proved_not_broadcast.txt"]
+            idx += 1
         else:
             safe = re.sub(r"[^A-Za-z0-9._\-+]+", "_", method)[:64] or "unknown"
             fnames = [f"{idx}_unknown_{safe}.txt"]
@@ -462,6 +468,11 @@ def _prune_proof_graph(raw_theorems, raw_stacks, theorems_dir=None):
         method = parts[1].lower() if len(parts) > 1 else ""
         var_field = parts[2] if len(parts) > 2 else ""
         if method == "reformulated statement" and var_field in all_thm_exprs:
+            var_deps.setdefault(expr, set()).add(var_field)
+        # An or-elimination row depends on its variant citation by contract
+        # (its other citations sit in the chapter cells and are collected by
+        # get_deps' exact-match scan like any raw theorem expression).
+        if method == "or elimination" and var_field in all_thm_exprs:
             var_deps.setdefault(expr, set()).add(var_field)
 
     # ---- Collect dependencies from proof stacks (exact match) ----
@@ -600,6 +611,19 @@ def create_processed_proof_graph(config: configuration_reader,
                 line = line.strip()
                 if line:
                     raw_external_set.add(line)
+    # The exe's load-time compiled twins of the externals (written by
+    # run_modes.cpp::fullRun). Base-form externals compile against the
+    # run's live registry at load; chapter citations carry those compiled
+    # forms, so the external registry must hold both shapes for the
+    # verifier's textual origin match.
+    precompiled_ext_file = (theorems_dir / "precompiled_external_theorems.txt"
+                            if theorems_dir else None)
+    if precompiled_ext_file and precompiled_ext_file.exists():
+        with open(precompiled_ext_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    raw_external_set.add(line)
     external_renames: dict[str, str] = {}
     for raw_ext in raw_external_set:
         renamed_ext = rename_external_theorem(raw_ext, config)
@@ -630,6 +654,12 @@ def create_processed_proof_graph(config: configuration_reader,
             file_idx += 1
         elif method == "or theorem":
             fname_to_raw_thm[f"{file_idx}_or_theorem.txt"] = thm_expr
+            file_idx += 1
+        elif method == "or elimination":
+            fname_to_raw_thm[f"{file_idx}_or_elimination.txt"] = thm_expr
+            file_idx += 1
+        elif method == "proved not broadcast":
+            fname_to_raw_thm[f"{file_idx}_proved_not_broadcast.txt"] = thm_expr
             file_idx += 1
         else:
             safe = re.sub(r"[^A-Za-z0-9._\-+]+", "_", method)[:64] or "unknown"

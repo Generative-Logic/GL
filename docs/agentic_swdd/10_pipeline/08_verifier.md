@@ -51,7 +51,7 @@ expansion                                    success N, failure M
 
 Column width: `W = 44`. The tag name is left-justified to 44 chars, followed by `success <count>, failure <count>`.
 
-Row composition on a typical run: 1 (`theorem goal reached`) + 31 (TAG_CHECKERS in dispatch order) + ~9 meta counters that were hit (`self-reference`, `anchor handling uniqueness`, `anchor handling trace`, `contradiction trace`, `vacuous truth trace`, `origin`, `definition set consistency`, `origin chain termination`, `operator registry consistency`) + 1 headline ≈ 42 rows. Meta counters not hit on a given run are omitted, so the row count drifts with chapter shape.
+Row composition on a typical run: 1 (`theorem goal reached`) + 31 (TAG_CHECKERS in dispatch order) + ~9 meta counters that were hit (`self-reference`, `anchor handling trace`, `contradiction trace`, `vacuous truth trace`, `origin`, `definition set consistency`, `origin chain termination`, `operator registry consistency`, `theorem usage termination`) + 1 headline ≈ 42 rows. Meta counters not hit on a given run are omitted, so the row count drifts with chapter shape.
 
 **On a clean release run, every row reports `failure 0`.** In-flight FTA-ladder branches (e.g. ) regularly have non-zero failures — these indicate the rung currently being worked on, not regressions against the release baseline. for the reference clean counts.
 
@@ -84,6 +84,7 @@ Full table:
 | `validity name` | `check_validity_name` | [`verifier.py`](../../verifier.py) |
 | `anchor handling` | `check_anchor_handling` | [`verifier.py`](../../verifier.py) |
 | `or theorem` | `check_or_theorem` | [`verifier.py`](../../verifier.py) |
+| `or elimination` | `check_or_elimination` | [`verifier.py`](../../verifier.py) |
 | `reformulated from` | `check_reformulated_from` | [`verifier.py`](../../verifier.py) |
 | `incubator back reformulation` | `check_incubator_back_reformulation` | [`verifier.py`](../../verifier.py) |
 | `externally provided theorem` | `check_externally_provided_theorem` | [`verifier.py`](../../verifier.py) |
@@ -100,6 +101,8 @@ Full table:
 
 ### Goal-carrying subproof namespaces
 
+**Or-element polarity awareness ([I-175](../30_invariants.md#i-175), I-16-consented).** Or-compact elements carry each disjunct's true sign, so the helper `_negate_expr` (double-negation cancellation, the Python twin of `negateScratch`) backs every element negation: `_build_or_from_elements` and `_build_or_subimpls_from_elements` build conjuncts/premises through it, `_check_or_disintegration_implication` computes its expected exclusion premises through it (lockstep with the producer's `negateScratch`), and `check_or_branch_assumption` recovers the disjunct as `_negate_expr(line.expression)` — a NEGATED disjunct's assumption row is its bare positive core, so the former leading-`!` requirement is gone and the branch-namespace payload parser accepts a `!`-headed asserted leaf.
+
 `check_premise_element` accepts a namespace whose LAST `_boundary_`-delimited payload is either the bare compact `cleanSig` (legacy / statement-driven subproof scopes) or the goal-carrying `<goal>_subproof_<cleanSig>` form ([I-170](../30_invariants.md#i-170)), parsed by `verifier.py::_split_subproof_payload` — the Python twin of the prover's `splitSubproofPayload`. The bare half must equal `cleanSig` EXACTLY; the goal half is validated structurally (optionally-negated balanced group + the exact separator) but deliberately NOT matched against the chapter's rows: a subproof's compact statement at main is shared, so a chapter proving a DIFFERENT goal may legitimately cite machinery owned by another goal. `check_validity_name` needs no change — the scoped-goal closure deposits the STRIPPED bare compact. The three OR-family checkers (`or disintegration` / `or branch proven` / `or branch assumption`) still reconstruct bare `orint_`/`ordis_` namespaces: a goal-carrying orint scope on MAIN cannot occur in the current pipeline (OR branches spawn at subproof scopes), and if a future batch mints one into a chapter these checkers fail LOUDLY — the deliberate I-16 posture until a real case exists to extend them against.
 
 ### Validity matching on dep cells
@@ -115,14 +118,14 @@ Each checker that compares a row's dep validity to a stored validity uses **exac
 **Non-checker (meta) categories** tracked and validated outside the `TAG_CHECKERS` dispatch:
 
 - `self-reference` — error counter; increments when a chapter cites its own theorem as a justification (a `theorem`-tagged row whose expression equals the chapter's target).
-- `anchor handling uniqueness` — at most one `anchor handling` row per chapter. Multiple rows record failures.
-- `anchor handling trace` — per-step chain of `_copy` variable rewrites produced by `anchor handling`. Every user row that mentions a `_copy` var in its rest sources must trace back to the chapter's `anchor handling` row.
-- `contradiction trace` — chapter-local origin-chain walk; at least one of the two contradicting ingredients in a `contradiction` row must trace back to a `task formulation` row whose expression is the cited `cleanOp`.
+- `anchor handling trace` — per-step chain of `_copy` variable rewrites produced by `anchor handling`. Every user row that mentions a `_copy` var in its rest sources must trace back to an `anchor handling` row. A chapter may legitimately carry SEVERAL handling rows — the producer guarantees one copied-anchor variant per LB, and a chapter aggregates rows fired at several LB depths, each citing its own variant; copy variables are collected from the union of all handling rows' args, and the walk's same-variable follow restriction makes each chain terminate only at a root that mints the variable. (The former `anchor handling uniqueness` counter — at most one handling row per chapter — is retired, D-263.)
+- `contradiction trace` — chapter-local origin-chain walk; at least one of the two contradicting ingredients in a `contradiction` row must trace back to the row's seed. For the legacy six-field LB shape the seed target is a `task formulation` row whose expression is the cited `cleanOp`. For the scope-carrying four-field reductio shape (sequenced-ordis campaign) the target is the child scope's OWN seed row: a `contradiction_<!S>` payload traces to the scope's `task formulation` of the positive `S`; an `ordis_<sig>_(<disjunct>)` payload traces to the branch's `or disintegration` row for the disjunct.
 - `vacuous truth trace` — chapter-local origin-chain walk added by commit. At least one contradicting ingredient in a `vacuous truth` row must trace back to the recursion-hypothesis cited in `rest[4..5]`. Counter reports success/failure separately from `vacuous truth` itself; a failing trace means the LB's vacuous-truth claim is unsound even if the `check_vacuous_truth` structural check passes. Pairs with the prover-side `mb.level`-in-ingredients gate to prevent induction-step LBs from collapsing on anchor-only contradictions. See [`08_proof_tags.md#vacuous-truth`](../20_core_concepts/08_proof_tags.md#vacuous-truth).
 - `origin` — every dependency cited in a row's `rest` (at even indices) must resolve: either to a chapter-local left-side expression, an `_integration_goal`-postfixed placeholder, an exempt tag, or (for `implication` / `multiplied from` / `reformulated from` at `rest[0]`) the global theorem registry / external theorems. Full algorithm: [`origin` meta-check](#origin-meta-check).
 - `definition set consistency` — D-41 per-row variable-port type-consistency check. Every expression in every row is parsed; shared variable names across child sub-trees must agree on type label. See [`definition set consistency` meta-check](#definition-set-consistency-meta-check).
-- `origin chain termination` — chapter-local cycle detection on the origin graph. Every (expression, namespace) node on a back-edge is recorded as a failure. See [`origin chain termination`](#origin-chain-termination).
+- `origin chain termination` — chapter-local cycle detection on the origin graph via iterative WHITE/GRAY/BLACK depth-first search. Every (expression, namespace) node on a back-edge is recorded as a failure.
 - `operator registry consistency` — I-23: every spontaneous compact-operator name (`implication<N>`, `existence<N>`, `or<N>`, `and<N>`) must encode the same operator across every binary that carries it. See [Operator-registry consistency (I-23)](#operator-registry-consistency-i-23).
+- `theorem usage termination` — global (cross-chapter) cycle detection on the theorem-usage graph: edge A → B when the chapter of theorem A cites theorem B. One record per chapter-owning theorem; a failure means the theorem's proof is transitively grounded in itself while every per-chapter check passes. See [`theorem usage termination` meta-check](#theorem-usage-termination-meta-check).
 
 ---
 
@@ -159,7 +162,9 @@ Function: `run_verifier(base_dir)` at [`verifier.py`](../../verifier.py). Steps 
  - Extract `chapter_type` from filename.
  - Fetch theorem via `chapter_thm_map.get(cf)`.
  - Call `verify_chapter(cf, lines, chapter_type, state, chapter_thm)` at [`verifier.py`](../../verifier.py).
-7. **Emit report** via `print_report(state)` at [`verifier.py`](../../verifier.py).
+ - Accumulate the chapter's used-theorem set (`collect_theorem_usage_citations`) into the cross-chapter usage graph, keyed by the chapter's theorem (induction triads merge three files into one node).
+7. **Check the usage graph.** `check_theorem_usage_termination` runs the global acyclicity check over the accumulated graph → `state.counter_for("theorem usage termination")`. See [`theorem usage termination` meta-check](#theorem-usage-termination-meta-check).
+8. **Emit report** via `print_report(state)` at [`verifier.py`](../../verifier.py).
 
 ### `verify_chapter` — per-chapter pipeline
 
@@ -168,14 +173,13 @@ Stages (in order within a single chapter, all inside `verify_chapter` at [`verif
 1. `check_theorem_goal_reached` → `state.goal_reached`.
 2. Set transient chapter context (`current_chapter_thm`, `current_chapter_type`, `current_gl_binary`, `current_resolved_defsets`) via the **premise-anchor binary resolution** described below.
 3. Self-reference check → `state.counter_for("self-reference")`.
-4. Anchor-handling uniqueness → `state.counter_for("anchor handling uniqueness")`.
-5. Anchor-handling trace → `state.counter_for("anchor handling trace")`.
-6. Contradiction trace → `state.counter_for("contradiction trace")`.
-7. Vacuous-truth trace → `state.counter_for("vacuous truth trace")`.
-8. **Dispatch each row to its tag checker** via `TAG_CHECKERS[row.tag](line, lines, state)`. Unknown tags record under `state.counter_for("<unknown:{tag}>")`.
-9. General `origin` meta-check → `state.counter_for("origin")`.
-10. `definition set consistency` meta-check (D-41) → `state.counter_for("definition set consistency")`.
-11. `origin chain termination` cycle detection → `state.counter_for("origin chain termination")`.
+4. Anchor-handling trace → `state.counter_for("anchor handling trace")`.
+5. Contradiction trace → `state.counter_for("contradiction trace")`.
+6. Vacuous-truth trace → `state.counter_for("vacuous truth trace")`.
+7. **Dispatch each row to its tag checker** via `TAG_CHECKERS[row.tag](line, lines, state)`. Unknown tags record under `state.counter_for("<unknown:{tag}>")`.
+8. General `origin` meta-check → `state.counter_for("origin")`.
+9. `definition set consistency` meta-check (D-41) → `state.counter_for("definition set consistency")`.
+10. `origin chain termination` cycle detection → `state.counter_for("origin chain termination")`.
 
 ---
 
@@ -245,7 +249,7 @@ Since [D-54](../40_decisions.md#d-54) the auto-detect for the incubator-side `ba
 
 The `state.gl_binaries` map is consulted by:
 
-- `check_expansion` — to expand a named expression into its compiled-structure form. Its `_try_expand` core accepts, per category: the reconstructed AND / implication / existence / De-Morgan-or forms; for `or`, additionally the K per-branch sub-implication forms (D-52); and for `implication`, additionally the per-leaf OR-INTRO forms `(>[bv](D_k)(orPremise))` for each premise element that is a compiled OR (D-237 — the producer's `disintegrateExprCore2` implication branch emits one intro implication per flattened disjunct alongside the main rule; the acceptance resolves the premise's `or<N>` entry through the supplied binaries and admits exactly the compiled leaves).
+- `check_expansion` — to expand a named expression into its compiled-structure form. Its `_try_expand` core accepts, per category: the reconstructed AND / implication / existence / De-Morgan-or forms; for `or`, additionally the K per-branch sub-implication forms (D-52); and for `implication`, additionally the per-leaf OR-INTRO forms `(>[bv](D_k)(orPremise))` for each premise element that is a compiled OR (D-237 — the producer's `disintegrateExprCore2` implication branch emits one intro implication per flattened disjunct alongside the main rule; the acceptance resolves the premise's `or<N>` entry through the supplied binaries and admits exactly the compiled leaves). Negated sources (`rest[0]` starting `!`) take dedicated branches before `_try_expand`: negated existence (the two FullBind implications; a row whose expression is a compact `(implication<N>[…])` — the existence-implication product statement, [D-310](../40_decisions.md#d-310) — is first expanded through its implication binary entry via `_expand_implication_compact`) and negated AND (the prover's De-Morgan door — expected form is the negation of the substituted definition body, `!(&` + conjuncts verbatim + `)`); `check_disintegration` symmetrically dispatches a negated-AND expansion source to the shared `_check_or_disintegration_against` tail with the disjuncts derived as the entry's negated conjuncts (double negation cancelled).
 - `_check_reformulation` — to expand an existence head via the binary into left+right elements.
 - `check_anchor_handling` — to match anchor-slot positions.
 
@@ -479,6 +483,33 @@ Diagnostic recipe:  — a localizer that calls `check_defset_consistency` per ro
 
 ---
 
+## `theorem usage termination` meta-check
+
+The global cross-chapter acyclicity check ([I-190](../30_invariants.md#i-190), [D-276](../40_decisions.md#d-276)). Chapters connect to each other only through proven-theorem citations (a `theorem` row is a foundation leaf of its chapter), so the per-chapter `origin chain termination` check cannot see a cycle routed through two or more chapters: each chapter of a mutually-grounded pair passes every per-chapter check while the pair justifies only itself.
+
+### What it checks
+
+The directed theorem-usage graph — node = chapter-owning theorem (distinct expressions of `global_theorem_list.txt`; induction triads collapse to one node), edge A → B = "the chapter of A cites B" — contains no cycle.
+
+### Edge extraction — `collect_theorem_usage_citations`
+
+Per chapter, two citation channels produce edges:
+
+1. **`theorem` rows** — the row's expression is the citation (empty `rest` by construction).
+2. **Citation cells** — dependency cells NOT locally originated (no chapter row derives that exact expression) in the sanctioned citation positions: `rest[0]` of `implication` / `multiplied from` / `reformulated from` rows, and any cell of `_ORIGIN_EXEMPT_TAGS` rows (`or theorem` sources, `incubator back reformulation` sources, `compilation` antecedents). Locally-originated cells are internal derivation edges owned by `origin chain termination`; non-citation cells that fail to originate locally are `origin`-check failures, not usage edges.
+
+`externally provided theorem` rows contribute nothing — external theorems own no chapter and cannot close a cycle.
+
+Citations resolve to registry entries via `build_theorem_citation_resolver`, which precomputes lookup maps and applies the `origin` meta-check's fallback ladder: exact → w/W revert (`_revert_w_to_v_in_theorem_citation`) → `_normalize_expr_list` → `_alpha_canonicalize_bound_vars`. Unresolvable citations create no edge (the `theorem` tag checker already fails unresolvable theorem rows).
+
+### Algorithm and reporting — `check_theorem_usage_termination`
+
+The same iterative WHITE/GRAY/BLACK depth-first search as the chapter-local check, over theorem nodes; children visited in sorted order (deterministic under hash randomization). Cited theorems without a local chapter (cross-batch citations merged via `--include-globals`) have no out-edges — foundations by construction. One record per chapter-owning theorem into `theorem usage termination`: success iff the theorem lies on no usage cycle. Cycle *membership* is flagged, not reachability — an acyclic theorem citing into a cycle still passes (its own row already fails through the cycle members' records).
+
+A failure is a producer bug in the chapter exporter's origin choice (`buildStack` picked a circular `theorem` origin), per I-16 never a false positive. First live catch: the mirrored Peano inequality pair (processed chapters 58/59), each proved solely by one application of the other.
+
+---
+
 ## Weaknesses
 
 ### Known & tracked
@@ -501,7 +532,7 @@ Diagnostic recipe:  — a localizer that calls `check_defset_consistency` per ro
 
 These checkers structurally pass any row meeting trivial gates. Soundness of the matching tag is therefore *not* enforced by the verifier; the structural witness lives upstream.
 
-- **`check_or_theorem`** — accepts any row with `namespace == "main"` and `len(rest) >= 2`. The OR theorem's structural witness lives in the existence theorem proved upstream; this row marks registration only. Hardened tightening is an [open question](#open-questions).
+- **`check_or_theorem`** — accepts any row with `namespace == "main"` and `len(rest) >= 2`. The OR theorem's structural witness lives in the existence theorem proved upstream; this row marks registration only. Hardened tightening is an [open question](#open-questions). Note the contrast: the sibling construction tag `or elimination` shipped with a FULL structural checker from day one (`check_or_elimination` — citation resolution, one-premise-difference on normalized chains, or-license disjunct alignment with literal polarity, side-premise cover); it is not in this stub list.
 
 (`check_incubator_back_reformulation` was formerly listed here; it now performs a real structural check — see [`incubator back reformulation`](../20_core_concepts/08_proof_tags.md#incubator-back-reformulation).)
 

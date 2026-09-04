@@ -216,8 +216,8 @@ sibling test files.
 ### Test inventory
 
 - ~273 per-tag failure tests across the `TAG_CHECKERS` entries.
-- ~53 chapter-level meta-check failure tests (theorem goal reached,
- self-reference, anchor handling uniqueness/trace, contradiction
+- ~52 chapter-level meta-check failure tests (theorem goal reached,
+ self-reference, anchor handling trace, contradiction
  trace, vacuous truth trace, origin, definition set consistency,
  origin chain termination).
 - ~38 positive sanity tests (the dedicated `test_verifier_positive.py`

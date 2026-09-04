@@ -1,20 +1,20 @@
-!(in2[6,9,8])	main	contradiction	(=[6,9])	main	!(=[6,9])	main	(in2[6,9,8])	main
-(=[6,9])	main	implication	(>[1,2](in2[1,2,u_8])(=[1,2]))	main	(in2[6,9,8])	main
-(>[1,2](in2[1,2,u_8])(=[1,2]))	main	expansion	(implication18[8])	main
-(implication18[8])	main	disintegration	(&(&(implication0[8,1])(implication18[8]))(implication19[1,8]))	main
-(&(&(implication0[8,1])(implication18[8]))(implication19[1,8]))	main	expansion	(identity[1,8])	main
+!(in2[6,7,8])	main	contradiction	(=[6,7])	main	!(=[6,7])	main	(in2[6,7,8])	main
+(=[6,7])	main	implication	(>[1,2](in2[1,2,u_8])(=[1,2]))	main	(in2[6,7,8])	main
+(>[1,2](in2[1,2,u_8])(=[1,2]))	main	expansion	(implication22[8])	main
+(implication22[8])	main	disintegration	(&(&(implication0[8,1])(implication22[8]))(implication23[1,8]))	main
+(&(&(implication0[8,1])(implication22[8]))(implication23[1,8]))	main	expansion	(identity[1,8])	main
 (identity[1,8])	main	disintegration	(&(&(&(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))(in2[6,7,3]))(identity[1,8]))(in2[7,9,3]))	main
 (&(&(&(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))(in2[6,7,3]))(identity[1,8]))(in2[7,9,3]))	main	expansion	(AnchorIncubator3[1,2,3,4,5,6,7,8,9])	main
 (AnchorIncubator3[1,2,3,4,5,6,7,8,9])	main	task formulation
-(in2[6,9,8])	main	task formulation
-!(=[6,9])	main	implication	(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in2[7,8,3])(>[](in2[8,6,3])!(=[6,7]))))	main	(AnchorPeano[1,2,3,4,5,6])	main	(in2[7,6,3])	main	(in2[9,7,3])	main
+(in2[6,7,8])	main	task formulation
+!(=[6,7])	main	implication	(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7](in2[7,7,3])(>[](in2[7,6,3])!(=[6,7]))))	main	(AnchorPeano[1,2,3,4,5,6])	main	(in2[7,6,3])	main	(in2[7,7,3])	main
+(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7](in2[7,7,3])(>[](in2[7,6,3])!(=[6,7]))))	main	multiplied from	(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in2[7,8,3])(>[](in2[8,6,3])!(=[6,7]))))	main
 (AnchorPeano[1,2,3,4,5,6])	main	implication	(>[](NaturalNumbers[u_1,u_2,u_3,u_4,u_5])(>[](in2[u_2,u_6,u_3])(AnchorPeano[u_1,u_2,u_3,u_4,u_5,u_6])))	main	(NaturalNumbers[1,2,3,4,5])	main	(in2[2,6,3])	main
 (>[](NaturalNumbers[u_1,u_2,u_3,u_4,u_5])(>[](in2[u_2,u_6,u_3])(AnchorPeano[u_1,u_2,u_3,u_4,u_5,u_6])))	main	reformulation for integration and	(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))_integration_goal	main
 (&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))_integration_goal	main	expansion for integration	(AnchorPeano[1,2,3,4,5,6])_integration_goal	main
 (NaturalNumbers[1,2,3,4,5])	main	disintegration	(&(&(&(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))(in2[6,7,3]))(identity[1,8]))(in2[7,9,3]))	main
 (in2[2,6,3])	main	disintegration	(&(&(&(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))(in2[6,7,3]))(identity[1,8]))(in2[7,9,3]))	main
-(in2[7,6,3])	main	equality1	(in2[7,9,3])	main	(=[9,6])	main
-(in2[7,9,3])	main	disintegration	(&(&(&(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))(in2[6,7,3]))(identity[1,8]))(in2[7,9,3]))	main
-(=[9,6])	main	symmetry of equality	(=[6,9])	main
-(in2[9,7,3])	main	equality1	(in2[6,7,3])	main	(=[6,9])	main
+(in2[7,6,3])	main	equality1	(in2[6,7,3])	main	(=[6,7])	main	(=[7,6])	main
 (in2[6,7,3])	main	disintegration	(&(&(&(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))(in2[6,7,3]))(identity[1,8]))(in2[7,9,3]))	main
+(=[7,6])	main	symmetry of equality	(=[6,7])	main
+(in2[7,7,3])	main	equality1	(in2[6,7,3])	main	(=[6,7])	main

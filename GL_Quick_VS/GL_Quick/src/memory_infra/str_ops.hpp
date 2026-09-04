@@ -909,6 +909,50 @@ namespace gl {
         return 1;
     }
 
+    /// @brief Whether EVERY `int_lev_<level>_<id>` occurrence in the span
+    ///        carries a level STRICTLY BELOW the given bound — the
+    ///        parent-level mail-gate predicate.
+    ///
+    /// @details
+    /// A witness name minted at logic-block level `k` embeds `k` as the first
+    /// digit run of its `int_lev_k_id` token. Mail flows only ancestor to
+    /// descendant, so a token whose level is strictly below an LB's own level
+    /// can only have reached that LB by ancestor mail — and every ancestor
+    /// deposit is pulled by ALL of the LB's descendants directly. Such names
+    /// are therefore known below by construction, and an expression composed
+    /// exclusively of them is safe to mail onward regardless of how many
+    /// distinct tokens it carries (`allowedForMail`'s parent-level pass).
+    ///
+    /// The scan is TOTAL (no early exit), matching the sibling
+    /// `scanSingleDistinctIntLev`'s convention. The level parse accumulates
+    /// into 64 bits; a run whose value exceeds `INT32_MAX` fails the
+    /// predicate conservatively (the caller falls through to the memo gates
+    /// — a refusal is always sound on this path). Zero occurrences satisfy
+    /// the predicate vacuously; the caller's no-token early exit fires first.
+    ///
+    /// @param s          Span scanned (a slice of a caller-stable buffer).
+    /// @param levelBound Exclusive upper bound — the owning LB's `level`.
+    /// @return `true` iff every `int_lev` occurrence's level is
+    ///         `< levelBound`.
+    /// @see scanIntLevOccurrences — the occurrence driver;
+    ///      scanSingleDistinctIntLev — the verdict sibling;
+    ///      `allowedForMail` (`prover.cpp`) — the consumer.
+    inline bool allIntLevLevelsBelow(const StrSpan& s, int32_t levelBound) {
+        bool allBelow = true;
+        scanIntLevOccurrences(s, [&](int32_t start, int32_t len) {
+            (void)len;
+            int32_t i = start + 8;   // just past "int_lev_"; run 1 has >= 1 digit
+            int64_t v = 0;
+            while (i < s.len && isDecimalDigitByte(s.ptr[i])) {
+                v = v * 10 + (s.ptr[i] - '0');
+                if (v > INT32_MAX) { allBelow = false; return; }
+                ++i;
+            }
+            if (v >= levelBound) allBelow = false;
+        });
+        return allBelow;
+    }
+
     /// @brief Whether the span contains any `it_\d+_lev_\d+_` prefix-shape
     ///        occurrence — the heap-free twin of `std::regex_search` with that
     ///        pattern.

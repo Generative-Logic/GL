@@ -1,0 +1,79 @@
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2,v3](in3[v1,v2,v3,+])(>[v4,v5](in3[v4,v2,v5,+])(>[](preorder[N,+,v3,v5])(preorder[N,+,v1,v4])))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2,v3](in3[v1,v2,v3,+])(>[v4](in3[v4,v2,v3,+])(=[v1,v4]))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2,v3](in3[v1,v2,v3,+])(preorder[N,+,v1,v3])))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2,v3](in3[v1,v2,v3,*])(>[v4,v5](in3[v3,v4,v5,+])(>[v6](in3[v1,v6,v5,*])(>[v7](in3[v2,v7,v6,+])(in3[v1,v7,v4,*]))))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2,v3](in3[v1,v2,v3,*])(>[v4,v5](in3[v4,v2,v5,*])(>[](strictOrder[N,+,v3,v5])(strictOrder[N,+,v1,v4])))))	induction	v2
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2,v3](in3[v1,v2,v3,*])(>[v4,v5](in3[v1,v4,v5,*])(>[](preorder[N,*,v3,v5])(>[](preorder[N,+,i1,v1])(preorder[N,*,v2,v4]))))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2,v3](in3[v1,v2,v3,*])(>[](preorder[N,+,i2,v3])(>[](in[v1,N])(>[]!(preorder[N,+,i2,v2])(preorder[N,+,i2,v1]))))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2,v3](in3[v1,v2,v3,*])(>[](preorder[N,+,i2,v3])(>[](in[v1,N])(>[]!(preorder[N,+,i2,v1])(preorder[N,+,i2,v2]))))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2,v3](in3[v1,v2,v3,*])(>[](preorder[N,+,i2,v3])(>[](in[v1,N])(or9[N,+,i2,v2,v1])))))	or theorem	(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9,10,11](in3[9,10,11,5])(>[](preorder[1,4,7,11])(>[](in[9,1])(>[]!(preorder[1,4,7,10])(preorder[1,4,7,9]))))))
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2,v3](in3[v1,v2,v3,*])(>[](preorder[N,+,i2,v1])(>[](preorder[N,+,i1,v3])(strictOrder[N,+,v2,v3])))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2,v3](in3[v1,v2,v3,*])(preorder[N,*,v2,v3])))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](=[v1,v2])!(strictOrder[N,+,v1,v2])))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[v3,v4](in2[v3,v4,s])(>[](preorder[N,+,v2,v4])(preorder[N,+,v1,v3])))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[v3,v4](in3[v3,v4,v2,+])(>[v5](in2[v5,v4,s])(in3[v3,v5,v1,+])))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[v3](preorder[N,+,v2,v3])!(=[v1,v3]))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[v3](preorder[N,+,v2,v3])(preorder[N,+,v1,v3]))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[v3](preorder[N,+,v3,v1])(strictOrder[N,+,v3,v2]))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[v3](strictOrder[N,+,v3,v2])(preorder[N,+,v3,v1]))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(>[v3](strictOrder[N,+,v1,v3])!(strictOrder[N,+,v3,v2]))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in2[v1,v2,s])(in3[v1,i1,v2,+])))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in3[v1,v2,i0,+])(>[](in[v2,N])(=[i0,v1]))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in3[v1,v2,i0,+])(>[](in[v1,N])(=[i0,v2]))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in3[v1,v2,i0,*])(>[](in[v1,N])(>[]!(=[i0,v2])(=[i0,v1])))))	induction	v2
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in3[v1,v2,i0,*])(>[](in[v1,N])(>[]!(=[i0,v1])(=[i0,v2])))))	induction	v2
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in3[v1,v2,i0,*])(>[](in[v1,N])(or4[i0,v1,v2]))))	or theorem	(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9,10](in3[9,10,2,5])(>[](in[9,1])(>[]!(=[2,9])(=[2,10])))))
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in3[v1,v2,i1,*])!(=[i0,v2])))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in3[v1,v2,i1,*])!(=[i0,v1])))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in3[v1,v2,i1,*])(>[](in[v2,N])(=[i1,v1]))))	induction	v2
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](in3[v1,v2,i1,*])(>[](in[v1,N])(=[i1,v2]))))	induction	v1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](preorder[N,+,v1,v2])(>[v3,v4](in3[v1,v3,v4,+])(>[v5](in3[v2,v3,v5,+])(preorder[N,+,v4,v5])))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](preorder[N,+,v1,v2])(>[v3,v4](in3[v1,v3,v4,*])(>[v5](in3[v2,v3,v5,*])(preorder[N,+,v4,v5])))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](preorder[N,+,v1,v2])(>[]!(=[v1,v2])(strictOrder[N,+,v1,v2]))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](preorder[N,+,v1,v2])(>[]!(strictOrder[N,+,v1,v2])(=[v1,v2]))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](preorder[N,+,v1,v2])(>[](preorder[N,+,v2,v1])(=[v1,v2]))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](preorder[N,+,v1,v2])(or0[v1,v2,N,+])))	or theorem	(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9,10](preorder[1,4,9,10])(>[]!(=[9,10])(strictOrder[1,4,9,10]))))
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](preorder[N,*,v1,v2])(>[v3,v4](in3[v2,v3,v4,+])(>[](preorder[N,*,v1,v4])(preorder[N,*,v1,v3])))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](preorder[N,*,v1,v2])(>[v3,v4](in3[v2,v3,v4,*])(preorder[N,*,v1,v4]))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](preorder[N,*,v1,v2])(>[v3,v4](in3[v3,v1,v4,*])(>[v5](in3[v3,v2,v5,*])(preorder[N,*,v4,v5])))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](preorder[N,*,v1,v2])(>[v3,v4](preorder[N,*,v3,v4])(>[v5](in3[v1,v3,v5,*])(>[v6](in3[v2,v4,v6,*])(preorder[N,*,v5,v6]))))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](preorder[N,*,v1,v2])(>[v3](preorder[N,*,v2,v3])(preorder[N,*,v1,v3]))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](preorder[N,*,v1,v2])(>[v3](preorder[N,*,v1,v3])(>[v4](in3[v2,v3,v4,+])(preorder[N,*,v1,v4])))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](preorder[N,*,v1,v2])(>[](preorder[N,+,i1,v2])(preorder[N,+,i1,v1]))))	induction	v1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](preorder[N,*,v1,v2])(>[](preorder[N,+,i1,v2])(preorder[N,+,v1,v2]))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](preorder[N,*,v1,v2])(>[](preorder[N,*,v2,v1])(=[v1,v2]))))	or elimination	(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9,10](preorder[1,5,9,10])(>[](preorder[1,5,10,9])(>[](=[2,10])(=[9,10])))))
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](preorder[N,*,v1,v2])(>[](preorder[N,*,v2,v1])(>[](=[i0,v2])(=[v1,v2])))))	proved not broadcast	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](preorder[N,*,v1,v2])(>[](preorder[N,*,v2,v1])(>[](preorder[N,+,i1,v2])(=[v1,v2])))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](strictOrder[N,+,v1,v2])!(strictOrder[N,+,v2,v1])))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](strictOrder[N,+,v1,v2])(>[v3](in3[v1,v3,v2,+])!(=[i0,v3]))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1,v2](strictOrder[N,+,v1,v2])(>[v3](preorder[N,+,i1,v3])(>[v4](in3[v1,v3,v4,*])(>[v5](in3[v2,v3,v5,*])(strictOrder[N,+,v4,v5]))))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](in[v1,N])(>[v2](=[v1,v2])(in3[i1,v1,v2,*]))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](in[v1,N])(>[v2](=[v1,v2])(preorder[N,+,v1,v2]))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](in[v1,N])(>[v2](=[v1,v2])(preorder[N,*,v1,v2]))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](in[v1,N])(>[v2](in[v2,N])(>[]!(preorder[N,+,v1,v2])(preorder[N,+,v2,v1])))))	induction	v2
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](in[v1,N])(>[v2](in[v2,N])(>[]!(strictOrder[N,+,v1,v2])(>[]!(=[v1,v2])(strictOrder[N,+,v2,v1]))))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](in[v1,N])(>[v2](in[v2,N])(>[]!(strictOrder[N,+,v1,v2])(>[]!(strictOrder[N,+,v2,v1])(=[v1,v2]))))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](in[v1,N])(>[v2](in[v2,N])(or10[N,+,v1,v2]))))	or theorem	(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9](in[9,1])(>[10](in[10,1])(>[]!(strictOrder[1,4,9,10])(>[]!(=[9,10])(strictOrder[1,4,10,9]))))))
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](in[v1,N])(>[v2](in[v2,N])(or5[N,+,v1,v2]))))	or theorem	(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9](in[9,1])(>[10](in[10,1])(>[]!(preorder[1,4,9,10])(preorder[1,4,10,9])))))
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](in[v1,N])(>[]!(=[i0,v1])(>[]!(=[i1,v1])(preorder[N,+,i2,v1])))))	induction	v1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](in[v1,N])(>[]!(=[i0,v1])(>[]!(preorder[N,+,i2,v1])(=[i1,v1])))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](in[v1,N])(>[]!(=[i0,v1])(preorder[N,+,i1,v1]))))	induction	v1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](in[v1,N])(>[]!(preorder[N,+,i1,v1])(=[i0,v1]))))	induction	v1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](in[v1,N])(or3[N,+,i1,v1,i0])))	or theorem	(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9](in[9,1])(>[]!(preorder[1,4,6,9])(=[2,9]))))
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](in[v1,N])(or6[i0,v1,i1,N,+,i2])))	or theorem	(>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9](in[9,1])(>[]!(=[2,9])(>[]!(=[6,9])(preorder[1,4,7,9])))))
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](in[v1,N])(preorder[N,+,i0,v1])))	induction	v1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](in[v1,N])(preorder[N,*,i1,v1])))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](in[v1,N])(preorder[N,*,v1,i0])))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](preorder[N,+,i1,v1])!(=[i0,v1])))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](preorder[N,+,i1,v1])(>[v2,v3](in3[v2,v1,v3,*])(>[v4,v5](in3[v4,v1,v5,*])(>[](preorder[N,+,v3,v5])(preorder[N,+,v2,v4]))))))	induction	v2
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](preorder[N,+,i1,v1])(>[v2,v3](in3[v2,v1,v3,*])(>[v4](in3[v4,v1,v3,*])(=[v2,v4])))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](preorder[N,+,i1,v1])(>[v2,v3](in3[v2,v1,v3,*])(preorder[N,+,v2,v3]))))	induction	v1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](preorder[N,+,i1,v1])(>[v2](preorder[N,+,i1,v2])(>[v3](in3[v1,v2,v3,*])(preorder[N,+,i1,v3])))))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](preorder[N,+,i1,v1])(>[v2](preorder[N,+,i2,v2])(>[v3](in3[v1,v2,v3,*])(strictOrder[N,+,v1,v3])))))	induction	v1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](preorder[N,+,i2,v1])!(=[i0,v1])))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](preorder[N,+,i2,v1])!(=[i1,v1])))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](preorder[N,+,i2,v1])(>[v2](preorder[N,+,i1,v2])(>[v3](in3[v1,v2,v3,*])(preorder[N,+,i2,v3])))))	induction	v2
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](preorder[N,+,v1,i0])(=[i0,v1])))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](preorder[N,*,i0,v1])(=[i0,v1])))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(AnchorGauss[N,i0,s,+,*,i1,i2,id]))	direct	-1
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(AnchorPeano[N,i0,s,+,*,i1]))	direct	-1

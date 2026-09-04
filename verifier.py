@@ -27,6 +27,7 @@ import os
 import re
 import sys
 import itertools
+import dataclasses
 from dataclasses import dataclass, field
 from typing import Dict, Iterator, List, Set, Tuple, Optional
 
@@ -96,9 +97,11 @@ class TagCounter:
     @details
     Every dispatched check — per-tag in ``TAG_CHECKERS`` plus every
     chapter-level meta counter (``self-reference``,
-    ``anchor handling uniqueness``, ``anchor handling trace``,
+    ``anchor handling trace``,
     ``contradiction trace``, ``vacuous truth trace``, ``origin``,
-    ``definition set consistency``, ``origin chain termination``) —
+    ``definition set consistency``, ``origin chain termination``) and
+    every global meta counter (``operator registry consistency``,
+    ``theorem usage termination``) —
     aggregates outcomes into one of these counters via
     ``state.counter_for(name).record(passed)``.
 
@@ -2045,9 +2048,23 @@ def check_theorem_goal_reached(
             return False
         return True
 
-    # direct proof, check_zero, check_induction_condition:
+    # or_elimination: single line with tag "or elimination" whose claimed
+    # expression IS the chapter's theorem (the merge row is the derived
+    # theorem's own chapter — column 0 stays in registry v/V form, so the
+    # comparison is exact). The structural merge validation itself lives
+    # in check_or_elimination.
+    if chapter_type == "or_elimination":
+        if first.namespace != "main" or first.tag != "or elimination":
+            return False
+        if len(first.rest) < 6:
+            return False
+        return first.expression == thm_expr
+
+    # direct proof, check_zero, check_induction_condition — plus the
+    # proved-not-broadcast tier, whose chapter is an ordinary direct walk:
     # extract head from theorem, compare with first line
-    if chapter_type in ("direct_proof", "check_zero", "check_induction_condition"):
+    if chapter_type in ("direct_proof", "check_zero", "check_induction_condition",
+                        "proved_not_broadcast"):
         if first.namespace != "main":
             return False
         head = disintegrate_implication_head(thm_expr)
@@ -2560,15 +2577,39 @@ def _build_and_from_elements(elements: List[str]) -> str:
     return result
 
 
+def _negate_expr(expr: str) -> str:
+    """@brief Negate an MPL expression with double-negation cancellation.
+
+    @details
+    A negated expression (leading ``!``) loses its negation; a positive
+    expression gains one. This is the Python mirror of the C++
+    ``negateScratch`` / the ``expandSignature`` OR-case negation:
+    or-disjuncts (GL-binary ``elements`` of an ``or``-category entry)
+    carry their TRUE polarity, so building the De Morgan conjunct of a
+    negated disjunct must yield its bare positive core — a blind ``!``
+    prefix would mint a double negation that hashes as a distinct,
+    semantically flipped expression.
+
+    @param expr  Canonical MPL expression, possibly ``!``-prefixed.
+    @return  The negation of ``expr`` with at most one leading ``!``.
+    """
+    return expr[1:] if expr.startswith('!') else '!' + expr
+
+
 def _build_or_from_elements(elements: List[str]) -> str:
     """@brief Build the De Morgan-style ``!(&!(D1)!(D2)...)`` OR form from disjuncts.
 
     @details
     The OR ``D1 ∨ D2 ∨ ... ∨ Dk`` materializes via De Morgan as
-    ``!(D1 ∧ ... ∧ Dk) → wait, actually as ``!(!D1 ∧ !D2 ∧ ... ∧ !Dk)``.
-    For a 2-disjunct OR this reduces to ``!(&!D1!D2)``; for k≥3 the
-    inner ``(&...)`` left-nests over the negated tail. Mirrors the
-    expandSignature OR-case used by the C++ compiler.
+    ``!(!D1 ∧ !D2 ∧ ... ∧ !Dk)``. For a 2-disjunct OR this is
+    ``!(&!D1!D2)``; for k≥3 the accumulated or-so-far is itself a
+    DISJUNCT of the next level and enters the AND negated — by
+    double-negation cancellation its ``!(&...)`` form contributes the
+    bare positive ``(&...)``: ``!(&(&!D1!D2)!D3)`` reads
+    ``(D1 ∨ D2) ∨ D3``. (Nesting the or-so-far un-negated read
+    ``¬(D1 ∨ D2) ∨ D3`` — the mirrored polarity defect flagged in
+    D-260.) Mirrors the expandSignature OR-case used by the C++
+    compiler byte-for-byte.
 
     Single-element input is returned unchanged (degenerate OR).
 
@@ -2585,9 +2626,9 @@ def _build_or_from_elements(elements: List[str]) -> str:
     """
     if len(elements) == 1:
         return elements[0]
-    current = f'!(&!{elements[0]}!{elements[1]})'
+    current = f'!(&{_negate_expr(elements[0])}{_negate_expr(elements[1])})'
     for e in elements[2:]:
-        current = f'!(&{current}!{e})'
+        current = f'!(&{_negate_expr(current)}{_negate_expr(e)})'
     return current
 
 
@@ -2624,7 +2665,7 @@ def _build_or_subimpls_from_elements(elements: List[str]) -> List[str]:
         return []
     result: List[str] = []
     for k in range(K):
-        neg_others = [f'!{elements[j]}' for j in range(K) if j != k]
+        neg_others = [_negate_expr(elements[j]) for j in range(K) if j != k]
         if len(neg_others) == 1:
             premise = neg_others[0]
         else:
@@ -3116,7 +3157,10 @@ def check_expansion(line: ProofLine, chapter: List[ProofLine],
        compact. Build the two FullBind implications
        ``(left → !right)`` and ``(right → !left)`` and accept if
        ``line.expression`` matches either (modulo normalize-with-
-       unchangeables).
+       unchangeables). A ``line.expression`` that is itself a compact
+       ``(implication<N>[args])`` — the existence-implication product
+       statement the prover emits — is first expanded through its
+       implication binary entry (``_expand_implication_compact``).
     5. **General case.** Otherwise dispatch to ``_try_expand`` with
        the compact's binary entry; accept on any matching category.
 
@@ -3167,11 +3211,49 @@ def check_expansion(line: ProofLine, chapter: List[ProofLine],
             impl1 = _build_implication_fullbind([left], '!' + right, unch)
             impl2 = _build_implication_fullbind([right], '!' + left, unch)
             target = line.expression
+            # The row's expression may be the negated existence's compact
+            # "existence implication" ``(implication<N>[args])`` instead of
+            # the rule text (the prover takes the two rules from the
+            # existence's binary entry and emits each compact as the
+            # expansion product; the rule follows as an ``expansion`` row
+            # citing the compact). Expand it through its implication binary
+            # entry and validate the expansion with the same shape checks —
+            # the binary, not the row, decides the rule.
+            expanded = _expand_implication_compact(
+                target, state.binaries_for_chapter())
+            if expanded is not None:
+                target = expanded
             if (_normalize_with_unchangeables(target, unch)
                     == _normalize_with_unchangeables(impl1, unch)):
                 return True
             if (_normalize_with_unchangeables(target, unch)
                     == _normalize_with_unchangeables(impl2, unch)):
+                return True
+
+        # --- Negated-AND De-Morgan expansion: !(name[args]) whose entry is
+        # category 'and'. The producer (the prover's negated-AND De-Morgan
+        # door) emits the negation of the substituted definition body —
+        # '!(&' + the conjuncts verbatim, each at its own polarity + ')' —
+        # which is byte-identical to the De Morgan or-form over the negated
+        # conjuncts. Compare modulo the usual normalization with the
+        # instance args unchangeable.
+        for binary in state.binaries_for_chapter():
+            if core not in binary:
+                continue
+            entry = binary[core]
+            if entry.get('category') != 'and':
+                continue
+            sig_args = _extract_args(entry.get('signature', ''))
+            actual_args = _extract_args(inner_expr)
+            if len(sig_args) != len(actual_args):
+                continue
+            subst = dict(zip(sig_args, actual_args))
+            elements = [_replace_arg_safe_multi(e, subst)
+                        for e in entry['elements']]
+            expected = '!(&' + ''.join(elements) + ')'
+            unch = set(actual_args)
+            if (_normalize_with_unchangeables(line.expression, unch)
+                    == _normalize_with_unchangeables(expected, unch)):
                 return True
         return False
 
@@ -3360,6 +3442,31 @@ def check_disintegration(line: ProofLine, chapter: List[ProofLine],
                             line, compact, state.binaries_for_chapter()):
                         return True
 
+            # Negated-AND De-Morgan source: the expansion's compact is
+            # '!(name[args])' with an and-category entry (the prover's
+            # negated-AND De-Morgan door). The K mutual-exclusion rows
+            # validate against the De-Morgan disjuncts — each substituted
+            # conjunct negated with double-negation cancellation, exactly
+            # the producer's negateScratch construction.
+            if compact.startswith('!'):
+                neg_core = _extract_core_name(compact[1:])
+                for binary in state.binaries_for_chapter():
+                    if neg_core not in binary:
+                        continue
+                    entry = binary[neg_core]
+                    if entry.get('category') != 'and':
+                        continue
+                    sig_args = _extract_args(entry.get('signature', ''))
+                    actual_args = _extract_args(compact[1:])
+                    if len(sig_args) != len(actual_args):
+                        continue
+                    subst = dict(zip(sig_args, actual_args))
+                    disjuncts = [
+                        _negate_expr(_replace_arg_safe_multi(e, subst))
+                        for e in entry.get('elements', [])]
+                    if _check_or_disintegration_against(line, disjuncts):
+                        return True
+
     return False
 
 
@@ -3398,6 +3505,135 @@ def _check_or_disintegration_implication(line: ProofLine, compact: str,
     """
     disjuncts = _or_disjuncts_from_compiled(
         compact, binaries, flatten_nested=True)
+    # The row's expression may be the or's compact "or implication"
+    # ``(implication<N>[args])`` instead of the rule text (the prover takes
+    # the K / subset-exclusion rules from the or's binary entry and emits
+    # the compact as the disintegration product; the rule follows as an
+    # ``expansion`` row citing the compact). Expand it through its
+    # implication binary entry and validate the expansion with the same
+    # shape checks — the binary, not the row, decides the rule.
+    expanded = _expand_implication_compact(line.expression, binaries)
+    if expanded is not None:
+        line = dataclasses.replace(line, expression=expanded)
+    if _check_or_disintegration_against(line, disjuncts):
+        return True
+    return _check_or_subset_exclusion(line, disjuncts, binaries)
+
+
+def _expand_implication_compact(expr: str,
+                                binaries: List[dict]) -> Optional[str]:
+    """@brief Expand a compact ``(implication<N>[args])`` into its full-bind
+    rule through its binary entry; ``None`` for anything else.
+
+    @details
+    Mirror of the prover's compact-expansion path (``prepareIntegrationCore``
+    substituting the signature's ``u_`` tokens by the instance arguments
+    positionally, then ``reconstructImplicationFullBind`` over the
+    elements): the entry's elements are substituted with the compact's
+    actual arguments (repeated arguments are legal) and rebuilt with
+    ``_build_implication_from_elements``, every actual argument
+    unchangeable. Returns ``None`` when ``expr`` is not a positive simple
+    compact, no binary defines its core, or the entry is not an
+    implication.
+
+    @param expr      The candidate compact.
+    @param binaries  The chapter's GL binaries.
+    @return  The expanded rule, or ``None``.
+    """
+    if not expr.startswith('(') or expr.startswith('(>'):
+        return None
+    core = _extract_core_name(expr)
+    for binary in binaries:
+        entry = binary.get(core)
+        if entry is None or entry.get('category') != 'implication':
+            continue
+        sig_args = _extract_args(entry.get('signature', ''))
+        actual_args = _extract_args(expr)
+        if len(sig_args) != len(actual_args):
+            continue
+        subst = dict(zip(sig_args, actual_args))
+        elements = [_replace_arg_safe_multi(e, subst)
+                    for e in entry.get('elements', [])]
+        if not elements:
+            continue
+        return _build_implication_from_elements(elements, set(actual_args))
+    return None
+
+
+def _check_or_subset_exclusion(line: ProofLine, disjuncts,
+                               binaries: List[dict]) -> bool:
+    """@brief Validate the subset-exclusion sub-implication form of OR
+    disintegration.
+
+    @details
+    For an OR with k >= 3 disjuncts ``D_0..D_{k-1}``, the prover emits —
+    in addition to the K mutual-exclusion rules — one subset-exclusion
+    rule per excluded index subset S with 1 <= |S| <= k-2:
+    ``!D_i1 & .. & !D_ij -> or(D_rest)``. The premises are the negations
+    of the excluded disjuncts (double-negation cancelling); the head is a
+    genuine reduced (k-j)-ary or-compact whose flattened disjunct list is
+    the parent's list minus the excluded disjuncts, ORDER PRESERVED (the
+    producer emits the surviving leaves in parent order). Premises are
+    matched as a MULTISET: the producer emits them in parent order, but
+    the prover-side install detector is deliberately order-free (the
+    mail-compact round-trip permutes premise order), so premise order is
+    not part of the logical shape. The reduced or-operator is pre-minted
+    by the producer, so the head decodes through the same binaries.
+
+    @param line       The subset-exclusion disintegration row.
+    @param disjuncts  The PARENT or's ordered flattened disjunct list
+                      (TRUE polarity), or None.
+    @param binaries   The chapter's GL binaries (for the head decode).
+    @return  True iff the row matches the subset-exclusion shape.
+    """
+    if disjuncts is None or len(disjuncts) < 3:
+        return False
+
+    premises, head = disintegrate_implication_full(line.expression)
+    j = len(premises)
+    if j < 1 or j > len(disjuncts) - 2:
+        return False
+
+    head_disjuncts = _or_disjuncts_from_compiled(
+        head, binaries, flatten_nested=True)
+    if head_disjuncts is None or len(head_disjuncts) != len(disjuncts) - j:
+        return False
+
+    # Greedy order-preserving walk: the head list must embed as a
+    # subsequence of the parent list (leftmost matching finds an
+    # embedding iff one exists); the complement is the excluded multiset,
+    # which is uniquely determined even with duplicate disjuncts.
+    complement = []
+    hi = 0
+    for d in disjuncts:
+        if hi < len(head_disjuncts) and d == head_disjuncts[hi]:
+            hi += 1
+        else:
+            complement.append(d)
+    if hi != len(head_disjuncts) or len(complement) != j:
+        return False
+
+    return sorted(premises) == sorted(_negate_expr(d) for d in complement)
+
+
+def _check_or_disintegration_against(line: ProofLine,
+                                     disjuncts) -> bool:
+    """@brief Validate a K mutual-exclusion row against a given disjunct list.
+
+    @details
+    The shared tail of the OR-disintegration validation: disintegrate
+    ``line.expression`` into ``(premises, head)``, require the head to
+    be one of the disjuncts, and require the premise multiset to equal
+    the negations (with double-negation cancellation) of all the other
+    disjuncts. Used by ``_check_or_disintegration_implication`` (compiled
+    or-compact source) and by ``check_disintegration``'s negated-AND
+    De-Morgan branch (disjuncts derived from an and-category entry's
+    negated conjuncts).
+
+    @param line       The K-rule disintegration row.
+    @param disjuncts  Ordered disjunct list at TRUE polarity, or None.
+    @return  True iff the row matches the mutual-exclusion shape.
+    """
     if disjuncts is None or len(disjuncts) < 2:
         return False
 
@@ -3407,7 +3643,7 @@ def _check_or_disintegration_implication(line: ProofLine, compact: str,
         return False
 
     head_index = disjuncts.index(head)
-    expected_premises = sorted('!' + d for j, d in enumerate(disjuncts)
+    expected_premises = sorted(_negate_expr(d) for j, d in enumerate(disjuncts)
                                if j != head_index)
     actual_premises = sorted(premises)
 
@@ -3442,16 +3678,32 @@ def check_task_formulation(line: ProofLine, chapter: List[ProofLine],
     the case above: in both, the seed is exactly the negation of the
     theorem's head.
 
-    **Namespace gate.** Must be ``"main"``. Task formulations live
-    only at the theorem root; descendant scopes derive their own
-    seeded facts via OR-branch or recursion rules.
+    **Contradiction-scope seed case.** A scope whose last payload is
+    ``contradiction_<!X>`` (negated-compound integration) hypothesises
+    the POSITIVE compact ``X`` inside the marked child scope; that
+    seed is the scope's own task formulation. Accepted iff the
+    payload's seed is negated and ``line.expression`` is exactly its
+    un-negated form.
+
+    **Namespace gate.** Otherwise must be ``"main"``. Task
+    formulations live only at the theorem root; descendant scopes
+    derive their own seeded facts via OR-branch or recursion rules.
 
     @param line     The task-formulation row.
     @param chapter  Sibling rows (unused).
     @param state    Reads ``current_chapter_thm``; reject if None.
     @return  True iff the expression is a real theorem premise (or
-             the cleanOp of a contradiction-style head).
+             the cleanOp of a contradiction-style head, or a
+             contradiction-scope seed).
     """
+    _tf_cut = line.namespace.rfind("_boundary_")
+    if _tf_cut >= 0:
+        _tf_payload = line.namespace[_tf_cut + len("_boundary_"):]
+        if _tf_payload.startswith("contradiction_"):
+            _tf_neg = _tf_payload[len("contradiction_"):]
+            return (_tf_neg.startswith('!')
+                    and line.expression == _tf_neg[1:])
+        return False
     if line.namespace != "main":
         return False
     if state.current_chapter_thm is None:
@@ -4811,6 +5063,214 @@ def check_or_theorem(line: ProofLine, chapter: List[ProofLine],
     return True
 
 
+def _or_elim_citation_resolves(expr: str, state: "VerifierState") -> bool:
+    """@brief Membership ladder for an or-elimination citation.
+
+    @details
+    The same three-stage test ``check_theorem_tag`` applies to a
+    ``theorem`` row, factored for the or-elimination checker's three
+    citations (two guard variants plus the licensing or theorem, all
+    rendered in w/W citation form by the processor): exact membership
+    in ``state.global_theorems``; the w/W -> v/V revert for
+    theorem-anchor implications; then the normalize-and-compare
+    fallback over every registered theorem.
+
+    @param expr   The cited theorem expression (citation cell form).
+    @param state  Reads ``global_theorems``.
+    @return  True iff the citation resolves to a registered theorem.
+    @see check_theorem_tag — the ladder's original site.
+    """
+    if expr in state.global_theorems:
+        return True
+    if _is_theorem_anchor_impl_local(expr):
+        rev = _revert_w_to_v_in_theorem_citation(expr)
+        if rev != expr and rev in state.global_theorems:
+            return True
+    norm_expr = _normalize_expr_list([expr])
+    for gt_expr in state.global_theorems:
+        if _normalize_expr_list([gt_expr]) == norm_expr:
+            return True
+    return False
+
+
+_OR_ELIM_VAR_RE = re.compile(r'[vVwW]\d+$')
+
+
+def _or_elim_align(a: str, b: str,
+                   forward: Dict[str, str], reverse: Dict[str, str]) -> bool:
+    """@brief Token-aligned variable unification of two processed
+    expressions — the or-elimination disjunct comparator.
+
+    @details
+    The Python mirror of the prover's ``alignOrEliminationExprs``,
+    over processed naming: both expressions split into alternating
+    delimiter and token runs (tokens are maximal ``[A-Za-z0-9_]+``
+    runs); every delimiter run must match byte-for-byte, which keeps
+    polarity literal (I-175 — a ``!`` on one side only fails the
+    walk). A token matching ``[vVwW]<digits>`` is a renamed bound
+    variable on BOTH sides or the walk fails; it binds through the
+    caller-shared ``forward``/``reverse`` maps (one consistent
+    bijection across a whole call sequence). Every other token —
+    operator names, anchor slot names, numerals — must be byte-equal.
+
+    Both verdicts are contractual: True extends the bijection, False
+    is a defined mismatch the caller skips.
+
+    @param a        First expression (or-theorem leaf side).
+    @param b        Second expression (guard side).
+    @param forward  Accumulated a->b bindings (extended in place).
+    @param reverse  Accumulated b->a bindings (extended in place).
+    @return  True iff the walk completes with a consistent bijection.
+    @see check_or_elimination — sole caller.
+    """
+    parts_a = re.split(r'([A-Za-z0-9_]+)', a)
+    parts_b = re.split(r'([A-Za-z0-9_]+)', b)
+    if len(parts_a) != len(parts_b):
+        return False
+    for idx, (pa, pb) in enumerate(zip(parts_a, parts_b)):
+        if idx % 2 == 0:
+            if pa != pb:
+                return False
+            continue
+        bind_a = bool(_OR_ELIM_VAR_RE.match(pa))
+        bind_b = bool(_OR_ELIM_VAR_RE.match(pb))
+        if bind_a != bind_b:
+            return False
+        if bind_a:
+            if pa in forward:
+                if forward[pa] != pb:
+                    return False
+            elif pb in reverse:
+                return False
+            else:
+                forward[pa] = pb
+                reverse[pb] = pa
+        elif pa != pb:
+            return False
+    return True
+
+
+def check_or_elimination(line: ProofLine, chapter: List[ProofLine],
+                         state: VerifierState) -> bool:
+    """@brief Verify an ``or elimination`` row derives its theorem from a
+    guard-variant pair under a proved or theorem — the pre-split merge.
+
+    @details
+    The row is a whole chapter (the merge row IS the derived theorem's
+    chapter): ``line.expression`` is the merged theorem, ``rest`` holds
+    the three citations with namespaces —
+    ``(variantA, main, variantB, main, orTheorem, main)``. The check is
+    the full or-elimination soundness argument:
+
+    1. **Citations resolve.** All three cited rows are registered
+       proved theorems (``_or_elim_citation_resolves`` — exact, w/W
+       revert, then normalized membership).
+    2. **One-premise difference.** The variants disintegrate to equal
+       heads and equal premise chains except the INNERMOST premise
+       (the guards), compared via shared-map normalization
+       (``_normalize_expr_list`` over premises+head); the guards must
+       differ. Guards are binder-free by the pre-split authoring
+       convention, so they introduce no variables and the shared
+       prefix normalization is stable.
+    3. **The merged claim.** ``line.expression`` disintegrates to
+       exactly the variants' common chain plus their head (normalized
+       comparison — the claim is v/V, the citations w/W).
+    4. **The or license.** The or theorem's head decodes through the
+       GL binaries (``_or_disjuncts_from_compiled``, flattened) to
+       exactly TWO leaves that align with the two guards — in either
+       order — under ONE variable bijection (``_or_elim_align``,
+       literal polarity per I-175).
+    5. **Side-premise cover.** Every premise of the or theorem, with
+       all its variables bound by the leaf bijection and mapped into
+       variant naming, is byte-present among the common premises, or
+       is a typing atom ``(in[x,...])`` whose mapped variable occurs
+       in a common premise (the definition-set-backed typing gate's
+       syntactic form — premises type their variables, so occurrence
+       in a common premise carries the or theorem's typing
+       requirement).
+
+    A miss on any stage returns False — failures are first-class.
+
+    @param line     The or-elimination row.
+    @param chapter  Sibling rows (unused — the row is the chapter).
+    @param state    Reads ``global_theorems`` + ``binaries_for_chapter``.
+    @return  True iff the merge is structurally sound.
+    @see check_or_theorem — the sibling construction tag.
+    """
+    if line.namespace != "main":
+        return False
+    if len(line.rest) < 6:
+        return False
+    variant_a, ns_a = line.rest[0], line.rest[1]
+    variant_b, ns_b = line.rest[2], line.rest[3]
+    or_thm, ns_o = line.rest[4], line.rest[5]
+    if ns_a != "main" or ns_b != "main" or ns_o != "main":
+        return False
+
+    for cited in (variant_a, variant_b, or_thm):
+        if not _or_elim_citation_resolves(cited, state):
+            return False
+
+    prem_a, head_a = disintegrate_implication_full(variant_a)
+    prem_b, head_b = disintegrate_implication_full(variant_b)
+    if len(prem_a) != len(prem_b) or len(prem_a) < 2:
+        return False
+    norm_a = _normalize_expr_list(prem_a + [head_a])
+    norm_b = _normalize_expr_list(prem_b + [head_b])
+    if norm_a[:-2] != norm_b[:-2]:
+        return False
+    if norm_a[-1] != norm_b[-1]:
+        return False
+    if norm_a[-2] == norm_b[-2]:
+        return False
+    guard_a = prem_a[-1]
+    guard_b = prem_b[-1]
+
+    prem_m, head_m = disintegrate_implication_full(line.expression)
+    if len(prem_m) != len(prem_a) - 1:
+        return False
+    if _normalize_expr_list(prem_m + [head_m]) != \
+            _normalize_expr_list(prem_a[:-1] + [head_a]):
+        return False
+
+    prem_o, head_o = disintegrate_implication_full(or_thm)
+    leaves = _or_disjuncts_from_compiled(
+        head_o, state.binaries_for_chapter(), flatten_nested=True)
+    if leaves is None or len(leaves) != 2:
+        return False
+    matched_forward: Optional[Dict[str, str]] = None
+    for g0, g1 in ((guard_a, guard_b), (guard_b, guard_a)):
+        forward: Dict[str, str] = {}
+        reverse: Dict[str, str] = {}
+        if _or_elim_align(leaves[0], g0, forward, reverse) \
+                and _or_elim_align(leaves[1], g1, forward, reverse):
+            matched_forward = forward
+            break
+    if matched_forward is None:
+        return False
+
+    common_set = set(prem_a[:-1])
+    for prem in prem_o:
+        prem_vars = set(re.findall(r'[vVwW]\d+', prem))
+        if any(tok not in matched_forward for tok in prem_vars):
+            return False
+        img = re.sub(r'[vVwW]\d+',
+                     lambda m: matched_forward[m.group(0)], prem)
+        if img in common_set:
+            continue
+        if img.startswith('(in['):
+            inner = img[4:-2]
+            in_var = inner.split(',')[0] if inner else ''
+            if in_var and any(
+                    re.search(r'(?<![A-Za-z0-9_])' + re.escape(in_var)
+                              + r'(?![A-Za-z0-9_])', c)
+                    for c in common_set):
+                continue
+        return False
+
+    return True
+
+
 def check_reformulated_from(line: ProofLine, chapter: List[ProofLine],
                             state: VerifierState) -> bool:
     """@brief Verify a ``reformulated from`` row reformulates its source theorem.
@@ -5009,10 +5469,12 @@ def check_variable_copy(line: ProofLine,
     = ``Y + "_copy"`` is a freshly manufactured suffixed name that
     never appears anywhere in the model except as a second name for
     ``Y`` — so the axiom is always sound (a conservative extension
-    by construction). The three C++ emission sites
+    by construction). The five C++ emission sites
     (``checkNecessityForEquality``, ``disintegrateExprHypothetically``,
-    ``reactToHypo``) all emit this shape with an empty origin vector;
-    they differ only in WHEN the prover chose to introduce the copy.
+    ``reactToHypo``, and the two ``addTheoremToMemory`` triggers — the
+    antisymmetry shape and the output-collision shape) all emit this
+    shape with an empty origin vector; they differ only in WHEN the
+    prover chose to introduce the copy.
 
     **Structural checks.**
 
@@ -5237,6 +5699,25 @@ def check_contradiction(line: ProofLine, chapter: List[ProofLine],
     6. ``cleanOp`` appears in the chapter as a row tagged
        ``"task formulation"``.
 
+    **Scope-carrying reductio variant (sequenced or-disintegration
+    campaign).** A contradiction INSIDE a marked child scope refutes
+    that scope's assumption at the scope's parent. Row layout
+    (exactly four rest fields)::
+
+        line.expression = negate(scope assumption)
+        line.namespace  = parent of rest[1]
+        rest[0] = X            rest[1] = the marked child scope
+        rest[2] = negate(X)    rest[3] = scope where negate(X) is known
+
+    Structural rules: ``X``/``negate(X)`` are negations of each
+    other; ``rest[3]`` is ``rest[1]`` itself or one of its
+    ``_boundary_``-ancestors; ``line.namespace`` equals ``rest[1]``
+    minus its last ``_boundary_<payload>`` segment; and
+    ``line.expression`` negates the scope's assumption — for a
+    ``contradiction_<!S>`` payload it IS the negated seed ``!S``,
+    for an ``ordis_<sig>_(<disjunct>)`` payload it is the disjunct's
+    negation.
+
     @param line     The contradiction row.
     @param chapter  All chapter rows (for cleanOp task-formulation
                     lookup).
@@ -5246,6 +5727,37 @@ def check_contradiction(line: ProofLine, chapter: List[ProofLine],
     @see verify_chapter — runs the trace check that verifies the
     ingredients are reachable from the seed.
     """
+    if len(line.rest) == 4:
+        expr = line.rest[0]
+        scope_ns = line.rest[1]
+        neg_expr = line.rest[2]
+        neg_ns = line.rest[3]
+        if not (neg_expr == "!" + expr or expr == "!" + neg_expr):
+            return False
+        cut = scope_ns.rfind("_boundary_")
+        if cut < 0:
+            return False
+        if line.namespace != scope_ns[:cut]:
+            return False
+        if not (neg_ns == scope_ns
+                or scope_ns.startswith(neg_ns + "_boundary_")):
+            return False
+        payload = scope_ns[cut + len("_boundary_"):]
+        if payload.startswith("contradiction_"):
+            return line.expression == payload[len("contradiction_"):]
+        if payload.startswith("ordis_"):
+            sep = payload.find("_(", len("ordis_"))
+            if sep < 0:
+                return False
+            body = payload[sep + 1:]
+            if len(body) < 4 or body[0] != '(' or body[-1] != ')':
+                return False
+            disjunct = body[1:-1]
+            neg_disj = (disjunct[1:] if disjunct.startswith('!')
+                        else "!" + disjunct)
+            return line.expression == neg_disj
+        return False
+
     if line.namespace != "main":
         return False
     if len(line.rest) < 6:
@@ -5298,17 +5810,19 @@ def _parse_or_disjuncts(expanded_or: str) -> List[str]:
     @details
     Inverse of ``_build_or_from_elements``. Recursive descent:
 
-        ``!(&!(&!(=[a,x])!(=[b,x]))!(=[c,x]))``
+        ``!(&(&!(=[a,x])!(=[b,x]))!(=[c,x]))``
         → ``['(=[a,x])', '(=[b,x])', '(=[c,x])']``
 
-    Structure is right-associative nested ``!(&<left><right>)`` where:
+    Structure is nested ``!(&<left><right>)`` where every conjunct is
+    a disjunct's cancelled negation:
 
-    - **Left child** starting with ``!(&`` → recurse to extract more
+    - **Left child** starting with ``(&`` → the negated or-so-far;
+      negate it back (prepend ``!``) and recurse to extract its
       disjuncts.
-    - **Left child** starting with ``!`` (but not ``!(&``) → single
-      disjunct (strip leading ``!``).
-    - **Right child** always shape ``!<disjunct>`` → strip leading
-      ``!`` and append.
+    - **Any other left child** → a single disjunct; ``_negate_expr``
+      recovers its true polarity.
+    - **Right child** → one disjunct; ``_negate_expr`` recovers its
+      true polarity.
 
     Malformed input (missing outer ``!(&``, unbalanced parens) →
     returns the input wrapped in a single-element list as a fallback.
@@ -5341,18 +5855,15 @@ def _parse_or_disjuncts(expanded_or: str) -> List[str]:
         if seen_open and depth == 0:
             left = inner[:i + 1]
             right = inner[i + 1:]
-            # Left: recurse if !(&...), else strip ! to get disjunct
-            if left.startswith('!(&'):
-                disjuncts = _parse_or_disjuncts(left)
-            elif left.startswith('!'):
-                disjuncts = [left[1:]]
+            # Left: a bare (&...) conjunct is the NEGATED or-so-far —
+            # negate it back and recurse. Every other conjunct is one
+            # disjunct's cancelled negation, so negating back recovers
+            # its true polarity.
+            if left.startswith('(&'):
+                disjuncts = _parse_or_disjuncts('!' + left)
             else:
-                disjuncts = [left]
-            # Right: always !<disjunct>
-            if right.startswith('!'):
-                disjuncts.append(right[1:])
-            else:
-                disjuncts.append(right)
+                disjuncts = [_negate_expr(left)]
+            disjuncts.append(_negate_expr(right))
             return disjuncts
 
     return [s]  # fallback
@@ -5863,9 +6374,12 @@ def check_or_branch_assumption(line: ProofLine, chapter: List[ProofLine],
         return False
     or_expr = raw[:-len(suffix)]
 
-    if not line.expression.startswith("!"):
-        return False
-    negated = line.expression[1:]
+    # The assumption asserts the negation of the disjunct under refutation
+    # WITH double-negation cancellation (the producer's negateScratch): a
+    # positive disjunct's assumption is !-prefixed, a negated disjunct's
+    # assumption is its bare positive core. Recover the disjunct by
+    # negating back — no leading-'!' requirement.
+    negated = _negate_expr(line.expression)
 
     disjuncts = _or_disjuncts_from_compiled(
         or_expr, state.binaries_for_chapter(), flatten_nested=True)
@@ -5887,22 +6401,27 @@ def check_or_branch_assumption(line: ProofLine, chapter: List[ProofLine],
     # starts with `(` since GL expressions are paren-wrapped). After that
     # group, exactly one `)` closes the wrapper, and nothing else may
     # follow.
-    if not after.startswith('('):
+    # The asserted leaf is embedded verbatim, so a negated disjunct's
+    # payload reads `_(!(...))` — accept one optional leading '!' before
+    # the balanced parens group.
+    neg_prefix = after.startswith('!')
+    core = after[1:] if neg_prefix else after
+    if not core.startswith('('):
         return False
     depth = 1
     end = -1
-    for j in range(1, len(after)):
-        if after[j] == '(':
+    for j in range(1, len(core)):
+        if core[j] == '(':
             depth += 1
-        elif after[j] == ')':
+        elif core[j] == ')':
             depth -= 1
             if depth == 0:
                 end = j
                 break
     if end < 0:
         return False
-    asserted = after[:end + 1]
-    if after[end + 1:] != ')':
+    asserted = ('!' if neg_prefix else '') + core[:end + 1]
+    if core[end + 1:] != ')':
         return False
 
     if not _disjunct_matches(asserted, disjuncts):
@@ -6021,6 +6540,10 @@ _ORIGIN_EXEMPT_TAGS = frozenset({
     "or branch proven",
     "or branch assumption",
     "or theorem",
+    # `or elimination` cites two proved guard variants plus the licensing
+    # or theorem — none locally originated; exemption also enrolls all
+    # three citation cells in the usage-graph edge collection.
+    "or elimination",
     # `compilation`'s antecedent is the original implication, a broadcast
     # theorem that need not appear as a prior left-side chapter row; the
     # compact<->original link is definitional (GL-binary construction).
@@ -6062,6 +6585,7 @@ TAG_CHECKERS = {
     "or branch assumption":             check_or_branch_assumption,
     "vacuous truth":                    check_vacuous_truth,
     "or theorem":                       check_or_theorem,
+    "or elimination":                   check_or_elimination,
 }
 
 
@@ -6101,28 +6625,31 @@ def verify_chapter(chapter_file: str, lines: List[ProofLine],
        self-reference → record under
        ``counter_for("self-reference")``.
 
-    4. **Anchor handling uniqueness.** At most one ``anchor handling``
-       row per chapter; record under
-       ``counter_for("anchor handling uniqueness")`` if >1.
+    4. **Anchor handling trace.** For every _copy variable named in
+       ANY ``anchor handling`` row's args, every chapter row whose
+       ``rest`` source fields carry that var must trace back (via
+       ``_trace_back_to``) to an anchor-handling row. Record under
+       ``counter_for("anchor handling trace")``. A chapter may carry
+       several anchor-handling rows — the producer guarantees one
+       copied-anchor variant per LB, and a chapter legitimately
+       aggregates rows fired at several LB depths, each citing its
+       own variant; the walk's same-variable follow restriction
+       guarantees each chain terminates at a root that mints the
+       variable. (The former per-chapter uniqueness demand is
+       retired — D-263.)
 
-    5. **Anchor handling trace.** For every _copy variable named in
-       the anchor's args, every chapter row whose ``rest`` source
-       fields carry that var must trace back (via
-       ``_trace_back_to``) to the anchor-handling row. Record
-       under ``counter_for("anchor handling trace")``.
-
-    6. **Contradiction trace** and **Vacuous truth trace.** For
+    5. **Contradiction trace** and **Vacuous truth trace.** For
        each row of the respective tag, at least one of the two
        contradicting ingredients must trace back to the seed
        (contradiction → task-formulation cleanOp; vacuous truth →
        LB exprKey). Record under the corresponding counters.
 
-    7. **Per-tag dispatch.** For every row, look up
+    6. **Per-tag dispatch.** For every row, look up
        ``TAG_CHECKERS[row.tag]`` and invoke it; record under
        ``counter_for(row.tag)``. Unknown tags get recorded under
        ``counter_for("<unknown:{tag}>")``.
 
-    8. **General origin check.** Every dependency (``rest[i]`` at
+    7. **General origin check.** Every dependency (``rest[i]`` at
        even indices) of every row must be either (a) the LEFT-side
        expression of some chapter row, (b) carry the
        ``_integration_goal`` postfix, or (c) belong to a tag in
@@ -6132,12 +6659,12 @@ def verify_chapter(chapter_file: str, lines: List[ProofLine],
        registries (with alpha-canonical and w→v revert fallbacks).
        Record under ``counter_for("origin")``.
 
-    9. **Definition-set consistency (D-41).** Every chapter row is
+    8. **Definition-set consistency (D-41).** Every chapter row is
        run through ``check_defset_consistency`` (the D-41
        variable-port type-consistency meta-check). Record under
        ``counter_for("definition set consistency")``.
 
-    10. **Origin chain termination (cycle detection).** Build the
+    9. **Origin chain termination (cycle detection).** Build the
         chapter's origin graph, run iterative DFS-color cycle
         detection. Every (expression, namespace) node on a cycle is
         flagged; record one failure per cyclic node under
@@ -6205,27 +6732,25 @@ def verify_chapter(chapter_file: str, lines: List[ProofLine],
             if line.tag == "theorem" and line.expression == thm_expr:
                 state.counter_for("self-reference").record(False)
 
-    # 4. Anchor handling uniqueness: at most one per chapter
-    anchor_handling_count = sum(1 for line in lines if line.tag == "anchor handling")
-    if anchor_handling_count > 1:
-        state.counter_for("anchor handling uniqueness").record(False)
-
     # Build expr → lines map once for chapter-level trace checks
     _ch_expr_to_lines: Dict[str, List[ProofLine]] = {}
     for ch_line in lines:
         _ch_expr_to_lines.setdefault(ch_line.expression, []).append(ch_line)
 
-    # 5. Anchor handling trace: every _copy var in rest fields must trace
-    #    back to the anchor handling line
-    anchor_line = None
-    for line in lines:
-        if line.tag == "anchor handling":
-            anchor_line = line
-            break
+    # 4. Anchor handling trace: every _copy var minted by ANY anchor-handling
+    #    row must, wherever a row's rest sources carry it, trace back to an
+    #    anchor-handling row. A chapter may carry several handling rows (one
+    #    copied-anchor variant per LB depth); the same-variable follow
+    #    restriction makes each chain terminate only at a root that mints
+    #    the variable (D-263).
+    anchor_lines = [line for line in lines if line.tag == "anchor handling"]
 
-    if anchor_line is not None:
-        anchor_args = _extract_args(anchor_line.expression)
-        copy_vars = [a for a in anchor_args if a.endswith("_copy")]
+    if anchor_lines:
+        copy_vars: List[str] = []
+        for al in anchor_lines:
+            for a in _extract_args(al.expression):
+                if a.endswith("_copy") and a not in copy_vars:
+                    copy_vars.append(a)
 
         if copy_vars:
             _anc_target = lambda cl: cl.tag == "anchor handling"
@@ -6246,9 +6771,39 @@ def verify_chapter(chapter_file: str, lines: List[ProofLine],
                             state.counter_for("anchor handling trace").record(ok)
 
     # 6. Contradiction trace: at least one of the two contradicting expressions
-    #    must trace back to the seed (task formulation) through all ingredients
+    #    must trace back to the seed (task formulation) through all ingredients.
+    #    The scope-carrying reductio variant (four rest fields) traces to the
+    #    child scope's OWN seed row instead: the contradiction-scope task
+    #    formulation (the positive of the negated payload seed), or the ordis
+    #    branch's `or disintegration` assumption row (the payload disjunct).
     for line in lines:
         if line.tag != "contradiction":
+            continue
+        if len(line.rest) == 4:
+            scope_ns = line.rest[1]
+            cut = scope_ns.rfind("_boundary_")
+            payload = (scope_ns[cut + len("_boundary_"):]
+                       if cut >= 0 else "")
+            if payload.startswith("contradiction_"):
+                neg_seed = payload[len("contradiction_"):]
+                seed_expr = (neg_seed[1:] if neg_seed.startswith('!')
+                             else "!" + neg_seed)
+                _seed_target = (lambda cl, _s=seed_expr:
+                                cl.tag == "task formulation"
+                                and cl.expression == _s)
+            elif payload.startswith("ordis_"):
+                sep = payload.find("_(", len("ordis_"))
+                seed_expr = payload[sep + 2:-1] if sep >= 0 else ""
+                _seed_target = (lambda cl, _s=seed_expr:
+                                cl.tag == "or disintegration"
+                                and cl.expression == _s)
+            else:
+                state.counter_for("contradiction trace").record(False)
+                continue
+            ok = (_trace_back_to(line.rest[0], _ch_expr_to_lines, _seed_target)
+                  or _trace_back_to(line.rest[2], _ch_expr_to_lines,
+                                    _seed_target))
+            state.counter_for("contradiction trace").record(ok)
             continue
         if len(line.rest) < 6:
             state.counter_for("contradiction trace").record(False)
@@ -6979,6 +7534,232 @@ def chapter_sort_key(filename: str) -> Tuple[int, str]:
         return (999999, base)
 
 
+# ---------------------------------------------------------------------------
+#  Cross-chapter meta-check: theorem usage termination
+#
+#  Every chapter may use previously proven theorems as inference rules
+#  (`theorem` rows, rule citations). The per-chapter `origin chain
+#  termination` check proves each chapter's INTERNAL derivation graph
+#  acyclic, but a `theorem` row is a foundation there — so two chapters
+#  can each ground themselves in the other's theorem and both pass every
+#  per-chapter check while the pair is circular. Chapters connect only
+#  through theorem citations, therefore global proof-graph acyclicity
+#  decomposes into per-chapter acyclicity (already checked) plus
+#  acyclicity of the directed theorem-usage graph "theorem A's chapter
+#  cites theorem B" — which is what this check establishes.
+# ---------------------------------------------------------------------------
+
+def build_theorem_citation_resolver(state: VerifierState):
+    """@brief Build a resolver from a cited expression to its registry theorem.
+
+    @details
+    A chapter cites a proven theorem in one of several textual forms:
+    byte-identical to the ``global_theorem_list.txt`` entry (`theorem`
+    rows), w/W-renamed citation form (rule cells at column >= 3, see
+    ``_revert_w_to_v_in_theorem_citation``), or an alpha-equivalent
+    bound-variable renaming (cross-batch citations). This factory
+    precomputes normalized and alpha-canonical lookup maps over
+    ``state.global_theorems`` once, then resolves each citation with
+    the same fallback ladder the ``origin`` meta-check applies:
+    exact -> w/W revert -> ``_normalize_expr_list`` -> alpha
+    canonicalization.
+
+    External theorems (``state.external_theorems``) are deliberately
+    NOT resolvable: they are axiomatic input, own no chapter, and can
+    therefore never participate in a usage cycle.
+
+    On collisions (two registry entries sharing a normalized or alpha
+    form) the first entry in ``state.global_theorems`` iteration order
+    wins, mirroring the ``any(...)`` first-hit semantics of the
+    ``origin`` meta-check.
+
+    @param state  Verifier state with ``global_theorems`` loaded.
+    @return  ``resolve(cited: str) -> Optional[str]`` — the registry
+             expression the citation denotes, or ``None`` when the
+             citation is not a proven theorem of this run family.
+
+    @see check_theorem_usage_termination — consumes the resolved edges.
+    """
+    exact = state.global_theorems
+    norm_map: Dict[str, str] = {}
+    alpha_map: Dict[str, str] = {}
+    for gt in state.global_theorems:
+        norm_map.setdefault(_normalize_expr_list([gt])[0], gt)
+        alpha_map.setdefault(_alpha_canonicalize_bound_vars(gt), gt)
+
+    def resolve(cited: str) -> Optional[str]:
+        """@brief Resolve one citation string to its registry theorem.
+
+        @details
+        Applies the fallback ladder documented on the factory. Pure
+        lookup — never mutates the precomputed maps.
+
+        @param cited  Citation text exactly as it appears in the
+                      chapter cell.
+        @return  Registry theorem expression, or ``None`` if the text
+                 does not denote a proven theorem.
+        """
+        if cited in exact:
+            return cited
+        if _is_theorem_anchor_impl_local(cited):
+            rev = _revert_w_to_v_in_theorem_citation(cited)
+            if rev in exact:
+                return rev
+        norm = _normalize_expr_list([cited])[0]
+        if norm in norm_map:
+            return norm_map[norm]
+        return alpha_map.get(_alpha_canonicalize_bound_vars(cited))
+
+    return resolve
+
+
+def collect_theorem_usage_citations(lines: List[ProofLine],
+                                    resolve) -> Set[str]:
+    """@brief Collect the proven theorems one chapter's rows cite.
+
+    @details
+    Walks every row of a parsed chapter and gathers the registry
+    theorems it uses, from the two citation channels:
+
+    1. **``theorem`` rows** — the row's own expression IS the citation
+       (empty rest by construction; the used theorem is a foundation
+       leaf of the chapter).
+    2. **Citation cells** — dependency cells that are NOT locally
+       originated (no chapter row derives that exact expression) in
+       the sanctioned citation positions: the ``rest[0]`` rule cell of
+       ``implication`` / ``multiplied from`` / ``reformulated from``
+       rows, and any cell of the ``_ORIGIN_EXEMPT_TAGS`` rows (or
+       theorem sources, incubator back-reformulation sources,
+       compilation antecedents). Locally-originated cells are internal
+       derivation edges — the ``origin chain termination`` check owns
+       those; non-citation cells that fail to originate locally are
+       ``origin``-check failures, not usage edges.
+
+    ``externally provided theorem`` rows contribute nothing: external
+    theorems own no chapter and cannot close a cycle. Citations that
+    resolve to no registry theorem contribute nothing here — the
+    ``theorem`` tag checker already fails unresolvable theorem rows.
+
+    @param lines    Parsed chapter rows.
+    @param resolve  Citation resolver from
+                    ``build_theorem_citation_resolver``.
+    @return  Set of registry theorem expressions this chapter uses
+             (possibly including the chapter's own theorem — a
+             self-citation is a length-1 usage cycle).
+
+    @see check_theorem_usage_termination — consumes one set per chapter.
+    """
+    originated = {ln.expression for ln in lines}
+    cited: Set[str] = set()
+    for ln in lines:
+        if ln.tag == "theorem":
+            resolved = resolve(ln.expression)
+            if resolved is not None:
+                cited.add(resolved)
+            continue
+        if ln.tag == "externally provided theorem":
+            continue
+        for i in range(0, len(ln.rest) - 1, 2):
+            dep = ln.rest[i]
+            if dep in originated:
+                continue
+            is_rule_cell = (i == 0 and ln.tag in (
+                "implication", "multiplied from", "reformulated from"))
+            if not (is_rule_cell or ln.tag in _ORIGIN_EXEMPT_TAGS):
+                continue
+            resolved = resolve(dep)
+            if resolved is not None:
+                cited.add(resolved)
+    return cited
+
+
+def check_theorem_usage_termination(usage_order: List[str],
+                                    usage_edges: Dict[str, Set[str]],
+                                    state: VerifierState) -> None:
+    """@brief Global acyclicity check over the theorem-usage graph.
+
+    @details
+    Nodes are the theorems that own chapters in this run (insertion
+    order of ``usage_order``); the directed edge A -> B means "A's
+    chapter cites B". Runs the same iterative WHITE/GRAY/BLACK
+    depth-first cycle detection as the chapter-local ``origin chain
+    termination`` check: a GRAY back-edge marks every node on the
+    cycle. Cited theorems without a local chapter (cross-batch
+    citations merged via ``--include-globals``) have no outgoing
+    edges and are foundations by construction.
+
+    Records exactly one result per local theorem node into
+    ``state.counter_for("theorem usage termination")`` — success when
+    the theorem lies on no usage cycle. A failure means the theorem's
+    proof is (transitively) grounded in itself: each chapter in the
+    cycle passes every per-chapter check, yet the cycle members
+    justify only each other. Per I-16 such a failure is a real
+    producer bug (the chapter exporter chose a circular origin), never
+    a false positive.
+
+    Children are visited in sorted order so the traversal (and any
+    future diagnostic ordering) is deterministic under Python hash
+    randomization; the set of cyclic nodes itself is
+    order-independent.
+
+    @param usage_order  Distinct chapter-owning theorem expressions in
+                        first-seen chapter order.
+    @param usage_edges  Theorem expression -> set of cited theorem
+                        expressions (union over the theorem's chapter
+                        files; induction triads contribute three files
+                        to one node).
+    @param state        Verifier state receiving the counter records.
+
+    @see collect_theorem_usage_citations — produces the edge sets.
+    @see build_theorem_citation_resolver — citation resolution.
+    """
+    WHITE, GRAY, BLACK = 0, 1, 2
+    node_color: Dict[str, int] = {}
+    cyclic_nodes: Set[str] = set()
+
+    def _dfs_cycle(start: str) -> None:
+        # Iterative DFS with explicit stack to avoid recursion limits.
+        stack: List[Tuple[str, Iterator[str]]] = []
+        node_color[start] = GRAY
+        stack.append((start, iter(sorted(usage_edges.get(start, ())))))
+        while stack:
+            node, children = stack[-1]
+            advanced = False
+            for child in children:
+                if child not in usage_edges:
+                    # No local chapter — foundation, cannot cycle.
+                    continue
+                c = node_color.get(child, WHITE)
+                if c == GRAY:
+                    # Back-edge: every GRAY node from `child` down the
+                    # stack lies on the cycle.
+                    in_cycle = False
+                    for st_node, _ in stack:
+                        if st_node == child:
+                            in_cycle = True
+                        if in_cycle:
+                            cyclic_nodes.add(st_node)
+                    cyclic_nodes.add(child)
+                    continue
+                if c == BLACK:
+                    continue
+                node_color[child] = GRAY
+                stack.append((child, iter(sorted(usage_edges.get(child, ())))))
+                advanced = True
+                break
+            if not advanced:
+                node_color[node] = BLACK
+                stack.pop()
+
+    for node in usage_order:
+        if node not in node_color:
+            _dfs_cycle(node)
+
+    for node in usage_order:
+        state.counter_for("theorem usage termination").record(
+            node not in cyclic_nodes)
+
+
 def run_verifier(base_dir: str,
                  extra_global_lists: Optional[List[str]] = None) -> VerifierState:
     """@brief Bootstrap state, enumerate chapters, run the verifier end-to-end.
@@ -7020,6 +7801,12 @@ def run_verifier(base_dir: str,
     8. **Verify every chapter.** For each chapter file, parse it
        and call ``verify_chapter``. Each call accumulates counter
        state.
+
+    9. **Theorem usage termination.** While looping, accumulate the
+       cross-chapter theorem-usage graph (one node per chapter-owning
+       theorem, edge A -> B for "A's chapter cites B" via
+       ``collect_theorem_usage_citations``); after the loop, run the
+       global acyclicity check ``check_theorem_usage_termination``.
 
     @param base_dir            Directory containing the
                                 processed-proof-graph chapter files
@@ -7102,6 +7889,12 @@ def run_verifier(base_dir: str,
     chapter_thm_map = build_chapter_theorem_map(
         chapter_files, state.global_theorem_list)
 
+    # Cross-chapter theorem-usage graph, accumulated over the chapter
+    # loop and cycle-checked after it (theorem usage termination).
+    resolve_citation = build_theorem_citation_resolver(state)
+    usage_order: List[str] = []
+    usage_edges: Dict[str, Set[str]] = {}
+
     # Process every chapter
     for cf in chapter_files:
         filepath = os.path.join(base_dir, cf)
@@ -7112,6 +7905,16 @@ def run_verifier(base_dir: str,
         chapter_thm = chapter_thm_map.get(cf)
 
         verify_chapter(cf, lines, chapter_type, state, chapter_thm)
+
+        if chapter_thm is not None:
+            thm_expr = chapter_thm[0]
+            if thm_expr not in usage_edges:
+                usage_order.append(thm_expr)
+                usage_edges[thm_expr] = set()
+            usage_edges[thm_expr].update(
+                collect_theorem_usage_citations(lines, resolve_citation))
+
+    check_theorem_usage_termination(usage_order, usage_edges, state)
 
     return state
 
@@ -7124,7 +7927,8 @@ def get_totals(state: VerifierState) -> tuple[int, int]:
     counter), every ``TAG_CHECKERS``-registered counter, and every
     chapter-level meta-counter (``"self-reference"``, ``"origin"``,
     ``"definition set consistency"``, ``"origin chain termination"``,
-    ``"operator registry consistency"``, ``"anchor handling uniqueness"``,
+    ``"operator registry consistency"``,
+    ``"theorem usage termination"``,
     ``"anchor handling trace"``, ``"contradiction trace"``,
     ``"vacuous truth trace"``). All three groups contribute BOTH success
     AND failure counts symmetrically — the headline "M checks" therefore

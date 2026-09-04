@@ -34,19 +34,47 @@ ifeq ($(USE_MIMALLOC),1)
   LDFLAGS  += -lmimalloc
 endif
 
+# CUDA Phase 2 route. Default OFF: a plain `make` builds the processor-only
+# binary (no CUDA toolkit needed; selecting the CUDA route on that binary
+# asserts at startup). `make USE_CUDA=1` compiles the two `.cu` translation
+# units with nvcc for the same device targets as the Visual Studio project,
+# defines GL_CUDA for every translation unit, and links the CUDA runtime.
+# Needs the CUDA toolkit (13.x; `CUDA_HOME` defaults to /usr/local/cuda) and
+# an NVIDIA driver on the run host. `main.py --GPU` selects the route.
+USE_CUDA  ?= 0
+CUDA_HOME ?= /usr/local/cuda
+NVCC      ?= $(CUDA_HOME)/bin/nvcc
+CUDA_ARCH ?= -gencode arch=compute_89,code=sm_89 -gencode arch=compute_120,code=sm_120
+
+ifeq ($(USE_CUDA),1)
+  CXXFLAGS += -DGL_CUDA
+  LDFLAGS  += -L$(CUDA_HOME)/lib64 -Wl,-rpath,$(CUDA_HOME)/lib64 -lcudart
+  CU_SRCS  := $(wildcard src/gpu/*.cu) $(wildcard src/tests/*.cu)
+  CU_OBJS  := $(patsubst src/%.cu,build/%.cu.o,$(CU_SRCS))
+  # nvcc gets the same standard, optimisation level, include path and
+  # preprocessor definitions as the host compiler; host-only warning flags
+  # ride -Xcompiler.
+  NVCCFLAGS := $(CXXSTD) $(OPT) $(INCLUDES) $(filter -D%,$(CXXFLAGS)) $(CUDA_ARCH) -Xcompiler "$(WARN)"
+else
+  CU_OBJS  :=
+endif
+
 # `src/*.cpp` is the production set; `src/infra/*.cpp` is the diagnostic
 # / instrumentation set (hashburst dump, runtime measurement tracker —
 # code the prover calls into but that is operationally independent of
 # the algorithm); `src/memory_infra/*.cpp` is the statification set
 # (static memory hierarchy, paged containers, deload, steward — one
-# component per file); `src/tests/*.cpp` is the unit-test harness
+# component per file); `src/gpu/*.cpp` is the portable host-side GPU projection
+# support (the sealing unit compiles to nothing without GL_CUDA; the CUDA
+# `.cu` translation units join the build only under USE_CUDA=1, see below);
+# `src/tests/*.cpp` is the unit-test harness
 # (test_harness.cpp + test_<module>.cpp), linked into the same
 # `gl_quick` binary so the `--unit-tests` flag in main.cpp can dispatch
-# to the registered tests. All four globs feed the same OBJS expansion;
+# to the registered tests. All five globs feed the same OBJS expansion;
 # the patsubst rewrites `src/...` to `build/...` preserving the relative
 # subdirectory, and the `build/%.o` recipe handles arbitrary depth via
 # the `mkdir -p $(@D)` order-only step inside the recipe.
-SRCS := $(wildcard src/*.cpp) $(wildcard src/infra/*.cpp) $(wildcard src/memory_infra/*.cpp) $(wildcard src/tests/*.cpp)
+SRCS := $(wildcard src/*.cpp) $(wildcard src/infra/*.cpp) $(wildcard src/memory_infra/*.cpp) $(wildcard src/gpu/*.cpp) $(wildcard src/tests/*.cpp)
 OBJS := $(patsubst src/%.cpp,build/%.o,$(SRCS))
 TARGET := gl_quick
 
@@ -54,12 +82,16 @@ TARGET := gl_quick
 
 all: $(TARGET)
 
-$(TARGET): $(OBJS)
-	$(CXX) $(OBJS) -o $@ $(LDFLAGS)
+$(TARGET): $(OBJS) $(CU_OBJS)
+	$(CXX) $(OBJS) $(CU_OBJS) -o $@ $(LDFLAGS)
 
 build/%.o: src/%.cpp | build
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+build/%.cu.o: src/%.cu | build
+	@mkdir -p $(@D)
+	$(NVCC) $(NVCCFLAGS) -c $< -o $@
 
 build:
 	@mkdir -p build

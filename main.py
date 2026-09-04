@@ -167,6 +167,45 @@ def main():
         print(f"Generative Logic {_read_version()}")
         return
 
+    # --shortcut: run the FTA-shortcut pipeline (run_modes.shortcut_run —
+    # prove the hand-maintained conjecture list in files/shortcut/theorems/
+    # against the corpus snapshot as externals) instead of the full
+    # pipeline. All hardcoded paths live in shortcut_run; no per-invocation
+    # path arguments. The .debug setup and both unit-test gates below run
+    # identically in either mode.
+    shortcut_mode = "--shortcut" in sys.argv[1:]
+
+    # --GPU: run every batch of this run on the CUDA Phase 2 route. The
+    # processor route is the default for every run (a customer PC needs no
+    # GPU); --GPU is the one switch users and agents pass for a GPU run, and
+    # it is exactly `--phase2-backend cuda` applied to the whole run. A CUDA
+    # route that finds its device, driver or runtime missing asserts — no
+    # fallback. `--phase2-backend cpu|cuda` stays as the explicit oracle
+    # override; naming both is a contradiction and is refused.
+    gpu_flag_count = sys.argv[1:].count("--GPU")
+    assert gpu_flag_count <= 1, "--GPU must be supplied at most once"
+    gpu_mode = gpu_flag_count == 1
+
+    backend_positions = [
+        index for index, argument in enumerate(sys.argv)
+        if argument == "--phase2-backend"
+    ]
+    assert len(backend_positions) <= 1, \
+        "--phase2-backend must be supplied at most once"
+    if backend_positions:
+        backend_position = backend_positions[0]
+        assert backend_position + 1 < len(sys.argv), \
+            "--phase2-backend requires cpu or cuda"
+        phase2_backend = sys.argv[backend_position + 1]
+    else:
+        phase2_backend = None
+    assert phase2_backend is None or phase2_backend in ("cpu", "cuda"), \
+        "--phase2-backend requires cpu or cuda"
+    assert not (gpu_mode and phase2_backend is not None), \
+        "--GPU and --phase2-backend name the same choice; pass only one"
+    if gpu_mode:
+        phase2_backend = "cuda"
+
     descriptor_positions = [
         index for index, argument in enumerate(sys.argv)
         if argument == "--run-descriptor"
@@ -220,11 +259,14 @@ def main():
     open(".debug/hashburst_trace.txt", "w").close()
     open(".debug/trap.log", "w").close()
 
-    # Wipe `.rt/*.log` once per main.py session so each full run starts
-    # with a clean view of the per-LB runtime-measurement table. A
-    # non-empty `.rt/` after a run is then unambiguous: every file
-    # represents a pathological LB from THIS run. The C++ side never
-    # wipes the folder; it only ever rewrites the per-LB file in place.
+    # Wipe the whole of `.rt/` once per main.py session so each full run
+    # starts with a clean view of the runtime-measurement artefacts. A
+    # non-empty `.rt/` after a run is then unambiguous: every file was
+    # written by THIS run. The folder holds the per-LB `<chain>.log`
+    # snapshot of a pathological hashburst, the per-batch
+    # `_aggregate_<tag>.log` cross-burst table, and `burst_phases.log`.
+    # All three are written only when `RT_MEASUREMENT` is 1; the C++ side
+    # never wipes the folder, it rewrites or appends in place.
     # When RT_MEASUREMENT == 0 (the default) no files are ever written
     # and this wipe is a no-op. See `docs/_meta/rt_measurement.md`.
     os.makedirs(".rt", exist_ok=True)
@@ -252,8 +294,35 @@ def main():
     with StageTimer("python.unit_tests.verifier", parent="run.total"):
         _run_verifier_unit_test_gate()
 
+    # One diagnostics log per pipeline run: the prover processes append
+    # observation-only telemetry ([GPU-*], [PHASE2-TIMING], [PHASE13-*],
+    # [DELOAD], [SPLIT]) with batch and hashburst markers; truncating here
+    # keeps exactly this run's telemetry in the file.
+    diagnostics_log = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        ".debug", "run_diagnostics.log")
+    os.makedirs(os.path.dirname(diagnostics_log), exist_ok=True)
+    with open(diagnostics_log, "w", encoding="utf-8"):
+        pass
+
+    # Rule 31: temporary Rule-30 traps write to the dedicated trap file,
+    # never stdout/stderr; truncate it once per pipeline run so the file
+    # carries exactly this run's trap lines.
+    traps_log = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        ".debug", "traps.log")
+    with open(traps_log, "w", encoding="utf-8"):
+        pass
+
     with StageTimer("python.pipeline", parent="run.total"):
-        run_modes.full_run()
+        if shortcut_mode:
+            # The shortcut, like the full run, defaults to the processor
+            # route; `--GPU` (or the explicit `--phase2-backend cuda`)
+            # selects CUDA.
+            run_modes.shortcut_run(
+                phase2_backend=phase2_backend or "cpu")
+        else:
+            run_modes.full_run(phase2_backend=phase2_backend)
 
     end_time = time.time()
     record_frame_timing(

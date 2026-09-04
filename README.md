@@ -14,7 +14,9 @@ The companion [`docs/fta_ladder/`](docs/fta_ladder/) folder is the rung-by-rung 
 
 GL's natural user is a researcher or engineer working alongside an AI coding assistant (Claude Code, Cursor, Codex, Copilot, etc.). The SwDD is sized for that workflow: paste an error message + the relevant chapter section into the assistant and it has enough context to proceed. For human-only readers, the [paper](https://arxiv.org/abs/2508.00017) and this README are the lighter entry points.
 
-GL also ships a hardware-oriented design document: the **MPU 0.1 booklet** at [`docs/MPU/index.html`](docs/MPU/index.html) maps the live prover onto silicon — the logic block as a core, the static memory hierarchy as on-die SRAM with on-demand SSD paging, the cross-block mail system as an on-chip network, and logic-block split as the parallelism lever — together with an order-of-magnitude estimate of what building a Mathematical Processing Unit (MPU) would cost. It is written for a hardware / computer-architecture audience and is maintained as a tracked design document alongside the SwDD.
+GL also ships a hardware-oriented design document: the **MPU 0.2 (GPU Edition) booklet** at [`docs/MPU/index.html`](docs/MPU/index.html) maps the live prover onto silicon — the logic block as a core, the static memory hierarchy as on-die SRAM with on-demand SSD paging, the cross-block mail system as an on-chip network, and logic-block split as the parallelism lever — together with an order-of-magnitude estimate of what building a Mathematical Processing Unit (MPU) would cost. It is written for a hardware / computer-architecture audience and is maintained as a tracked design document alongside the SwDD.
+
+GL's proof artifacts also have an **independent Lean 4 checking path**. [`proof_export/`](proof_export/) converts an existing processed proof graph into a typed, hashed certificate; the pinned project in [`lean_export/`](lean_export/) replays every certified row over ordinary predicates, with no `sorry`, `admit`, added axiom, opaque proof, or unsafe declaration. The current tracked corpus covers the complete acyclic Peano export, all Gauss main theorems, and the 42-theorem FTA shortlist plus four internal support theorems: 140 public theorems and 6,173 named row facts, accepted by `lake build`. Since release 13 the export is **part of every run**: when a Lean toolchain is installed, `python main.py` exports and kernel-checks the Peano and Gauss theorems into `files/full_proof_graph/lean_export/`, and `python main.py --shortcut` does the same for the FTA shortlist into `files/shortcut/full_proof_graph/lean_export/`; every HTML proof page links its Lean twin. Without Lean the run prints one notice and simply produces no Lean export. The tracked corpus and the manual commands are documented in [`proof_export/README.md`](proof_export/README.md).
 
 ## Three pillars
 
@@ -67,6 +69,8 @@ For implementation depth — exact validity-stack semantics, the `K` mutual-excl
 | Case differentiation — branching 0.1 | shipped 2026-05 (FTA-ladder rung 1, `EnumerationSet2 ⟹ interval`) |
 | Runtime & memory — MPU 0.1 (static prover memory) | shipped 2026-07 (v0.9.0) |
 | Case differentiation — branching 0.2 | shipped 2026-07 (v0.10.0, FTA-ladder rungs 2 + 2.1: nested case analysis proves `{0,1,2} = [0,2]` and `{0,1,2} ≠ [0,1]`) |
+| Independent proof checking — Lean 4 export | shipped 2026-08 (Peano + Gauss + FTA shortlist, 140 theorems / 6,173 row facts) |
+| Runtime — MPU 0.2 (GPU Edition): phase 2 of the hashburst on GPU threads | shipped 2026-09 (v0.11.0; `--GPU`, about ten times faster on phase 2, byte-identical proofs) |
 
 The next frontier — see [`docs/fta_ladder/README.md`](docs/fta_ladder/README.md) for the rung-by-rung index, and `docs/fta_ladder/rung<N>/current_proof_state.md` for any in-flight rung's live analysis trace:
 
@@ -76,7 +80,7 @@ The next frontier — see [`docs/fta_ladder/README.md`](docs/fta_ladder/README.m
 - **Euclid's lemma**.
 - **FTA proper**.
 
-Runtime and memory — the **MPU 0.1** campaign — is done: the entire per-logic-block prover state (logic-block pool, hash memory, mail buffers, name map) now lives in a fixed static pool with on-demand SSD paging, shipped in v0.9.0. This removed the per-proof heap growth that made FTA-scale proofs infeasible at prior consumption, unblocking the FTA push above. See the [MPU 0.1 booklet](docs/MPU/index.html) and `RELEASE_NOTES.md`.
+Runtime and memory — the **MPU 0.1** campaign — is done: the entire per-logic-block prover state (logic-block pool, hash memory, mail buffers, name map) now lives in a fixed static pool with on-demand SSD paging, shipped in v0.9.0. This removed the per-proof heap growth that made FTA-scale proofs infeasible at prior consumption, unblocking the FTA push above. MPU 0.2 (GPU Edition) follows on the runtime axis: phase 2 of the hashburst — the engine itself and its main runtime consumer — now runs on GPU threads (`python main.py --GPU`), about ten times faster than the 32 processor threads so far, with byte-identical proofs on both routes. See the [MPU 0.2 booklet](docs/MPU/index.html) and `RELEASE_NOTES.md`.
 
 Verifier coverage: one entry per proof-graph tag in `verifier.py`'s `TAG_CHECKERS` dispatch table. On a clean release, every category reports `failure 0`. Tag semantics: [`docs/agentic_swdd/20_core_concepts/08_proof_tags.md`](docs/agentic_swdd/20_core_concepts/08_proof_tags.md). Verifier algorithm: [`docs/agentic_swdd/10_pipeline/08_verifier.md`](docs/agentic_swdd/10_pipeline/08_verifier.md).
 
@@ -86,7 +90,7 @@ Verifier coverage: one entry per proof-graph tag in `verifier.py`'s `TAG_CHECKER
 
 ## Run mode
 
-There is only one run mode (previously called "Full Mode"). `python main.py` orchestrates the full ten-stage pipeline end-to-end (MPL definitions → conjecturer → CE filter → prover → compressor → process-proof-graph → HTML export → verifier; plus the incubator counterpart for ground-fact discovery). Each stage is documented in its own chapter under [`docs/agentic_swdd/10_pipeline/`](docs/agentic_swdd/10_pipeline/) — read those if you need to understand or modify a specific stage.
+There is only one run mode (previously called "Full Mode"). `python main.py` orchestrates the full ten-stage pipeline end-to-end (MPL definitions → conjecturer → CE filter → prover → compressor → process-proof-graph → HTML export → verifier; plus the incubator counterpart for ground-fact discovery). Each stage is documented in its own chapter under [`docs/agentic_swdd/10_pipeline/`](docs/agentic_swdd/10_pipeline/) — read those if you need to understand or modify a specific stage. The Lean export runs inside both modes whenever a Lean toolchain is installed (`lake` on the PATH or under `~/.elan/bin`); see *Lean 4 (optional)* below and [`proof_export/README.md`](proof_export/README.md) for the manual commands.
 
 Latest full reference (2026-07-30, the v0.10.0 release gate, WSL Ubuntu native-ext4 copy of the working tree, g++): 1,137 seconds wall (18 minutes 57 seconds) for the full pipeline, with 138,948 main-pass and 17,452 incubator-pass proof checks, zero failures. Windows build gate on the same tree (MSVC): 1,345/1,345 native unit tests; Python-side suite 375/375. The Linux build needs `libmimalloc-dev` installed (see *Why mimalloc is required by default* in the build section).
 
@@ -112,6 +116,8 @@ Run from the repository root (where `main.py` lives) on Windows / macOS / Linux:
 python main.py
 ```
 
+This runs every batch on the processor. On a PC with an NVIDIA GPU (driver with CUDA 13 API), `python main.py --GPU` runs every batch's Phase 2 on the GPU instead; the proof output is identical, the run is several times faster, and a missing device or driver is reported as an assertion, never worked around. The FTA shortcut takes the same flag: `python main.py --shortcut --GPU`.
+
 What happens:
 
 - Two unit-test gates run before any pipeline work. The native `gl_quick` binary executes its in-tree C++ unit-test suite; `tests/test_harness.py` runs the verifier-side Python suite. The first failing test aborts `main.py` before any proof run starts.
@@ -124,6 +130,39 @@ Outputs:
 
 - Generated HTML lives under `files/full_proof_graph/index.html` (plus `chapter*.html`) for the main batches.
 - Incubator-batch HTML lives under `files/incubator/full_proof_graph/`.
+
+## GPU (optional) — what you need to run GL on an NVIDIA GPU
+
+GL runs on the processor by default; nothing below is needed for that. With `--GPU` the prover's Phase 2 (the hashburst engine, its main runtime consumer) runs as CUDA threads; the proof output is byte-identical to the processor route and the run is several times faster. Everything the GPU route needs on a customer PC, and what happens when something is missing:
+
+- **An NVIDIA GPU and its driver.** The shipped Windows executable links the CUDA runtime statically, so no CUDA installation is needed to *run* it: at `--GPU` time it loads `nvcuda.dll` and `nvcudart_hybrid64.dll`, both installed by the NVIDIA display driver. The driver must support the CUDA 13 API (`nvidia-smi` prints the supported "CUDA Version" in its header; 13.x or newer is fine). The kernels ship for `sm_89` (RTX 40 series) and `sm_120` (RTX 50 series).
+- **Run:** `python main.py --GPU` (full pipeline) or `python main.py --shortcut --GPU` (FTA shortlist). `--phase2-backend cpu|cuda` is the explicit per-run override for comparisons.
+- **When something is missing** — no NVIDIA GPU, a driver too old for the CUDA 13 API, or a Linux binary built without CUDA — a `--GPU` run stops with an assertion naming the missing piece. GL never silently falls back to the processor: a run either uses the route you asked for or tells you why it cannot.
+- **Building the Windows executable yourself** needs the CUDA Toolkit 13.3 (the Visual Studio project imports its build customisation) in addition to Visual Studio 2022; without the toolkit the solution does not build. Download: <https://developer.nvidia.com/cuda-downloads> (Windows, `exe (local)`), then reopen Visual Studio.
+- **Linux (Ubuntu / WSL2):** the Makefile builds the processor-only binary by default; `make USE_CUDA=1 -j$(nproc)` adds the CUDA route and needs the toolkit (`CUDA_HOME` defaults to `/usr/local/cuda`; `NVCC` and `CUDA_ARCH` can be overridden). Install the toolkit from NVIDIA's repository — on WSL2 use the WSL-specific repository, which ships driver-free packages (never install the `cuda` or `cuda-drivers` meta-packages under WSL; the Windows driver serves the GPU):
+
+  ```bash
+  # Ubuntu 24.04+ on WSL2 (driver comes from Windows)
+  wget https://developer.download.nvidia.com/compute/cuda/repos/wsl-ubuntu/x86_64/cuda-keyring_1.1-1_all.deb
+  sudo dpkg -i cuda-keyring_1.1-1_all.deb && sudo apt-get update
+  sudo apt-get install -y cuda-toolkit-13-3 libmimalloc-dev build-essential
+  echo 'export PATH=/usr/local/cuda/bin:$PATH' >> ~/.bashrc
+  # native Ubuntu: same commands with the ubuntu2404/x86_64 repository path plus your distribution's NVIDIA driver
+  ```
+
+  Then `cd GL_Quick_VS/GL_Quick && make USE_CUDA=1 -j$(nproc)` and run `python3 main.py --GPU` from the repository root. `nvidia-smi` inside the shell must list the GPU first.
+- **macOS** has no CUDA; the processor route is the only one.
+
+## Lean 4 (optional) — independent kernel checking of every proof
+
+When a Lean 4 toolchain is installed, every run exports its proofs to Lean and kernel-checks them: `python main.py` writes `files/full_proof_graph/lean_export/` (Peano and Gauss), `python main.py --shortcut` writes `files/shortcut/full_proof_graph/lean_export/` (FTA shortlist, self-contained: its only dependency is the shortlist's own externals snapshot, whose theorems enter Lean as explicit premises of the citing theorem), and every HTML proof page links its Lean twin (`chapter<N>_lean.html`). Without a toolchain the run prints one notice and produces no Lean export — nothing else changes. The pinned toolchain version is in `lean_export/lean-toolchain`; `elan` installs it on first use.
+
+| Platform | Install command |
+|---|---|
+| Windows | `winget install --id LeanProver.Elan` (then reopen the terminal) |
+| Linux / macOS / WSL2 | `curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf \| sh` |
+
+GL looks for `lake` on the `PATH` or under `~/.elan/bin`. A failing kernel check stops the run: the Lean export is a verification gate, never decoration.
 
 ## Rebuilding the native executable (if needed)
 
@@ -248,3 +287,4 @@ See `legal/CONTRIBUTOR_LICENSE_AGREEMENT.md` for details.
 - **regex** — © Matthew Barnett — Apache-2.0 and CNRI-Python.
 - **nlohmann/json** — © Niels Lohmann — MIT. <https://github.com/nlohmann/json>
 - **mimalloc** — © Microsoft Corporation — MIT.
+- **Lean 4** (optional, kernel-checks the exported proofs) — © Microsoft Corporation, Lean FRO — Apache-2.0. <https://github.com/leanprover/lean4>

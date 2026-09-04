@@ -41,6 +41,7 @@ from tests.test_harness import (  # noqa: E402
 from verifier import (  # noqa: E402
     check_or_theorem, check_or_disintegration, check_or_convergence,
     check_or_branch_proven, check_or_branch_assumption,
+    _negate_expr, _build_or_from_elements, _build_or_subimpls_from_elements,
 )
 
 
@@ -899,6 +900,70 @@ def test_or_branch_assumption_proven_row_wrong_disjunct():
         "(=[c,X])", "main_boundary_orint_(or3[a,b,c])_((=[c,X]))",
     )
     assert_failure(check_or_branch_assumption, assumption, [assumption, proven], state)
+
+
+@register
+def test_negate_expr_cancels_double_negation():
+    """_negate_expr adds one '!' to a positive expression and strips the
+    leading '!' from a negated one (Python mirror of the C++
+    negateScratch / expandSignature OR-case negation)."""
+    assert _negate_expr("(=[a,b])") == "!(=[a,b])"
+    assert _negate_expr("!(=[a,b])") == "(=[a,b])"
+
+
+@register
+def test_build_or_from_elements_negated_disjunct_cancels():
+    """A negated disjunct's De Morgan conjunct is its bare positive core.
+    A blind '!' prefix would flip the OR's meaning — (a=b) OR (c=d)
+    instead of (a=b) OR !(c=d) — the exact defect that minted a false
+    or theorem and contradicted the incubator anchor."""
+    assert (_build_or_from_elements(["(=[a,b])", "!(=[c,d])"])
+            == "!(&!(=[a,b])(=[c,d]))")
+    # All-positive elements keep the historical bytes.
+    assert (_build_or_from_elements(["(P[a])", "(Q[b])"])
+            == "!(&!(P[a])!(Q[b]))")
+
+
+@register
+def test_build_or_subimpls_negated_disjunct_cancels():
+    """The K-sub-implication premises negate co-disjuncts with
+    cancellation: the negated disjunct !(=[c,d]) contributes the premise
+    (=[c,d]); each branch head stays the disjunct verbatim."""
+    subs = _build_or_subimpls_from_elements(["(=[a,b])", "!(=[c,d])"])
+    assert subs == ["(>[](=[c,d])(=[a,b]))", "(>[]!(=[a,b])!(=[c,d]))"]
+
+
+@register
+def test_build_or_from_elements_three_disjuncts_nests_negated():
+    """k>=3: the or-so-far is a DISJUNCT of the next level and enters the
+    AND negated — its !(&...) form contributes the bare positive (&...)
+    by double-negation cancellation, so the nest reads (D1 v D2) v D3.
+    The former builder inserted the or-so-far un-negated, which read
+    NOT(D1 v D2) v D3 — the D-260 mirrored polarity defect, live once
+    3-element ors are consumed in-run."""
+    built = _build_or_from_elements(["(P[a])", "(Q[b])", "(R[c])"])
+    assert built == "!(&(&!(P[a])!(Q[b]))!(R[c]))"
+    # Four disjuncts nest the same way one level deeper.
+    built4 = _build_or_from_elements(["(P[a])", "(Q[b])", "(R[c])", "(S[d])"])
+    assert built4 == "!(&(&(&!(P[a])!(Q[b]))!(R[c]))!(S[d]))"
+    # A negated THIRD disjunct still cancels to its bare positive core.
+    built_neg = _build_or_from_elements(["(P[a])", "(Q[b])", "!(R[c])"])
+    assert built_neg == "!(&(&!(P[a])!(Q[b]))(R[c]))"
+
+
+@register
+def test_parse_or_disjuncts_roundtrips_builder():
+    """_parse_or_disjuncts is the exact inverse of the fixed builder for
+    2, 3, and 4 disjuncts, including a negated disjunct's polarity."""
+    from verifier import _parse_or_disjuncts
+    for elements in (
+        ["(P[a])", "(Q[b])"],
+        ["(P[a])", "!(Q[b])"],
+        ["(P[a])", "(Q[b])", "(R[c])"],
+        ["(P[a])", "(Q[b])", "!(R[c])"],
+        ["(P[a])", "(Q[b])", "(R[c])", "(S[d])"],
+    ):
+        assert _parse_or_disjuncts(_build_or_from_elements(elements)) == elements
 
 
 if __name__ == "__main__":

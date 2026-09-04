@@ -183,27 +183,33 @@ TEST(prover_span_twins, get_global_key_span_matches_vector) {
     }
 }
 
-// dischargeToBeProved Part B: the proven-direct theorems formerly staged in a
-// std::vector<std::tuple<std::string,int>> (std::sort'd, then replayed) now ride
-// a shared SealedPageSet as UpdateGlobalDirectRec records. The drain's index-sort
-// on updateGlobalDirectLess must reproduce std::sort over the equivalent
-// tuple<string,int> vector byte-for-byte (theorem bytes then coreId). Appended in
-// a scrambled, all-distinct (theorem, coreId) order.
+// dischargeToBeProved Part B: the proven-direct theorems ride a shared
+// SealedPageSet as UpdateGlobalDirectRec records. The drain's index-sort on
+// updateGlobalDirectLess orders by (theorem bytes, level verdict TRUE first,
+// producer chain) — every key a pure function of proof state. The dispatch
+// coreId is deliberately ABSENT from the order (a scheduling race outcome:
+// ordering same-theorem records by it let the worker race pick the
+// registration method), so the coreIds here are adversarial noise — within
+// each theorem the true-verdict record carries the LARGER coreId and must
+// still drain first. Appended scrambled; all (theorem, verdict) pairs
+// distinct so the expected order is total without producers.
 TEST(prover_span_twins, update_global_direct_sealed_drain_matches_sorted) {
     gl::GlobalMemoryManager m;
     m.init(gl::StaticMemoryConfig{ 1 << 20, 1 << 18 });
     gl::SealedPageSet ps;
     ps.bind(&m);
 
-    const std::vector<std::pair<std::string, int>> input = {
-        { "(=[b,a])", 2 }, { "(=[a,b])", 1 }, { "(=[a,b])", 0 },
-        { "(zero[])", 3 }, { "(=[b,a])", 1 }, { "(=[a,b])", 5 },
+    struct Row { std::string thm; int coreId; bool verdict; };
+    const std::vector<Row> input = {
+        { "(=[b,a])", 2, false }, { "(=[a,b])", 9, true },
+        { "(zero[])", 3, true },  { "(=[b,a])", 7, true },
+        { "(=[a,b])", 0, false },
     };
     for (const auto& r : input) {
         ps.appendRecord(gl::ExpressionAnalyzer::UpdateGlobalDirectRec{
-            gl::SealedString::copyFrom(ps, r.first.data(),
-                static_cast<int32_t>(r.first.size())),
-            r.second });
+            gl::SealedString::copyFrom(ps, r.thm.data(),
+                static_cast<int32_t>(r.thm.size())),
+            r.coreId, nullptr, r.verdict });
     }
 
     // Gather + index-sort via updateGlobalDirectLess (the drain's replay order).
@@ -220,16 +226,19 @@ TEST(prover_span_twins, update_global_direct_sealed_drain_matches_sorted) {
                    *refs[static_cast<std::size_t>(b)]) < 0;
     });
 
-    // Oracle: std::sort over the equivalent std::tuple<std::string,int> vector.
-    std::vector<std::tuple<std::string, int>> oracle;
-    for (const auto& r : input) oracle.emplace_back(r.first, r.second);
-    std::sort(oracle.begin(), oracle.end());
+    // Expected: theorem bytes ascending; within a theorem, verdict true
+    // first — the record's coreId never consulted.
+    const std::vector<std::pair<std::string, bool>> oracle = {
+        { "(=[a,b])", true }, { "(=[a,b])", false },
+        { "(=[b,a])", true }, { "(=[b,a])", false },
+        { "(zero[])", true },
+    };
 
     ASSERT_EQ(idx.size(), oracle.size());
     for (std::size_t i = 0; i < idx.size(); ++i) {
         const auto& r = *refs[static_cast<std::size_t>(idx[i])];
-        ASSERT_EQ(gl::StrSpan(r.theorem).toStdString(), std::get<0>(oracle[i]));
-        ASSERT_EQ(r.coreId, std::get<1>(oracle[i]));
+        ASSERT_EQ(gl::StrSpan(r.theorem).toStdString(), oracle[i].first);
+        ASSERT_EQ(r.allLevelsInvolved, oracle[i].second);
     }
     ps.seal();
     ps.freePages();
@@ -312,9 +321,16 @@ static std::string expandSignatureOracle(gl::ExpressionAnalyzer& ea,
         if (elements.empty()) result = signature;
         else if (elements.size() == 1) result = elements[0];
         else {
-            std::string current = "!(&!" + elements[0] + "!" + elements[1] + ")";
+            // Elements carry true disjunct polarity; the conjunct form is the
+            // element's negation with double-negation cancellation. The
+            // or-so-far is itself a disjunct of the next level, so it too
+            // enters negated (its !(&…) form cancels to the bare (&…)).
+            const auto neg = [](const std::string& e) {
+                return (!e.empty() && e[0] == '!') ? e.substr(1) : "!" + e;
+            };
+            std::string current = "!(&" + neg(elements[0]) + neg(elements[1]) + ")";
             for (size_t i = 2; i < elements.size(); ++i)
-                current = "!(&" + current + "!" + elements[i] + ")";
+                current = "!(&" + neg(current) + neg(elements[i]) + ")";
             result = current;
         }
     }
@@ -370,6 +386,8 @@ TEST(prover_span_twins, expand_signature_scratch_matches_heap) {
         "implication", { "(a[u_x])", "(b[u_y])", "(c[u_x,u_y])" }, "(sig[u_x,u_y])", 2));
     cases.push_back(gl::LogicalEntity(
         "or", { "(d0[u_a])", "(d1[u_b])", "(d2[u_c])" }, "(sig[u_a])", 1));
+    cases.push_back(gl::LogicalEntity(
+        "or", { "(=[u_a,u_b])", "!(=[u_c,u_d])" }, "(sig[u_a,u_b,u_c,u_d])", 4));
     // rename branches: u_ stripped, int_lev kept-or-c_ (both paths agree), plain -> c_.
     cases.push_back(gl::LogicalEntity(
         "and", { "(P[u_a,int_lev_0,plain])", "(Q[u_b])" }, "(sig[u_a,u_b])", 2));
@@ -388,6 +406,54 @@ TEST(prover_span_twins, expand_signature_scratch_matches_heap) {
             gl::StrSpan(le.category), gl::StrSpan(le.signature), elemRun, elemN, arena);
         ASSERT_EQ(gl::StrSpan(twinSpan).toStdString(), oracle);
     }
+}
+
+// Mixed-polarity or: a registered element may carry its true (negated) sign;
+// the expansion negates with double-negation cancellation, so a negated
+// disjunct contributes its bare positive core. A positive-only store would
+// flip the disjunct's sign on round-trip and mint a FALSE or compound
+// ((a=b) OR (c=d) instead of (a=b) OR !(c=d)).
+TEST(prover_span_twins, expand_signature_or_negated_disjunct_cancels) {
+    gl::ExpressionAnalyzer ea("Peano");
+    gl::ScratchArena& arena =
+        gl::scratchArenas().forSlot(gl::scratchArenas().slotCount() - 1);
+    const gl::LogicalEntity le(
+        "or", { "(=[u_a,u_b])", "!(=[u_c,u_d])" }, "(sig[u_a,u_b,u_c,u_d])", 4);
+    gl::ScratchScope sc(arena);
+    const gl::ScratchString twin = ea.expandSignature(le, arena);
+    ASSERT_EQ(gl::StrSpan(twin).toStdString(),
+              std::string("!(&!(=[a,b])(=[c,d]))"));
+    ASSERT_EQ(expandSignatureOracle(ea, le),
+              std::string("!(&!(=[a,b])(=[c,d]))"));
+}
+
+// k >= 3 or-expansion nests the or-so-far NEGATED: its !(&…) form cancels
+// to the bare positive (&…) conjunct, so the nest reads (D1 v D2) v D3.
+// The former builder inserted the or-so-far un-negated — semantically
+// NOT(D1 v D2) v D3 — byte-mirrored in the verifier's
+// _build_or_from_elements, so the prover-vs-verifier compare PASSED on
+// the wrong form (the D-260 latent defect). Literal-bytes assertions so
+// a shared oracle/production error cannot mask again.
+TEST(prover_span_twins, expand_signature_or_three_disjuncts_nests_negated) {
+    gl::ExpressionAnalyzer ea("Peano");
+    gl::ScratchArena& arena =
+        gl::scratchArenas().forSlot(gl::scratchArenas().slotCount() - 1);
+    const gl::LogicalEntity le(
+        "or", { "(d0[u_a])", "(d1[u_b])", "(d2[u_c])" }, "(sig[u_a])", 1);
+    gl::ScratchScope sc(arena);
+    const gl::ScratchString twin = ea.expandSignature(le, arena);
+    ASSERT_EQ(gl::StrSpan(twin).toStdString(),
+              std::string("!(&(&!(d0[a])!(d1[b]))!(d2[c]))"));
+    ASSERT_EQ(expandSignatureOracle(ea, le),
+              std::string("!(&(&!(d0[a])!(d1[b]))!(d2[c]))"));
+
+    // A negated third disjunct still cancels to its bare positive core.
+    const gl::LogicalEntity leNeg(
+        "or", { "(d0[u_a])", "(d1[u_b])", "!(d2[u_c])" }, "(sig[u_a])", 1);
+    gl::ScratchScope sc2(arena);
+    const gl::ScratchString twinNeg = ea.expandSignature(leNeg, arena);
+    ASSERT_EQ(gl::StrSpan(twinNeg).toStdString(),
+              std::string("!(&(&!(d0[a])!(d1[b]))(d2[c]))"));
 }
 
 // Test-local heap oracle for the retired std::set<std::string> body of

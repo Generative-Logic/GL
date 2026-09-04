@@ -88,6 +88,29 @@ A `processText(input)` JavaScript function (embedded in every generated page) pr
 
 ---
 
+## Lean twin pages — `chapter<N>_lean.html`
+
+A run with a Lean toolchain leaves the mode's Lean export at
+`<out_dir>/lean_export/` (written by `proof_export/live.py` before this stage;
+the output-folder wipe at the top of `generate_proof_graph_pages` keeps that
+one child). [`lean_pages.py`](../../lean_pages.py) reads it —
+`load_lean_export(out_dir, proc_dir)` takes every corpus whose certificate
+was built from exactly this graph (its `source.theorem_list_sha256` equals the
+hash of `<proc_dir>/global_theorem_list.txt`; the shortcut folder also holds
+the copied Peano and Gauss corpora, whose indices would otherwise collide),
+requires a green `kernel_check.log`, and slices each theorem's declarations
+(`slice_theorem_source`: the public `theorem <id>` and its private
+`<id>_…` induction helpers) out of the generated module. Every exported chapter
+gets `chapter<N>_lean.html` in the chapter style: the theorem statement and
+readable caption, a card (Lean identifier, method, chapters with row-fact
+counts, toolchain), links to the raw module, certificate, manifest and
+kernel-check log, and the highlighted source (`highlight_lean`: comments and
+keywords marked, everything escaped). The chapter page's navigation gains
+`Lean 4 proof`, the index entry a `[Lean 4]` link and the index a one-line
+export summary. Without an export (no toolchain) none of this appears —
+`load_lean_export` returns None and every hook renders the empty string.
+Regression: `tests/test_lean_pages.py`.
+
 ## Page structure — `chapter<N>.html`
 
 Head — includes title (the theorem's MPL expression + a human-readable caption). Sample:
@@ -186,6 +209,7 @@ The generator's `_htmlify_readable` + `visu_helpers.format_implication` / `forma
 
 1. Stripping `i`-prefixes (`i0 → 0`, `i1 → 1`).
 2. Translating common predicates (`in`, `in2`, `in3`, `fold[`, `=`) to their natural-language or algebraic forms.
+ - Order relations go through one symbol table, `_ORDER_SYMBOLS` in `generate_full_proof_graph.py`, keyed by (operator, operation slot) and applied by `_apply_order_symbols` on the plain text before HTML escaping (so the strict-order `<` is escaped like any other character). `preorder[N,+,a,b]` → `a ≤ b`, `preorder[N,*,a,b]` → `a ∣ b` (divisibility is the preorder instantiated with multiplication, an operator-free reduction recorded in the release notes), `strictOrder[N,+,a,b]` → `a < b`; a leading `!` selects the crossed glyph (`≰`, `∤`, `≮`), never a textual `!`. The proper-divisor shape `strictOrder[N,*,a,b]` has no single glyph and renders `a ∣ b, a ≠ b`. An operation slot other than `+` / `*` asserts — every caption is built after the anchor rename, which names those two slots. The same function feeds the human-readable `<title>`. Regression: `tests/test_html_readable_symbols.py`.
 3. For implication-tag rows, dispatching to the **title-form** chain renderer:
  - Operator-headed chains (`(in2`, `(in3`, `(fold[`) → `make_readable_simple_implication_title` produces closed algebraic form `LHS = head_output = RHS` and walks `fully_resolve_markers` to substitute antecedent outputs back in. Body rows match chapter titles for the same theorem. Pre- body rows used the verbose `from <premises> follows <conclusion>` form via `make_readable_simple_implication`.
  - Equality-headed chains (`(=[a,b]`) → `make_readable_equality` (the body path) renders the chapter row's literal head form for the IMPLIES clause to avoid the marker-resolved tautology trap (commit — pre-fix, `from s(7)=2 follows V1(v1)=V1(v1)` collapsed both sides to the same expression). The post-fix form is `from s(7)=2 follows 2=8`, naming the actual derived equality. After commit, equality-headed implication-tag rows route through `make_readable_from_chain_title` → `make_readable_generic_chain` (`from X, Y follows EQ`) instead, which trades the "and" connector for comma but preserves the literal-head form for the IMPLIES clause.

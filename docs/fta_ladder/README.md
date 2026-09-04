@@ -17,6 +17,25 @@ The ladder exists because FTA is too large a step from Peano + Gauss in a single
 
 ---
 
+## Same-run or-headed theorems ARE minted and broadcast in-run
+
+**A case split over an or built from the batch's own proved implications is available while the grid runs.** `prover.cpp` → `constructOrTheoremsInRun` builds the or rows at the in-run theorem-drain seam (the single-threaded phase-4 barrier window) and broadcasts them like any proved theorem; the mint sequence follows `globalTheoremList` append order, so it is a deterministic function of the proof history. `run_modes.cpp` → `constructOrTheoremsFromPairs` remains the post-run export seam only.
+
+So all three split sources are live: corpus or rules loaded at start (the predecessor splits), ors minted in-run from proved implications with a negated premise, and negated AND-bodied premises through the runtime De-Morgan door (which case-splits the negated compound itself — how A16 closed). A16's stall diagnosis, which recorded the in-run route as missing, predates that mechanism; the C8 trace shows both `or0[…]` and `or10[…]` rules registered inside a live premise LB.
+
+---
+
+## The unfair-advantage move — helper lemmas instead of machinery
+
+**When a shortlist proof stalls, the first candidate repair is a new TRUE pool lemma, not a machinery or config change.** The shortcut campaign controls the conjecture list, and that is a legitimate, standing advantage: a missing fact-producer or an over-budget inference chain can usually be packaged as a helper lemma that GL proves itself, in the same run, with the existing machinery. Precedent (A17 forward, `A17/current_proof_state.md`):
+
+- **A17a** `a < b → (a + k = b → k ≠ 0)` — a flat producer for a fact (`witness ≠ 0`) that no corpus row could derive; its product triggered the already-emitted K rule, so the parked case split resolved by disjunctive syllogism without any cohort machinery.
+- **A17b** `a + w = s(b) ∧ w = s(m) → a + m = b` — a k-witness arithmetic chain whose direct firing would exceed the secondary-variable budget (`maxNumberSecondaryVariables`, D-210) is proved as a lemma **over bound variables** (cap-free in its own grid); the consuming grid then fires it as ONE rule binding few witnesses, under the cap.
+
+Three reusable shapes: (1) *fact-producer lemmas* that flatly derive a trigger the standing rules wait for; (2) *chain-collapse lemmas* that fold a multi-witness derivation into a single transport row; (3) *pre-split lemmas* — when a lemma's bound input parameter must be case-split and the in-prover split cannot open (no consumer passes the demand gates), state the guard variants as separate pool rows (`… ∧ 1≤b ⟹ G` and `… ∧ b=0 ⟹ G`), prove each flat, and recover the unguarded theorem by the or-elimination merge: a construction step licensed by the proved anchor-conditioned or theorem over the two guards (design: [`docs/agentic_swdd/or_elimination_plan.md`](../agentic_swdd/or_elimination_plan.md); first target C13). All three keep the explosion guards intact and leave zero hot-path machinery deltas to regress. Try these moves before proposing prover changes; escalate to machinery only when the stall diagnosis shows no true lemma can express the missing step (e.g. the constructed-or gap above).
+
+---
+
 ## Status table
 
 | Rung | Theorem (human) | Forward direction | Reverse direction | Folder |

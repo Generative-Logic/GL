@@ -60,6 +60,7 @@ namespace gl {
     // a validity id; the record type is named only in TypedCold's member
     // templates (defined in memory.hpp), so a forward declaration suffices here.
     struct EquivalenceClass;
+    struct CompactExpansionRec;
 
     /// @brief The growable per-LB aggregate of statified containers — the
     ///        unit the static memory hierarchy manages and the deload format
@@ -211,8 +212,54 @@ namespace gl {
             // facets; base in eq_class_name_caches.hpp), spliced the same
             // at-a-base way.
             // Tags 755..804 are RESERVED for the deloadable mailOut aggregate
-            // (base 755, 8 facets: private string table + statements + origins;
-            // base in deloadable_mail_out.hpp). Next free tag: 805.
+            // (base 755, 10 facets: private string table + statements +
+            // origins + statement flags; base in deloadable_mail_out.hpp).
+            // Sequenced or-disintegration: the pending-branch queue. Per
+            // cohort (the lbStateInterner-packed (parent, orSignature) id):
+            // orPendingBranches holds the UNRELEASED disjunct payload-body
+            // ids in decoded-lex order (per-call DecodedIdLess, the
+            // orBookkeeping discipline — release order is re-derived by the
+            // ranking at each release, never stored); orPendingLevels holds
+            // the cohort's seed level run (ascending ints, natural order).
+            // Both dischargeable side tables like orBookkeeping.
+            OrPendingBranchesKeys = 805,
+            OrPendingBranchesRunStarts = 806,
+            OrPendingBranchesValues = 807,
+            OrPendingLevelsKeys = 808,
+            OrPendingLevelsRunStarts = 809,
+            OrPendingLevelsValues = 810,
+            // Flag-5 relay staging (D-284): per compact
+            // (NameMap expression id, main-scope only) awaiting a flag-5 mail
+            // deposit — pendingRelayIter holds the sender disintegration's
+            // witness-generation stamp (min-merged on restage);
+            // pendingRelayLevels holds the staging deposit's ascending level
+            // run (first-seen kept). Entries erase when fillMailOut ships the
+            // compact. Dischargeable side tables like orPending*. Next free
+            // tag: 816.
+            PendingRelayIterKeys = 811,
+            PendingRelayIterValues = 812,
+            PendingRelayLevelsKeys = 813,
+            PendingRelayLevelsRunStarts = 814,
+            PendingRelayLevelsValues = 815,
+            // compactExpansions — the carrier index (tags 816..819): the
+            // packed statement key of every carrier that was expanded into
+            // hash-memory rules -> one CompactExpansionRec per expanded
+            // implication (its lbStateInterner text + scope ids, the install
+            // kind). Read by the compact canonicalization to remove exactly
+            // the rules a non-canonical compact installed; swept by
+            // wipeSubtree by carrier validity; dischargeable like
+            // expandedImplications (the dump's source, which stays).
+            CompactExpansionsKeys = 816,
+            CompactExpansionsRunStarts = 817,
+            CompactExpansionsBlobStarts = 818,
+            CompactExpansionsBlobPool = 819,
+            // expansionCarrierCount (tags 820..821): packed (implTextId, scopeId)
+            // of an expanded implication -> the number of carriers in
+            // compactExpansions that expanded into it. Two different compacts
+            // can expand into one rule text; the rule leaves hash memory only
+            // with its LAST carrier. Dischargeable like the carrier index.
+            ExpansionCarrierCountKeys = 820,
+            ExpansionCarrierCountValues = 821,
             // Append new tags here - never renumber, reorder, or reuse.
             // Tags 4..18 survive discharge (survivesDischarge): the cold STRING
             // tags (4..17) plus the NameMap validity-node forest (18). Tag 28
@@ -317,7 +364,30 @@ namespace gl {
               nextInternalMail(&manager, &dirty),
               changedClassesThisStep(&manager, &dirty),
               eqClassNameCaches(&manager, &dirty),
-              mailOut(&manager, &dirty) {}
+              mailOut(&manager, &dirty),
+              orPendingBranches(&manager, &dirty),
+              orPendingBranchesKeys(&orPendingBranches.inner()),
+              orPendingBranchesRunStarts(&orPendingBranches.inner()),
+              orPendingBranchesValues(&orPendingBranches.inner()),
+              orPendingLevels(&manager, &dirty),
+              orPendingLevelsKeys(&orPendingLevels.inner()),
+              orPendingLevelsRunStarts(&orPendingLevels.inner()),
+              orPendingLevelsValues(&orPendingLevels.inner()),
+              pendingRelayIter(&manager, &dirty),
+              pendingRelayIterKeys(&pendingRelayIter.inner()),
+              pendingRelayIterValues(&pendingRelayIter.inner()),
+              pendingRelayLevels(&manager, &dirty),
+              pendingRelayLevelsKeys(&pendingRelayLevels.inner()),
+              pendingRelayLevelsRunStarts(&pendingRelayLevels.inner()),
+              pendingRelayLevelsValues(&pendingRelayLevels.inner()),
+              compactExpansions(&manager, &dirty),
+              compactExpansionsKeys(&compactExpansions.inner()),
+              compactExpansionsRunStarts(&compactExpansions.inner()),
+              compactExpansionsBlobStarts(&compactExpansions.inner()),
+              compactExpansionsBlobPool(&compactExpansions.inner()),
+              expansionCarrierCount(&manager, &dirty),
+              expansionCarrierCountKeys(&expansionCarrierCount),
+              expansionCarrierCountValues(&expansionCarrierCount) {}
 
         LbMemory(const LbMemory&) = delete;
         LbMemory& operator=(const LbMemory&) = delete;
@@ -416,7 +486,8 @@ namespace gl {
         TypedColdSet<LbStatePairKey> expandedImplications;
         TypedColdSet<LbStatePairKey>::KeysView expandedImplicationsKeys;
         // intKnownStatements: packed (originalId, validityId) -> StatementFlags
-        // (the registered/known membership bits, I-85). A ColdHashMap: key facet
+        // (row presence IS the known membership, I-85; the value carries the
+        // local/fullyDisintegrated payload). A ColdHashMap: key facet
         // + value facet (two tags). Dischargeable — the equality-node gate
         // probes the captured dischargedRegistryKeys for discharged LBs instead.
         TypedColdMap<StatementKey, StatementFlags> intKnownStatements;
@@ -503,6 +574,47 @@ namespace gl {
         // string id space. Spliced into visitContainers at base 755 and kept on
         // discharge until its final committed batch is cleared.
         DeloadableMailOut mailOut;
+        // Sequenced or-disintegration (tags 805..810): cohortId -> the
+        // unreleased disjunct payload-body ids (decoded-lex runs via a
+        // per-call DecodedIdLess, read in run order like orBookkeeping), and
+        // cohortId -> the cohort's seed level run (ascending ints, natural
+        // order). Both dischargeable, rebuilt per grid like orBookkeeping /
+        // orDisjunctCount.
+        TypedColdSetMap<int32_t, int32_t> orPendingBranches;
+        TypedColdSetMap<int32_t, int32_t>::KeysView orPendingBranchesKeys;
+        TypedColdSetMap<int32_t, int32_t>::RunStartsView orPendingBranchesRunStarts;
+        TypedColdSetMap<int32_t, int32_t>::RunValuesView orPendingBranchesValues;
+        TypedColdSetMap<int32_t, int32_t> orPendingLevels;
+        TypedColdSetMap<int32_t, int32_t>::KeysView orPendingLevelsKeys;
+        TypedColdSetMap<int32_t, int32_t>::RunStartsView orPendingLevelsRunStarts;
+        TypedColdSetMap<int32_t, int32_t>::RunValuesView orPendingLevelsValues;
+
+        // Flag-5 relay staging (D-284): compact NameMap id →
+        // witness-generation stamp, plus the staging deposit's level run.
+        // Main-scope only, erased when fillMailOut ships the compact.
+        TypedColdMap<int32_t, int32_t> pendingRelayIter;
+        TypedColdMap<int32_t, int32_t>::KeysView pendingRelayIterKeys;
+        TypedColdMap<int32_t, int32_t>::ValuesView pendingRelayIterValues;
+        TypedColdSetMap<int32_t, int32_t> pendingRelayLevels;
+        TypedColdSetMap<int32_t, int32_t>::KeysView pendingRelayLevelsKeys;
+        TypedColdSetMap<int32_t, int32_t>::RunStartsView pendingRelayLevelsRunStarts;
+        TypedColdSetMap<int32_t, int32_t>::RunValuesView pendingRelayLevelsValues;
+        // compactExpansions (tags 816..819): carrier statement key (packed
+        // (originalId, validityId), NameMap ids) -> the run of the expanded
+        // implications it installed (CompactExpansionRec: lbStateInterner
+        // text + scope ids, install kind). The carrier index the compact
+        // canonicalization removes rules through (see ContainerTag).
+        TypedColdBlobMap<int64_t, CompactExpansionRec> compactExpansions;
+        TypedColdBlobMap<int64_t, CompactExpansionRec>::KeysView compactExpansionsKeys;
+        TypedColdBlobMap<int64_t, CompactExpansionRec>::RunStartsView compactExpansionsRunStarts;
+        TypedColdBlobMap<int64_t, CompactExpansionRec>::BlobStartsView compactExpansionsBlobStarts;
+        TypedColdBlobMap<int64_t, CompactExpansionRec>::BlobPoolView compactExpansionsBlobPool;
+        // expansionCarrierCount (tags 820..821): how many carriers expanded into
+        // an implication (packed lbStateInterner text + scope ids); a rule leaves
+        // only when the count reaches zero (see ContainerTag).
+        ColdHashMap<PodKeyStore<int64_t>, int32_t> expansionCarrierCount;
+        ColdHashMap<PodKeyStore<int64_t>, int32_t>::KeysView expansionCarrierCountKeys;
+        ColdHashMap<PodKeyStore<int64_t>, int32_t>::ValuesView expansionCarrierCountValues;
 
         /// @brief Enumerate the statified containers in tag order (mutable).
         ///
@@ -623,6 +735,30 @@ namespace gl {
             // Outgoing routing mail (tags 755..762) — private string table plus
             // statements and origins, all deloaded as one unit.
             mailOut.visitContainers(kMailOutDeloadBase, visitHashMemory);
+            // Sequenced or-disintegration pending queue (tags 805..810) —
+            // dischargeable.
+            visit(ContainerTag::OrPendingBranchesKeys, orPendingBranchesKeys);
+            visit(ContainerTag::OrPendingBranchesRunStarts,
+                  orPendingBranchesRunStarts);
+            visit(ContainerTag::OrPendingBranchesValues,
+                  orPendingBranchesValues);
+            visit(ContainerTag::OrPendingLevelsKeys, orPendingLevelsKeys);
+            visit(ContainerTag::OrPendingLevelsRunStarts,
+                  orPendingLevelsRunStarts);
+            visit(ContainerTag::OrPendingLevelsValues, orPendingLevelsValues);
+            visit(ContainerTag::PendingRelayIterKeys, pendingRelayIterKeys);
+            visit(ContainerTag::PendingRelayIterValues, pendingRelayIterValues);
+            visit(ContainerTag::PendingRelayLevelsKeys, pendingRelayLevelsKeys);
+            visit(ContainerTag::PendingRelayLevelsRunStarts,
+                  pendingRelayLevelsRunStarts);
+            visit(ContainerTag::PendingRelayLevelsValues,
+                  pendingRelayLevelsValues);
+            visit(ContainerTag::CompactExpansionsKeys, compactExpansionsKeys);
+            visit(ContainerTag::CompactExpansionsRunStarts, compactExpansionsRunStarts);
+            visit(ContainerTag::CompactExpansionsBlobStarts, compactExpansionsBlobStarts);
+            visit(ContainerTag::CompactExpansionsBlobPool, compactExpansionsBlobPool);
+            visit(ContainerTag::ExpansionCarrierCountKeys, expansionCarrierCountKeys);
+            visit(ContainerTag::ExpansionCarrierCountValues, expansionCarrierCountValues);
         }
 
         /// @brief Enumerate the statified containers in tag order
@@ -738,6 +874,30 @@ namespace gl {
             // Outgoing routing mail (tags 755..762) — private string table plus
             // statements and origins, all deloaded as one unit.
             mailOut.visitContainers(kMailOutDeloadBase, visitHashMemory);
+            // Sequenced or-disintegration pending queue (tags 805..810) —
+            // dischargeable.
+            visit(ContainerTag::OrPendingBranchesKeys, orPendingBranchesKeys);
+            visit(ContainerTag::OrPendingBranchesRunStarts,
+                  orPendingBranchesRunStarts);
+            visit(ContainerTag::OrPendingBranchesValues,
+                  orPendingBranchesValues);
+            visit(ContainerTag::OrPendingLevelsKeys, orPendingLevelsKeys);
+            visit(ContainerTag::OrPendingLevelsRunStarts,
+                  orPendingLevelsRunStarts);
+            visit(ContainerTag::OrPendingLevelsValues, orPendingLevelsValues);
+            visit(ContainerTag::PendingRelayIterKeys, pendingRelayIterKeys);
+            visit(ContainerTag::PendingRelayIterValues, pendingRelayIterValues);
+            visit(ContainerTag::PendingRelayLevelsKeys, pendingRelayLevelsKeys);
+            visit(ContainerTag::PendingRelayLevelsRunStarts,
+                  pendingRelayLevelsRunStarts);
+            visit(ContainerTag::PendingRelayLevelsValues,
+                  pendingRelayLevelsValues);
+            visit(ContainerTag::CompactExpansionsKeys, compactExpansionsKeys);
+            visit(ContainerTag::CompactExpansionsRunStarts, compactExpansionsRunStarts);
+            visit(ContainerTag::CompactExpansionsBlobStarts, compactExpansionsBlobStarts);
+            visit(ContainerTag::CompactExpansionsBlobPool, compactExpansionsBlobPool);
+            visit(ContainerTag::ExpansionCarrierCountKeys, expansionCarrierCountKeys);
+            visit(ContainerTag::ExpansionCarrierCountValues, expansionCarrierCountValues);
         }
 
         /// @brief Whether a tag's content survives discharge (rides the
@@ -848,6 +1008,8 @@ namespace gl {
                  + integrationPrepared.liveBytes()
                  + integrationPreparedMarker.liveBytes()
                  + expandedImplications.liveBytes()
+                 + compactExpansions.liveBytes()
+                 + expansionCarrierCount.liveBytes()
                  + intKnownStatements.liveBytes()
                  + equivalenceClassesMap.liveBytes()
                  + exprOriginMap.liveBytes()
@@ -859,7 +1021,11 @@ namespace gl {
                  + nextInternalMail.liveBytes()
                  + changedClassesThisStep.liveBytes()
                  + eqClassNameCaches.liveBytes()
-                 + mailOut.liveBytes();
+                 + mailOut.liveBytes()
+                 + orPendingBranches.liveBytes()
+                 + orPendingLevels.liveBytes()
+                 + pendingRelayIter.liveBytes()
+                 + pendingRelayLevels.liveBytes();
         }
 
         /// @brief Compaction: pack the LB's live pages onto the contiguous

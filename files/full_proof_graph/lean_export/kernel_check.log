@@ -1,0 +1,8 @@
+$ C:\Users\nikol\.elan\bin\lake.EXE build
+✔ [2/7] Built GLExport.ProofSupport (632ms)
+✔ [3/7] Built GLExport.Generated.Definitions (720ms)
+✔ [4/7] Built GLExport.Generated.Peano (2.8s)
+✔ [5/7] Built GLExport.Generated.Gauss (1.7s)
+✔ [6/7] Built GLExport (645ms)
+Build completed successfully (7 jobs).
+exit 0

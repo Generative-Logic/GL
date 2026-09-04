@@ -290,6 +290,83 @@ namespace gl {
         }
     };
 
+    /// @brief The "no flag" mail-statement flag code — the routing default.
+    constexpr int32_t kMailStatementFlagNone = 0;
+    /// @brief Mail-statement flag 5 — "external, may be disintegrated": the
+    ///        receiver runs the statement through the full disintegration
+    ///        pipeline with witness minting (door status 5) instead of the
+    ///        bare-row status-3 absorb.
+    constexpr int32_t kMailStatementFlagExternalDisintegrate = 5;
+
+    /// @brief Pack a mail-statement flag code plus its witness-generation
+    ///        stamp into the side-column value.
+    ///
+    /// @details
+    /// Bits 0-2 carry the flag code (`kMailStatementFlagNone` or
+    /// `kMailStatementFlagExternalDisintegrate`); bits 3+ carry
+    /// `iteration + 1`, so the all-zero value keeps meaning "nothing carried"
+    /// (flag none, iteration -1). The iteration is the sender-side
+    /// disintegration's witness-generation stamp (I-171), carried across the
+    /// cross-LB seam so a flag-5 receiver mints its `it_` witnesses at the
+    /// same generation the sender's disintegration used.
+    ///
+    /// @param flagCode  The flag code; one of the two constants above.
+    /// @param iteration The witness-generation stamp; `>= -1` (-1 = none).
+    /// @return The packed int32 side-column value.
+    /// @see unpackMailStatementFlagCode, unpackMailStatementFlagIteration.
+    inline int32_t packMailStatementFlag(int32_t flagCode, int32_t iteration) {
+        assert((flagCode == kMailStatementFlagNone
+                || flagCode == kMailStatementFlagExternalDisintegrate)
+            && "packMailStatementFlag: unknown flag code");
+        assert(iteration >= -1 && "packMailStatementFlag: iteration below -1");
+        return flagCode | ((iteration + 1) << 3);
+    }
+
+    /// @brief Unpack the flag-code half of a packed mail-statement flag value.
+    /// @param packed The stored int32.
+    /// @return The flag code (`kMailStatementFlagNone` when none was carried).
+    /// @see packMailStatementFlag.
+    inline int32_t unpackMailStatementFlagCode(int32_t packed) {
+        return packed & 7;
+    }
+
+    /// @brief Unpack the iteration half of a packed mail-statement flag value.
+    /// @param packed The stored int32.
+    /// @return The witness-generation stamp (`-1` when the writer carried none).
+    /// @see packMailStatementFlag.
+    inline int32_t unpackMailStatementFlagIteration(int32_t packed) {
+        return (packed >> 3) - 1;
+    }
+
+    /// @brief Merge a new packed mail-statement flag value onto an existing one.
+    ///
+    /// @details Flag codes 5-win (a relay marking never downgrades to none);
+    /// iterations min-merge over real generations, with -1 (none) losing to
+    /// any real one — the same order-free deterministic fold
+    /// `ColdMail::setDisintegrationSignal` applies, so multiple ancestors'
+    /// blobs folding into one inbox yield a write-order-independent value.
+    ///
+    /// @param oldPacked The stored value.
+    /// @param newPacked The incoming value.
+    /// @return The merged packed value.
+    /// @see packMailStatementFlag.
+    inline int32_t mergeMailStatementFlag(int32_t oldPacked, int32_t newPacked) {
+        const int32_t code =
+            (unpackMailStatementFlagCode(oldPacked)
+                    == kMailStatementFlagExternalDisintegrate
+                || unpackMailStatementFlagCode(newPacked)
+                    == kMailStatementFlagExternalDisintegrate)
+            ? kMailStatementFlagExternalDisintegrate
+            : kMailStatementFlagNone;
+        const int32_t oldIt = unpackMailStatementFlagIteration(oldPacked);
+        const int32_t newIt = unpackMailStatementFlagIteration(newPacked);
+        const int32_t mergedIt =
+            (oldIt == -1) ? newIt
+            : (newIt == -1) ? oldIt
+            : (oldIt < newIt ? oldIt : newIt);
+        return packMailStatementFlag(code, mergedIt);
+    }
+
     /// @brief Id-form of one mail origin line -- `(tag, packed dependency keys)`,
     ///        the self-contained mail twin of `IdOrigin`.
     ///

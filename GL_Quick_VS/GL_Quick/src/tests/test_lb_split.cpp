@@ -150,7 +150,8 @@ TEST(lb_split, apply_firing_records_symbol_signature) {
     // part order, records read off each set's chain.
     using ApplyFn = void (gl::ExpressionAnalyzer::*)(gl::Memory&,
                                                      gl::SealedPageSet* const*,
-                                                     std::int32_t);
+                                                     std::int32_t,
+                                                     bool);
     ApplyFn fn = &gl::ExpressionAnalyzer::applyFiringRecords;
     ASSERT_TRUE(fn != nullptr);
 }
@@ -169,7 +170,7 @@ TEST(lb_split, apply_firing_records_head_deposit) {
     rig.pages.appendRecord(
         makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", true, false));
     gl::SealedPageSet* parts[1] = { &rig.pages };
-    ana.applyFiringRecords(mb, parts, 1);
+    ana.applyFiringRecords(mb, parts, 1, false);
 
     const gl::ExpressionWithValidity key("(in[2,1])", "main");
     bool found = false;
@@ -205,7 +206,7 @@ TEST(lb_split, apply_firing_records_carries_iteration_min_merged) {
     rig.pages.appendRecord(r3);
     rig.pages.appendRecord(r1);
     gl::SealedPageSet* parts[1] = { &rig.pages };
-    ana.applyFiringRecords(mb, parts, 1);
+    ana.applyFiringRecords(mb, parts, 1, false);
 
     const gl::Mail mailSnap = gl::makeHeapMail(mb.sameIterationInternalMail,
                                                mb.nameMap, mb.originInterner);
@@ -249,7 +250,7 @@ TEST(lb_split, apply_firing_records_already_known_skips_deposit) {
     rig.pages.appendRecord(
         makeHeadRecord(rig, "(in[int_lev_1_2,1])", "main", "implication", "(impA)", true, /*alreadyKnown=*/true));
     gl::SealedPageSet* parts[1] = { &rig.pages };
-    ana.applyFiringRecords(mb, parts, 1);
+    ana.applyFiringRecords(mb, parts, 1, false);
     ASSERT_TRUE(mb.sameIterationInternalMail.statementsEmpty());
     ASSERT_TRUE(mb.sameIterationInternalMail.exprOriginMapEmpty());
     const gl::NameId headId = mb.nameMap.lookup(std::string("(in[int_lev_1_2,1])"));
@@ -267,12 +268,31 @@ TEST(lb_split, apply_firing_records_marker_deposit) {
     rig.pages.appendRecord(
         makeMarkerRecord(rig, "(in3[1,marker,2,3])", "main", "(k1)"));
     gl::SealedPageSet* parts[1] = { &rig.pages };
-    ana.applyFiringRecords(mb, parts, 1);
+    ana.applyFiringRecords(mb, parts, 1, false);
     ASSERT_EQ((int)mb.deferredIntegrationPreps.size(), 1);
     ASSERT_EQ((int)mb.admissionKeysAlgebra.size(), 1);
     const gl::NameId markerId = mb.nameMap.lookup(std::string("(in3[1,marker,2,3])"));
     ASSERT_TRUE(markerId != 0);
     ASSERT_TRUE(mb.canBeSentMarkerIds.contains(markerId));
+}
+
+TEST(lb_split, apply_firing_records_canonical_input_bypasses_sort) {
+    // A deliberately noncanonical sentinel order makes the bypass observable:
+    // the true-path contract trusts the GPU adapter and deposits chain order
+    // directly. Production GPU input has already been canonically ordered.
+    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    RecordRig rig;
+    gl::Memory mb;
+    rig.pages.appendRecord(
+        makeMarkerRecord(rig, "(in3[1,marker,2,3])", "main", "(k2)"));
+    rig.pages.appendRecord(
+        makeMarkerRecord(rig, "(in3[1,marker,2,3])", "main", "(k1)"));
+    gl::SealedPageSet* parts[1] = { &rig.pages };
+    ana.applyFiringRecords(mb, parts, 1, true);
+
+    ASSERT_EQ(static_cast<int>(mb.admissionKeysAlgebra.size()), 2);
+    ASSERT_EQ(mb.admissionKeysAlgebra[0].value.key[0].toStdString(), "(k2)");
+    ASSERT_EQ(mb.admissionKeysAlgebra[1].value.key[0].toStdString(), "(k1)");
 }
 
 namespace {
@@ -346,8 +366,8 @@ TEST(lb_split, apply_firing_records_order_independent) {
     gl::Memory mbB;
     gl::SealedPageSet* partsA[1] = { &rigA.pages };
     gl::SealedPageSet* partsB[1] = { &rigB.pages };
-    ana.applyFiringRecords(mbA, partsA, 1);
-    ana.applyFiringRecords(mbB, partsB, 1);
+    ana.applyFiringRecords(mbA, partsA, 1, false);
+    ana.applyFiringRecords(mbB, partsB, 1, false);
     assertSameDeposits(mbA, mbB);
 
     // Two-part variant: the records split across TWO page sets handed in both
@@ -364,8 +384,8 @@ TEST(lb_split, apply_firing_records_order_independent) {
     gl::Memory mbD;
     gl::SealedPageSet* partsPQ[2] = { &rigP.pages, &rigQ.pages };
     gl::SealedPageSet* partsQP[2] = { &rigQ.pages, &rigP.pages };
-    ana.applyFiringRecords(mbC, partsPQ, 2);
-    ana.applyFiringRecords(mbD, partsQP, 2);
+    ana.applyFiringRecords(mbC, partsPQ, 2, false);
+    ana.applyFiringRecords(mbD, partsQP, 2, false);
     assertSameDeposits(mbC, mbD);
     // And the two-part merge equals the one-part merge of the same set.
     assertSameDeposits(mbA, mbC);
@@ -538,63 +558,6 @@ TEST(lb_split, pointer_index_sort_matches_vector_sort) {
     }
 }
 
-TEST(lb_split, make_partition_id_packs_and_is_injective) {
-    // makePartitionId packs origId in the high 32 bits and scopeVid in the low
-    // 32 (int64, via packInt32Pair) — the composite id stored in
-    // OwnerSet::partitionIds. Layout:
-    ASSERT_EQ(gl::makePartitionId(0, 0), (std::int64_t)0);
-    ASSERT_EQ(gl::makePartitionId(1, 0), gl::packInt32Pair(1, 0));
-    ASSERT_EQ(gl::makePartitionId(0, 5), gl::packInt32Pair(0, 5));
-    ASSERT_EQ(gl::makePartitionId(7, 3), gl::packInt32Pair(7, 3));
-    // Large NameId inputs (past the old 16-bit ceiling) stay a positive int64 —
-    // so id % N is well-defined and non-negative for any N > 0:
-    ASSERT_TRUE(gl::makePartitionId(200000, 1000000) > 0);
-    ASSERT_EQ(gl::makePartitionId(200000, 1000000),
-              gl::packInt32Pair(200000, 1000000));
-    // Injective: differing in EITHER half yields a different id — distinct
-    // (original, validity) owners never collide.
-    ASSERT_TRUE(gl::makePartitionId(3, 4) != gl::makePartitionId(4, 3));
-    ASSERT_TRUE(gl::makePartitionId(3, 4) != gl::makePartitionId(3, 5));
-    ASSERT_TRUE(gl::makePartitionId(3, 4) != gl::makePartitionId(2, 4));
-    // Deterministic: same inputs -> same id, so the wipe-time recompute matches
-    // the install-time id (the lockstep-erase contract).
-    ASSERT_EQ(gl::makePartitionId(123, 45), gl::makePartitionId(123, 45));
-}
-
-TEST(lb_split, partition_accepts_filters_by_residue) {
-    // partitionAccepts(set) accepts iff g_splitCount <= 1 (unsplit -> always) or
-    // some id in the set has id % g_splitCount == g_splitProcessID. It reads the
-    // thread-local executor context, so save/restore it around the checks.
-    const int savedPid = gl::g_splitProcessID;
-    const int savedN = gl::g_splitCount;
-
-    std::set<std::int64_t> ids = { 3, 7, 12 };
-
-    // N <= 1 is the unsplit identity: always true, set untouched (even empty).
-    gl::g_splitCount = 1; gl::g_splitProcessID = 0;
-    ASSERT_TRUE(gl::partitionAccepts(ids));
-    std::set<std::int64_t> empty;
-    ASSERT_TRUE(gl::partitionAccepts(empty));
-
-    // N = 4: residues present are {3%4=3, 7%4=3, 12%4=0} = {0, 3}.
-    gl::g_splitCount = 4;
-    gl::g_splitProcessID = 0; ASSERT_TRUE(gl::partitionAccepts(ids));   // 12 % 4 == 0
-    gl::g_splitProcessID = 3; ASSERT_TRUE(gl::partitionAccepts(ids));   // 3 % 4 == 3
-    gl::g_splitProcessID = 1; ASSERT_FALSE(gl::partitionAccepts(ids));  // none == 1
-    gl::g_splitProcessID = 2; ASSERT_FALSE(gl::partitionAccepts(ids));  // none == 2
-
-    // Completeness: a non-empty set is claimed by at least one executor.
-    int claimedBy = 0;
-    for (int n = 0; n < 4; ++n) {
-        gl::g_splitProcessID = n;
-        if (gl::partitionAccepts(ids)) ++claimedBy;
-    }
-    ASSERT_TRUE(claimedBy >= 1);
-
-    gl::g_splitProcessID = savedPid;
-    gl::g_splitCount = savedN;
-}
-
 TEST(lb_split, phase_helpers_exist) {
     // The performElem phase-split helpers exist with their declared member
     // signatures (this compiles only if each is present). Their behaviour is
@@ -686,13 +649,20 @@ TEST(lb_split, lb_split_defaults_true) {
 
 TEST(lb_split, lb_split_config_wiring) {
     // The per-batch wiring that replaced the hard incubator exclusion (the
-    // proveKernel gate no longer consults incubator_mode): IncubatorGauss3 opts
-    // IN so its heavy rung LBs split; the small-LB incubator configs opt OUT.
+    // proveKernel gate no longer consults incubator_mode): every production
+    // incubator batch opts in, while the statistics trigger keeps balanced
+    // small LBs unsplit.
     // See D-231.
+    gl::ExpressionAnalyzer ip1(std::string("IncubatorPeano1"));
+    ASSERT_TRUE(ip1.parameters.lb_split);
+    gl::ExpressionAnalyzer ip2(std::string("IncubatorPeano2"));
+    ASSERT_TRUE(ip2.parameters.lb_split);
+    gl::ExpressionAnalyzer ig1(std::string("IncubatorGauss1"));
+    ASSERT_TRUE(ig1.parameters.lb_split);
+    gl::ExpressionAnalyzer ig2(std::string("IncubatorGauss2"));
+    ASSERT_TRUE(ig2.parameters.lb_split);
     gl::ExpressionAnalyzer ig3(std::string("IncubatorGauss3"));
     ASSERT_TRUE(ig3.parameters.lb_split);
-    gl::ExpressionAnalyzer ip1(std::string("IncubatorPeano1"));
-    ASSERT_FALSE(ip1.parameters.lb_split);
 }
 
 TEST(lb_split, max_split_parts_bounds_the_expression_split) {
@@ -744,7 +714,7 @@ TEST(lb_split, burst_deactivates_contradiction) {
     mb.primedForContradiction = true;
     const gl::NameId negId = mb.nameMap.encode("!(in[2,1])");
     mb.intKnownStatements.insert(gl::StatementKey{ negId, gl::NameMap::MAIN_ID },
-                                 gl::StatementFlags{ true, false, true, true });
+                                 gl::StatementFlags{ true, false });
 
     gl::FiringRecord fr =
         makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", true, false);
@@ -761,7 +731,7 @@ TEST(lb_split, burst_deactivates_rejects_branch_local_contradiction) {
     mb.primedForContradiction = true;
     const gl::NameId negId = mb.nameMap.encode("!(in[2,1])");
     mb.intKnownStatements.insert(gl::StatementKey{ negId, gl::NameMap::MAIN_ID },
-                                 gl::StatementFlags{ true, false, true, true });
+                                 gl::StatementFlags{ true, false });
 
     gl::FiringRecord fr = makeHeadRecord(
         rig, "(in[2,1])",
@@ -791,7 +761,7 @@ TEST(lb_split, burst_deactivates_plain_lb_never_fires) {
     gl::Memory mb;
     const gl::NameId negId = mb.nameMap.encode("!(in[2,1])");
     mb.intKnownStatements.insert(gl::StatementKey{ negId, gl::NameMap::MAIN_ID },
-                                 gl::StatementFlags{ true, false, true, true });
+                                 gl::StatementFlags{ true, false });
 
     gl::FiringRecord fr =
         makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", true, false);
@@ -807,7 +777,7 @@ TEST(lb_split, burst_deactivates_vacuous_truth) {
     mb.isPartOfRecursion = true;
     const gl::NameId negId = mb.nameMap.encode("!(in[2,1])");
     mb.intKnownStatements.insert(gl::StatementKey{ negId, gl::NameMap::MAIN_ID },
-                                 gl::StatementFlags{ true, false, true, true });
+                                 gl::StatementFlags{ true, false });
 
     gl::FiringRecord fr =
         makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", true, false);
@@ -876,7 +846,7 @@ TEST(lb_split, burst_deactivates_ce_filter) {
     mb.contradictionIndex = 5;          // CE LB under test; not primed, not recursion
     const gl::NameId negId = mb.nameMap.encode("!(in[2,1])");
     mb.intKnownStatements.insert(gl::StatementKey{ negId, gl::NameMap::MAIN_ID },
-                                 gl::StatementFlags{ true, false, true, true });
+                                 gl::StatementFlags{ true, false });
 
     gl::FiringRecord fr =
         makeHeadRecord(rig, "(in[2,1])", "main", "implication", "(impA)", true, false);
@@ -897,24 +867,54 @@ TEST(lb_split, burst_deactivates_ce_filter_requires_known_negation) {
     ASSERT_FALSE(ana.burstDeactivates(mb, fr));
 }
 
-TEST(lb_split, burst_sink_runs_uncapped_and_gates_early_exit_on_multipart) {
-    // BurstSink no longer caps on the submatch count -- bursts run to COMPLETION
-    // (a heavy LB is split preemptively next iteration, not truncated). consume
-    // still runs the dependency skip (a request element must be a known statement
-    // before firing). The early-exit stop is honored ONLY for a SINGLE-part LB
-    // (g_isMultiPart == false); a multi-part LB ignores the sibling-set stop and
-    // runs every part to completion (I-76).
+TEST(lb_split, doom_line_packing_and_cas_min) {
+    // packDoomLine orders (position, ordinal) pairs lexicographically as plain
+    // integers; lowerDoomLine is an atomic CAS-min, so the final line is the
+    // minimum over every published trigger regardless of publish order — the
+    // deterministic winner selection the split early-exit rests on.
+    const int64_t a = gl::packDoomLine(5, 3);
+    const int64_t b = gl::packDoomLine(5, 1);   // same position, earlier part
+    const int64_t c = gl::packDoomLine(4, 7);   // earlier position wins outright
+    ASSERT_TRUE(b < a);
+    ASSERT_TRUE(c < b);
+    ASSERT_EQ(gl::doomLinePosition(a), (int64_t)5);
+    ASSERT_EQ(gl::doomLineOrdinal(a), 3);
+    ASSERT_EQ(gl::doomLinePosition(c), (int64_t)4);
+    ASSERT_EQ(gl::doomLineOrdinal(c), 7);
+    // The sentinel's position sits above any reachable submatch count, so a
+    // part comparing its counter against "no line" never stops.
+    ASSERT_TRUE(gl::doomLinePosition(gl::kNoDoomLine) > (int64_t(1) << 40));
+
+    std::atomic<int64_t> line{ gl::kNoDoomLine };
+    gl::lowerDoomLine(line, a);            // first trigger replaces the sentinel
+    ASSERT_EQ(line.load(), a);
+    gl::lowerDoomLine(line, c);            // smaller -> replaces
+    ASSERT_EQ(line.load(), c);
+    gl::lowerDoomLine(line, b);            // larger -> no-op
+    ASSERT_EQ(line.load(), c);
+    gl::lowerDoomLine(line, gl::packDoomLine(4, 2));  // position tie, earlier part
+    ASSERT_EQ(line.load(), gl::packDoomLine(4, 2));
+}
+
+TEST(lb_split, burst_sink_stops_on_the_doom_line_for_every_part) {
+    // BurstSink carries no cap -- a burst without a doom trigger runs to
+    // COMPLETION (a heavy LB is split preemptively next iteration, not
+    // truncated). consume still runs the dependency skip (a request element
+    // must be a known statement before firing). The doom line stops ANY part
+    // -- split or unsplit alike -- once the part's OWN submatch counter lies
+    // strictly past the line's position, so every part covers the identical
+    // deterministic prefix of its stream; a part AT the position keeps going
+    // (a position tie may still publish its own trigger, which an earlier
+    // invocation ordinal must win).
     gl::ExpressionAnalyzer ana(std::string("Peano"));
     gl::Memory mb;
     RecordRig rig;
-    std::atomic<bool> stop{ false };
-    const bool savedMulti = gl::g_isMultiPart;
-    gl::g_isMultiPart = false;
-    gl::BurstSink sink{ &ana, &mb, 0, &rig.pages, &stop,
+    std::atomic<int64_t> doomLine{ gl::kNoDoomLine };
+    gl::BurstSink sink{ &ana, &mb, 0, &rig.pages, &doomLine, 0,
                         gl::SealedRecordCursor<gl::FiringRecord>(rig.pages) };
 
     // No cap: canAccept stays true however high the submatch count climbs
-    // (single-part, stop clear).
+    // while no line is published.
     gl::ExpressionAnalyzer::g_growthMatchCount = 0;
     ASSERT_TRUE(sink.canAccept());
     gl::ExpressionAnalyzer::g_growthMatchCount = 1 << 20;
@@ -933,15 +933,81 @@ TEST(lb_split, burst_sink_runs_uncapped_and_gates_early_exit_on_multipart) {
     ASSERT_EQ((int)sink.produced, 1);
     ASSERT_EQ(rig.pages.recordCount(), 0); // nothing fired
 
-    // Early-exit gate: with the stop set, a SINGLE-part LB closes...
-    stop.store(true);
-    gl::g_isMultiPart = false;
-    ASSERT_FALSE(sink.canAccept());
-    // ...but a MULTI-part LB ignores the sibling-set stop and keeps generating.
-    gl::g_isMultiPart = true;
+    // With a line published at position 5, a part runs up to the line and
+    // stops strictly past it — regardless of how many parts the LB has.
+    gl::lowerDoomLine(doomLine, gl::packDoomLine(5, 0));
+    gl::ExpressionAnalyzer::g_growthMatchCount = 5;
     ASSERT_TRUE(sink.canAccept());
+    gl::ExpressionAnalyzer::g_growthMatchCount = 6;
+    ASSERT_FALSE(sink.canAccept());
 
-    gl::g_isMultiPart = savedMulti;
-    stop.store(false);
+    // A sibling part below the line keeps generating up to it (partOrdinal 3
+    // can no longer win against ordinal 0 at the same position, but its
+    // records before the line are not the merge's concern — the winner's
+    // chain alone is merged).
+    gl::BurstSink sibling{ &ana, &mb, 0, &rig.pages, &doomLine, 3,
+                           gl::SealedRecordCursor<gl::FiringRecord>(rig.pages) };
+    gl::ExpressionAnalyzer::g_growthMatchCount = 4;
+    ASSERT_TRUE(sibling.canAccept());
+    gl::ExpressionAnalyzer::g_growthMatchCount = 6;
+    ASSERT_FALSE(sibling.canAccept());
+
+    // A part that fired its own doom trigger (consume returned false) never
+    // accepts again — its remaining request batches skip.
+    gl::BurstSink stopped{ &ana, &mb, 0, &rig.pages, &doomLine, 0,
+                           gl::SealedRecordCursor<gl::FiringRecord>(rig.pages) };
+    stopped.selfStopped = true;
+    gl::ExpressionAnalyzer::g_growthMatchCount = 0;
+    ASSERT_FALSE(stopped.canAccept());
+
     gl::ExpressionAnalyzer::g_growthMatchCount = 0;  // reset for later tests
+}
+
+TEST(lb_split, phase2_finalize_merges_only_the_winner_on_a_doom_line) {
+    // With a doom line set, performElemPhase2 merges ONLY the winning part's
+    // chain (the part named by the line's ordinal); the losing parts' records
+    // are discarded unread. Without a line, every part merges as before.
+    gl::ExpressionAnalyzer ana(std::string("Peano"));
+    ana.parameters.trackHistory = true;
+    ana.parameters.compressor_mode = false;
+    ana.parameters.max_origin_per_expr = 1;
+
+    const auto deposited = [](gl::Memory& mb, const std::string& expr) {
+        const gl::Mail mailSnap = gl::makeHeapMail(mb.sameIterationInternalMail,
+                                                   mb.nameMap, mb.originInterner);
+        for (const auto& st : mailSnap.statements)
+            if (st.first.original == expr && st.first.validityName == "main")
+                return true;
+        return false;
+    };
+
+    // Doom line naming part 1 as the winner: only part 1's record lands.
+    {
+        gl::Memory mb;
+        mb.isActive = true;
+        RecordRig rigA, rigB;
+        rigA.pages.appendRecord(makeHeadRecord(
+            rigA, "(in[2,1])", "main", "implication", "(impA)", true, false));
+        rigB.pages.appendRecord(makeHeadRecord(
+            rigB, "(in[3,1])", "main", "implication", "(impB)", true, false));
+        gl::SealedPageSet* parts[2] = { &rigA.pages, &rigB.pages };
+        ana.performElemPhase2(mb, parts, 2, gl::packDoomLine(7, 1));
+        ASSERT_FALSE(deposited(mb, "(in[2,1])"));
+        ASSERT_TRUE(deposited(mb, "(in[3,1])"));
+    }
+
+    // No line: both parts merge.
+    {
+        gl::Memory mb;
+        mb.isActive = true;
+        RecordRig rigA, rigB;
+        rigA.pages.appendRecord(makeHeadRecord(
+            rigA, "(in[2,1])", "main", "implication", "(impA)", true, false));
+        rigB.pages.appendRecord(makeHeadRecord(
+            rigB, "(in[3,1])", "main", "implication", "(impB)", true, false));
+        gl::SealedPageSet* parts[2] = { &rigA.pages, &rigB.pages };
+        ana.performElemPhase2(mb, parts, 2, gl::kNoDoomLine);
+        ASSERT_TRUE(deposited(mb, "(in[2,1])"));
+        ASSERT_TRUE(deposited(mb, "(in[3,1])"));
+    }
 }

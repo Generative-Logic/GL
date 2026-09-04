@@ -38,6 +38,7 @@ User-oriented SwDD — Chapter 8: Compilation & names (deep dive).
       <ul>
         <li><a href="prover.html#life">Life of a run</a></li>
         <li><a href="prover.html#cycles">Cycles</a></li>
+        <li><a href="prover.html#cuda-filter-classes">CUDA filter classes</a></li>
         <li><a href="prover.html#enter">How a theorem enters</a></li>
         <li><a href="prover.html#status">Status modes</a></li>
         <li><a href="prover.html#deactivate">Deactivation cascade</a></li>
@@ -62,7 +63,7 @@ User-oriented SwDD — Chapter 8: Compilation & names (deep dive).
         <li><a href="mechanisms.html#integ">Integration</a></li>
         <li><a href="mechanisms.html#branch">Branching &amp; contradiction</a></li>
         <li><a href="mechanisms.html#induct">Induction</a></li>
-        <li><a href="mechanisms.html#fan5">5-batch fan-out</a></li>
+        <li><a href="mechanisms.html#fan5">Request-generation fan-out</a></li>
         <li><a href="mechanisms.html#cascade">Pending-rejection cascade</a></li>
       </ul>
     </li>
@@ -85,6 +86,7 @@ User-oriented SwDD — Chapter 8: Compilation & names (deep dive).
         <li><a href="memory.html#aggregate">LbMemory — the aggregate</a></li>
         <li><a href="memory.html#deload">Deload / reload</a></li>
         <li><a href="memory.html#scope">Scope</a></li>
+        <li><a href="memory.html#strings">String statification</a></li>
       </ul>
     </li>
     <li><a href="provenance.html">Provenance</a>
@@ -304,7 +306,7 @@ the analyzer-level table mapping a compact name (<code>or7</code>,
 <code>existence2</code>, …) to the structural template it stands for: head shape,
 arity, the bound-variable signature, the original MPL body, a <code>category</code>
 label (<code>or</code> / <code>existence</code> / <code>and</code> /
-<code>implication</code>). Every later mechanism that needs to know “what is
+<code>implication</code>). An <code>or</code> row additionally carries its <i>or implications</i>: the K mutual-exclusion rules and the subset-exclusion rules of that OR, compiled once as compact <code>implication&lt;N&gt;[u_…]</code> atoms over the OR's own tokens (the K rules when the OR is registered, the subset-exclusion family at the reduced-OR closure seam) and written to the GL binary under <code>implications</code> — the disintegrator instantiates them instead of rebuilding rule text per instance. An <code>existence</code> row carries its two <i>existence implications</i> the same way — <code>left → !right</code> and <code>right → !left</code>, the rules its negation disintegrates into, compiled once as compacts over the existence's own tokens when the existence is registered. Every later mechanism that needs to know “what is
 <code>or7</code>, really?” reads it from this registry — never from the string.
 </p>
 <p>
@@ -696,11 +698,9 @@ the same string — the second character of the proof.</li>
 <code>HashMemory</code> is the umbrella that owns the firing index. Alongside
 <code>encodedMap</code> (the premise-key → fireable-rules map) it carries
 <code>normalizedEncodedKeys</code>: an existence index keyed on the same
-<code>IntNormalizedKey</code>, whose value is the set of
-<i>(implication, scope)</i> owners that installed a marker rule for that key.
-When a firing rule retires or is shadowed by an equivalence-class rewrite,
-<code>normalizedEncodedKeys</code> drops that owner; only when the owner-set
-becomes empty does the <code>encodedMap</code> entry itself shrink. The pattern
+<code>IntNormalizedKey</code>, with no value at all — a bare key set.
+It is never pruned: when a scope closes only the <code>encodedMap</code> rules
+go, and a stale key's request simply misses there. The pattern
 is refcount-by-owner rather than naked refcount — it lets the runtime answer
 “does any rule for this shape still exist?” in O(1) without a full sweep.
 </p>

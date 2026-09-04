@@ -427,7 +427,7 @@ Batch-level fields (outside per-expression records) control things like the anch
 
 ## `files/GL_binaries/GL_binary_<Tag>.json` — the compiled artefact
 
-The compiler's output, and — since [D-22](../40_decisions.md#d-22) — also one of its **inputs**. Maps expression name to `{arity, category, elements, signature, definedSet}`. Generated at every run; **gitignored**.
+The compiler's output, and — since [D-22](../40_decisions.md#d-22) — also one of its **inputs**. Maps expression name to `{arity, category, elements, signature, definedSet}` — plus, on **or and existence entries**, `implications`: for an or, its K mutual-exclusion and subset-exclusion rules as `(implication<N>[u_…])` compacts over the or's own `u_` tokens (K-rules in leaf order, then the subset-exclusion rules in the disintegrator's enumeration order; the argument order is the projection onto the or's tokens — [D-309](../40_decisions.md#d-309)); for a two-element existence, its two existence implications `left → !right` then `right → !left` as compacts over the existence's own tokens ([D-310](../40_decisions.md#d-310)). The writer omits the key when the list is empty, so every other entry keeps the earlier layout byte-for-byte; an or or existence loaded without it is completed at the next `preMintReducedOrs` seam. Generated at every run; **gitignored**.
 
 **Cross-batch shared registry.** Spontaneous compact operator names (`implication<N>`, `existence<N>`, `or<N>`, `and<N>`) live in a sibling file `files/GL_binaries/GL_binary_shared.json`. This shared file is the cross-batch source of truth for spontaneous identifiers. Per-batch lifecycle:
 
@@ -465,7 +465,22 @@ Because the binary is regenerated, this document cannot quote a byte-exact examp
         "category": "existence",
         "elements": ["(...)","(...)"],
         "signature": "(fXY[u_0,u_1,u_2])",
-        "definedSet": 0
+        "definedSet": 0,
+        "implications": [
+            "(implication34[u_0,u_1,u_2])",
+            "...left → !right, then right → !left, over the existence's tokens..."
+        ]
+    },
+    "or6": {
+        "arity": 6,
+        "category": "or",
+        "elements": ["(...)","(...)","(...)"],
+        "signature": "(or6[u_1,u_2,u_3,u_4,u_5,u_6])",
+        "definedSet": "",
+        "implications": [
+            "(implication172[u_3,u_2,u_4,u_5,u_6,u_1])",
+            "...the 3 K-rules in leaf order, then the 3 subset-exclusion compacts..."
+        ]
     }
 }
 ```

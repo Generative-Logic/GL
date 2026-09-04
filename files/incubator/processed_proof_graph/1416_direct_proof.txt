@@ -1,20 +1,17 @@
-!(in2[i1,i2,id])	main	contradiction	(in2[i0,i1,s])	main	!(in2[i0,i1,s])	main	(in2[i1,i2,id])	main
-(in2[i0,i1,s])	main	disintegration	(&(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))(in2[i2,i3,s]))	main
+!(in2[i1,i0,id])	main	contradiction	!(in2[i0,i0,s])	main	(in2[i0,i0,s])	main	(in2[i1,i0,id])	main
+!(in2[i0,i0,s])	main	implication	(>[w1](in[w1,N])!(in2[w1,i0,s]))	main	(in[i0,N])	main
+(>[w1](in[w1,N])!(in2[w1,i0,s]))	main	expansion	(implication6[N,i0,s])	main
+(implication6[N,i0,s])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication6[N,i0,s]))(implication7[N,s]))(fXYZ[+,N,N,N]))(implication15[N,i0,+]))(implication16[N,i0,+]))(implication17[N,s,+]))(implication18[N,s,+]))(fXYZ[*,N,N,N]))(implication19[N,i0,*]))(implication20[N,s,*,+]))(implication21[N,s,*,+]))	main
+(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication6[N,i0,s]))(implication7[N,s]))(fXYZ[+,N,N,N]))(implication15[N,i0,+]))(implication16[N,i0,+]))(implication17[N,s,+]))(implication18[N,s,+]))(fXYZ[*,N,N,N]))(implication19[N,i0,*]))(implication20[N,s,*,+]))(implication21[N,s,*,+]))	main	expansion	(NaturalNumbers[N,i0,s,+,*])	main
+(NaturalNumbers[N,i0,s,+,*])	main	disintegration	(&(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))(in2[i2,i3,s]))	main
 (&(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))(in2[i2,i3,s]))	main	expansion	(AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])	main
 (AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])	main	task formulation
-!(in2[i0,i1,s])	main	equality1	!(in2[i0,i3,s])	main	(=[i3,i1])	main
-!(in2[i0,i3,s])	main	implication	(>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])!(in2[i0,i3,s]))	main	(AnchorIncubator3[N,i0,s,+,*,1_copy,2_copy,id,i3])	main
-(AnchorIncubator3[N,i0,s,+,*,1_copy,2_copy,id,i3])	main	anchor handling	(AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])	main
-(=[i3,i1])	main	equality2	(=[i3,i2])	main	(=[i2,i1])	main
-(=[i3,i2])	main	symmetry of equality	(=[i2,i3])	main
-(=[i2,i3])	main	implication	(>[N,i0,s,+,*,i1,10,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,10,id,i3])(>[10](in2[10,10,s])(=[10,i3])))	main	(AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])	main	(in2[i2,i2,s])	main
-(>[N,i0,s,+,*,i1,10,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,10,id,i3])(>[10](in2[10,10,s])(=[10,i3])))	main	multiplied from	(>[N,i0,s,+,*,i1,i2,id,i3](AnchorIncubator3[N,i0,s,+,*,i1,i2,id,i3])(>[w1](in2[i2,w1,s])(=[w1,i3])))	main
-(in2[i2,i2,s])	main	equality1	(in2[i1,i2,s])	main	(=[i1,i2])	main
-(in2[i1,i2,s])	main	disintegration	(&(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))(in2[i2,i3,s]))	main
-(=[i1,i2])	main	implication	(>[w1,w2](in2[w1,w2,id])(=[w1,w2]))	main	(in2[i1,i2,id])	main
-(>[w1,w2](in2[w1,w2,id])(=[w1,w2]))	main	expansion	(implication18[id])	main
-(implication18[id])	main	disintegration	(&(&(implication0[id,N])(implication18[id]))(implication19[N,id]))	main
-(&(&(implication0[id,N])(implication18[id]))(implication19[N,id]))	main	expansion	(identity[N,id])	main
+(in[i0,N])	main	disintegration	(&(&(&(&(&(&(&(&(&(&(&(&(in[i0,N])(fXY[s,N,N]))(implication6[N,i0,s]))(implication7[N,s]))(fXYZ[+,N,N,N]))(implication15[N,i0,+]))(implication16[N,i0,+]))(implication17[N,s,+]))(implication18[N,s,+]))(fXYZ[*,N,N,N]))(implication19[N,i0,*]))(implication20[N,s,*,+]))(implication21[N,s,*,+]))	main
+(in2[i0,i0,s])	main	equality1	(in2[i0,i1,s])	main	(=[i1,i0])	main
+(in2[i0,i1,s])	main	disintegration	(&(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))(in2[i2,i3,s]))	main
+(=[i1,i0])	main	implication	(>[w1,w2](in2[w1,w2,id])(=[w1,w2]))	main	(in2[i1,i0,id])	main
+(>[w1,w2](in2[w1,w2,id])(=[w1,w2]))	main	expansion	(implication22[id])	main
+(implication22[id])	main	disintegration	(&(&(implication0[id,N])(implication22[id]))(implication23[N,id]))	main
+(&(&(implication0[id,N])(implication22[id]))(implication23[N,id]))	main	expansion	(identity[N,id])	main
 (identity[N,id])	main	disintegration	(&(&(&(&(NaturalNumbers[N,i0,s,+,*])(in2[i0,i1,s]))(in2[i1,i2,s]))(identity[N,id]))(in2[i2,i3,s]))	main
-(in2[i1,i2,id])	main	task formulation
-(=[i2,i1])	main	symmetry of equality	(=[i1,i2])	main
+(in2[i1,i0,id])	main	task formulation

@@ -32,11 +32,13 @@
 // function bodies live here.
 
 #include "memory.hpp"
+
 #include "prover.hpp"
 #include "parameters.hpp"
 #include "memory_infra/lb_deload.hpp"
 #include "memory_infra/deload_stats.hpp"
 #include <cstdio>
+#include <iostream>
 #include "memory_infra/str_ops.hpp"
 #include "memory_infra/arena_stack.hpp"
 #include "memory_infra/scratch_arena.hpp"
@@ -51,18 +53,6 @@
 #include <vector>
 
 namespace gl {
-
-    // D-119: per-executor LB-split context. Default
-    // (0, 1) is the unsplit identity (partitionAccepts is then a no-op). Set per
-    // executor at the top of its hashburst call; thread-local so parallel
-    // executors of one LB never race on them.
-    thread_local int g_splitProcessID = 0;
-    thread_local int g_splitCount = 1;
-    // Per-burst multi-part signal for the early-exit gate (I-76), set in
-    // performElem2 from its partCount. Distinct from g_splitCount (the rule
-    // dimension), because the expression/bucket split runs many parts at
-    // g_splitCount == 1. Default false = unsplit identity.
-    thread_local bool g_isMultiPart = false;
 
     // Out-of-line IntEncodedExpr recordUSignature (declared in memory.hpp).
     // Heap-free: builds the (slot, argFullId) pairs on the per-slot gen-scratch
@@ -205,6 +195,229 @@ namespace gl {
         return matched;
     }
 
+    // Doxygen at the declaration (prover.hpp).
+    int32_t ExpressionAnalyzer::flattenRegistryOrLeavesScratch(
+        const LogicalEntity& orLe, StrSpan instance,
+        StrSpan* out, int32_t cap, ScratchArena& sArena) {
+
+        assert(orLe.category == "or"
+            && "flattenRegistryOrLeavesScratch: entity must be or-category");
+        int32_t outN = 0;
+        const auto walk = [&](const LogicalEntity& node, StrSpan inst,
+                              const auto& self) -> void {
+            StrSpan sigArgs[ExecutionParameters::MAX_ARITY];
+            const int32_t sigN = getArgsSpans(StrSpan(node.signature), sigArgs,
+                                              ExecutionParameters::MAX_ARITY);
+            StrSpan instArgs[ExecutionParameters::MAX_ARITY];
+            const int32_t instN = getArgsSpans(inst, instArgs,
+                                               ExecutionParameters::MAX_ARITY);
+            assert(sigN == instN
+                && "flattenRegistryOrLeavesScratch: instance arity differs from compiled or");
+            StrReplacement pairs[ExecutionParameters::MAX_ARITY];
+            int32_t pairN = 0;
+            for (int32_t a = 0; a < sigN; ++a) {
+                pairs[pairN].key = sigArgs[a];
+                pairs[pairN].value = instArgs[a];
+                ++pairN;
+            }
+            for (const std::string& rawElem : node.elements) {
+                const ScratchString subst =
+                    replaceKeysScratch(sArena, StrSpan(rawElem), pairs, pairN);
+                const StrSpan substSpan(subst);
+                const LogicalEntity* childLe =
+                    (substSpan.len >= 1 && substSpan.ptr[0] == '(')
+                    ? compiledEntity(extractExpressionUniversalSpan(substSpan))
+                    : nullptr;
+                if (childLe != nullptr && childLe->category == "or") {
+                    self(*childLe, substSpan, self);
+                } else {
+                    assert(outN < cap
+                        && "flattenRegistryOrLeavesScratch: leaf count exceeds cap");
+                    out[outN++] = substSpan;
+                }
+            }
+        };
+        walk(orLe, instance, walk);
+        assert(outN >= 2
+            && "flattenRegistryOrLeavesScratch: or entity flattens to fewer than two leaves");
+        return outN;
+    }
+
+    // Doxygen at the declaration (prover.hpp).
+    bool ExpressionAnalyzer::isSubsetExclusionInstall(const StrSpan* keyRun,
+                                                      int32_t keyN,
+                                                      StrSpan headSpan) {
+        if (keyN < 1
+            || keyN > ExecutionParameters::kMaxReducedOrLeaves - 2) {
+            return false;
+        }
+        if (headSpan.len < 1 || headSpan.ptr[0] != '(') return false;
+        const LogicalEntity* redLe =
+            compiledEntity(extractExpressionUniversalSpan(headSpan));
+        if (redLe == nullptr || redLe->category != "or") return false;
+
+        const unsigned slot = (g_currentCoreId >= 0)
+            ? static_cast<unsigned>(g_currentCoreId)
+            : scratchArenas().slotCount() - 1;
+        ScratchArena& sArena = scratchArenas().forSlot(slot);
+        ScratchScope scope(sArena);
+
+        // The excluded-disjunct candidates: negate each premise with
+        // double-negation cancellation — the emission builds premises as
+        // negateScratch(leaf), so negating recovers the TRUE-polarity leaf
+        // whatever its sign (I-175). Premise ORDER is deliberately ignored:
+        // the mail-compact round-trip stores only the first-seen body and
+        // dedups whole name-sorted permutation families (I-52), so a
+        // reinstalled rule's premises may arrive in any order.
+        StrSpan dSpans[ExecutionParameters::kMaxReducedOrLeaves];
+        for (int32_t p = 0; p < keyN; ++p)
+            dSpans[p] = negateScratch(sArena, keyRun[p]);
+
+        // The head's leaves in INSTANCE terms. Bytes sit below the
+        // per-entry scopes and survive the whole registry scan.
+        StrSpan leaves[ExecutionParameters::kMaxReducedOrLeaves];
+        const int32_t leafN = flattenRegistryOrLeavesScratch(
+            *redLe, headSpan, leaves,
+            ExecutionParameters::kMaxReducedOrLeaves, sArena);
+        const int32_t parentN = leafN + keyN;
+        if (parentN > ExecutionParameters::kMaxReducedOrLeaves) return false;
+
+        // Token->arg binding for one registry entry: registry-term leaves
+        // carry the entity's canonical u_<digits> signature tokens; the
+        // binding is INJECTIVE (two distinct tokens never bind one arg),
+        // which reproduces the first-appearance-canonicalization verdict —
+        // in particular a DEGENERATE repeated-arg instance stays untagged
+        // (D-270 keeps its head safe to
+        // flat-consume).
+        StrSpan boundArg[ExecutionParameters::MAX_ARITY + 1];
+        bool boundSet[ExecutionParameters::MAX_ARITY + 1] = {};
+        int32_t dfsSteps = 0;
+
+        // Match one registry-term element against one instance-term
+        // candidate under the growing binding. Newly bound token indices
+        // are appended to undo[]; the CALLER unbinds them when its branch
+        // fails (a failed match may leave partial binds behind — the undo
+        // log covers them).
+        const auto matchElem = [&](StrSpan regElem, StrSpan cand,
+                                   int32_t* undo, int32_t& undoN) -> bool {
+            const bool regNeg = (regElem.len > 0 && regElem.ptr[0] == '!');
+            const bool candNeg = (cand.len > 0 && cand.ptr[0] == '!');
+            if (regNeg != candNeg) return false;
+            const StrSpan r = regNeg
+                ? StrSpan(regElem.ptr + 1, regElem.len - 1) : regElem;
+            const StrSpan c = candNeg
+                ? StrSpan(cand.ptr + 1, cand.len - 1) : cand;
+            int32_t rb = -1, cb = -1;
+            for (int32_t i = 0; i < r.len && rb < 0; ++i)
+                if (r.ptr[i] == '[') rb = i;
+            for (int32_t i = 0; i < c.len && cb < 0; ++i)
+                if (c.ptr[i] == '[') cb = i;
+            if ((rb < 0) != (cb < 0)) return false;
+            if (rb < 0) return equalSpans(r, c);
+            if (rb != cb
+                || std::memcmp(r.ptr, c.ptr, static_cast<std::size_t>(rb)) != 0) {
+                return false;
+            }
+            StrSpan rArgs[ExecutionParameters::MAX_ARITY];
+            StrSpan cArgs[ExecutionParameters::MAX_ARITY];
+            const int32_t rN = getArgsSpans(r, rArgs,
+                                            ExecutionParameters::MAX_ARITY);
+            const int32_t cN = getArgsSpans(c, cArgs,
+                                            ExecutionParameters::MAX_ARITY);
+            if (rN != cN) return false;
+            for (int32_t a = 0; a < rN; ++a) {
+                const StrSpan t = rArgs[a];
+                int32_t idx = 0;
+                bool isTok = (t.len >= 3 && t.ptr[0] == 'u' && t.ptr[1] == '_');
+                for (int32_t d = 2; d < t.len && isTok; ++d) {
+                    isTok = (t.ptr[d] >= '0' && t.ptr[d] <= '9');
+                    if (isTok) idx = idx * 10 + (t.ptr[d] - '0');
+                }
+                if (!isTok || idx < 1
+                    || idx > ExecutionParameters::MAX_ARITY) {
+                    // A non-signature token (shared literal) matches by
+                    // bytes only.
+                    if (!equalSpans(t, cArgs[a])) return false;
+                    continue;
+                }
+                if (boundSet[idx]) {
+                    if (!equalSpans(boundArg[idx], cArgs[a])) return false;
+                    continue;
+                }
+                bool argTaken = false;
+                for (int32_t s = 1;
+                     s <= ExecutionParameters::MAX_ARITY && !argTaken; ++s) {
+                    argTaken = boundSet[s] && equalSpans(boundArg[s], cArgs[a]);
+                }
+                if (argTaken) return false;
+                boundSet[idx] = true;
+                boundArg[idx] = cArgs[a];
+                undo[undoN++] = idx;
+            }
+            return true;
+        };
+
+        // Embed walk over one registry entry's flattened leaf list pl[]:
+        // element ei matches either the next head leaf (order preserved) or
+        // any unused premise negation (order free). At ei == plN the counts
+        // force hi == leafN and a full usedMask, so reaching the end IS
+        // acceptance.
+        const auto embed = [&](int32_t ei, int32_t hi, uint32_t usedMask,
+                               const StrSpan* pl, int32_t plN,
+                               const auto& self) -> bool {
+            ++dfsSteps;
+            assert(dfsSteps <= ExecutionParameters::kSubsetExclusionEmbedCap
+                && "isSubsetExclusionInstall: embed search exceeds the Rule-19 cap");
+            if (ei == plN) return true;
+            int32_t undo[ExecutionParameters::MAX_ARITY];
+            if (hi < leafN) {
+                int32_t undoN = 0;
+                const bool m = matchElem(pl[ei], leaves[hi], undo, undoN);
+                if (m && self(ei + 1, hi + 1, usedMask, pl, plN, self))
+                    return true;
+                for (int32_t u = 0; u < undoN; ++u) boundSet[undo[u]] = false;
+            }
+            for (int32_t p = 0; p < keyN; ++p) {
+                if (usedMask & (1u << p)) continue;
+                int32_t undoN = 0;
+                const bool m = matchElem(pl[ei], dSpans[p], undo, undoN);
+                if (m && self(ei + 1, hi, usedMask | (1u << p), pl, plN, self))
+                    return true;
+                for (int32_t u = 0; u < undoN; ++u) boundSet[undo[u]] = false;
+            }
+            return false;
+        };
+
+        // ONE order-free registry scan: a parent candidate is any or entry
+        // whose FLATTENED leaf count equals leafN + keyN (flatten-based on
+        // both sides, so a nested parent's flat form matches — the same
+        // flattened-cohort discipline the emission uses, I-166). The
+        // element-count prefilter is sound because flattening only grows
+        // the count.
+        bool found = false;
+        forEachCompiledOr([&](const std::string& name,
+                              const LogicalEntity& le) -> bool {
+            (void)name;
+            if (static_cast<int32_t>(le.elements.size()) > parentN)
+                return false;
+            ScratchScope entScope(sArena);
+            StrSpan pl[ExecutionParameters::kMaxReducedOrLeaves];
+            const int32_t plN = flattenRegistryOrLeavesScratch(
+                le, StrSpan(le.signature), pl,
+                ExecutionParameters::kMaxReducedOrLeaves, sArena);
+            if (plN != parentN) return false;
+            for (int32_t s = 0; s <= ExecutionParameters::MAX_ARITY; ++s)
+                boundSet[s] = false;
+            dfsSteps = 0;
+            if (embed(0, 0, 0u, pl, plN, embed)) {
+                found = true;
+                return true;
+            }
+            return false;
+        });
+        return found;
+    }
+
     /// @brief Install one or more `LocalMemoryValue` records into a `HashMemory`,
     /// keyed on the canonical normalization of `key`.
     ///
@@ -246,6 +459,11 @@ namespace gl {
     ///                                that must travel with the head.
     /// @param mb                      Owning `Memory` (used for `exprOriginMap`,
     ///                                `mailOut`, `ruleInterner`).
+    /// @param secondTarget            Optional second instance receiving every
+    ///                                staged record of the same build (the
+    ///                                incubator's `workingMemory` beside
+    ///                                `overallHashMemory`); install-only,
+    ///                                never the first target.
     /// @param targetIntMemory         The `HashMemory` to install into. Usually
     ///                                `mb.localHashMemory` for fresh installs;
     ///                                deltas go to `mb.localHashMemoryDelta`.
@@ -274,7 +492,7 @@ namespace gl {
     ///                                [I-2](../../docs/agentic_swdd/30_invariants.md#i-2).
     ///
     /// @pre  `mb.lbMemory.manager` is resident — the cold `encodedMap` and the
-    ///       four `normalizedEncoded*` owner maps install onto it. Keys are owning
+    ///       two `normalizedEncoded*` owner maps install onto it. Keys are owning
     ///       (`NormKey`); the former keyArena-backed `IntNormalizedKey`
     ///       persistence is retired.
     /// @post `targetIntMemory.encodedMap` and the related `normalizedEncoded*`
@@ -308,7 +526,9 @@ namespace gl {
         StrSpan justificationSpan,
         bool performAdmissionMapUpdate,
         StrSpan originalImplicationCleanSpan,
-        StrSpan validityNameSpan) {
+        StrSpan validityNameSpan,
+        const RuleIndexOp& op,
+        HashMemory* secondTarget) {
 
         // 0% heap: the caller feeds spans over its own stable bytes and this
         // install body reads them directly (key = keyRun, value = valueSpan,
@@ -316,17 +536,33 @@ namespace gl {
         // clean / validity = their spans). Byte-identical: the ordered chain +
         // the sorted-unique remaining-arg run are preserved.
 
+        // A rule installed from non-derived material (the {-1} statement
+        // level tier, e.g. a mail-carried non-derived implication) has no
+        // level constraints — that is the empty-set convention (I-51). Rule
+        // level sets therefore stay empty-or-real; the {-1} tier never
+        // enters hash memory.
+        if (levelCount == 1 && levels[0] == -1) {
+            levels = nullptr;
+            levelCount = 0;
+        }
+        assert((levelCount == 0 || levels[0] >= 0)
+            && "rule install level run mixes the non-derived tier with real levels");
+        // A removal leaves owner-less entries behind for the end-of-apply
+        // compaction (eraseOwnerlessEntries) — flag the instance.
+        assert((!op.isRemove() || (op.visited != nullptr && op.dropSet != nullptr))
+            && "addToHashMemory: a removal without its visited set or drop set");
+        if (op.isRemove()) targetIntMemory.ownerlessPending = true;
+
         // Own multiplyImplication loop — fully independent from addToHashMemory.
         // The span form emits each copy onto mulStrArena (string tier) as a
         // CopyRef index on mulGenArena (page tier, I-124); each copy is read as a
         // zero-copy copySpan over mulStrArena (0% heap). mulStrScope holds the
         // copies live across the whole loop.
-        // Per-registry slot derivation: the two registries deliberately differ
-        // by one slot (string: logicalCores+1 with a DEDICATED reserved
-        // single-threaded slot; gen: logicalCores, single-threaded fallback
-        // sharing the last worker slot), so each registry's fallback comes from
-        // its OWN slotCount(). Workers (g_currentCoreId >= 0) use their own
-        // coreId on both — disjoint arenas, in range for both registries.
+        // Per-registry slot derivation: both registries carry logicalCores
+        // worker slots plus one DEDICATED reserved single-threaded slot (index
+        // logicalCores), and each fallback still reads its OWN slotCount().
+        // Workers (g_currentCoreId >= 0) use their own coreId on both —
+        // disjoint arenas, in range for both registries.
         const unsigned mulStrSlot = (g_currentCoreId >= 0)
             ? static_cast<unsigned>(g_currentCoreId)
             : scratchArenas().slotCount() - 1;
@@ -338,9 +574,34 @@ namespace gl {
         ScratchArena& mulGenArena = genScratchArenas().forSlot(mulGenSlot);
         DirtyState mulDirty = DirtyState::Clean;
         PagedVector<CopyRef> copies(&mulGenArena, &mulDirty);
-        multiplyImplication(originalImplicationSpan, mulStrArena, copies);
+        // The rule-index staging serving this instance on this slot (an
+        // install only; a removal uses the direct doors): the install stages
+        // every index write into it; the window's closer flushes it. The
+        // install is a staging window of its own: a nested deposit into the
+        // same LB (a copy equality, an integration seed) shares the bindings
+        // and must not close them from under this install — the outermost
+        // window closes all four instances.
+        RuleIndexStaging* stagingPtr = op.isRemove()
+            ? nullptr : &ruleStagings().acquire(mulGenSlot, &targetIntMemory);
+        RuleIndexStaging& staging = stagingPtr != nullptr
+            ? *stagingPtr : ruleStagings().at(mulGenSlot, 0);   // never read on the remove path
+        // A second target (the incubator's workingMemory beside
+        // overallHashMemory) receives every staged record of the same build:
+        // the copies, permutations and keys are computed once and written to
+        // both stagings (D-333).
+        assert((secondTarget == nullptr || (!op.isRemove() && secondTarget != &targetIntMemory))
+            && "addToHashMemory: a second target is an install-only twin of a different instance");
+        RuleIndexStaging* const staging2Ptr = (secondTarget != nullptr)
+            ? &ruleStagings().acquire(mulGenSlot, secondTarget) : nullptr;
+        ++mb.ruleStagingArmDepth;
+        {
+            RT_SCOPE_HERE("HM_MULTIPLY");
+            multiplyImplication(originalImplicationSpan, mulStrArena, copies);
+            RT_NOTE_ITERATIONS_HERE(copies.size());   // copies produced
+        }
 
         for (int32_t c = 0; c < copies.size(); ++c) {
+            RT_SCOPE_HERE("HM_COPY");
             const CopyRef cr = copies[c];
             const StrSpan copySpan(
                 reinterpret_cast<const char*>(mulStrArena.resolve(cr.off)), cr.len);
@@ -361,6 +622,7 @@ namespace gl {
                 // Track history for multiplied copies (L3 span-record door; drops
                 // the EWV / OriginLine build).
                 if (parameters.trackHistory) {
+                    RT_SCOPE_HERE("HM_COPY_HISTORY");
                     const OriginDep mulDeps[1] = {
                         { originalImplicationCleanSpan, StrSpan("main", 4) } };
                     const int mulCap = (parameters.compressor_mode
@@ -381,6 +643,7 @@ namespace gl {
 
                 // Row 238: span twin — curKey from each triple's key (get<0>),
                 // curValue = head. Spans slice copySpan (mulStrArena, stable).
+                RT_SCOPE_HERE("HM_COPY_DISINT");
                 ce::disintegrateImplicationSpans(copySpan, curValueSpan,
                     [&curKeyRun, &curKeyN](StrSpan keySpan, const StrSpan*, int32_t) {
                         assert(curKeyN < ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS
@@ -389,6 +652,65 @@ namespace gl {
                     });
             }
 
+            // One encode per premise per copy: every whole-key permutation,
+            // every subkey prefix and every admission derivative below reads
+            // this memo. The lazy fill keeps the NameMap first-touch order
+            // (a premise is first read where it used to be first encoded).
+            KeyEncodeMemo encMemo;
+            encMemo.bind(curKeyRun, curKeyN);
+
+            // The rule's owner identity in this HashMemory instance: the copy
+            // text's ruleInterner id + the install scope's NameMap id, recorded
+            // on every index entry the install below mints (whole keys, subkeys,
+            // remaining-args edges, the originals chain) so a later removal of
+            // this rule deletes exactly its owner from each. Minted here, before
+            // the chain ids, so the owner exists for the originals insert.
+            int32_t copyImplId = 0;
+            NameId ownerVid = 0;
+            RuleOwner owner = 0;
+            RuleOwner ruleOwner = 0;
+            {
+                RT_SCOPE_HERE("HM_COPY_OWNER_MINT");
+                copyImplId = mb.ruleInterner.encode(copySpan);
+                ownerVid = mb.nameMap.encode(validityNameSpan);
+                owner = packRuleOwner(copyImplId, ownerVid);
+                ruleOwner = packRuleOwner(
+                    mb.ruleInterner.encode(originalImplicationSpan), ownerVid);
+            }
+
+            // The copy's owning rules (copyOwners, keyed by the packed copy
+            // owner): two rules can multiply into one copy text, so the
+            // install lists this rule on the copy and a removal delists it —
+            // the copy's index entries and LMVs are touched only when no
+            // other rule owns the copy any more. A removal then stages the
+            // copy's LMVs for the batched compaction: the pair every LMV
+            // record of this copy carries (originalImplicationId = the copy's
+            // id). The drop set follows the multiplication exactly — several
+            // copies, several pairs; no copy (the trivial-head skip), nothing
+            // staged, nothing installed.
+            char copyKey[sizeof(RuleOwner)];
+            std::memcpy(copyKey, &owner, sizeof(RuleOwner));
+            {
+            RT_SCOPE_HERE("HM_COPY_OWNERS");
+            if (!op.isRemove()) {
+                stageOwnerToRun(staging.copyOwners,
+                                StrSpan(copyKey, static_cast<int32_t>(sizeof(RuleOwner))),
+                                ruleOwner);
+                if (staging2Ptr != nullptr) {
+                    stageOwnerToRun(staging2Ptr->copyOwners,
+                                    StrSpan(copyKey, static_cast<int32_t>(sizeof(RuleOwner))),
+                                    ruleOwner);
+                }
+            } else {
+                if (removeOwnerFromRun(targetIntMemory.copyOwners,
+                                       StrSpan(copyKey, static_cast<int32_t>(sizeof(RuleOwner))),
+                                       ruleOwner, mulGenArena) > 0) {
+                    continue;   // another rule still owns this copy
+                }
+                op.dropSet->mint(owner);
+            }
+            } // RT_SCOPE HM_COPY_OWNERS
+
             // --- Shared members (path-independent, needed for integration) ---
             // implication = curKey + curValue as a StrSpan run.
             StrSpan implRun[ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS + 1];
@@ -396,25 +718,41 @@ namespace gl {
             for (int32_t i = 0; i < curKeyN; ++i) implRun[implRunN++] = curKeyRun[i];
             implRun[implRunN++] = curValueSpan;
             // Positional value-id mint (byte-identical to encodeValueVector, I-84);
-            // originals.mint via the raw encodeIdVecKeyInto door (no owning IdVecKey).
+            // the originals chain gains this rule as an owner via the raw
+            // encodeIdVecKeyInto door (no owning IdVecKey).
             {
+                RT_SCOPE_HERE("HM_ORIGINALS_CHAIN");
                 int32_t implIds[ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS + 1];
                 for (int32_t i = 0; i < implRunN; ++i)
                     implIds[i] = mb.ruleInterner.encode(implRun[i]);
                 char ivKeyBuf[4 * (ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS + 2)];
                 const int32_t ivLen = encodeIdVecKeyInto(implIds, implRunN,
                     ivKeyBuf, static_cast<int32_t>(sizeof(ivKeyBuf)));
-                targetIntMemory.originals.inner().mint(StrSpan(ivKeyBuf, ivLen));
+                const StrSpan ivKey(ivKeyBuf, ivLen);
+                if (!op.isRemove()) {
+                    stageOwnerToRun(staging.originals, ivKey, owner);
+                    if (staging2Ptr != nullptr) stageOwnerToRun(staging2Ptr->originals, ivKey, owner);
+                } else if (op.firstVisit(RuleIndexOp::Chain, ivKey, owner, mulGenArena)) {
+                    removeOwnerFromRun(targetIntMemory.originals, ivKey, owner,
+                                       mulGenArena);
+                }
             }
-            {
+            for (int32_t tgtIx = 0; tgtIx < 2; ++tgtIx) {
+                // Each target's own triggers, the second target after the
+                // first (a second target is an install-only twin).
+                HashMemory* const tgtPtr = (tgtIx == 0) ? &targetIntMemory : secondTarget;
+                if (tgtPtr == nullptr) continue;
+                HashMemory& trigTarget = *tgtPtr;
                 // Decoded-lex INDEX over the triggers, sorted by decodeTemplateKeyView
                 // (template then validity, compareSpans) — reproduces the former
                 // std::sort(triggerRows) order (I-84). Per row copyFrom template +
                 // validity to the string tier (MANDATORY: makeAdmissionKeys mints
                 // templateInterner, the SAME interner the trigger decodes from, I-3).
-                auto& trig = targetIntMemory.triggersForAdmissionSetIntegration;
+                RT_SCOPE_HERE("HM_TRIGGERS");
+                auto& trig = trigTarget.triggersForAdmissionSetIntegration;
                 const int32_t trigN = trig.count();
-                if (trigN > 0) {
+                RT_NOTE_ITERATIONS_HERE(trigN);
+                if (trigN > 0 && !op.isRemove()) {   // admission keys are install-only
                     const unsigned tgGenSlot = (g_currentCoreId >= 0)
                         ? static_cast<unsigned>(g_currentCoreId)
                         : genScratchArenas().slotCount() - 1;
@@ -442,14 +780,22 @@ namespace gl {
                         const ScratchString tKeyC = ScratchString::copyFrom(tgStrArena, tKey.ptr, tKey.len);
                         const ScratchString tValC = ScratchString::copyFrom(tgStrArena, tVal.ptr, tVal.len);
                         makeAdmissionKeys(implRun, implRunN, StrSpan(tKeyC),
-                            targetIntMemory, StrSpan(tValC), mb);
+                            trigTarget, StrSpan(tValC), mb);
                     }
                 }
             }
 
+            {
+            RT_SCOPE_HERE("HM_ADMISSION_NORMKEYS");
             this->makeNormalizedKeysForAdmission(curKeyRun, curKeyN, targetIntMemory,
                 mb.nameMap, mb.ruleInterner, curValueSpan, minNumOperatorsKey,
-                copySpan, validityNameSpan, &mb);
+                copySpan, validityNameSpan, &mb, op, &encMemo, stagingPtr);
+            if (secondTarget != nullptr) {
+                this->makeNormalizedKeysForAdmission(curKeyRun, curKeyN, *secondTarget,
+                    mb.nameMap, mb.ruleInterner, curValueSpan, minNumOperatorsKey,
+                    copySpan, validityNameSpan, &mb, op, &encMemo, staging2Ptr);
+            }
+            }
 
             // Remaining args: c==0 = the caller's sorted-unique remRun; c!=0 =
             // getRemainingArgs over curKeyRun (u_ vars may have been equalized),
@@ -460,13 +806,15 @@ namespace gl {
             if (c == 0) {
                 curRemRun = remRun; curRemN = remN;
             } else {
+                RT_SCOPE_HERE("HM_REMARGS_MINT");
                 curRemN = getRemainingArgs(curKeyRun, curKeyN, remScratch,
                     ExecutionParameters::MAX_ADMISSION_REM_ARGS);
                 curRemRun = remScratch;
             }
 
-            if (performAdmissionMapUpdate)
+            if (performAdmissionMapUpdate && !op.isRemove())
             {
+                RT_SCOPE_HERE("HM_UPDATE_ADMISSION_MAP");
                 // keyPlusValue == implRun (curKey + curValue, already built).
                 updateAdmissionMap(mb,
                     implRun, implRunN,
@@ -480,29 +828,20 @@ namespace gl {
             // --- Inner: add this single key/value to int hash memory ---
             const int32_t n = curKeyN;
             NameMap& nm = mb.nameMap;
-            // D-105: encode the rule's owner scope id
-            // once per install; the owner-set inserts below store it with each
-            // owner so the validity prune never re-encodes.
-            const NameId ownerVid = nm.encode(validityNameSpan);
-
-            // D-119: composite id of this rule's
-            // (expanded-original, validity) pair. nm.encode(copySpan) is the
-            // NameId of the full expanded implication (idempotent — minted at
-            // first install, returned thereafter). Stored in every (sub)key's
-            // partitionIds below so a split executor claims the keys of the
-            // rules assigned to it via id % splitCount.
-            const int64_t partitionId = makePartitionId(nm.encode(copySpan), ownerVid);
 
             // intRemainingArgs: mint NameMap in curRemRun (sorted-lex) order ==
             // the former set-lex mint order (I-84), then a sorted-ASCENDING copy
             // for the Int16SetKey == the former std::set<NameId> iteration.
             NameId intRemArgs[ExecutionParameters::MAX_ADMISSION_REM_ARGS];
-            for (int32_t i = 0; i < curRemN; ++i) intRemArgs[i] = nm.encode(curRemRun[i]);
             NameId intRemArgsSorted[ExecutionParameters::MAX_ADMISSION_REM_ARGS];
+            {
+            RT_SCOPE_HERE("HM_REMARGS_MINT");
+            for (int32_t i = 0; i < curRemN; ++i) intRemArgs[i] = nm.encode(curRemRun[i]);
             if (curRemN > 0)
                 std::memcpy(intRemArgsSorted, intRemArgs,
                     static_cast<std::size_t>(curRemN) * sizeof(NameId));
             std::sort(intRemArgsSorted, intRemArgsSorted + curRemN);
+            }
 
             std::map<int, std::vector<std::vector<int>>>::const_iterator pit =
                 this->allPermutationsAna.find(static_cast<int>(n));
@@ -539,6 +878,23 @@ namespace gl {
             DirtyState remArgsBatchDirty = DirtyState::Clean;
             PagedVector<RemArgsBatchBlob> remArgsBatch(&genArena, &remArgsBatchDirty);
 
+            // Both shape detectors read only curKeyRun / curValueSpan, which
+            // do not vary across the installed permutations — one detection
+            // per multiplied copy, not one per permutation (at keyN >= 2 the
+            // subset-exclusion registry scan would otherwise repeat up to
+            // n! times).
+            bool copyOrIntro = false;
+            bool copySubsetExclusion = false;
+            {
+                RT_SCOPE_HERE("HM_SHAPE_DETECT");
+                copyOrIntro = isOrIntroInstall(curKeyRun, curKeyN, curValueSpan);
+                copySubsetExclusion =
+                    isSubsetExclusionInstall(curKeyRun, curKeyN, curValueSpan);
+            }
+
+            {
+            RT_SCOPE_HERE("HM_WHOLEKEY_RECORDS");
+            RT_NOTE_ITERATIONS_HERE(static_cast<int64_t>(permuts.size()));   // permutations enumerated
             for (std::size_t p = 0; p < permuts.size(); ++p) {
                 const std::vector<int>& permutation = permuts[p];
 
@@ -563,27 +919,47 @@ namespace gl {
                 const NameId intEncCount = static_cast<NameId>(permutation.size());
                 assert(intEncCount <= ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS
                     && "addToHashMemory: key element count exceeds cap");
+                {
+                RT_SCOPE_HERE("HM_WK_ENCODE");
                 for (std::size_t k = 0; k < permutation.size(); ++k) {
-                    intEncoded[k] = encodeExpression(
-                        curKeyRun[permutation[k]], StrSpan("main", 4), nm);
+                    intEncoded[k] = encMemo.at(permutation[k], nm);
+                }
                 }
 
                 NameId reverseMap[ExecutionParameters::MAX_KEY_SLOTS];
                 std::memset(reverseMap, 0, sizeof(reverseMap));
                 NameId numNormVars = 0;
-                NameId lenIgnored = makeIntNormalizedKeyFromEncodedWithMap(
+                NameId lenIgnored = 0;
+                NameId lenNotIgnored = 0;
+                {
+                RT_SCOPE_HERE("HM_WK_NORMKEY");
+                lenIgnored = makeIntNormalizedKeyFromEncodedWithMap(
                     intEncoded, intEncCount, true, bufIgnored,
                     ExecutionParameters::MAX_KEY_SLOTS, reverseMap, numNormVars);
 
-                NameId lenNotIgnored = makeIntNormalizedKeyFromEncoded(
+                lenNotIgnored = makeIntNormalizedKeyFromEncoded(
                     intEncoded, intEncCount, false, bufNotIgnored,
                     ExecutionParameters::MAX_KEY_SLOTS);
+                }
+
+                // Remove policy: this permutation's whole key and remaining-args
+                // edge lose the owner (first visit only); no LMV, no batch.
+                if (op.isRemove()) {
+                    removeRuleKeyEntries(targetIntMemory, op,
+                        static_cast<NameId>(n), bufNotIgnored, lenNotIgnored,
+                        intRemArgsSorted, curRemN, owner, genArena);
+                    continue;
+                }
 
                 // Rename run { normalized-var name -> decimal id } from reverseMap.
                 // decodeView keys: no NameMap mint falls between here and the last
                 // replaceKeysScratch use (the mints below are ruleInterner), so
                 // decodeView is I-3-safe. Byte-identical to the former lex-ordered
                 // std::map (replaceKeysScratch is greedy-longest, order-independent).
+                int32_t valueId = 0;
+                bool isMarker = false;
+                {
+                RT_SCOPE_HERE("HM_WK_VALUE_VARIANT");
                 StrReplacement mp2Pairs[ExecutionParameters::MAX_KEY_SLOTS];
                 int32_t mp2PairsN = 0;
                 for (NameId id = 1; id <= numNormVars; ++id) {
@@ -601,15 +977,19 @@ namespace gl {
                     replaceKeysScratch(strArena, curValueSpan, mp2Pairs, mp2PairsN);
 
                 // LMV fields (id-run door). ruleInterner mint ORDER: valueVariant,
-                // originalImplication, then each remaining arg (== the former
-                // per-field order). keyIds empty (the head install carries none).
-                const int32_t valueId = mb.ruleInterner.encode(StrSpan(valueVariantS));
-                const bool isMarker =
+                // then each remaining arg (the copy text itself was minted with
+                // the owner above). keyIds empty (the head install carries none).
+                valueId = mb.ruleInterner.encode(StrSpan(valueVariantS));
+                isMarker =
                     containsSpan(StrSpan(valueVariantS), StrSpan("marker", 6));
-                const int32_t originalImplId = mb.ruleInterner.encode(copySpan);
+                } // RT_SCOPE HM_WK_VALUE_VARIANT
+                const int32_t originalImplId = copyImplId;
                 int32_t remIds[ExecutionParameters::MAX_ADMISSION_REM_ARGS];
+                {
+                RT_SCOPE_HERE("HM_WK_LMV_FIELDS");
                 for (int32_t i = 0; i < curRemN; ++i)
                     remIds[i] = mb.ruleInterner.encode(curRemRun[i]);
+                }
                 const RuleJustification just = ruleJustificationFromString(justificationSpan);
 
                 // D-32: product-of-disintegration — true iff at least one premise
@@ -617,6 +997,8 @@ namespace gl {
                 // placeholder). Consumed by checkLocalEncodedMemoryStatic to gate
                 // OR-disintegration on the head-firing path.
                 bool productOf = false;
+                {
+                RT_SCOPE_HERE("HM_WK_LMV_FIELDS");
                 for (int32_t i = 0; i < curKeyN && !productOf; ++i) {
                     StrSpan pArgs[ExecutionParameters::MAX_ARITY];
                     const int32_t pArgsN = getArgsSpans(curKeyRun[i], pArgs,
@@ -627,6 +1009,7 @@ namespace gl {
                         }
                     }
                 }
+                }
 
                 // D-241: may heads fired
                 // by this rule be disintegrated. False for integration
@@ -636,20 +1019,45 @@ namespace gl {
                 // FiringRecord::doNotDisintegrate.
                 const bool disintegrationAllowed =
                     just != RuleJustification::integration
-                    && !isOrIntroInstall(curKeyRun, curKeyN, curValueSpan);
+                    && !copyOrIntro;
+
+                // I-184: shape-detected
+                // subset-exclusion rules fire PARK-FIRST — the firing site
+                // strips the route-(b) open signal from their heads, so the
+                // fired reduced or parks in rejectedMapOrdis until the
+                // compound-demand map opens it.
+                const bool subsetExclusion = copySubsetExclusion;
 
                 // encodedMap HEAD record + owner record + remaining-args index,
                 // all via the raw / id-run doors (no owning NormKey / LMV). The
                 // levels run is caller-owned ascending-unique (I-136) == the former
                 // std::set<int> serialize order.
-                appendLmvIdsRecord(targetIntMemory.encodedMap,
+                {
+                RT_SCOPE_HERE("HM_LMV_APPEND");
+                stageLmvIdsRecord(staging.lmv,
                     static_cast<NameId>(n), bufIgnored, lenIgnored,
                     valueId, isMarker, nullptr, 0, remIds, curRemN,
                     originalImplId, ownerVid, genArena,
-                    levels, levelCount, just, productOf, disintegrationAllowed);
-                mergeOwnerRecord(targetIntMemory.normalizedEncodedKeys,
-                    static_cast<NameId>(n), bufNotIgnored, lenNotIgnored,
-                    partitionId, intEncoded, intEncCount, nm);
+                    levels, levelCount, just, productOf, disintegrationAllowed,
+                    /*ordisOnly=*/false, subsetExclusion);
+                if (staging2Ptr != nullptr) {
+                    stageLmvIdsRecord(staging2Ptr->lmv,
+                        static_cast<NameId>(n), bufIgnored, lenIgnored,
+                        valueId, isMarker, nullptr, 0, remIds, curRemN,
+                        originalImplId, ownerVid, genArena,
+                        levels, levelCount, just, productOf, disintegrationAllowed,
+                        /*ordisOnly=*/false, subsetExclusion);
+                }
+                }
+                {
+                RT_SCOPE_HERE("HM_WHOLEKEY_OWNER");
+                stageWholeKeyOwner(staging.wholeKeys,
+                    static_cast<NameId>(n), bufNotIgnored, lenNotIgnored, owner);
+                if (staging2Ptr != nullptr) {
+                    stageWholeKeyOwner(staging2Ptr->wholeKeys,
+                        static_cast<NameId>(n), bufNotIgnored, lenNotIgnored, owner);
+                }
+                }
                 // Accumulate this permutation's NormKey (Codec<NormKey> bytes:
                 // int16 numberExpressions ++ int16 length ++ data) for the one
                 // batched insert after the loop.
@@ -667,21 +1075,43 @@ namespace gl {
                     remArgsBatch.push_back(RemArgsBatchBlob{ nkBlobOff, nkBlobLen });
                 }
             }
+            } // RT_SCOPE HM_WHOLEKEY_RECORDS
+            {
+            RT_SCOPE_HERE("HM_REMARGS_BATCH");
             // ONE RMW for the whole permutation batch into the invariant key.
-            insertRemainingArgsNormKeyBatch(
-                targetIntMemory.remainingArgsNormalizedEncodedMap,
-                targetIntMemory.remainingArgsReverseIndex,
-                intRemArgsSorted, curRemN, remArgsBatch, genArena);
+            stageRemainingArgsNormKeyBatch(
+                staging.remArgs,
+                staging.remArgsOwners,
+                intRemArgsSorted, curRemN, remArgsBatch, owner, genArena);
+            if (staging2Ptr != nullptr) {
+                stageRemainingArgsNormKeyBatch(
+                    staging2Ptr->remArgs,
+                    staging2Ptr->remArgsOwners,
+                    intRemArgsSorted, curRemN, remArgsBatch, owner, genArena);
+            }
             genArena.popTo(remArgsBatchMark);
+            } // RT_SCOPE HM_REMARGS_BATCH
 
             // --- makeNormalizedSubkeys equivalent ---
+            {
+            RT_SCOPE_HERE("HM_SUBKEYS");
+            RT_NOTE_ITERATIONS_HERE(static_cast<int64_t>(permuts.size()));   // permutations enumerated
             for (std::size_t p = 0; p < permuts.size(); ++p) {
                 const std::vector<int>& permut = permuts[p];
 
-                StrSpan tempRun[ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS];
-                int32_t tempN = 0;
-                for (std::size_t k = 0; k < permut.size(); ++k)
-                    tempRun[tempN++] = curKeyRun[permut[k]];
+                // The permutation's premises come from the per-copy memo and
+                // its normalized key is built ONCE, one premise per prefix
+                // step (`appendExprToIntNormalizedKey`): after step L the
+                // first `st.pos` slots ARE the subkey of prefix length L (the
+                // resumable builder's contract), so no prefix is re-encoded
+                // or re-normalized. subEncoded[0..index] is the prefix in key
+                // order — what the signature record reads.
+                IntEncodedExpr subEncoded[ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS];
+                NameId subBuf[ExecutionParameters::MAX_KEY_SLOTS];
+                NormKeyBuildState st;
+                st.nVars = 0;
+                st.nextNormId = 1;
+                st.pos = 0;
 
                 for (int32_t index = 0; index < n; ++index) {
                     bool toBreak = false;
@@ -693,37 +1123,72 @@ namespace gl {
                     }
                     if (toBreak) break;
 
-                    IntEncodedExpr subEncoded[ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS];
                     const NameId subEncCount = static_cast<NameId>(index + 1);
                     assert(subEncCount <= ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS
                         && "addToHashMemory subkey: element count exceeds cap");
-                    for (int32_t t = 0; t <= index; ++t) {
-                        subEncoded[t] = encodeExpression(tempRun[t], StrSpan("main", 4), nm);
+                    {
+                    RT_SCOPE_HERE("HM_SK_ENCODE");
+                    subEncoded[index] = encMemo.at(permut[index], nm);
                     }
 
-                    NameId subBuf[ExecutionParameters::MAX_KEY_SLOTS];
-                    NameId subLen = makeIntNormalizedKeyFromEncoded(
-                        subEncoded, subEncCount, false, subBuf,
+                    NameId subLen = 0;
+                    {
+                    RT_SCOPE_HERE("HM_SK_NORMKEY");
+                    appendExprToIntNormalizedKey(subEncoded[index], st, subBuf,
                         ExecutionParameters::MAX_KEY_SLOTS);
+                    subLen = st.pos;
+                    }
 
-                    // D-72 owner record = the packed composite id (D-119: the same
-                    // id is the LB-split partition cover), via the raw-key door
-                    // (no owning NormKey).
-                    mergeOwnerRecord(targetIntMemory.normalizedEncodedSubkeys,
-                        static_cast<NameId>(index + 1), subBuf, subLen,
-                        partitionId, subEncoded, subEncCount, nm);
-                    if (index + 1 == n - 1)
-                        mergeOwnerRecord(targetIntMemory.normalizedEncodedSubkeysMinusOne,
+                    // A subkey below kSubkeyUCheckMinElements records its owner
+                    // on the signature-free record; from there on its
+                    // u_-signature record gains the owner with the signature's
+                    // index — via the raw-key door (no owning NormKey). Under
+                    // the remove policy the owner's pairs leave the record.
+                    if (op.isRemove()) {
+                        removeRuleSubkeyEntry(targetIntMemory, op,
                             static_cast<NameId>(index + 1), subBuf, subLen,
-                            partitionId, subEncoded, subEncCount, nm);
-                    if (index + 1 == n - 2)
-                        mergeOwnerRecord(targetIntMemory.normalizedEncodedSubkeysMinusTwo,
+                            owner, genArena);
+                    } else if (subEncCount < kSubkeyUCheckMinElements) {
+                        RT_SCOPE_HERE("HM_SK_WRITE_SHORT");
+                        stageShortSubkeyOwner(staging.subkeys,
+                            static_cast<NameId>(index + 1), subBuf, subLen, owner);
+                        if (staging2Ptr != nullptr) {
+                            stageShortSubkeyOwner(staging2Ptr->subkeys,
+                                static_cast<NameId>(index + 1), subBuf, subLen, owner);
+                        }
+                    } else {
+                        RT_SCOPE_HERE("HM_SK_WRITE_MERGE");
+                        stageSubkeySignatures(staging.subkeys,
                             static_cast<NameId>(index + 1), subBuf, subLen,
-                            partitionId, subEncoded, subEncCount, nm);
+                            subEncoded, subEncCount, owner);
+                        if (staging2Ptr != nullptr) {
+                            stageSubkeySignatures(staging2Ptr->subkeys,
+                                static_cast<NameId>(index + 1), subBuf, subLen,
+                                subEncoded, subEncCount, owner);
+                        }
+                    }
                 }
             }
 
-            targetIntMemory.maxKeyLength = std::max(static_cast<NameId>(n), targetIntMemory.maxKeyLength);
+            } // RT_SCOPE HM_SUBKEYS
+            if (!op.isRemove()) {
+                targetIntMemory.maxKeyLength =
+                    std::max(static_cast<NameId>(n), targetIntMemory.maxKeyLength);
+                if (secondTarget != nullptr) {
+                    secondTarget->maxKeyLength =
+                        std::max(static_cast<NameId>(n), secondTarget->maxKeyLength);
+                }
+            }
+        }
+
+        // The outermost window of this LB closes here (LB seeding, the CE
+        // facts, the compressor, a standalone door call): every instance the
+        // window's nested rounds staged into is flushed and released. Inside an
+        // outer window (the absorbs, the apply, an enclosing install) that
+        // window's closer flushes every install of the window at once.
+        --mb.ruleStagingArmDepth;
+        if (mb.ruleStagingArmDepth == 0) {
+            closeRuleIndexStaging(mb);
         }
     }
 
@@ -737,15 +1202,18 @@ namespace gl {
     /// `normalizedEncodedSubkeys*` sets advertises that the rule is admissible
     /// for fast-rejection lookups.
     ///
-    /// For each element index of the input `key`, the function:
+    /// For each non-anchor element index of the input `key`, the function:
     /// 1. Extracts the core expression and its declared output-index list via
     ///    `ce::getArgs` + the per-anchor `coreExpressionMap`.
     /// 2. Asserts there is at most one output argument
     ///    ([I-19](../../docs/agentic_swdd/30_invariants.md#i-19) — assert is first-class;
     ///    a firing assert here means the core map declared a multi-output
     ///    operator, which the rest of the engine does not handle).
-    /// 3. Builds a binary mask + subkey by selecting other elements that do
-    ///    NOT contain the output arg, then qualifies the result via two gates:
+    /// 3. Builds a binary mask + subkey by selecting other non-anchor elements
+    ///    that do NOT contain the output arg and always retaining an anchor
+    ///    premise. The anchor is normalized together with the derivative key,
+    ///    preserving its equality classes without changing normalization.
+    ///    The result then qualifies via two gates:
     ///    - the *classic* gate, baseline-only behavior preserved by the
     ///      static-pipeline migration; fires when the subkey size is exactly
     ///      `n - 1` and `baselineClassicQualifies` accepts.
@@ -777,7 +1245,7 @@ namespace gl {
     /// @pre  `coreExpressionMap` is populated for every core expression
     ///       referenced in `key` — populated at compiler-side init.
     /// @post `intHashMemory.normalizedEncodedSubkeys`,
-    ///       `…SubkeysMinusOne`, and `…SubkeysMinusTwo` are extended with
+    ///       is extended with
     ///       fast-rejection entries for the qualifying subkeys.
     /// @invariant [I-19](../../docs/agentic_swdd/30_invariants.md#i-19) — the
     ///            single-output-arg assert here is intentional and must
@@ -807,6 +1275,257 @@ namespace gl {
             StrSpan(originalImpl), StrSpan(validityName), mbTrap);
     }
 
+    bool ExpressionAnalyzer::ordisRouteQualifies(const StrSpan* key,
+        int32_t keyN, StrSpan value) const
+    {
+        const auto isOperatorApplication = [this](StrSpan elem) -> bool {
+            if (elem.len > 0 && elem.ptr[0] == '!') return false;
+            const StrSpan core = extractExpressionSpan(elem);
+            return this->operators.find(std::string_view(core.ptr,
+                static_cast<std::size_t>(core.len))) != this->operators.end();
+        };
+        int32_t opCount = 0;
+        for (int32_t i = 0; i < keyN; ++i) {
+            const StrSpan elem = key[i];
+            if (elem.len >= 7
+                && equalSpans(StrSpan(elem.ptr, 7), StrSpan("(Anchor", 7))) {
+                continue;   // anchors: excluded from requirement and count
+            }
+            if (!isOperatorApplication(elem)) return false;
+            ++opCount;
+        }
+        if (!isOperatorApplication(value)) return false;
+        ++opCount;
+        return opCount >= ExecutionParameters::kOrdisMinOperatorExpressions;
+    }
+
+    // Doxygen at the declaration (prover.hpp).
+    bool ExpressionAnalyzer::ordis2KeyEligible(StrSpan elem) const
+    {
+        // An anchor can never be selected as the missing compound premise.
+        if (elem.len >= 7
+            && equalSpans(StrSpan(elem.ptr, 7), StrSpan("(Anchor", 7))) {
+            return false;
+        }
+
+        // COMPOUND: a compact with a compiled non-atomic entity;
+        // polarity-transparent (a negated form qualifies on its core,
+        // I-175 — the demand and the filing both carry the '!' verbatim,
+        // only the eligibility test looks through it). The compiledEntity
+        // fence alone IS the operator test: compiledExpressions holds only
+        // compiled operator DEFINITIONS, so any hit is an operator by
+        // construction — and crucially it admits PREDICATES (preorder /
+        // strictOrder, output_args empty), which `operators` (the
+        // input-AND-output core-config set) excludes. Gating on
+        // `operators` here was the 3X install-route defect that silently
+        // disqualified the whole order family: no demand ever installed,
+        // no disjunct ever filed (root-caused 2026-08-10, trap4 run).
+        const StrSpan bare = (elem.len > 0 && elem.ptr[0] == '!')
+            ? StrSpan(elem.ptr + 1, elem.len - 1) : elem;
+        if (bare.len < 1 || bare.ptr[0] != '(') return false;
+        const StrSpan core = extractExpressionSpan(bare);
+        const LogicalEntity* le = compiledEntity(core);
+        if (le == nullptr || le->category == "atomic") return false;
+
+        // ARITY.
+        StrSpan args[ExecutionParameters::MAX_ARITY];
+        const int32_t argsN = getArgsSpans(elem, args,
+                                           ExecutionParameters::MAX_ARITY);
+        return argsN >= ExecutionParameters::kOrdis2DemandMinArity;
+    }
+
+    // Doxygen at the declaration (prover.hpp).
+    bool ExpressionAnalyzer::ordis2DemandSlotQualifies(const StrSpan* key,
+        int32_t keyN, int32_t index) const
+    {
+        const StrSpan elem = key[index];
+
+        // Key-language filters (compound, arity, anchor refuse) — the
+        // pair's ONE shared predicate, so a minted demand key is always a
+        // text the park filing could have filed.
+        if (!ordis2KeyEligible(elem)) return false;
+
+        // SUBSET over the other NON-ANCHOR premises (the sharpened form,
+        // maintainer-kept 2026-08-10): every slot argument must be bound by
+        // a substantive premise. Anchor-only-bound short rules (the
+        // A14 shape) mint no demand — the strict route through the Part-1
+        // reduced or closes without them, and the parked totality cohorts
+        // stay parked (D-267, filter decision).
+        const auto isAnchor = [](StrSpan e) -> bool {
+            return e.len >= 7
+                && equalSpans(StrSpan(e.ptr, 7), StrSpan("(Anchor", 7));
+        };
+        StrSpan args[ExecutionParameters::MAX_ARITY];
+        const int32_t argsN = getArgsSpans(elem, args,
+                                           ExecutionParameters::MAX_ARITY);
+        bool anySubstantive = false;
+        for (int32_t a = 0; a < argsN; ++a) {
+            bool bound = false;
+            for (int32_t i = 0; i < keyN && !bound; ++i) {
+                if (i == index) continue;
+                if (isAnchor(key[i])) continue;
+                StrSpan iArgs[ExecutionParameters::MAX_ARITY];
+                const int32_t iN = getArgsSpans(key[i], iArgs,
+                    ExecutionParameters::MAX_ARITY);
+                for (int32_t x = 0; x < iN; ++x) {
+                    if (equalSpans(iArgs[x], args[a])) {
+                        bound = true;
+                        break;
+                    }
+                }
+            }
+            if (bound) {
+                anySubstantive = true;
+                continue;
+            }
+
+            // An anchor-slot argument is GROUND by construction (D-287): it
+            // names a fixed value of the anchor context -- the numeral 1 in
+            // `1 <= d`, the carrier set, an operator -- so no substantive
+            // premise can ever bind it. Requiring one rejects every consumer
+            // whose slot mentions a constant.
+            bool anchorSlot = false;
+            for (int32_t i = 0; i < keyN && !anchorSlot; ++i) {
+                if (!isAnchor(key[i])) continue;
+                StrSpan iArgs[ExecutionParameters::MAX_ARITY];
+                const int32_t iN = getArgsSpans(key[i], iArgs,
+                    ExecutionParameters::MAX_ARITY);
+                for (int32_t x = 0; x < iN; ++x) {
+                    if (equalSpans(iArgs[x], args[a])) {
+                        anchorSlot = true;
+                        break;
+                    }
+                }
+            }
+            if (!anchorSlot) return false;
+        }
+        // A slot whose arguments are anchor slots alone still mints nothing
+        // (the A14 shape): at least one argument must come from a
+        // substantive premise.
+        if (!anySubstantive) return false;
+
+        // MINIMUM PREMISE COUNT (maintainer-set 2026-08-10), checked LAST:
+        // only premise-rich rules mint demand — at least
+        // kOrdis2DemandMinPremises NON-anchor premises, the qualifying
+        // slot included (the B5 shape: slot + guard + two products).
+        // Without this gate every short rule with a qualifying compound
+        // slot installs demand-marker families across all LBs (the
+        // post-eligibility-fix RT explosion).
+        {
+            int32_t nonAnchorN = 0;
+            for (int32_t i = 0; i < keyN; ++i) {
+                if (isAnchor(key[i])) continue;
+                ++nonAnchorN;
+            }
+            if (nonAnchorN < ExecutionParameters::kOrdis2DemandMinPremises) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Doxygen at the declaration (prover.hpp).
+    bool ExpressionAnalyzer::inputSlotDemandSlotQualifies(const StrSpan* key,
+        int32_t keyN, int32_t index, int32_t inputPos, StrSpan value) const
+    {
+        const auto isAnchor = [](StrSpan e) -> bool {
+            return e.len >= 7
+                && equalSpans(StrSpan(e.ptr, 7), StrSpan("(Anchor", 7));
+        };
+
+        // The route's domain is positive operator-application premises: an
+        // anchor, a negated form, and a core without a config (equality)
+        // are defined misses, not errors — regular-qualified rules carry
+        // such elements legitimately.
+        const StrSpan elem = key[index];
+        if (isAnchor(elem)) return false;
+        if (elem.len > 0 && elem.ptr[0] == '!') return false;
+        const ce::CoreExpressionConfig* cfg =
+            coreConfig(extractExpressionSpan(elem));
+        if (cfg == nullptr) return false;
+        if (inputPos < 0
+            || inputPos >= static_cast<int32_t>(cfg->inputIndices.size())) {
+            return false;
+        }
+        StrSpan args[ExecutionParameters::MAX_ARITY];
+        const int32_t argsN = getArgsSpans(elem, args,
+                                           ExecutionParameters::MAX_ARITY);
+        const int idx = cfg->inputIndices[inputPos];
+        if (idx < 0 || idx >= argsN) return false;
+        const StrSpan cand = args[idx];
+
+        // (1) Candidate at a config input slot of the HEAD — the demanded
+        // witness must feed the head, or releasing it buys nothing.
+        if (value.len > 0 && value.ptr[0] == '!') return false;
+        const ce::CoreExpressionConfig* headCfg =
+            coreConfig(extractExpressionSpan(value));
+        if (headCfg == nullptr) return false;
+        StrSpan headArgs[ExecutionParameters::MAX_ARITY];
+        const int32_t headArgsN = getArgsSpans(value, headArgs,
+                                               ExecutionParameters::MAX_ARITY);
+        bool atHeadInput = false;
+        for (const int hIdx : headCfg->inputIndices) {
+            if (hIdx >= 0 && hIdx < headArgsN
+                && equalSpans(headArgs[hIdx], cand)) {
+                atHeadInput = true;
+                break;
+            }
+        }
+        if (!atHeadInput) return false;
+
+        // (2) Confinement: the candidate appears in no other key element
+        // (the head is allowed). An anchor-slot candidate fails here by
+        // construction — it appears in the anchor element.
+        for (int32_t i = 0; i < keyN; ++i) {
+            if (i == index) continue;
+            StrSpan iArgs[ExecutionParameters::MAX_ARITY];
+            const int32_t iN = getArgsSpans(key[i], iArgs,
+                                            ExecutionParameters::MAX_ARITY);
+            for (int32_t a = 0; a < iN; ++a) {
+                if (equalSpans(iArgs[a], cand)) return false;
+            }
+        }
+
+        // (3) Concreteness: every other argument of the marked premise
+        // appears in some other key element (anchor included), so a fired
+        // key is fully instantiated; a repeated candidate fails — it
+        // cannot be bound.
+        for (int32_t a = 0; a < argsN; ++a) {
+            if (a == idx) continue;
+            const StrSpan other = args[a];
+            if (equalSpans(other, cand)) return false;
+            bool bound = false;
+            for (int32_t i = 0; i < keyN && !bound; ++i) {
+                if (i == index) continue;
+                StrSpan iArgs[ExecutionParameters::MAX_ARITY];
+                const int32_t iN = getArgsSpans(key[i], iArgs,
+                                                ExecutionParameters::MAX_ARITY);
+                for (int32_t x = 0; x < iN; ++x) {
+                    if (equalSpans(iArgs[x], other)) {
+                        bound = true;
+                        break;
+                    }
+                }
+            }
+            if (!bound) return false;
+        }
+
+        // MINIMUM PREMISE COUNT, checked LAST — the fan-out gate mirroring
+        // kOrdis2DemandMinPremises (the D-267 RT lesson): only premise-rich
+        // rules mint input-slot demand.
+        {
+            int32_t nonAnchorN = 0;
+            for (int32_t i = 0; i < keyN; ++i) {
+                if (isAnchor(key[i])) continue;
+                ++nonAnchorN;
+            }
+            if (nonAnchorN < ExecutionParameters::kInputSlotDemandMinPremises) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     void ExpressionAnalyzer::makeNormalizedKeysForAdmission(
         const StrSpan* key, int32_t keyN,
         HashMemory& intHashMemory,
@@ -816,23 +1535,297 @@ namespace gl {
         int minNumOperatorsKey,
         StrSpan originalImpl,
         StrSpan validityName,
-        const Memory* mbTrap) {
+        const Memory* mbTrap,
+        const RuleIndexOp& op,
+        KeyEncodeMemo* memo,
+        RuleIndexStaging* staging) {
 
         (void)mbTrap;
+        // The premise encode memo: the install's per-copy memo when the
+        // caller shares one (bound to this very key run — asserted), else a
+        // local one for a standalone call. Both are the same contract; every
+        // derivative key below reads its premises through it.
+        const bool standalone = (memo == nullptr);
+        KeyEncodeMemo localMemo;
+        if (standalone) {
+            localMemo.bind(key, keyN);
+            memo = &localMemo;
+        }
+        assert(memo->key == key && memo->keyN == keyN
+            && "makeNormalizedKeysForAdmission: the memo is bound to another key run");
+        KeyEncodeMemo& encMemo = *memo;
+        // A standalone call (the twin-oracle use: no shared memo) owns its
+        // staging window — it acquires the slot's staging for the instance
+        // and its staged index writes flush at exit on every return path; a
+        // call sharing the install's memo is inside addToHashMemory, whose
+        // exit (or the armed window's closer) flushes.
+        const unsigned stagingSlot = (g_currentCoreId >= 0)
+            ? static_cast<unsigned>(g_currentCoreId)
+            : genScratchArenas().slotCount() - 1;
+        if (staging == nullptr && !op.isRemove()) {
+            staging = &ruleStagings().acquire(stagingSlot, &intHashMemory);
+        }
+        assert((op.isRemove() || staging->boundTo == &intHashMemory)
+            && "makeNormalizedKeysForAdmission: the staging serves another instance");
+        RuleIndexStaging& stg = (staging != nullptr) ? *staging
+                                                      : ruleStagings().at(stagingSlot, 0);   // never read on the remove path
+        struct StandaloneFlush {
+            HashMemory* hm;
+            RuleIndexStaging* st;
+            ~StandaloneFlush() {
+                if (hm == nullptr) return;
+                ExpressionAnalyzer::flushRuleIndexStaging(*hm, *st);
+                st->boundTo = nullptr;   // the standalone call is its own window
+            }
+        } standaloneFlush{ (standalone && !op.isRemove()) ? &intHashMemory : nullptr, &stg };
         const NameId ownerVid = nameMap.encode(validityName);
+        // The admitting rule's owner identity for every derivative index entry
+        // (same pair as the head install's: the implication text's ruleInterner
+        // id + the install scope id).
+        const RuleOwner owner =
+            packRuleOwner(ruleInterner.encode(originalImpl), ownerVid);
+        const auto isAnchor = [](StrSpan elem) -> bool {
+            return elem.len >= 7
+                && equalSpans(StrSpan(elem.ptr, 7), StrSpan("(Anchor", 7));
+        };
 
-        // D-119: composite id of this marker rule's
-        // (expanded-original, validity) pair — same packing as addToHashMemory
-        // so a rule's head and marker entries carry the same partition id.
-        const int64_t partitionId = makePartitionId(nameMap.encode(originalImpl), ownerVid);
+        // THIRD, independent qualification pass
+        // (D-267) — runs REGARDLESS of the two
+        // mutually exclusive routes below (it neither enables nor
+        // suppresses them): each qualifying premise slot installs a
+        // marker-style variant whose key is every other premise, including
+        // the anchor context, and whose VALUE is the slot verbatim (no marker
+        // token, polarity kept), flagged isMarker + ordis2Demand. Retaining
+        // the anchor preserves the normalized equality classes that bind an
+        // actual rule's anchor slots to its non-anchor premises. When the key
+        // matches, the firing site's demand branch back-substitutes the match
+        // into the value — the GROUND missing premise — and stages a demand
+        // record for the post-fixpoint drain.
+        {
+            RT_SCOPE_HERE("ADM_PASS_ORDIS2");
+            constexpr int32_t kO2KeyCap =
+                ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS + 1;
+            assert(keyN <= kO2KeyCap
+                && "ordis2-demand pass: key size exceeds cap");
+            for (int32_t index = 0; index < keyN; ++index) {
+                if (!ordis2DemandSlotQualifies(key, keyN, index)) continue;
+                int binary[kO2KeyCap];
+                for (int32_t i = 0; i < keyN; ++i) binary[i] = 0;
+                StrSpan subkey[kO2KeyCap];
+                int32_t subCount = 0;
+                for (int32_t i = 0; i < keyN; ++i) {
+                    if (i == index) continue;
+                    binary[i] = 1;
+                    subkey[subCount++] = key[i];
+                }
+                // The subset condition binds >= 4 args through non-anchor
+                // others, so a qualifying slot always has a subkey.
+                assert(subCount >= 1
+                    && "ordis2-demand pass: qualifying slot with empty subkey");
+                installAdmissionMarkerVariants(key,
+                    static_cast<std::size_t>(keyN),
+                    static_cast<std::size_t>(index), StrSpan(),
+                    binary, subkey, subCount, intHashMemory, nameMap,
+                    ruleInterner, originalImpl, ownerVid, owner,
+                    /*ordisOnly=*/false, /*ordis2Demand=*/true, op, encMemo, stg);
+            }
+        }
 
-        if (!implicationIsQualified(key, keyN, value, minNumOperatorsKey)) {
+        // FOURTH, independent qualification pass
+        // (D-288) — like the ordis2 pass above,
+        // it neither enables nor suppresses the two mutually exclusive
+        // routes below: each qualifying (premise, input slot) pair installs
+        // an UNTAGGED marker variant whose marked argument is the premise's
+        // input-slot candidate and whose subkey is every other premise,
+        // anchor included. When the subkey matches live facts, the marker
+        // branch stages the INSTANTIATED key — the exact marker form under
+        // which a witness-minting disintegration probes (and parks in
+        // rejectedMap): the demanded witness registers instead of parking,
+        // and revisitRejected2 wakes an already-parked product. Untagged,
+        // so isAdmitted reads it (unlike the ordisOnly route's or-cohort
+        // evidence); consumers probe through the ancestor-inclusive twin
+        // because a fired key lands at deeperOf(subkey constituents) while
+        // the disintegration may deposit in a descendant (ordis-branch)
+        // scope.
+        {
+            RT_SCOPE_HERE("ADM_PASS_INPUT_SLOT");
+            constexpr int32_t kISKeyCap =
+                ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS + 1;
+            assert(keyN <= kISKeyCap
+                && "input-slot demand pass: key size exceeds cap");
+            for (int32_t index = 0; index < keyN; ++index) {
+                if (isAnchor(key[index])) continue;
+                if (key[index].len > 0 && key[index].ptr[0] == '!') continue;
+                const ce::CoreExpressionConfig* elemCfg =
+                    coreConfig(extractExpressionSpan(key[index]));
+                if (elemCfg == nullptr) continue;
+                StrSpan elemArgs[ExecutionParameters::MAX_ARITY];
+                const int32_t elemArgsN = getArgsSpans(key[index], elemArgs,
+                    ExecutionParameters::MAX_ARITY);
+                const int32_t inputN =
+                    static_cast<int32_t>(elemCfg->inputIndices.size());
+                for (int32_t ip = 0; ip < inputN; ++ip) {
+                    if (!inputSlotDemandSlotQualifies(key, keyN, index, ip,
+                            value)) {
+                        continue;
+                    }
+                    const int idx = elemCfg->inputIndices[ip];
+                    assert(idx >= 0 && idx < elemArgsN
+                        && "input-slot demand pass: qualified slot out of range");
+                    const StrSpan cand = elemArgs[idx];
+                    int binary[kISKeyCap];
+                    for (int32_t i = 0; i < keyN; ++i) binary[i] = 0;
+                    StrSpan subkey[kISKeyCap];
+                    int32_t subCount = 0;
+                    for (int32_t i = 0; i < keyN; ++i) {
+                        if (i == index) continue;
+                        binary[i] = 1;
+                        subkey[subCount++] = key[i];
+                    }
+                    assert(subCount >= 1
+                        && "input-slot demand pass: qualifying slot with empty subkey");
+                    installAdmissionMarkerVariants(key,
+                        static_cast<std::size_t>(keyN),
+                        static_cast<std::size_t>(index), cand,
+                        binary, subkey, subCount, intHashMemory, nameMap,
+                        ruleInterner, originalImpl, ownerVid, owner,
+                        /*ordisOnly=*/false, /*ordis2Demand=*/false, op, encMemo, stg);
+                }
+            }
+        }
+
+        // Two mutually exclusive qualification routes: the regular
+        // (A)/(B)/(C) gates retain their existing eligibility criteria; a
+        // rule failing all three may still install ordisOnly-tagged marker
+        // keys through the ordis candidate loop below — or-cohort opening
+        // demand evidence, invisible to general Pass-B admission.
+        const bool regularQualified =
+            implicationIsQualified(key, keyN, value, minNumOperatorsKey);
+        if (!regularQualified && !ordisRouteQualifies(key, keyN, value)) {
             return;
         }
 
         const std::size_t n = static_cast<std::size_t>(keyN);
 
+        if (!regularQualified) {
+            RT_SCOPE_HERE("ADM_PASS_ORDIS");
+            // Ordis-only route: candidates are variables at config INPUT
+            // slots of a premise, gated by (1) presence at a config input
+            // slot of the HEAD (the maintainer-adopted extra filter), (2)
+            // confinement — the candidate appears in no other key element
+            // (the head is allowed), (3) concreteness — every other argument
+            // of the marked premise appears in some subkey element, so a
+            // fired key is fully instantiated. The subkey is every other
+            // premise, including the anchor context (confinement already
+            // guarantees none of them mentions the candidate). Deterministic
+            // order: premise index ascending, config input-slot order.
+            constexpr int32_t kKeyCap =
+                ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS + 1;
+            assert(n <= static_cast<std::size_t>(kKeyCap)
+                && "makeNormalizedKeysForAdmission ordis: key size exceeds cap");
+
+            const ce::CoreExpressionConfig* headCfg =
+                coreConfig(extractExpressionSpan(value));
+            assert(headCfg
+                && "ordis route: head operator core must be compiled");
+            StrSpan headArgs[ExecutionParameters::MAX_ARITY];
+            const int32_t headArgsN = getArgsSpans(value, headArgs,
+                                                   ExecutionParameters::MAX_ARITY);
+
+            for (std::size_t index = 0; index < n; ++index) {
+                const StrSpan elem = key[index];
+                if (isAnchor(elem)) continue;
+                const ce::CoreExpressionConfig* cfg =
+                    coreConfig(extractExpressionSpan(elem));
+                assert(cfg && "ordis route: premise operator core must be compiled");
+                StrSpan args[ExecutionParameters::MAX_ARITY];
+                const int32_t argsN = getArgsSpans(elem, args,
+                                                   ExecutionParameters::MAX_ARITY);
+
+                for (const int inIdx : cfg->inputIndices) {
+                    if (inIdx < 0 || inIdx >= argsN) continue;
+                    const StrSpan cand = args[inIdx];
+
+                    // (1) Candidate at a config input slot of the head.
+                    bool atHeadInput = false;
+                    for (const int hIdx : headCfg->inputIndices) {
+                        if (hIdx >= 0 && hIdx < headArgsN
+                            && equalSpans(headArgs[hIdx], cand)) {
+                            atHeadInput = true;
+                            break;
+                        }
+                    }
+                    if (!atHeadInput) continue;
+
+                    // (2) Confinement: cand in no other key element.
+                    bool confined = true;
+                    for (std::size_t i = 0; i < n && confined; ++i) {
+                        if (i == index) continue;
+                        StrSpan iArgs[ExecutionParameters::MAX_ARITY];
+                        const int32_t iArgsN = getArgsSpans(key[i], iArgs,
+                            ExecutionParameters::MAX_ARITY);
+                        for (int32_t a = 0; a < iArgsN; ++a) {
+                            if (equalSpans(iArgs[a], cand)) {
+                                confined = false;
+                                break;
+                            }
+                        }
+                    }
+                    if (!confined) continue;
+
+                    // Subkey = every other premise, including the anchor.
+                    int binary[kKeyCap];
+                    for (int32_t i = 0; i < static_cast<int32_t>(n); ++i)
+                        binary[i] = 0;
+                    StrSpan subkey[kKeyCap];
+                    int32_t subCount = 0;
+                    for (std::size_t i = 0; i < n; ++i) {
+                        if (i == index) continue;
+                        binary[i] = 1;
+                        subkey[subCount++] = key[i];
+                    }
+
+                    // (3) Concreteness: every other argument of the marked
+                    // premise appears among some subkey element's args (a
+                    // repeated candidate arg fails — it cannot be bound).
+                    bool concrete = true;
+                    for (int32_t a = 0; a < argsN && concrete; ++a) {
+                        if (a == inIdx) continue;
+                        const StrSpan other = args[a];
+                        if (equalSpans(other, cand)) {
+                            concrete = false;
+                            break;
+                        }
+                        bool bound = false;
+                        for (int32_t s = 0; s < subCount && !bound; ++s) {
+                            StrSpan sArgs[ExecutionParameters::MAX_ARITY];
+                            const int32_t sArgsN = getArgsSpans(subkey[s],
+                                sArgs, ExecutionParameters::MAX_ARITY);
+                            for (int32_t sa = 0; sa < sArgsN; ++sa) {
+                                if (equalSpans(sArgs[sa], other)) {
+                                    bound = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (!bound) concrete = false;
+                    }
+                    if (!concrete) continue;
+
+                    installAdmissionMarkerVariants(key, n, index, cand,
+                        binary, subkey, subCount, intHashMemory, nameMap,
+                        ruleInterner, originalImpl, ownerVid, owner,
+                        /*ordisOnly=*/true, /*ordis2Demand=*/false, op, encMemo, stg);
+                }
+            }
+            return;
+        }
+
+        RT_SCOPE_HERE("ADM_PASS_REGULAR");
         for (std::size_t index = 0; index < n; ++index) {
+            // The anchor is permanent context for every derivative rule; it
+            // is never itself the missing premise.
+            if (isAnchor(key[index])) continue;
             const ce::CoreExpressionConfig* cfg =
                 coreConfig(extractExpressionSpan(key[index]));
             assert(cfg && "Core expression not found");
@@ -874,6 +1867,14 @@ namespace gl {
                 for (int32_t a = 0; a < iArgsN; ++a) {
                     if (equalSpans(iArgs[a], outputArg)) { containsOutput = true; break; }
                 }
+                if (isAnchor(key[i])) {
+                    // The anchor always remains in the derivative key, while
+                    // the existing non-output qualification count is unchanged.
+                    binary[i] = 1;
+                    subkey[subCount++] = key[i];
+                    if (!containsOutput) validCount++;
+                    continue;
+                }
                 if (!containsOutput) {
                     binary[i] = 1;
                     subkey[subCount++] = key[i];
@@ -881,8 +1882,9 @@ namespace gl {
                 }
             }
 
-            // Classic path is baseline behavior untouched — fires ONLY on
-            // keys that would have qualified via (A) or (B) in baseline.
+            // Classic eligibility remains based on the existing (A)/(B)
+            // qualification and non-output premise count. Anchor retention
+            // changes only the installed derivative key.
             // (C) qualification (hasUPrefix + localUCriterion) admits keys
             // into this loop but does NOT enable the classic per-element
             // gates. Those keys must go through the local-u path below.
@@ -903,9 +1905,62 @@ namespace gl {
 
             if (!accept) continue;
 
-            // Replace output arg with "marker" -> a ScratchString on the string
-            // tier (replaceKeysScratch, byte-exact to ce::replaceKeysInString),
-            // held across both blocks by mnkStrScope for this index.
+            installAdmissionMarkerVariants(key, n, index, outputArg,
+                binary, subkey, subCount, intHashMemory, nameMap,
+                ruleInterner, originalImpl, ownerVid, owner,
+                /*ordisOnly=*/false, /*ordis2Demand=*/false, op, encMemo, stg);
+        }
+    }
+
+    void ExpressionAnalyzer::installAdmissionMarkerVariants(
+        const StrSpan* key, std::size_t n,
+        std::size_t index, StrSpan markedArg,
+        const int* binary, const StrSpan* subkey, int32_t subCount,
+        HashMemory& intHashMemory,
+        NameMap& nameMap,
+        ValueInterner& ruleInterner,
+        StrSpan originalImpl,
+        NameId ownerVid,
+        RuleOwner owner,
+        bool ordisOnly,
+        bool ordis2Demand,
+        const RuleIndexOp& op,
+        KeyEncodeMemo& memo,
+        RuleIndexStaging& staging) {
+        {
+            constexpr int32_t kKeyCap =
+                ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS + 1;
+            assert(n <= static_cast<std::size_t>(kKeyCap)
+                && "installAdmissionMarkerVariants: key size exceeds cap");
+            assert(memo.key == key && memo.keyN == static_cast<int32_t>(n)
+                && "installAdmissionMarkerVariants: the memo is bound to another key run");
+
+            // subkey[j] is key[subIdx[j]] — the j-th premise the caller's
+            // mask selected, in key order (the span identity is asserted) —
+            // so the memo is read through the mask.
+            int32_t subIdx[kKeyCap];
+            {
+                int32_t j = 0;
+                for (std::size_t i = 0; i < n; ++i) {
+                    if (!binary[i]) continue;
+                    assert(j < subCount
+                        && "installAdmissionMarkerVariants: more masked premises than subkey elements");
+                    assert(subkey[j].ptr == key[i].ptr && subkey[j].len == key[i].len
+                        && "installAdmissionMarkerVariants: a subkey element is not the masked premise");
+                    subIdx[j++] = static_cast<int32_t>(i);
+                }
+                assert(j == subCount
+                    && "installAdmissionMarkerVariants: mask and subkey disagree");
+            }
+
+            // Replace the marked arg with "marker" -> a ScratchString on the
+            // string tier (replaceKeysScratch, byte-exact to
+            // ce::replaceKeysInString), held across both blocks by mnkStrScope.
+            // The ordis2-demand route keeps the value VERBATIM instead — no
+            // marker token; changeable args ride the decimal rename below
+            // and back-substitute at fire, unchangeable u_ args match
+            // literally and the firing path's u_-strip grounds them — the
+            // fired demand is ground either way.
             // Per-registry slot derivation (the two registries differ by one
             // slot; each fallback comes from its OWN slotCount() — see the
             // addToHashMemory site note).
@@ -918,10 +1973,12 @@ namespace gl {
             ScratchArena& mnkStrArena = scratchArenas().forSlot(mnkStrSlot);
             ScratchScope mnkStrScope(mnkStrArena);
             StrReplacement markerPair[1];
-            markerPair[0].key = outputArg;
+            markerPair[0].key = ordis2Demand ? StrSpan() : markedArg;
             markerPair[0].value = StrSpan("marker", 6);
-            const ScratchString replaced =
-                replaceKeysScratch(mnkStrArena, key[index], markerPair, 1);
+            const ScratchString replaced = ordis2Demand
+                ? ScratchString::copyFrom(mnkStrArena, key[index].ptr,
+                                          key[index].len)
+                : replaceKeysScratch(mnkStrArena, key[index], markerPair, 1);
 
             // --- Int subkeys (mirrors makeNormalizedSubkeys for HashMemory) ---
             {
@@ -929,15 +1986,27 @@ namespace gl {
                 auto pit = this->allPermutationsAna.find(sn);
                 if (pit != this->allPermutationsAna.end()) {
                     const auto& permuts = pit->second;
+                    RT_SCOPE_HERE("ADM_SUBKEYS");
+                    RT_NOTE_ITERATIONS_HERE(static_cast<int64_t>(permuts.size()));
                     StrSpan sids[kKeyCap];
                     for (int32_t i = 0; i < sn; ++i)
                         sids[i] = extractExpressionSpan(subkey[i]);
 
                     for (std::size_t p = 0; p < permuts.size(); ++p) {
                         const auto& permut = permuts[p];
-                        StrSpan tempList[kKeyCap];
-                        for (std::size_t k = 0; k < permut.size(); ++k)
-                            tempList[k] = subkey[permut[k]];
+
+                        // Premises from the per-copy memo (through the mask);
+                        // the normalized key built ONCE, one premise per
+                        // prefix step — after step L the first `st.pos` slots
+                        // are the subkey of prefix length L (the resumable
+                        // builder's contract). subEncoded[0..si] is the prefix
+                        // in key order for the signature record.
+                        IntEncodedExpr subEncoded[ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS];
+                        NameId subBuf[ExecutionParameters::MAX_KEY_SLOTS];
+                        NormKeyBuildState st;
+                        st.nVars = 0;
+                        st.nextNormId = 1;
+                        st.pos = 0;
 
                         for (int32_t si = 0; si < sn; ++si) {
                             bool toBreak = false;
@@ -949,29 +2018,40 @@ namespace gl {
                             }
                             if (toBreak) break;
 
-                            IntEncodedExpr subEncoded[ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS];
                             const NameId subEncCount = static_cast<NameId>(si + 1);
                             assert(subEncCount <= ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS
                                 && "makeNormalizedKeysForAdmission subkey: element count exceeds cap");
-                            for (int32_t t = 0; t <= si; ++t)
-                                subEncoded[t] = encodeExpression(
-                                    tempList[t], StrSpan("main", 4), nameMap);
+                            {
+                            RT_SCOPE_HERE("ADM_SK_ENCODE");
+                            subEncoded[si] = memo.at(subIdx[permut[si]], nameMap);
+                            }
 
-                            NameId subBuf[ExecutionParameters::MAX_KEY_SLOTS];
-                            NameId subLen = makeIntNormalizedKeyFromEncoded(
-                                subEncoded, subEncCount, false, subBuf, ExecutionParameters::MAX_KEY_SLOTS);
-                            // Owner maps via the raw-key door (no owning NormKey).
-                            mergeOwnerRecord(intHashMemory.normalizedEncodedSubkeys,
-                                static_cast<NameId>(si + 1), subBuf, subLen,
-                                partitionId, subEncoded, subEncCount, nameMap);
-                            if (si + 1 == sn - 1)
-                                mergeOwnerRecord(intHashMemory.normalizedEncodedSubkeysMinusOne,
+                            NameId subLen = 0;
+                            {
+                            RT_SCOPE_HERE("ADM_SK_NORMKEY");
+                            appendExprToIntNormalizedKey(subEncoded[si], st, subBuf,
+                                ExecutionParameters::MAX_KEY_SLOTS);
+                            subLen = st.pos;
+                            }
+                            // Subkey map via the raw-key door (no owning NormKey):
+                            // the owner on the signature-free record below
+                            // kSubkeyUCheckMinElements, on the u_-signature
+                            // record from there on; under the remove policy the
+                            // owner's pairs leave the record.
+                            if (op.isRemove()) {
+                                removeRuleSubkeyEntry(intHashMemory, op,
                                     static_cast<NameId>(si + 1), subBuf, subLen,
-                                    partitionId, subEncoded, subEncCount, nameMap);
-                            if (si + 1 == sn - 2)
-                                mergeOwnerRecord(intHashMemory.normalizedEncodedSubkeysMinusTwo,
+                                    owner, genScratchArenas().forSlot(mnkGenSlot));
+                            } else if (subEncCount < kSubkeyUCheckMinElements) {
+                                RT_SCOPE_HERE("ADM_SK_WRITE_SHORT");
+                                stageShortSubkeyOwner(staging.subkeys,
+                                    static_cast<NameId>(si + 1), subBuf, subLen, owner);
+                            } else {
+                                RT_SCOPE_HERE("ADM_SK_WRITE_MERGE");
+                                stageSubkeySignatures(staging.subkeys,
                                     static_cast<NameId>(si + 1), subBuf, subLen,
-                                    partitionId, subEncoded, subEncCount, nameMap);
+                                    subEncoded, subEncCount, owner);
+                            }
                         }
                     }
                 }
@@ -981,8 +2061,10 @@ namespace gl {
             {
                 const int32_t sn = subCount;
                 auto pit = this->allPermutationsAna.find(sn);
-                if (pit == this->allPermutationsAna.end()) continue;
+                if (pit == this->allPermutationsAna.end()) return;
                 const auto& permuts = pit->second;
+                RT_SCOPE_HERE("ADM_WHOLEKEY");
+                RT_NOTE_ITERATIONS_HERE(static_cast<int64_t>(permuts.size()));
 
                 StrSpan sids[kKeyCap];
                 for (int32_t i = 0; i < sn; ++i)
@@ -1047,18 +2129,35 @@ namespace gl {
                     const NameId intEncCount = static_cast<NameId>(permutation.size());
                     assert(intEncCount <= ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS
                         && "makeNormalizedKeysForAdmission: subkey element count exceeds cap");
+                    {
+                    RT_SCOPE_HERE("ADM_WK_ENCODE");
                     for (std::size_t k = 0; k < permutation.size(); ++k)
-                        intEncoded[k] = encodeExpression(
-                            subkey[permutation[k]], StrSpan("main", 4), nameMap);
+                        intEncoded[k] = memo.at(subIdx[permutation[k]], nameMap);
+                    }
 
                     NameId reverseMap[ExecutionParameters::MAX_KEY_SLOTS];
                     std::memset(reverseMap, 0, sizeof(reverseMap));
                     NameId numNormVars = 0;
-                    NameId lenIgnored = makeIntNormalizedKeyFromEncodedWithMap(
+                    NameId lenIgnored = 0;
+                    NameId lenNotIgnored = 0;
+                    {
+                    RT_SCOPE_HERE("ADM_WK_NORMKEY");
+                    lenIgnored = makeIntNormalizedKeyFromEncodedWithMap(
                         intEncoded, intEncCount, true, bufIgnored,
                         ExecutionParameters::MAX_KEY_SLOTS, reverseMap, numNormVars);
-                    NameId lenNotIgnored = makeIntNormalizedKeyFromEncoded(
+                    lenNotIgnored = makeIntNormalizedKeyFromEncoded(
                         intEncoded, intEncCount, false, bufNotIgnored, ExecutionParameters::MAX_KEY_SLOTS);
+                    }
+
+                    // Remove policy: this permutation's whole key and
+                    // remaining-args edge lose the owner (first visit only);
+                    // no marker LMV, no batch.
+                    if (op.isRemove()) {
+                        removeRuleKeyEntries(intHashMemory, op,
+                            static_cast<NameId>(sn), bufNotIgnored, lenNotIgnored,
+                            intRemArgsSorted, remScratchN, owner, mnkGenArena);
+                        continue;
+                    }
 
                     // Rename run { normalized-var name -> decimal id } from
                     // reverseMap. mp2 order is NOT observable (replaceKeysScratch is
@@ -1069,6 +2168,10 @@ namespace gl {
                     // ruleInterner), so decodeView is I-3-safe (proved per-site).
                     StrReplacement mp2Pairs[ExecutionParameters::MAX_KEY_SLOTS];
                     int32_t mp2PairsN = 0;
+                    int32_t valueId = 0;
+                    bool isMarker = false;
+                    {
+                    RT_SCOPE_HERE("ADM_WK_VALUE_VARIANT");
                     for (NameId id = 1; id <= numNormVars; ++id) {
                         assert(mp2PairsN < ExecutionParameters::MAX_KEY_SLOTS
                             && "makeNormalizedKeysForAdmission valueVariant: rename pair count exceeds cap");
@@ -1084,16 +2187,24 @@ namespace gl {
                     const ScratchString valueVariant =
                         replaceKeysScratch(mnkStrArena, StrSpan(replaced), mp2Pairs, mp2PairsN);
 
-                    // Marker value id + isMarker flag (id-run door, no owning LMV).
-                    const int32_t valueId = ruleInterner.encode(StrSpan(valueVariant));
-                    const bool isMarker =
+                    // Marker value id + isMarker flag (id-run door, no owning
+                    // LMV). An ordis2-demand value carries no marker token
+                    // and is NOT flagged isMarker — the demand kind is its
+                    // own (maintainer decision 2026-08-10); the firing
+                    // dispatch checks ordis2Demand FIRST, so the head
+                    // branch never fires it.
+                    valueId = ruleInterner.encode(StrSpan(valueVariant));
+                    isMarker =
                         containsSpan(StrSpan(valueVariant), StrSpan("marker", 6));
+                    } // RT_SCOPE ADM_WK_VALUE_VARIANT
 
                     // replKey ids: each valid subkey element (binary[i], subkey only
                     // — never key[index]) with the rename applied, minted in binary
                     // order == the former replKey vector order.
                     int32_t keyIds[ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS];
                     int32_t keyIdsN = 0;
+                    {
+                    RT_SCOPE_HERE("ADM_WK_KEYIDS");
                     for (std::size_t i = 0; i < n; ++i) {
                         if (binary[i]) {
                             assert(keyIdsN < ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS
@@ -1103,24 +2214,37 @@ namespace gl {
                             keyIds[keyIdsN++] = ruleInterner.encode(StrSpan(e));
                         }
                     }
+                    } // RT_SCOPE ADM_WK_KEYIDS
 
                     // remainingArgIds: walk remScratch (run order == former set-lex).
                     int32_t remIds[ExecutionParameters::MAX_ADMISSION_REM_ARGS];
+                    int32_t originalImplId = 0;
+                    {
+                    RT_SCOPE_HERE("ADM_WK_LMV_FIELDS");
                     for (int32_t i = 0; i < remScratchN; ++i)
                         remIds[i] = ruleInterner.encode(remScratch[i]);
-
-                    const int32_t originalImplId = ruleInterner.encode(originalImpl);
+                    originalImplId = ruleInterner.encode(originalImpl);
+                    }
 
                     // encodedMap marker record + owner record + remaining-args index,
                     // all via the raw / id-run doors (no owning NormKey / LMV). D-72:
-                    // the LMV carries the admitting implication + scope.
-                    appendLmvIdsRecord(intHashMemory.encodedMap,
+                    // the LMV carries the admitting implication + scope. The
+                    // trailing defaults are spelled out to reach the ordisOnly
+                    // slot; regular installs pass false — byte-identical.
+                    {
+                    RT_SCOPE_HERE("ADM_LMV_APPEND");
+                    stageLmvIdsRecord(staging.lmv,
                         static_cast<NameId>(sn), bufIgnored, lenIgnored,
                         valueId, isMarker, keyIds, keyIdsN, remIds, remScratchN,
-                        originalImplId, ownerVid, mnkGenArena);
-                    mergeOwnerRecord(intHashMemory.normalizedEncodedKeys,
-                        static_cast<NameId>(sn), bufNotIgnored, lenNotIgnored,
-                        partitionId, intEncoded, intEncCount, nameMap);
+                        originalImplId, ownerVid, mnkGenArena,
+                        nullptr, 0, RuleJustification::none, false, true,
+                        ordisOnly, /*subsetExclusion=*/false, ordis2Demand);
+                    }
+                    {
+                    RT_SCOPE_HERE("ADM_WHOLEKEY_OWNER");
+                    stageWholeKeyOwner(staging.wholeKeys,
+                        static_cast<NameId>(sn), bufNotIgnored, lenNotIgnored, owner);
+                    }
                     // Accumulate this permutation's NormKey (Codec<NormKey> bytes)
                     // for the one batched insert after the loop.
                     {
@@ -1139,10 +2263,13 @@ namespace gl {
                     }
                 }
                 // ONE RMW for the whole permutation batch into the invariant key.
-                insertRemainingArgsNormKeyBatch(
-                    intHashMemory.remainingArgsNormalizedEncodedMap,
-                    intHashMemory.remainingArgsReverseIndex,
-                    intRemArgsSorted, remScratchN, remArgsBatch, mnkGenArena);
+                {
+                RT_SCOPE_HERE("ADM_REMARGS_BATCH");
+                stageRemainingArgsNormKeyBatch(
+                    staging.remArgs,
+                    staging.remArgsOwners,
+                    intRemArgsSorted, remScratchN, remArgsBatch, owner, mnkGenArena);
+                }
                 mnkGenArena.popTo(remArgsBatchMark);
             }
         }
@@ -1167,70 +2294,6 @@ namespace gl {
         return a.original < b.original;
     }
 
-    // ------------------------------------------------------------------
-    // Hash-engine mandatory-element filters (moved from prover.cpp in
-    // commit C). Singles + Pairs versions used by the request-generator
-    // pipeline.
-    // ------------------------------------------------------------------
-
-    /// @brief Build the ONE-element obligatory stumps: every statement that
-    /// passes the `filterIntEncodedStatements` admission gate, sorted by
-    /// `originalId` for stable output.
-    ///
-    /// @details
-    /// The request pipeline operates on pre-encoded `IntEncodedExpr` arrays.
-    /// Before generating requests it must filter the candidates so only
-    /// statements whose normalized form is admissible against the rule's hash
-    /// key remain. Each survivor becomes a stump of one element;
-    /// `makeMandatoryEncodedStatementLists2Static` (in the same file) builds
-    /// the two-element stumps.
-    ///
-    /// The stump's single index lands in `Stump::idx0`; `Stump::idx1` is unused
-    /// and set to a sentinel, because the generator reads it only at stump
-    /// length 2.
-    ///
-    /// @param mem        Reference `HashMemory` whose `normalizedEncoded*`
-    ///                   sets the admission check consults.
-    /// @param nm         Scope name map, for the comparability predicate.
-    /// @param stmts      Pre-encoded statement view.
-    /// @param outStumps  Destination array for the surviving stumps.
-    /// @param maxOut     Capacity of `outStumps`.
-    /// @return Number of stumps written into `outStumps`. Capped at
-    ///         `maxOut`; the local filter buffer is sized at 4096 which
-    ///         comfortably exceeds any per-LB statement count seen so far.
-    /// @pre  The container behind `stmts` lives at least until this
-    ///       function returns.
-    /// @post `outStumps[0..return-1]` is the surviving subset, sorted
-    ///       ascending by `originalId`.
-    /// @see `generateEncodedRequestsStatic` — the consumer, at stump length 1.
-    NameId ExpressionAnalyzer::makeMandatoryEncodedStatementLists1Static(
-        const HashMemory& mem, const NameMap& nm,
-        IntStmtView stmts,
-        Stump* outStumps, NameId maxOut)
-    {
-        RT_SCOPE_HERE("MAKE_MANDATORY_LISTS_1_STATIC");
-        // Filter, then sort by originalId (proxy for stable sort by original string)
-        NameId filtBuf[4096];
-        NameId nFilt = filterIntEncodedStatements(stmts, mem, nm, false, filtBuf, 4096);
-
-        // Insertion sort filtered indices by originalId (counts are small)
-        for (NameId i = 1; i < nFilt; ++i) {
-            NameId key = filtBuf[i];
-            NameId j = i - 1;
-            while (j >= 0 && stmts[filtBuf[j]].originalId > stmts[key].originalId) {
-                filtBuf[j + 1] = filtBuf[j];
-                --j;
-            }
-            filtBuf[j + 1] = key;
-        }
-
-        NameId nOut = std::min(nFilt, maxOut);
-        for (NameId i = 0; i < nOut; ++i) {
-            outStumps[i].idx0 = filtBuf[i];
-            outStumps[i].idx1 = -1;
-        }
-        return nOut;
-    }
 
     // ------------------------------------------------------------------
     // Hash-engine request generation.
@@ -1247,12 +2310,15 @@ namespace gl {
     /// `IntNormalizedKey` on a stack buffer (no heap allocation), normalizes
     /// the var ids sequentially by first appearance (`changeable=0`,
     /// `ignoreU=false`), and tests:
-    /// 1. `ownerKeyAccepts` against `mem.normalizedEncodedSubkeys` — the
-    ///    fast-rejection owner-set map populated by `addToHashMemory` /
-    ///    `makeNormalizedKeysForAdmission`, plus the D-105 scope prune and the
-    ///    D-120 `u_` literal prune. When @p alsoAcceptFullKeys is set, a hit in
-    ///    `mem.normalizedEncodedKeys` accepts the statement as well, so the gate
-    ///    becomes the UNION of the two maps. Misses are dropped.
+    /// 1. `subkeyUSatisfied` against `mem.normalizedEncodedSubkeys` — the
+    ///    fast-rejection subkey record map populated by `addToHashMemory` /
+    ///    `makeNormalizedKeysForAdmission`, probed for key presence plus the
+    ///    D-120 `u_` literal prune only (scope comparability and partition are
+    ///    not read). When @p alsoAcceptFullKeys is set, a hit
+    ///    in `mem.normalizedEncodedKeys` (`wholeKeyPresent` — key presence only,
+    ///    the owner record is not read) accepts
+    ///    the statement as well, so the gate becomes the UNION of the two maps.
+    ///    Misses are dropped.
     /// 2. `maxIteration <= parameters.maxIterationNumberVariable` — caps
     ///    blow-up on iteration counters.
     ///
@@ -1271,7 +2337,9 @@ namespace gl {
     /// @param mem                Reference `HashMemory` for the owner-set checks.
     /// @param nm                 Scope name map, for the comparability predicate.
     /// @param alsoAcceptFullKeys Widen the gate with `normalizedEncodedKeys`;
-    ///                           true exactly when the stump length is 0.
+    ///                           true for every firing-request generator call,
+    ///                           including split-stump buckets, and false only
+    ///                           for stump production.
     /// @param outIndices         Destination array for surviving indices.
     /// @param maxOut             Capacity of `outIndices`.
     /// @return Count of surviving indices written into `outIndices`.
@@ -1282,16 +2350,33 @@ namespace gl {
     ///            [I-79](../../docs/agentic_swdd/30_invariants.md#i-79)).
     NameId ExpressionAnalyzer::filterIntEncodedStatements(
         IntStmtView stmts,
-        const HashMemory& mem, const NameMap& nm,
+        const HashMemory& mem, const Memory& body,
         bool alsoAcceptFullKeys,
         NameId* outIndices, NameId maxOut) {
 
         const NameId count = static_cast<NameId>(stmts.size());
         NameId buf[ExecutionParameters::MAX_KEY_SLOTS];
         NameId nOut = 0;
+        // Frozen or-branch subtree exclusion (I-206): a
+        // statement whose scope is a frozen `_ordis_` branch or any descendant
+        // of one is not used to build requests. Pure reads of the persistent
+        // frozen set and the NameMap parent forest (I-83); the empty fast path
+        // keeps the common no-frozen case at one branch per call.
+        const bool anyFrozen = !body.frozenOrBranches.empty();
 
         for (NameId i = 0; i < count && nOut < maxOut; ++i) {
             const IntEncodedExpr& s = stmts[i];
+            if (anyFrozen) {
+                bool frozen = false;
+                for (NameId sc = s.validityId; sc != 0;
+                     sc = body.nameMap.parentOf(sc)) {
+                    if (body.frozenOrBranches.lookup(sc) != 0) {
+                        frozen = true;
+                        break;
+                    }
+                }
+                if (frozen) continue;
+            }
 
             // Build single-expr IntNormalizedKey on stack
             NameId pos = 0;
@@ -1323,17 +2408,18 @@ namespace gl {
                 }
             }
 
-            // D-105/D-120: keep the statement only if an owner of its
-            // single-element subkey is at a comparable scope and its u_ literals
-            // are satisfiable by this statement's argFullId.
+            // Growth half: keep the statement when its single-element subkey is
+            // present and some owner's u_ signature admits it (D-120); scope
+            // comparability and partition are not read here.
             const IntEncodedExpr* sp = &s;
             const bool subOk =
-                ownerKeyAccepts(mem.normalizedEncodedSubkeys, buf, pos, nm, &sp, 1);
+                subkeyUSatisfied(mem.normalizedEncodedSubkeys, buf, pos, &sp, 1);
             // Empty stump: a statement may be a whole request on its own, so a
-            // full-key owner also accepts it.
+            // present whole key also accepts it (presence only; the owner
+            // record is not read).
             const bool keyOk =
                 alsoAcceptFullKeys
-                && ownerKeyAccepts(mem.normalizedEncodedKeys, buf, pos, nm, &sp, 1);
+                && wholeKeyPresent(mem.normalizedEncodedKeys, buf, pos, 1);
             if (!subOk && !keyOk)
                 continue;
             if (s.maxIteration > parameters.maxIterationNumberVariable)
@@ -1344,44 +2430,35 @@ namespace gl {
         return nOut;
     }
 
-    /// @brief THE request generator: grow base candidates, attach the obligatory
-    /// stump, emit every request that lands on a whole key.
+    /// @brief THE request generator: grow every candidate to a whole key and emit
+    /// the ones that carry a mandatory ingredient.
     ///
     /// @details
-    /// See the declaration in `prover.hpp` for the phase-by-phase contract and the
-    /// `stumpLen` dispatch table. The body below is a direct transcription of it.
+    /// See the declaration in `prover.hpp` for the phase-by-phase contract. The body
+    /// below is a direct transcription of it.
     ///
-    /// Three details are load-bearing and easy to break:
+    /// Two details are load-bearing and easy to break:
     ///
     /// - **The submatch tally.** `g_growthMatchCount` is bumped once per node whose
-    ///   key an owner of `normalizedEncodedSubkeys` accepts — exactly the matches
-    ///   `preEvaluateFromEncoded` used to count when the grow loop called it. The
-    ///   tally caps the burst and is the LB-split policy's fill-ratio numerator
+    ///   key `subkeyUSatisfied` accepts on `normalizedEncodedSubkeys` (presence +
+    ///   the D-120 u_ signature; scope and partition are not read). The tally is
+    ///   the doom-line coordinate and the LB-split policy's work statistic
     ///   (D-109), so a second probe per node would change the split decisions and
     ///   therefore the proof. That is why the node runs `requestGatesPass` +
-    ///   `makeIntNormalizedKeyFromEncoded` + two bare `ownerKeyAccepts` probes
-    ///   instead of two `preEvaluateFromEncoded` calls.
-    /// - **The empty stump emits inside the search.** A zero-length stump means the
-    ///   base candidate is the finished request. Recording it and emitting after the
-    ///   search would defer every firing past the whole enumeration and defeat the
+    ///   `makeIntNormalizedKeyFromEncoded` + one bare `subkeyUSatisfied` growth
+    ///   probe + one bare `wholeKeyPresent` record probe.
+    /// - **Emission happens inside the search.** A recorded candidate IS the
+    ///   finished request. Buffering the candidates and emitting after the search
+    ///   would defer every firing past the whole enumeration and defeat the
     ///   counter-example filter's contradiction early-exit, which is the only thing
     ///   that halts a CE burst (I-73).
-    /// - **The stump sorts after the base on a name tie.** The merged array is
-    ///   `base ++ stump`, then one stable sort. This does NOT decide hit/miss:
-    ///   `addToHashMemory` installs every weakly-name-sorted permutation of a rule's
-    ///   premises, so both tie orders exist as keys. It IS observable downstream —
-    ///   the emitted tuple order feeds `StaticRequestEmitter::seen`'s dedup bytes and
-    ///   `checkLocalEncodedMemoryStatic`'s probe. Treat it as frozen.
     ///
     /// @see The declaration in `prover.hpp` for the full parameter documentation.
     template <typename Consumer>
     void ExpressionAnalyzer::generateEncodedRequestsStatic(
         const Memory& body,
         const HashMemory& intMemory,
-        NameId stumpLen,
-        const Stump* stumps, NameId stumpCount,
-        IntStmtView stumpSrc0,
-        IntStmtView stumpSrc1,
+        const MandatoryTerm* terms, NameId termCount,
         const SplitStumpRef& splitStump,
         unsigned coreId,
         Consumer& consumer)
@@ -1391,8 +2468,6 @@ namespace gl {
         // over one shared filtered statement list.
         const ExpressionStump* const bucket = splitStump.stumps;
         const NameId bucketCount = splitStump.count;
-        assert(stumpLen >= 0 && stumpLen <= 2
-            && "generateEncodedRequestsStatic: the obligatory stump is 0, 1 or 2 elements");
         assert((bucketCount == 0) == (bucket == nullptr)
             && "generateEncodedRequestsStatic: stump bucket present iff non-empty");
         assert((bucketCount == 0
@@ -1401,36 +2476,31 @@ namespace gl {
                     && splitStump.ordinal < splitStump.total))
             && "generateEncodedRequestsStatic: a stump sub-part has a place among "
                "its siblings");
-        // The counter-example filter runs one unsplit LB per conjecture, so it is
-        // never stump-split (its empty obligatory stump asserts g_splitCount == 1
-        // below for the same reason).
-        assert((stumpLen > 0 || bucketCount == 0)
-            && "generateEncodedRequestsStatic: an empty obligatory stump implies "
-               "no split stump");
-        assert(((stumpLen == 0) == (stumpCount == 0))
-            && "generateEncodedRequestsStatic: an empty stump has no instances, "
-               "a non-empty one has at least one (the callers gate on that)");
-        assert((stumpLen == 0) == (stumps == nullptr)
-            && "generateEncodedRequestsStatic: stump array present iff stumpLen > 0");
-        // A zero-length stump is the counter-example filter: one unsplit LB per
-        // conjecture, whose submatch tally nothing reads (the cap is bypassed in
-        // BurstSink::canAccept, and an unsplit LB has no split policy). The tally
-        // below therefore need not reproduce the CE generator's former bump count.
-        assert((stumpLen > 0 || g_splitCount == 1)
-            && "generateEncodedRequestsStatic: an empty stump implies an unsplit LB");
+        // The mandatory-containment control: a request must contain a statement
+        // from every view of at least ONE term.
+        //
+        // An EMPTY term list is a first-class input, not the absence of one: it
+        // says no ingredient is mandatory, so every whole key is a request. Two
+        // callers use it — the counter-example filter, and the batch whose rule
+        // registry is itself the new thing (`localHashMemoryDelta`), which has to
+        // meet every visible statement rather than only this burst's. The second
+        // one IS stump-split, so nothing here may infer "termless" ⇒ "unsplit";
+        // the counter-example call site asserts its own unsplit-ness, where that
+        // is still true.
+        const bool containmentMode = (termCount > 0);
+        assert(termCount >= 0 && termCount <= kMaxMandatoryTerms
+            && "generateEncodedRequestsStatic: at most kMaxMandatoryTerms terms");
+        assert(((termCount == 0) == (terms == nullptr))
+            && "generateEncodedRequestsStatic: term array present iff termCount > 0");
 
         const NameMap& nm = body.nameMap;
         const NameId mainValidityId = NameMap::MAIN_ID;
-        const int maxKeyLen = intMemory.maxKeyLength;
-        const int targetLen = std::max(0, maxKeyLen - stumpLen);
+        const int targetLen = intMemory.maxKeyLength;
 
-        // Which owner-set map decides that a grown candidate is RECORDED: a base
-        // candidate plus a stump of stumpLen elements has to complete a whole key,
-        // so on its own it must be a key minus stumpLen elements.
-        const TypedColdBlobMap<NormKey, OwnerSet>& targetKeys =
-            (stumpLen == 0) ? intMemory.normalizedEncodedKeys
-          : (stumpLen == 1) ? intMemory.normalizedEncodedSubkeysMinusOne
-                            : intMemory.normalizedEncodedSubkeysMinusTwo;
+        // Which normalized-key index decides that a candidate is RECORDED. The candidate
+        // is the whole request, so it has to be a whole key.
+        const TypedColdBlobMap<NormKey, RuleOwnerRec>& targetKeys =
+            intMemory.normalizedEncodedKeys;
 
         // The request keys + the IntEncodedExpr copies ride this slot's gen scratch
         // arena byte-bump tier (no per-thread heap arena); persistent per task,
@@ -1450,86 +2520,38 @@ namespace gl {
             return dst;
         };
 
-        // ---------------------------------------------------------------
-        // Phase 1: stump preparation. Name-sort each stump's own elements and
-        // record whether they are mutually comparable. The stump array rides this
-        // slot's gen scratch arena PAGE tier; built by push_back, read by index.
-        // Throwaway dirty flag (scratch never deloads). Empty for stumpLen == 0.
-        // ---------------------------------------------------------------
-        struct SortedStump {
-            IntEncodedExpr sorted[2];
-            uint8_t valid;
-        };
-        DirtyState stumpsDirty = DirtyState::Clean;
-        PagedVector<SortedStump> sortedStumps(&genArena, &stumpsDirty);
-
-        for (NameId i = 0; i < stumpCount; ++i) {
-            const IntEncodedExpr& e0 = stumpSrc0[stumps[i].idx0];
-            SortedStump ss;
-            if (stumpLen == 1) {
-                // One element: trivially name-sorted and trivially self-comparable.
-                ss.sorted[0] = e0;
-                ss.valid = 1;
-            } else {
-                const IntEncodedExpr& e1 = stumpSrc1[stumps[i].idx1];
-                const StrSpan n0 = nm.decodeView(e0.nameId);
-                const StrSpan n1 = nm.decodeView(e1.nameId);
-                if (compareSpans(n0, n1) <= 0) { ss.sorted[0] = e0; ss.sorted[1] = e1; }
-                else                           { ss.sorted[0] = e1; ss.sorted[1] = e0; }
-                ss.valid = nm.comparable(e0.validityId, e1.validityId) ? 1 : 0;
-            }
-            sortedStumps.push_back(ss);
-        }
-
-        // ---------------------------------------------------------------
-        // Phase 2: seed — a stump that is already a complete key is a request.
-        // ---------------------------------------------------------------
-        for (NameId i = 0; i < stumpCount; ++i) {
-            if (!sortedStumps[i].valid) continue;
-            // A seed request IS the obligatory stump, so it contains no split
-            // stump and every sub-part of this rule-part would emit it. Deal them
-            // out by obligatory-stump index: each is emitted exactly once, and the
-            // deal is a pure function of the index, so it survives any scheduling.
-            if (splitStump.total > 1 && (i % splitStump.total) != splitStump.ordinal)
-                continue;
-            const IntEncodedExpr* ptrs[2] = { nullptr, nullptr };
-            for (NameId k = 0; k < stumpLen; ++k) ptrs[k] = &sortedStumps[i].sorted[k];
-            const NameId len = makeIntNormalizedKeyFromEncoded(ptrs, stumpLen, buf,
-                ExecutionParameters::MAX_KEY_SLOTS);
-            // D-105/D-120: keep the seed only if an owner of the matched key is at a
-            // comparable scope and its u_ literals are satisfiable.
-            if (ownerKeyAccepts(intMemory.normalizedEncodedKeys, buf, len, nm, ptrs, stumpLen)) {
-                IntNormalizedKey nk(stumpLen, arenaKey(buf, len), len);
-                if (!emitter.emit(ptrs, stumpLen, nk)) return;
-            }
-        }
-
         if (targetLen <= 0) return;
 
         // ---------------------------------------------------------------
-        // Phase 3: grow. Filter the statement universe, name-sort it, then
-        // depth-first extend the empty candidate up to targetLen elements.
+        // The grow search. Filter the statement universe, name-sort it, then
+        // depth-first extend the empty candidate up to targetLen elements,
+        // emitting every candidate that lands on a whole key and carries a
+        // mandatory ingredient.
         //
         // Under a stump split the search runs ONCE PER STUMP in this sub-part's
         // bucket, over this one filtered list -- which is why a bucket exists: the
-        // filter is the fixed cost, and it is paid once for the whole bucket. Each
-        // run is the ordinary search with its stump joined to every candidate for
-        // the two owner-set probes: a growing candidate never carries the stump,
-        // the union is built per probe and dropped again, and only a candidate the
-        // target map accepts materialises the union into a `BaseCandidate`. So
-        // every request this sub-part emits contains one of its stumps.
+        // filter is the fixed cost, and it is paid once for the whole bucket.
         //
-        // Base candidates repeat across the bucket's stumps -- {a,b} is reached
-        // from stump {a} and from stump {b} -- and the merge emits both. The
-        // emitter's dedup collapses them, which two separate sub-parts could not
-        // have done.
+        // A stump NAMES A NODE of this same search: the run seeds its stack with
+        // that node and grows it onward, children starting past the stump's last
+        // element exactly as the unsplit search grows them. A run therefore owns
+        // that node's SUBTREE and nothing else. Because the search extends in
+        // ascending list order every candidate has one path, so the stumps'
+        // subtrees are disjoint and their union is the whole unsplit enumeration:
+        // the split is an exact partition, not a filter. Split and unsplit totals
+        // are identical.
         // ---------------------------------------------------------------
         const IntStmtView allIntStmts(body.intEncodedStatements);
         NameId filteredIdx[8192];
-        // An empty stump admits statements that are whole keys on their own; a
-        // non-empty one admits only growable subkeys.
-        NameId nFiltered = filterIntEncodedStatements(allIntStmts,
-            intMemory, nm, /*alsoAcceptFullKeys=*/stumpLen == 0, filteredIdx, 8192);
+        NameId nFiltered = 0;
+        {
+        // RT part 1 of 2: statement-universe filter + name sort — the fixed
+        // per-call cost the whole bucket shares.
+        RT_SCOPE_HERE("STATIC_REQGEN_FILTER_SORT");
+        // A candidate is the whole request, so a statement that is a whole key on
+        // its own is admitted alongside the growable subkeys.
+        nFiltered = filterIntEncodedStatements(allIntStmts,
+            intMemory, body, /*alsoAcceptFullKeys=*/true, filteredIdx, 8192);
         // Name-only stable_sort. Emergence-order tie resolution is deterministic by
         // the stable_sort contract across MSVC STL and libstdc++ — cross-host
         // byte-identical at this site. The Gauss / fold theorem proves under this
@@ -1540,20 +2562,128 @@ namespace gl {
             return compareSpans(nm.decodeView(allIntStmts[a].nameId),
                                 nm.decodeView(allIntStmts[b].nameId)) < 0;
         });
+        gpuRequestFilterCalls.fetch_add(1, std::memory_order_relaxed);
+        gpuFilterInputStatements.fetch_add(
+            static_cast<uint64_t>(allIntStmts.size()),
+            std::memory_order_relaxed);
+        gpuFilterOutputStatements.fetch_add(
+            static_cast<uint64_t>(nFiltered), std::memory_order_relaxed);
+        const auto publishMaximum = [](std::atomic<uint64_t>& maximum,
+                                       uint64_t value) {
+            uint64_t observed = maximum.load(std::memory_order_relaxed);
+            while (observed < value
+                && !maximum.compare_exchange_weak(
+                    observed, value,
+                    std::memory_order_relaxed,
+                    std::memory_order_relaxed)) {
+            }
+        };
+        publishMaximum(gpuFilterMaximumInputStatements,
+            static_cast<uint64_t>(allIntStmts.size()));
+        publishMaximum(gpuFilterMaximumOutputStatements,
+            static_cast<uint64_t>(nFiltered));
+        }
 
-        // baseCandidates accumulates the grow-phase survivors of EVERY stump in the
-        // bucket, then is read by index in the merge: PAGE tier of this slot's gen
-        // scratch arena, independent of the DFS stack's byte-bump tier on the same
-        // arena. Stays empty when the obligatory stump is empty — those candidates
-        // are emitted inside the search instead.
-        DirtyState dfsDirty = DirtyState::Clean;
-        PagedVector<BaseCandidate> baseCandidates(&genArena, &dfsDirty);
+        // ---------------------------------------------------------------
+        // Mandatory containment: turn view membership into one bit per filtered
+        // statement, and precompute what each suffix of the sorted list can still
+        // contribute. Bit (t, s) marks membership in term t's view s, so a term is
+        // satisfied by a mask that carries every one of its bits.
+        //
+        // All three arrays ride this slot's gen scratch arena byte-bump tier and
+        // are allocated BEFORE the DFS stack's first push, so they sit below every
+        // stack frame and no `pop` can reclaim them.
+        // ---------------------------------------------------------------
+        uint8_t termMask[kMaxMandatoryTerms] = { 0, 0 };
+        const uint8_t* viewMask = nullptr;    // per filtered position
+        const uint8_t* suffixMask = nullptr;  // views live at or after a position
+        if (containmentMode) {
+            for (NameId t = 0; t < termCount; ++t) {
+                assert(terms[t].viewCount >= 1 && terms[t].viewCount <= kMaxTermViews
+                    && "generateEncodedRequestsStatic: a mandatory term names one "
+                       "or two statement views");
+                for (NameId s = 0; s < terms[t].viewCount; ++s)
+                    termMask[t] |= static_cast<uint8_t>(
+                        1u << static_cast<unsigned>(t * kMaxTermViews + s));
+            }
+
+            // Intern the filtered universe by (originalId, validityId) so a view
+            // element finds its filtered position in O(1). Two filtered rows can
+            // share a key, so the bits are collected per interned id and read back
+            // per position — no assumption that ids and positions coincide.
+            DirtyState maskDirty = DirtyState::Clean;
+            ColdHashSet<PodKeyStore<int64_t>> filteredKeys(&genArena, &maskDirty);
+            int32_t* keyId = reinterpret_cast<int32_t*>(genArena.resolve(
+                genArena.alloc(
+                    static_cast<int32_t>(nFiltered + 1) * static_cast<int32_t>(sizeof(int32_t)),
+                    static_cast<int32_t>(alignof(int32_t)))));
+            for (NameId k = 0; k < nFiltered; ++k) {
+                const IntEncodedExpr& fe = allIntStmts[filteredIdx[k]];
+                keyId[k] = filteredKeys.mint(
+                    packStatementKey(fe.originalId, fe.validityId));
+            }
+
+            uint8_t* bitsById = reinterpret_cast<uint8_t*>(genArena.resolve(
+                genArena.alloc(static_cast<int32_t>(nFiltered + 1), 1)));
+            std::memset(bitsById, 0, static_cast<std::size_t>(nFiltered) + 1);
+            for (NameId t = 0; t < termCount; ++t) {
+                for (NameId s = 0; s < terms[t].viewCount; ++s) {
+                    const uint8_t bit = static_cast<uint8_t>(
+                        1u << static_cast<unsigned>(t * kMaxTermViews + s));
+                    const IntStmtView& view = terms[t].views[s];
+                    for (int32_t j = 0; j < view.size(); ++j) {
+                        const int32_t id = filteredKeys.lookup(
+                            packStatementKey(view[j].originalId, view[j].validityId));
+                        // A miss means the view's statement is not a viable request
+                        // ingredient at all (the filter dropped it) — the retired
+                        // stump builders filtered their source views the same way.
+                        if (id != 0) bitsById[id] |= bit;
+                    }
+                }
+            }
+
+            uint8_t* vm = reinterpret_cast<uint8_t*>(genArena.resolve(
+                genArena.alloc(static_cast<int32_t>(nFiltered + 1), 1)));
+            uint8_t* sm = reinterpret_cast<uint8_t*>(genArena.resolve(
+                genArena.alloc(static_cast<int32_t>(nFiltered + 1), 1)));
+            sm[nFiltered] = 0;
+            for (int k = static_cast<int>(nFiltered) - 1; k >= 0; --k) {
+                vm[k] = bitsById[keyId[k]];
+                sm[k] = static_cast<uint8_t>(sm[k + 1] | vm[k]);
+            }
+            viewMask = vm;
+            suffixMask = sm;
+        }
+
+        // Does this mask already satisfy some term — is the candidate emittable?
+        const auto termsSatisfied = [&](uint8_t m) -> bool {
+            for (NameId t = 0; t < termCount; ++t)
+                if ((m & termMask[t]) == termMask[t]) return true;
+            return false;
+        };
+
+        // Can some term still be completed from here: either it is satisfied
+        // already, or there is depth left AND every view it still misses is live
+        // somewhere at or after `from` in the sorted list. Conservative on purpose
+        // — one statement may carry two of a term's views at once, so the count of
+        // missing views is not a depth bound.
+        const auto termsReachable =
+            [&](uint8_t m, NameId count, int from) -> bool {
+            for (NameId t = 0; t < termCount; ++t) {
+                const uint8_t missing = static_cast<uint8_t>(termMask[t] & ~m);
+                if (missing == 0) return true;
+                if (count >= targetLen) continue;
+                if ((missing & suffixMask[from]) == missing) return true;
+            }
+            return false;
+        };
 
         struct StackItem {
             int start;
             NameId allIdx[ExecutionParameters::MAX_EXPRESSIONS];
             NameId count;
             NameId validityId;
+            uint8_t mask;   // union of the term-view bits this candidate carries
         };
 
         // The stump of the run in progress. Its elements ascend by (decoded name,
@@ -1562,40 +2692,32 @@ namespace gl {
         const NameId* curIdx = nullptr;
         NameId curCount = 0;
         NameId curVid = mainValidityId;
+        // The union of the term-view bits the run's stump already carries.
+        uint8_t curMask = 0;
 
-        const auto stmtLess = [&](NameId a, NameId b) {
-            const int c = compareSpans(nm.decodeView(allIntStmts[a].nameId),
-                                       nm.decodeView(allIntStmts[b].nameId));
-            return (c != 0) ? (c < 0) : (a < b);
-        };
-        const auto inSplitStump = [&](NameId allIdx) {
-            for (NameId k = 0; k < curCount; ++k)
-                if (curIdx[k] == allIdx) return true;
-            return false;
-        };
-        // Merge the run's stump into `cand` (both ascending, disjoint — the search
-        // skips the stump's own statements). Fills `outIdx` and `outPtrs`, returns
-        // the union size. The unsplit path copies straight through.
-        const auto unionWithStump = [&](const NameId* cand, NameId candCount,
-                                        NameId* outIdx,
-                                        const IntEncodedExpr** outPtrs) -> NameId {
-            NameId o = 0;
-            if (curCount == 0) {
-                for (NameId k = 0; k < candCount; ++k) outIdx[o++] = cand[k];
-            } else {
-                NameId a = 0, b = 0;
-                while (a < curCount && b < candCount)
-                    outIdx[o++] = stmtLess(curIdx[a], cand[b]) ? curIdx[a++]
-                                                               : cand[b++];
-                while (a < curCount) outIdx[o++] = curIdx[a++];
-                while (b < candCount) outIdx[o++] = cand[b++];
-            }
-            for (NameId k = 0; k < o; ++k) outPtrs[k] = &allIntStmts[outIdx[k]];
-            return o;
+        // Position of a statement in the name-sorted filtered list, or -1 when the
+        // statement is not in it. A stump that survives the subkey gate names a node
+        // of THIS search's own enumeration, so each of its elements is a filtered
+        // statement: the subkey map is closed downward, so a stump the map accepts
+        // has every element accepted, and the filter keeps exactly those (same
+        // maxIteration gate the producer applied). A stump the gate rejects — which
+        // is what a reference memory narrower than the producer's yields — is
+        // skipped before the seed frame, so -1 never reaches it.
+        const auto posInFiltered = [&](NameId stmtIdx) -> int {
+            for (NameId i = 0; i < nFiltered; ++i)
+                if (filteredIdx[i] == stmtIdx) return static_cast<int>(i);
+            return -1;
         };
 
-        NameId unionIdx[ExecutionParameters::MAX_EXPRESSIONS];
-        const IntEncodedExpr* unionPtrs[ExecutionParameters::MAX_EXPRESSIONS];
+        const IntEncodedExpr* candPtrs[ExecutionParameters::MAX_EXPRESSIONS];
+
+        // The resumable key build behind `buf` and the resumable request gates.
+        // Function-scope so the DFS pays one stack reservation for the whole call
+        // rather than one per pop.
+        NormKeyBuildState keyState;
+        RequestGateState gateState;
+        const TypedColdSet<NameId>& prodRecIds =
+            body.overallHashMemory.productsOfRecursionIds;
 
         // The DFS frontier rides the byte-bump tier: grow on push, reclaim on
         // backtrack via popTo, so the footprint tracks the live frontier, not the
@@ -1605,6 +2727,14 @@ namespace gl {
         // One search per stump; one search with no stump when the LB is not
         // stump-split.
         const NameId runCount = (bucketCount > 0) ? bucketCount : 1;
+        {
+        // RT part 2 of 2: the grow search — DFS candidate enumeration with its
+        // per-node gates and owner-set probes. A recorded candidate is emitted
+        // right here, inside the scope, which is what preserves the CE filter's
+        // contradiction early-exit.
+        // iter = the filtered statement universe the search grows over.
+        RT_SCOPE_HERE("STATIC_REQGEN_GROW_SEARCH");
+        RT_NOTE_ITERATIONS_HERE(static_cast<int>(nFiltered));
         for (NameId si = 0; si < runCount; ++si) {
             const bool terminalOnly = bucketCount > 0
                 && bucket[si].terminalOnly != 0;
@@ -1630,6 +2760,30 @@ namespace gl {
                     curVid = (k == 0) ? se.validityId
                                       : nm.deeperOf(curVid, se.validityId);
                 }
+                // The containment control needs the stump's view bits BEFORE the
+                // stump-alone probe below, which may emit it — so the positions
+                // are resolved here rather than in the seed frame.
+                //
+                // An element may be legitimately absent from this call's filtered
+                // universe. The producer grew its stumps over the LB's OVERALL rule
+                // registry, and a batch reading a narrower one (working memory, the
+                // local registries) may hold no rule that could ever use that
+                // statement. Such a stump yields nothing here and is skipped: the
+                // subkey map is closed downward, so a set containing a non-subkey is
+                // itself a non-subkey, which makes the stump fail both the growth
+                // and the record probe — and so does every candidate in its subtree,
+                // since each one still contains that element. The stumped modes
+                // reach the same verdict one probe later, at the subkey gate below.
+                curMask = 0;
+                bool stumpIsUsableHere = true;
+                if (containmentMode) {
+                    for (NameId k = 0; k < curCount; ++k) {
+                        const int pos = posInFiltered(curIdx[k]);
+                        if (pos < 0) { stumpIsUsableHere = false; break; }
+                        curMask = static_cast<uint8_t>(curMask | viewMask[pos]);
+                    }
+                }
+                if (!stumpIsUsableHere) continue;
             }
 
             // The stump alone is the one base candidate no growing candidate can
@@ -1643,22 +2797,27 @@ namespace gl {
             // superset of a non-subkey is a non-subkey).
             if (curCount > 0) {
                 for (NameId k = 0; k < curCount; ++k)
-                    unionPtrs[k] = &allIntStmts[curIdx[k]];
-                if (!requestGatesPass(unionPtrs, curCount, body, mainValidityId))
+                    candPtrs[k] = &allIntStmts[curIdx[k]];
+                if (!requestGatesPass(candPtrs, curCount, body, mainValidityId))
                     continue;
-                const NameId keyLen = makeIntNormalizedKeyFromEncoded(unionPtrs,
+                const NameId keyLen = makeIntNormalizedKeyFromEncoded(candPtrs,
                     curCount, buf, ExecutionParameters::MAX_KEY_SLOTS);
-                const bool subOk = ownerKeyAccepts(intMemory.normalizedEncodedSubkeys,
-                                                   buf, keyLen, nm, unionPtrs, curCount);
-                if (subOk) ++g_growthMatchCount;
-                if (subOk && ownerKeyAccepts(targetKeys, buf, keyLen, nm,
-                                             unionPtrs, curCount)) {
-                    BaseCandidate bc;
-                    std::memcpy(bc.allIdx, curIdx,
-                        static_cast<std::size_t>(curCount) * sizeof(NameId));
-                    bc.count = curCount;
-                    bc.validityId = curVid;
-                    baseCandidates.push_back(bc);
+                const bool subOk = subkeyUSatisfied(intMemory.normalizedEncodedSubkeys,
+                                                    buf, keyLen, candPtrs, curCount);
+                if (subOk) {
+                    ++g_growthMatchCount;
+                    ++g_gpuGrowSubkeysByDepth[curCount];
+                }
+                // Record gate, mirroring the search's. The candidate is already the
+                // finished request and nothing more will be added to it, so it need
+                // not be growable — only a present whole key (the owner record is
+                // not read), and only carrying a term's ingredients when there are
+                // terms.
+                if (wholeKeyPresent(targetKeys, buf, keyLen, curCount)
+                    && (!containmentMode || termsSatisfied(curMask))) {
+                    ++g_gpuGrowRequestsByDepth[curCount];
+                    IntNormalizedKey nk(curCount, arenaKey(buf, keyLen), keyLen);
+                    if (!emitter.emit(candPtrs, curCount, nk)) return;
                 }
                 if (!subOk) continue;
             }
@@ -1673,7 +2832,29 @@ namespace gl {
                 init.start = 0;
                 init.count = 0;
                 init.validityId = curVid;
+                init.mask = 0;
+                if (curCount > 0) {
+                    // The stump IS the growing candidate. This run resumes the
+                    // unsplit search at the node the stump names and grows it
+                    // onward; children start past the stump's last element, so the
+                    // run owns exactly that node's subtree and no sibling bucket
+                    // can reach into it. Ascending positions are the producer's own
+                    // enumeration order — it grows a child at pos + 1.
+                    int lastPos = -1;
+                    for (NameId k = 0; k < curCount; ++k) {
+                        const int pos = posInFiltered(curIdx[k]);
+                        assert(pos > lastPos
+                            && "a split stump's elements must be filtered statements "
+                               "in ascending list order");
+                        lastPos = pos;
+                        init.allIdx[k] = curIdx[k];
+                    }
+                    init.count = curCount;
+                    init.start = lastPos + 1;
+                    init.mask = curMask;
+                }
                 stack.push(init);
+                ++g_gpuGrowFrontierByDepth[curCount];
             }
 
             while (!stack.empty()) {
@@ -1685,140 +2866,146 @@ namespace gl {
                 StackItem top = stack.back();
                 stack.pop();
 
+                // The prefix is the same for every position this pop visits: only
+                // the appended slot moves. Its statement indices and its premise
+                // pointers are therefore written once here, and the loop below
+                // writes slot `top.count` alone.
+                NameId cand[ExecutionParameters::MAX_EXPRESSIONS];
+                std::memcpy(cand, top.allIdx, top.count * sizeof(NameId));
+                for (NameId k = 0; k < top.count; ++k)
+                    candPtrs[k] = &allIntStmts[top.allIdx[k]];
+                // Those pointers resolve through the LB's statement vector, so they
+                // stay valid for the whole pop only because phase 2 never writes
+                // shared LB state (I-83).
+                assert(body.intEncodedStatements.size() == allIntStmts.size()
+                    && "the statement universe must not change during a grow pop "
+                       "— the hoisted premise pointers resolve through it");
+
+                // The prefix's normalized key, built once for the same reason.
+                // Its bytes stay in `buf[0, prefixKeyLen)` for the whole pop —
+                // nothing in the loop writes that buffer — so each position only
+                // rewinds the three counters and folds in its own premise.
+                buildIntNormalizedKeyPrefix(candPtrs, top.count, buf,
+                                            ExecutionParameters::MAX_KEY_SLOTS,
+                                            keyState);
+                const NameId prefixVars = keyState.nVars;
+                const NameId prefixNextNormId = keyState.nextNormId;
+                const NameId prefixKeyLen = keyState.pos;
+
+                // The prefix's gate summary, same story: the hypothesis scope,
+                // the non-exempt scope count and the distinct secondaries are all
+                // order-free over the premises, so the prefix folds once and each
+                // position folds in its own premise alone. That is what keeps the
+                // per-argument productsOfRecursionIds probes off the prefix.
+                foldPrefixIntoRequestGates(candPtrs, top.count, prodRecIds,
+                                           mainValidityId, gateState);
+                const int32_t prefixHypoFound = gateState.hypoFound;
+                const NameId prefixHypoValidityId = gateState.hypoValidityId;
+                const int32_t prefixNonExemptScopes = gateState.nonExemptScopes;
+                const NameId prefixNonExemptValidityId =
+                    gateState.nonExemptValidityId;
+                const int32_t prefixSecondaryCount = gateState.secondaryCount;
+
                 for (int i = top.start; i < nFiltered; ++i) {
-                    // The split stump joins every candidate, so it eats grow depth.
-                    if (top.count + 1 + curCount > targetLen) break;
+                    // The stump sits inside top.count, so this is the plain
+                    // unsplit depth test.
+                    if (top.count + 1 > targetLen) break;
                     // Submatch cap (D-109). canAccept bypasses the cap for an empty
                     // stump (I-73) and honors this LB's early-exit stop when it runs
                     // unsplit (I-76); under split it never observes a sibling's stop.
                     if (!consumer.canAccept()) return;
 
                     const NameId allIdx = filteredIdx[i];
-                    // One copy of each expression: the stump is already in the union,
-                    // so a candidate never repeats it. This is what makes the union a
-                    // plain merge of two disjoint ascending runs.
-                    if (curCount > 0 && inSplitStump(allIdx)) continue;
                     const IntEncodedExpr& ie = allIntStmts[allIdx];
+                    const NameId newCount = static_cast<NameId>(top.count + 1);
+                    ++g_gpuGrowAttemptsByDepth[newCount];
+
+                    // Mandatory containment, cheapest gate first: skip a position
+                    // that neither finishes a term here nor leaves one completable
+                    // deeper. Nothing else happens at such a position — it can be
+                    // neither emitted nor grown — so skipping it costs no request
+                    // and no submatch.
+                    const uint8_t newMask = containmentMode
+                        ? static_cast<uint8_t>(top.mask | viewMask[i])
+                        : static_cast<uint8_t>(0);
+                    if (containmentMode
+                        && !termsReachable(newMask, newCount, i + 1)) continue;
 
                     if (!nm.comparable(top.validityId, ie.validityId)) continue;
                     const NameId newValidityId = nm.deeperOf(top.validityId, ie.validityId);
 
-                    // The growing candidate itself, then the union it is PROBED as.
-                    // The stump is attached here and dropped again; it becomes part
-                    // of the candidate only where the record probe accepts (below).
-                    NameId cand[ExecutionParameters::MAX_EXPRESSIONS];
-                    std::memcpy(cand, top.allIdx, top.count * sizeof(NameId));
+                    // The growing candidate. The stump's elements are already its
+                    // prefix, written above; this position contributes the last
+                    // element only.
                     cand[top.count] = allIdx;
-                    const NameId newCount = static_cast<NameId>(top.count + 1);
-                    const NameId unionCount =
-                        unionWithStump(cand, newCount, unionIdx, unionPtrs);
+                    candPtrs[top.count] = &ie;
 
                     // The map-independent request-shape gates, then the key. Both
-                    // maps below are probed with this one key.
-                    if (!requestGatesPass(unionPtrs, unionCount, body, mainValidityId)) continue;
-                    const NameId keyLen = makeIntNormalizedKeyFromEncoded(unionPtrs, unionCount,
-                        buf, ExecutionParameters::MAX_KEY_SLOTS);
+                    // maps below are probed with this one key. Rewind to the
+                    // prefix summary, fold in this position's premise, then take
+                    // the verdict over the whole candidate.
+                    gateState.hypoFound = prefixHypoFound;
+                    gateState.hypoValidityId = prefixHypoValidityId;
+                    gateState.nonExemptScopes = prefixNonExemptScopes;
+                    gateState.nonExemptValidityId = prefixNonExemptValidityId;
+                    gateState.secondaryCount = prefixSecondaryCount;
+                    if (!foldExprIntoRequestGates(ie, gateState, prodRecIds,
+                                                  mainValidityId)) {
+                        continue;
+                    }
+                    if (!requestGateStateAccepts(gateState, candPtrs, newCount,
+                                                 body, mainValidityId)) {
+                        continue;
+                    }
+                    // Rewind to the prefix, then fold in this position's premise.
+                    // Byte-identical to rebuilding the whole key: the renumbering
+                    // is first-appearance order, so the prefix's slot assignments
+                    // are exactly what a full rebuild would have reached here.
+                    keyState.nVars = prefixVars;
+                    keyState.nextNormId = prefixNextNormId;
+                    keyState.pos = prefixKeyLen;
+                    appendExprToIntNormalizedKey(ie, keyState, buf,
+                                                 ExecutionParameters::MAX_KEY_SLOTS);
+                    const NameId keyLen = keyState.pos;
 
-                    // Growth probe: may this candidate be extended? These are the
-                    // submatches the burst cap and the split policy count.
-                    const bool subOk = ownerKeyAccepts(intMemory.normalizedEncodedSubkeys,
-                                                       buf, keyLen, nm, unionPtrs, unionCount);
-                    if (subOk) ++g_growthMatchCount;
-
-                    // Record probe: will this candidate plus its stump complete a
-                    // whole key? A candidate carrying a stump must ALSO still be
-                    // growable, since the stump has yet to be attached.
-                    if (ownerKeyAccepts(targetKeys, buf, keyLen, nm, unionPtrs, unionCount)
-                        && (stumpLen == 0 || subOk)) {
-                        if (stumpLen == 0) {
-                            // No stump: the candidate is the finished request. Emit
-                            // here, inside the search, so a refuting head can halt
-                            // the burst.
-                            IntNormalizedKey nk(unionCount, arenaKey(buf, keyLen), keyLen);
-                            if (!emitter.emit(unionPtrs, unionCount, nk)) return;
-                        } else {
-                            // Now the stump joins permanently: the base candidate is
-                            // the union, and the merge appends the obligatory stump.
-                            BaseCandidate bc;
-                            std::memcpy(bc.allIdx, unionIdx, unionCount * sizeof(NameId));
-                            bc.count = unionCount;
-                            bc.validityId = newValidityId;
-                            baseCandidates.push_back(bc);
-                        }
+                    // Growth probe: may this candidate be extended? Key presence
+                    // plus the u_ signature (D-120) only — scope and partition are
+                    // not read. These are the submatches the doom line and the
+                    // split policy count.
+                    const bool subOk = subkeyUSatisfied(intMemory.normalizedEncodedSubkeys,
+                                                        buf, keyLen, candPtrs, newCount);
+                    if (subOk) {
+                        ++g_growthMatchCount;
+                        ++g_gpuGrowSubkeysByDepth[newCount];
+                    }
+                    // Record probe: is this candidate a present whole key (presence
+                    // only, the owner record is not read)? It is the finished
+                    // request, so it need not also be growable. Emit here, inside
+                    // the search, so a refuting head can halt the burst — and, under
+                    // the containment control, only once the candidate actually
+                    // carries a term's ingredients.
+                    if (wholeKeyPresent(targetKeys, buf, keyLen, newCount)
+                        && (!containmentMode || termsSatisfied(newMask))) {
+                        ++g_gpuGrowRequestsByDepth[newCount];
+                        IntNormalizedKey nk(newCount, arenaKey(buf, keyLen), keyLen);
+                        if (!emitter.emit(candPtrs, newCount, nk)) return;
                     }
 
-                    if (subOk && unionCount < targetLen) {
+                    if (subOk && newCount < targetLen) {
                         StackItem next;
                         next.start = i + 1;
                         std::memcpy(next.allIdx, cand, newCount * sizeof(NameId));
                         next.count = newCount;
                         next.validityId = newValidityId;
+                        next.mask = newMask;
                         stack.push(next);
+                        ++g_gpuGrowFrontierByDepth[newCount];
                     }
                 }
             }
         }
-
-        // ---------------------------------------------------------------
-        // Phase 4: merge — base candidates x stumps. Empty for stumpLen == 0.
-        // ---------------------------------------------------------------
-        for (int32_t bi = 0; bi < baseCandidates.size(); ++bi) {
-            // Per-new-seed checkpoint: each base candidate is a fresh growing seed
-            // about to be merged against every stump.
-            RT_REFRESH_HERE();
-            const BaseCandidate& base = baseCandidates[bi];
-
-            for (NameId si = 0; si < stumpCount; ++si) {
-                if (!sortedStumps[si].valid) continue;
-                const IntEncodedExpr* stump[2] = { nullptr, nullptr };
-                for (NameId k = 0; k < stumpLen; ++k) stump[k] = &sortedStumps[si].sorted[k];
-
-                // The stump's own elements are comparable (checked in phase 1), so
-                // deeperOf over them is the stump's scope.
-                NameId stumpVid = stump[0]->validityId;
-                for (NameId k = 1; k < stumpLen; ++k)
-                    stumpVid = nm.deeperOf(stumpVid, stump[k]->validityId);
-                if (!nm.comparable(base.validityId, stumpVid)) continue;
-
-                bool dup = false;
-                for (NameId k = 0; k < base.count && !dup; ++k) {
-                    const IntEncodedExpr& bIe = allIntStmts[base.allIdx[k]];
-                    for (NameId t = 0; t < stumpLen; ++t) {
-                        if (bIe.originalId == stump[t]->originalId
-                            && nm.comparable(bIe.validityId, stump[t]->validityId)) {
-                            dup = true;
-                            break;
-                        }
-                    }
-                }
-                if (dup) continue;
-
-                // Base first, stump appended, then ONE stable sort by name: a stump
-                // element tying a base element on name lands after it. Every
-                // weakly-name-sorted permutation of a rule's premises is installed, so
-                // the tie order does not decide hit/miss — but it is observable
-                // downstream (dedup bytes, firing-check probe). Do not reorder.
-                const IntEncodedExpr* merged[ExecutionParameters::MAX_EXPRESSIONS + 2];
-                NameId mc = 0;
-                for (NameId k = 0; k < base.count; ++k)
-                    merged[mc++] = &allIntStmts[base.allIdx[k]];
-                for (NameId k = 0; k < stumpLen; ++k)
-                    merged[mc++] = stump[k];
-                std::stable_sort(merged, merged + mc,
-                    [&](const IntEncodedExpr* a, const IntEncodedExpr* b) {
-                        return compareSpans(nm.decodeView(a->nameId),
-                                            nm.decodeView(b->nameId)) < 0;
-                    });
-
-                std::pair<bool, IntNormalizedKey> pr2 =
-                    preEvaluateFromEncoded(merged, mc, body, mainValidityId,
-                        intMemory.normalizedEncodedKeys, genArena);
-
-                if (pr2.first) {
-                    if (!emitter.emit(merged, mc, pr2.second)) return;
-                }
-            }
         }
+
     }
 
     /// @brief The stump list a rule-part returns when it reaches the second
@@ -1851,12 +3038,32 @@ namespace gl {
         const IntStmtView allIntStmts(body.intEncodedStatements);
         ScratchArena& genArena = genScratchArenas().forSlot(coreId);
 
-        // The statement universe, pruned to this rule-part's rules by the
-        // partition filter inside ownerKeyAccepts, then name-sorted exactly as
-        // the search sorts it (ties keep ascending statement index).
+        // The statement universe, filtered by the subkey growth probe, then
+        // name-sorted exactly as the search sorts it (ties keep ascending
+        // statement index).
         NameId filteredIdx[8192];
         const NameId nFiltered = filterIntEncodedStatements(allIntStmts,
-            mem, nm, /*alsoAcceptFullKeys=*/false, filteredIdx, 8192);
+            mem, body, /*alsoAcceptFullKeys=*/false, filteredIdx, 8192);
+        gpuProducerFilterCalls.fetch_add(1, std::memory_order_relaxed);
+        gpuFilterInputStatements.fetch_add(
+            static_cast<uint64_t>(allIntStmts.size()),
+            std::memory_order_relaxed);
+        gpuFilterOutputStatements.fetch_add(
+            static_cast<uint64_t>(nFiltered), std::memory_order_relaxed);
+        const auto publishMaximum = [](std::atomic<uint64_t>& maximum,
+                                       uint64_t value) {
+            uint64_t observed = maximum.load(std::memory_order_relaxed);
+            while (observed < value
+                && !maximum.compare_exchange_weak(
+                    observed, value,
+                    std::memory_order_relaxed,
+                    std::memory_order_relaxed)) {
+            }
+        };
+        publishMaximum(gpuFilterMaximumInputStatements,
+            static_cast<uint64_t>(allIntStmts.size()));
+        publishMaximum(gpuFilterMaximumOutputStatements,
+            static_cast<uint64_t>(nFiltered));
         if (nFiltered == 0) return 0;
         std::stable_sort(filteredIdx, filteredIdx + nFiltered, [&](NameId a, NameId b) {
             return compareSpans(nm.decodeView(allIntStmts[a].nameId),
@@ -1880,6 +3087,8 @@ namespace gl {
             n.validityId = allIntStmts[filteredIdx[i]].validityId;
             nodes.push_back(n);
         }
+        g_gpuProducerSurvivorsByDepth[1] +=
+            static_cast<uint64_t>(nFiltered);
         int32_t levelBegin = 0;
         int32_t levelEnd = nodes.size();
 
@@ -1915,20 +3124,23 @@ namespace gl {
                 const Node p = nodes[ni];
                 for (NameId j = static_cast<NameId>(p.pos[p.count - 1] + 1);
                      j < nFiltered; ++j) {
+                    const NameId newCount = static_cast<NameId>(p.count + 1);
+                    ++g_gpuProducerAttemptsByDepth[newCount];
                     const IntEncodedExpr& ie = allIntStmts[filteredIdx[j]];
                     if (!nm.comparable(p.validityId, ie.validityId)) continue;
                     for (NameId k = 0; k < p.count; ++k)
                         ptrs[k] = &allIntStmts[filteredIdx[p.pos[k]]];
                     ptrs[p.count] = &ie;
-                    const NameId newCount = static_cast<NameId>(p.count + 1);
                     if (!requestGatesPass(ptrs, newCount, body, NameMap::MAIN_ID))
                         continue;
                     const NameId keyLen = makeIntNormalizedKeyFromEncoded(ptrs,
                         newCount, buf, ExecutionParameters::MAX_KEY_SLOTS);
-                    // A stump survives the filter — nothing more is asked of it.
-                    if (!ownerKeyAccepts(mem.normalizedEncodedSubkeys, buf, keyLen,
-                                         nm, ptrs, newCount))
+                    // A stump survives the filter (subkey presence + u_ signature)
+                    // — nothing more is asked of it.
+                    if (!subkeyUSatisfied(mem.normalizedEncodedSubkeys, buf, keyLen,
+                                          ptrs, newCount))
                         continue;
+                    ++g_gpuProducerSurvivorsByDepth[newCount];
                     Node c = p;
                     c.pos[p.count] = j;
                     c.count = newCount;
@@ -1947,11 +3159,11 @@ namespace gl {
             for (int32_t ni = levelBegin; ni < levelEnd; ++ni) {
                 const Node& p = nodes[ni];
                 const NameId keyLen = keyOf(p);
+                // Every batch records against the whole-key map, so one presence
+                // probe covers all of them. Missing it would silently drop the
+                // node's own requests from every bucket.
                 const bool recordable =
-                    ownerKeyAccepts(mem.normalizedEncodedSubkeysMinusOne, buf,
-                                    keyLen, nm, ptrs, p.count)
-                    || ownerKeyAccepts(mem.normalizedEncodedSubkeysMinusTwo, buf,
-                                       keyLen, nm, ptrs, p.count);
+                    wholeKeyPresent(mem.normalizedEncodedKeys, buf, keyLen, p.count);
                 if (recordable) {
                     appendStump(p, 1);
                     ++terminalCount;
@@ -2176,12 +3388,17 @@ namespace gl {
             for (NameId i = 0; i < reqCount; ++i) {
                 if (levelLvIds[i] == 0) continue;
                 const int32_t rl = memoryBlock.intStatementLevelsMap.runLen(levelLvIds[i]);
-                for (int32_t j = 0; j < rl; ++j)
-                    combinedBuf[w++] = memoryBlock.intStatementLevelsMap.valueAt(levelLvIds[i], j);
+                for (int32_t j = 0; j < rl; ++j) {
+                    const int lv = memoryBlock.intStatementLevelsMap.valueAt(levelLvIds[i], j);
+                    // The {-1} non-derived tier is transparent to level
+                    // accounting: it never enters a derivation union.
+                    if (lv < 0) continue;
+                    combinedBuf[w++] = lv;
+                }
             }
-            std::sort(combinedBuf, combinedBuf + combinedRawN);
+            std::sort(combinedBuf, combinedBuf + w);
             combinedCount = static_cast<int>(
-                std::unique(combinedBuf, combinedBuf + combinedRawN) - combinedBuf);
+                std::unique(combinedBuf, combinedBuf + w) - combinedBuf);
         }
 
         // 5. Candidate loop: the forward keys whose remaining-arg set is a
@@ -2218,9 +3435,12 @@ namespace gl {
         // destructor (page tier, disjoint from the byte-bump popTo below).
         DirtyState candDirty = DirtyState::Clean;
         PagedVector<int32_t> candIds(&genArena, &candDirty);
+        uint64_t reverseOwnersThisRequest = 0;
+        uint64_t candidateOwnersThisRequest = 0;
         memoryBlock.overallHashMemory.remainingArgsReverseIndex.reverseIndexRunOf(
             StrSpan(reinterpret_cast<const char*>(tpleProbe), tpleProbeLen),
             [&](int32_t kid) {
+                ++reverseOwnersThisRequest;
                 // Apply the EXISTING subset test to the run-contains owners only.
                 // Both branches are defined outcomes (keep / drop), not a failure
                 // fallback.
@@ -2232,8 +3452,17 @@ namespace gl {
                         return;   // not a subset -- drop this owner
                     }
                 }
+                ++candidateOwnersThisRequest;
                 candIds.push_back(kid);
             });
+        g_gpuEvaluationUsage.reverseOwners += reverseOwnersThisRequest;
+        g_gpuEvaluationUsage.candidateOwners += candidateOwnersThisRequest;
+        g_gpuEvaluationUsage.maximumReverseOwnersPerRequest = std::max(
+            g_gpuEvaluationUsage.maximumReverseOwnersPerRequest,
+            reverseOwnersThisRequest);
+        g_gpuEvaluationUsage.maximumCandidateOwnersPerRequest = std::max(
+            g_gpuEvaluationUsage.maximumCandidateOwnersPerRequest,
+            candidateOwnersThisRequest);
         // Decoded-lex index (std::set<NameId> order == R1) on the gen-scratch
         // byte-bump tier -- coexists with the page-tier candIds (independent
         // substrates). Reclaimed by the function-exit popTo(genReqMark).
@@ -2293,6 +3522,7 @@ namespace gl {
             if (encId == 0) {
                 continue;
             }
+            ++g_gpuEvaluationUsage.encodedHits;
 
             // HIT — per-hit hot window: the back-replacement pairs and every
             // transient built in the value loop below die when this hit is
@@ -2325,6 +3555,10 @@ namespace gl {
             // reclaimed by the function-exit popTo(genReqMark).
             const int32_t runN =
                 memoryBlock.overallHashMemory.encodedMap.runLen(encId);
+            g_gpuEvaluationUsage.localValues += static_cast<uint64_t>(runN);
+            g_gpuEvaluationUsage.maximumLocalValuesPerHit = std::max(
+                g_gpuEvaluationUsage.maximumLocalValuesPerHit,
+                static_cast<uint64_t>(runN));
             struct LmvPeek { const char* p; int32_t len; };
             LmvPeek* peeks = runN
                 ? reinterpret_cast<LmvPeek*>(genArena.resolve(genArena.alloc(
@@ -2452,7 +3686,76 @@ namespace gl {
                     if (hitFiltered) continue;
                 }
 
-                if (!lmv.isMarker()) {
+                if (lmv.ordis2Demand()) {
+                    // Demand branch (D-267): the
+                    // rule matched everything except its qualifying slot,
+                    // and rplScratch2 IS the ground missing premise (every
+                    // value token was subkey-bound at install; unchangeable
+                    // u_ args grounded by the u_-strip above). Stage a
+                    // demand record — an OWN kind, neither head nor marker
+                    // (maintainer decision 2026-08-10: no marker anywhere
+                    // in the ordis2 machinery): checked FIRST so neither
+                    // sibling branch ever processes a demand LMV. Nothing
+                    // of the marker / admission machinery is touched (no
+                    // admv, no sawMarker path). Purity discipline as the
+                    // marker branch's: an
+                    // impure match outside an or branch registers no
+                    // demand.
+                    const bool inOrBranch =
+                        containsSpan(hitValidityView,
+                                     StrSpan("_boundary_orint_", 16));
+                    if (!pure && !inOrBranch) {
+                        continue;
+                    }
+
+                    // I-171 mirror (maintainer-approved 2026-08-10): a
+                    // demand whose ground text carries witnesses beyond the
+                    // per-batch generation cap is not staged — the
+                    // admission side gates depth the same way, and without
+                    // this every deeper it_ generation would mint a fresh
+                    // distinct demand key (the RMW dedup collapses only
+                    // exact repeats).
+                    if (extractMaxIterationNumber(StrSpan(rplScratch2))
+                        > parameters.maxIterationNumberVariable) {
+                        continue;
+                    }
+
+                    // Combined level run (request premises + rule levels),
+                    // sorted-unique — the head branch's computation.
+                    SealedSpan<int> levelsSpan;
+                    {
+                        const int Ln = lmv.levelCount();
+                        const int total = combinedCount + Ln;
+                        if (total > 0) {
+                            int* tmp = reinterpret_cast<int*>(genArena.resolve(
+                                genArena.alloc(
+                                    total * static_cast<int32_t>(sizeof(int)),
+                                    static_cast<int32_t>(alignof(int)))));
+                            int w = 0;
+                            for (int c = 0; c < combinedCount; ++c) tmp[w++] = combinedBuf[c];
+                            for (int32_t li = 0; li < lmv.levelCount(); ++li)
+                                tmp[w++] = lmv.levelAt(li);
+                            std::sort(tmp, tmp + w);
+                            const int uniq = static_cast<int>(
+                                std::unique(tmp, tmp + w) - tmp);
+                            levelsSpan = SealedSpan<int>::copyFrom(sealedPages, tmp, uniq);
+                        }
+                    }
+
+                    FiringRecord rec;
+                    rec.isOrdis2Demand = true;
+                    rec.rplExpr2 = seal(StrSpan(rplScratch2));
+                    rec.validityName = seal(hitValidityView);
+                    rec.levels = levelsSpan;
+                    rec.demandSourceImplId = lmv.originalImplicationId();
+                    sealedPages.appendRecord(rec);
+                    ++g_gpuEvaluationUsage.demandRecords;
+                    g_gpuEvaluationUsage.generatedBytes +=
+                        static_cast<uint64_t>(StrSpan(rplScratch2).len);
+                    g_gpuEvaluationUsage.levelValues +=
+                        static_cast<uint64_t>(levelsSpan.size());
+                }
+                else if (!lmv.isMarker()) {
                     // Per-firing level set: the request's combinedLevels plus
                     // this rule's own levels, sorted-unique on the gen-scratch
                     // byte-bump tier, then sealed onto the page set as the
@@ -2468,8 +3771,15 @@ namespace gl {
                                     static_cast<int32_t>(alignof(int)))));
                             int w = 0;
                             for (int c = 0; c < combinedCount; ++c) tmp[w++] = combinedBuf[c];
-                            for (int32_t li = 0; li < lmv.levelCount(); ++li)
+                            for (int32_t li = 0; li < lmv.levelCount(); ++li) {
+                                // Rule level sets are empty-or-real by
+                                // construction (I-51 mail contract; local
+                                // installs carry derivation levels) — the
+                                // {-1} statement tier never reaches them.
+                                assert(lmv.levelAt(li) >= 0
+                                    && "rule level set carries the non-derived tier");
                                 tmp[w++] = lmv.levelAt(li);
+                            }
                             std::sort(tmp, tmp + w);
                             const int uniq = static_cast<int>(
                                 std::unique(tmp, tmp + w) - tmp);
@@ -2508,7 +3818,11 @@ namespace gl {
                     //       one matched premise is in this LB's
                     //       intLocalEncodedStatementsSet (i.e. the rule was
                     //       triggered at least partly by THIS LB's own derivation
-                    //       work, not solely by anchor / broadcast inputs).
+                    //       work, not solely by anchor / external-rule inputs;
+                    //       incubator-derived theorem rules no longer reach a
+                    //       non-anchor LB at all -- the root's log has one
+                    //       reader, D-332 --
+                    //       so here the external inputs are the pool lemmas).
                     // Without (1) the prover crashed at burst 2 / ~4570 exprs.
                     // Without (2) the prover crashed at burst 3 / ~7686 exprs.
                     // Both clauses are load-bearing.
@@ -2517,19 +3831,9 @@ namespace gl {
                     // rules from the prior IncubatorGauss batch fanning out
                     // across local (in[X, N]) rows.
                     if (parameters.incubator_mode && !parameters.ban_disintegration && !doNotDisintegrate) {
-                        // Zero-allocation prefix test: exprKey starts with
-                        // "(" + anchor name (the former per-record
-                        // anchorPrefix concatenation, byte-identical
-                        // outcome).
-                        const std::string& anchorName = this->anchorInfo.name;
-                        const StrSpan mbKey = memoryBlock.exprKeyView();
-                        const bool isAnchorLB =
-                            mbKey.len > static_cast<int32_t>(anchorName.size())
-                            && mbKey.len > 0 && mbKey.ptr[0] == '('
-                            && std::memcmp(mbKey.ptr + 1,
-                                           anchorName.data(),
-                                           anchorName.size()) == 0;
-                        if (isAnchorLB) {
+                        // The shared zero-allocation anchor-LB predicate
+                        // (exprKey starts with "(" + anchor name).
+                        if (this->isAnchorLb(memoryBlock)) {
                             doNotDisintegrate = true;
                         } else {
                             // O(1) packed probes on the request's int rows —
@@ -2576,19 +3880,15 @@ namespace gl {
                         // interned later at deposit time in applyFiringRecords).
                         // Span probe over the value-scratch bytes — the
                         // NameMap span lookup overload is non-minting, so no
-                        // per-firing heap std::string on this hot path.
+                        // per-firing heap std::string on this hot path. The
+                        // scan is the shared `ancestorKnown` predicate (the
+                        // single definition of the Site F contract).
                         const NameId origId =
                             memoryBlock.nameMap.lookup(StrSpan(rplScratch2));
                         const NameId valId  = hitValidityId;
-                        for (int32_t ancK = 0, ancN = memoryBlock.nameMap.ancLen(valId);
-                             ancK < ancN; ++ancK) {
-                            const NameId anc = memoryBlock.nameMap.ancAt(valId, ancK);
-                            const StatementFlags* kf = memoryBlock.intKnownStatements.find(StatementKey{ origId, anc });
-                            if (kf != nullptr && kf->known) {
-                                alreadyKnown = true;
-                                break;
-                            }
-                        }
+                        alreadyKnown = origId != 0
+                            && ancestorKnown(memoryBlock, origId, valId,
+                                             /*includeSelf=*/true);
                     }
 
                     // Capture the head deposit. applyFiringRecords sorts the
@@ -2623,11 +3923,26 @@ namespace gl {
                             SealedSpan<SealedExpressionWithValidity>::copyFrom(
                                 sealedPages, originBuf, 1 + sealedPremisesCount);
                         rec.doNotDisintegrate = doNotDisintegrate;
-                        rec.allowOrDisintegration = lmv.productOfDisintegration();
+                        // Park-first (I-184):
+                        // a single-exclusion rule IS a disintegration product,
+                        // but its fired reduced-or head must not open a cohort
+                        // via route (b) — allowOrProbe stays untouched, so the
+                        // head parks in rejectedMapOrdis and opens only from
+                        // the compound-demand map.
+                        rec.allowOrDisintegration =
+                            lmv.productOfDisintegration()
+                            && !lmv.subsetExclusion();
                         rec.allGood = allGood;
                         rec.alreadyKnown = alreadyKnown;
                         rec.iteration = iteration;
                         sealedPages.appendRecord(rec);
+                        ++g_gpuEvaluationUsage.headRecords;
+                        g_gpuEvaluationUsage.generatedBytes +=
+                            static_cast<uint64_t>(StrSpan(rplScratch2).len);
+                        g_gpuEvaluationUsage.levelValues +=
+                            static_cast<uint64_t>(levelsSpan.size());
+                        g_gpuEvaluationUsage.originDependencies +=
+                            static_cast<uint64_t>(1 + reqCount);
                     }
                 }
                 else {
@@ -2647,12 +3962,17 @@ namespace gl {
                     }
 
                     StagedAdmissionValue admv;
+                    uint64_t markerGeneratedBytes =
+                        static_cast<uint64_t>(StrSpan(rplScratch2).len);
+                    int32_t markerKeyCount = 0;
+                    int32_t markerRemainingCount = 0;
                     {
                         // Replaced key elements in rule order: each stripped
                         // result is sealed onto the page set, the view array
                         // assembled in a gen-scratch buffer, then sealed as the
                         // staged value's key span.
                         const int kn = lmv.keyIdCount();
+                        markerKeyCount = kn;
                         if (kn > 0) {
                             SealedString* keyBuf = reinterpret_cast<SealedString*>(
                                 genArena.resolve(genArena.alloc(
@@ -2665,6 +3985,8 @@ namespace gl {
                                     brPairs, numNormVars);
                                 keyBuf[k] = seal(StrSpan(replaceUSubstringsScratch(
                                     scratchArena, StrSpan(tmp))));
+                                markerGeneratedBytes += static_cast<uint64_t>(
+                                    keyBuf[k].size());
                             }
                             admv.key = SealedSpan<SealedString>::copyFrom(
                                 sealedPages, keyBuf, kn);
@@ -2702,6 +4024,7 @@ namespace gl {
                                     || !equalSpans(remSpans[ri], remSpans[ri - 1]))
                                     remBuf[uniq++] = seal(remSpans[ri]);
                             }
+                            markerRemainingCount = uniq;
                             admv.remainingArgsSorted =
                                 SealedSpan<SealedString>::copyFrom(
                                     sealedPages, remBuf, uniq);
@@ -2710,6 +4033,10 @@ namespace gl {
                     admv.standardMaxAdmissionDepth = parameters.maxIterationNumberVariable;
                     admv.standardMaxSecondaryNumber = parameters.standardMaxSecondaryNumber;
                     admv.flag = false;
+                    // The ordis-route tag travels rule -> staged value -> the
+                    // drained admission blob; a plain uint8 copy, no interner
+                    // touch (the frozen mint sequence is untouched).
+                    admv.ordisOnly = lmv.ordisOnly();
 
                     // The templateInterner probe and the compiledExpressions
                     // read below run span-native — the probe on the existing
@@ -2717,19 +4044,6 @@ namespace gl {
                     // category read through the compiledEntity reader fence
                     // (I-137). No per-row std::string is
                     // materialized on this hot capture edge.
-
-                    // Non-minting probe — this runs in the phase-2 parallel
-                    // staging path (I-83); a never-interned template was
-                    // never consumed. hitValidityView is a decodeView on the
-                    // mint-free burst path, so it cannot dangle.
-                    {
-                        int64_t consumedPk = 0;
-                        if (lookupTemplateKey(memoryBlock.templateInterner, memoryBlock.nameMap,
-                                              StrSpan(rplScratch2), hitValidityView, consumedPk)
-                            && memoryBlock.overallHashMemory.consumedAdmissionKeys.contains(consumedPk)) {
-                            continue;
-                        }
-                    }
 
                     // Zero-copy arg slicing, then sort + dedupe the
                     // non-marker args in place — the former
@@ -2793,6 +4107,15 @@ namespace gl {
                         rec.admv = admv;
                         rec.markerNotAtomic = markerNotAtomic;
                         sealedPages.appendRecord(rec);
+                        ++g_gpuEvaluationUsage.markerRecords;
+                        g_gpuEvaluationUsage.generatedBytes +=
+                            markerGeneratedBytes;
+                        g_gpuEvaluationUsage.markerKeys +=
+                            static_cast<uint64_t>(markerKeyCount);
+                        g_gpuEvaluationUsage.markerRemainingArgs +=
+                            static_cast<uint64_t>(markerRemainingCount);
+                        g_gpuEvaluationUsage.markerArgs +=
+                            static_cast<uint64_t>(uniqueArgCount);
                     }
                 }
             }
@@ -2802,25 +4125,26 @@ namespace gl {
         genArena.popTo(genReqMark);
     }
 
-    /// @brief Sort one hashburst's captured firing records into a canonical
-    ///        content order, then apply their deposits to the LB.
+    /// @brief Canonically order one hashburst's captured firing records when
+    ///        needed, then apply their deposits to the LB.
     ///
     /// @details
     /// Definition of the consumer declared in `prover.hpp`. Replays the deposit
     /// side of `checkLocalEncodedMemoryStatic` for one static request-evaluation
     /// pass, reading the records off the LB's sealed part sets (part order,
-    /// each chain in append order). A pointer INDEX over the chains' stable
-    /// payload addresses is sorted by a total content key (expression,
-    /// validity,
-    /// kind, then per-kind fields) so the resulting container state is a
-    /// function of the firing SET, not the request-generation ORDER — the
-    /// determinism the LB split relies on. Head records feed `canBeSentIds`
+    /// each chain in append order). Processor chains build a pointer INDEX over
+    /// the chains' stable payload addresses and sort it by a total content key
+    /// (expression, validity, kind, then per-kind fields). A GPU chain already
+    /// carrying that exact order walks its index directly. The resulting
+    /// container state is a function of the firing SET, not the request-
+    /// generation ORDER — the determinism the LB split relies on. Head records
+    /// feed `canBeSentIds`
     /// (gated on `allGood`) and, when not already known,
     /// `sameIterationInternalMail.statements` + `.exprOriginMap` (capped
     /// `addOrigin`) + `.disintegrationSignals`. Marker records feed
     /// `deferredIntegrationPreps`, `canBeSentMarkerIds` (non-atomic), and
-    /// `admissionKeysAlgebra`. Deactivation already fired inline during the
-    /// burst, so it is not handled here. The sealed views feed the span
+    /// `admissionKeysAlgebra`. Deactivation and discharge are deferred to Phase
+    /// 3's post-burst absorb, so they are not handled here. The sealed views feed the span
     /// doors directly — no per-record string materialization at this
     /// boundary; the doors intern the sealed bytes into the LB's NameMap /
     /// originInterner with the identical touch order the string doors
@@ -2830,11 +4154,14 @@ namespace gl {
     /// @param parts     The LB's sealed part sets in part order (chains read,
     ///                  never mutated).
     /// @param partCount Number of part sets (`>= 0`).
+    /// @param firingRecordsCanonical Whether the concatenated chains already
+    ///        carry the exact canonical content order and may bypass sorting.
     /// @see `checkLocalEncodedMemoryStatic` — the producer.
     /// @see `FiringRecord` — the record shape.
     /// @see `D-117`.
     void ExpressionAnalyzer::applyFiringRecords(Memory& memoryBlock,
-        SealedPageSet* const* parts, int32_t partCount)
+        SealedPageSet* const* parts, int32_t partCount,
+        bool firingRecordsCanonical)
     {
         // This finalize worker's slot + gen-scratch arena frame (the house
         // slot idiom): the record-pointer list and the sort index below are
@@ -2879,7 +4206,8 @@ namespace gl {
         // submatch cap, so the burst ran to completion and produced 80,147 records.
         // The ceiling was a property of the allocation, never of the merge.
         constexpr int32_t kChunk = ExecutionParameters::kFiringRecordSortChunk;
-        const int32_t chunkCount = (total + kChunk - 1) / kChunk;
+        const int32_t chunkCount = firingRecordsCanonical
+            ? 0 : (total + kChunk - 1) / kChunk;
         assert(chunkCount <= ExecutionParameters::kMaxFiringRecordSortChunks
             && "firing-record sort needs more chunks than the cursor arrays hold - "
                "raise kMaxFiringRecordSortChunks deliberately, never truncate");
@@ -2887,7 +4215,7 @@ namespace gl {
         int32_t chunkLen[ExecutionParameters::kMaxFiringRecordSortChunks] = { 0 };
         int32_t chunkAt[ExecutionParameters::kMaxFiringRecordSortChunks] = { 0 };
         const auto recordLess =
-                [](const FiringRecord& a, const FiringRecord& b) -> bool {
+                [&memoryBlock](const FiringRecord& a, const FiringRecord& b) -> bool {
                 // Sealed views compare by content (compareSpans ==
                 // std::string byte order), so the canonical order is
                 // byte-identical to the former string-member sort.
@@ -2896,6 +4224,36 @@ namespace gl {
                 c = compareSpans(StrSpan(a.validityName), StrSpan(b.validityName));
                 if (c != 0) return c < 0;
                 if (a.isMarker != b.isMarker) return a.isMarker < b.isMarker; // head before marker
+                // Demand records are an OWN kind (isMarker false — no
+                // marker anywhere in the ordis2 machinery); the
+                // discriminator separates them from heads at equal
+                // (rplExpr2, validity), then they order on (levels,
+                // decoded source rule) — content compares only (I-84),
+                // completing the strict total order for the kind (I-77).
+                if (a.isOrdis2Demand != b.isOrdis2Demand)
+                    return a.isOrdis2Demand < b.isOrdis2Demand;
+                if (a.isOrdis2Demand) {
+                    const int32_t na = a.levels.size();
+                    const int32_t nb = b.levels.size();
+                    const int32_t mn = na < nb ? na : nb;
+                    for (int32_t i = 0; i < mn; ++i) {
+                        if (a.levels[i] != b.levels[i])
+                            return a.levels[i] < b.levels[i];
+                    }
+                    if (na != nb) return na < nb;
+                    if (a.demandSourceImplId != b.demandSourceImplId) {
+                        const int cs = compareSpans(
+                            memoryBlock.ruleInterner.decodeView(
+                                a.demandSourceImplId),
+                            memoryBlock.ruleInterner.decodeView(
+                                b.demandSourceImplId));
+                        assert(cs != 0
+                            && "distinct rule ids decode to equal bytes — "
+                               "interner injectivity broken");
+                        return cs < 0;
+                    }
+                    return false;
+                }
                 if (!a.isMarker) {
                     c = compareSpans(StrSpan(a.originTag), StrSpan(b.originTag));
                     if (c != 0) return c < 0;
@@ -2972,7 +4330,12 @@ namespace gl {
         // generalises, and the deposit bytes still cannot depend on input
         // permutation, part count, chunking or sort algorithm. With one chunk this
         // is a walk down chunk[0] and costs no comparison at all.
+        int32_t canonicalAt = 0;
         const auto nextIdx = [&]() -> int32_t {
+            if (firingRecordsCanonical) {
+                assert(canonicalAt < total);
+                return canonicalAt++;
+            }
             int32_t bestC = -1;
             for (int32_t c = 0; c < chunkCount; ++c) {
                 if (chunkAt[c] >= chunkLen[c]) continue;
@@ -2991,7 +4354,18 @@ namespace gl {
 
         for (int32_t ri = 0; ri < total; ++ri) {
             const FiringRecord& rec = *refs[nextIdx()];
-            if (!rec.isMarker) {
+            if (rec.isOrdis2Demand) {
+                // Demand deposits — an OWN kind, checked FIRST (neither
+                // head nor marker; maintainer decision 2026-08-10). They
+                // ride their own staging vector (sealed views;
+                // performElemPhase2 clears post-drain like the sibling
+                // vectors). No admission / marker container is touched
+                // here.
+                memoryBlock.admissionKeysOrdis2.push_back(
+                    Ordis2DemandRecord{ rec.rplExpr2, rec.validityName,
+                                        rec.demandSourceImplId,
+                                        rec.levels });
+            } else if (!rec.isMarker) {
                 // Sealed views feed the span doors directly — no head-record
                 // materialization at this deposit boundary; the doors intern
                 // the bytes into the LB's NameMap (statements / signals) and
@@ -3074,16 +4448,12 @@ namespace gl {
     /// `AdmissionKeyAlgebraRecord` on `memoryBlock.admissionKeysAlgebra`, in
     /// firing order, it replays the four writes the marker branch used to
     /// perform inline mid-burst:
-    ///   1. re-check the consumed-key gate — skip the record if an earlier
-    ///      record's `revisitRejected2` (transitively `cleanAdmissionMap`) has
-    ///      since consumed this key, matching the inline loop's within-burst
-    ///      consume→skip ordering;
-    ///   2. insert `record.value` into `overallHashMemory.admissionMap` under
+    ///   1. insert `record.value` into `overallHashMemory.admissionMap` under
     ///      `record.key` (fresh per-record lookup; create the set if absent);
-    ///   3. set `admissionStatusMap[record.key] = false`;
-    ///   4. add every non-`marker` argument of `record.key.original` to
+    ///   2. set `admissionStatusMap[record.key] = false`;
+    ///   3. add every non-`marker` argument of `record.key.original` to
     ///      `varsInAdmissionMapKeys`;
-    ///   5. fire `revisitRejected2`, depositing any revival cohort on
+    ///   4. fire `revisitRejected2`, depositing any revival cohort on
     ///      `sameIterationInternalMail`.
     /// Called once from `performElemPhase2`, immediately before phase 3's
     /// post-burst `standardProcessing`, so the revival cohorts are present for
@@ -3095,9 +4465,7 @@ namespace gl {
     ///        receive the writes. The buffer is left intact; the burst-start
     ///        clear in `performElem2` empties it.
     /// @return (void)
-    /// @invariant Drains in append (firing) order — the canonical-closure scan
-    ///            in `cleanAdmissionMap` reached via `revisitRejected2` is
-    ///            order-sensitive.
+    /// @invariant Drains in append (firing) order.
     /// @invariant FROZEN interner-touch sequence per record: (1)
     ///            `templateInterner.encode(key.original)` inside
     ///            `mintTemplateKey`, (2) `nameMap.encode(key.validityName)`
@@ -3134,15 +4502,7 @@ namespace gl {
             const int64_t recPk = mintTemplateKey(memoryBlock.templateInterner,
                 memoryBlock.nameMap, keyOriginal, keyValidity);
 
-            // (1) Consumed-key gate, re-applied per record: an earlier record's
-            // revisitRejected2 (transitively cleanAdmissionMap) may have
-            // consumed this key since it was staged — matches the inline
-            // loop's within-burst consume→skip ordering.
-            if (memoryBlock.overallHashMemory.consumedAdmissionKeys.contains(recPk)) {
-                continue;
-            }
-
-            // (2) admissionMap insert — this drain is the single-threaded
+            // (1) admissionMap insert — this drain is the single-threaded
             // intern point for the staged value (I-68/I-83). Fast path: the
             // staged strings encode STRAIGHT into the serialized blob
             // (stagedToArenaBlob — the stagedToIdValue interner-touch order
@@ -3179,7 +4539,15 @@ namespace gl {
 
             // (5) Revival — deposits the rejection cohort on
             // sameIterationInternalMail (spans over the sealed record).
-            this->revisitRejected2(keyOriginal, memoryBlock, keyValidity);
+            // Ordis-only key gains must not probe the GENERAL rejectedMap
+            // (they are cohort-opening demand evidence; their revival seam
+            // is revisitRejectedOrdis).
+            if (!rec.value.ordisOnly) {
+                this->revisitRejected2(keyOriginal, memoryBlock, keyValidity);
+            }
+            // (6) Ordis revival — parked cohorts wake on EVERY key gain,
+            // tagged or untagged (the cohort probe reads both).
+            this->revisitRejectedOrdis(keyOriginal, memoryBlock, keyValidity);
         }
     }
 
@@ -3237,105 +4605,45 @@ namespace gl {
         }
     }
 
-    /// @brief Build the TWO-element obligatory stumps: index pairs whose merged
-    /// subkey has an accepting owner in `mem`.
-    ///
-    /// @details
-    /// Two-layer counterpart to `makeMandatoryEncodedStatementLists1Static`.
-    /// Both `first` and `second` are first filtered through
-    /// `filterIntEncodedStatements`; the surviving indices are sorted by
-    /// `originalId`; then each candidate pair `(i ∈ first, j ∈ second)` is
-    /// tested against `mem`'s `normalizedEncodedSubkeys` map via
-    /// `ownerKeyAccepts`. Surviving pairs are written as
-    /// `Stump{ idx0: i, idx1: j }` into `outStumps`, capped at `maxOut`.
-    ///
-    /// O(n²) over the filtered counts; in practice both filters cut the
-    /// statement count by an order of magnitude or two, so the inner loop
-    /// stays bounded.
-    ///
-    /// @param body         Owning LB; supplies `nameMap`.
-    /// @param mem          Reference hash memory.
-    /// @param first        Source view for the pair's first element.
-    /// @param second       Source view for the pair's second element.
-    /// @param outStumps    Destination buffer for the emitted stumps.
-    /// @param maxOut       Capacity of `outStumps`.
-    /// @return Count of stumps emitted into `outStumps`.
-    /// @pre  `first` and `second` live for the duration of the call.
-    /// @post `outStumps[0..return-1]` contains the surviving pairs.
-    /// @see `generateEncodedRequestsStatic` — the consumer, at stump length 2.
-    NameId ExpressionAnalyzer::makeMandatoryEncodedStatementLists2Static(
-        const Memory& body, const HashMemory& mem,
-        IntStmtView first,
-        IntStmtView second,
-        Stump* outStumps, NameId maxOut)
+    // Doxygen at the declaration (prover.hpp).
+    void ExpressionAnalyzer::drainAdmissionKeysOrdis2(Memory& memoryBlock)
     {
-        RT_SCOPE_HERE("MAKE_MANDATORY_LISTS_2_STATIC");
-        if (first.empty() || second.empty()) return 0;
+        const unsigned slot = (g_currentCoreId >= 0)
+            ? static_cast<unsigned>(g_currentCoreId)
+            : genScratchArenas().slotCount() - 1;
+        ScratchArena& gArena = genScratchArenas().forSlot(slot);
 
-        // Filter both layers
-        NameId filt1Buf[4096], filt2Buf[4096];
-        NameId nF1 = filterIntEncodedStatements(first, mem, body.nameMap, false, filt1Buf, 4096);
-        NameId nF2 = filterIntEncodedStatements(second, mem, body.nameMap, false, filt2Buf, 4096);
+        for (const Ordis2DemandRecord& rec : memoryBlock.admissionKeysOrdis2) {
+            // FROZEN interner-touch sequence per record (the
+            // drainAdmissionKeysAlgebra discipline): (1) mintTemplateKey
+            // (templateInterner + NameMap), (2) the RMW blob insert
+            // (valueInterner untouched — the value carries rule-interner
+            // ids minted at install), (3) the ordis2 wake.
+            const ArenaOffset mark = gArena.cursor();
+            const int64_t pk = mintTemplateKey(memoryBlock.templateInterner,
+                memoryBlock.nameMap, StrSpan(rec.expression),
+                StrSpan(rec.validityName));
+            insertAdmissionOrdis2IdsBlob(
+                memoryBlock.overallHashMemory.admissionMapOrdis2, pk,
+                rec.sourceImplId, rec.levels.begin(), rec.levels.size(),
+                memoryBlock.ruleInterner, gArena);
+            gArena.popTo(mark);
 
-        // Sort by originalId
-        auto sortByOriginal = [](NameId* arr, NameId n, IntStmtView stmts) {
-            for (NameId i = 1; i < n; ++i) {
-                NameId key = arr[i];
-                NameId j = i - 1;
-                while (j >= 0 && stmts[arr[j]].originalId > stmts[key].originalId) {
-                    arr[j + 1] = arr[j];
-                    --j;
-                }
-                arr[j + 1] = key;
-            }
-        };
-        sortByOriginal(filt1Buf, nF1, first);
-        sortByOriginal(filt2Buf, nF2, second);
-
-        // "main" ID is guaranteed to be NameMap::MAIN_ID (== 1).
-        NameId mainId = NameMap::MAIN_ID;
-
-        NameId nOut = 0;
-        NameId buf[ExecutionParameters::MAX_KEY_SLOTS];
-
-        for (NameId i = 0; i < nF1 && nOut < maxOut; ++i) {
-            const IntEncodedExpr& e1 = first[filt1Buf[i]];
-            for (NameId j = 0; j < nF2 && nOut < maxOut; ++j) {
-                const IntEncodedExpr& e2 = second[filt2Buf[j]];
-
-                // Validity check
-                if (e1.validityId != e2.validityId) {
-                    if (e1.validityId != mainId && e2.validityId != mainId) continue;
-                }
-
-                // Skip identical expressions
-                if (e1.originalId == e2.originalId && e1.validityId == e2.validityId)
-                    continue;
-
-                // Build sorted pair and preEvaluate — sort by name string (lexicographic),
-                // NOT by nameId (insertion order), to match storage sort in addToHashMemory
-                IntEncodedExpr sorted[2];
-                const StrSpan name1 = body.nameMap.decodeView(e1.nameId);
-                const StrSpan name2 = body.nameMap.decodeView(e2.nameId);
-                if (compareSpans(name1, name2) <= 0) { sorted[0] = e1; sorted[1] = e2; }
-                else { sorted[0] = e2; sorted[1] = e1; }
-
-                NameId len = makeIntNormalizedKeyFromEncoded(sorted, 2, false, buf,
-                    ExecutionParameters::MAX_KEY_SLOTS);
-
-                // D-105/D-120: keep the mandatory pair only if an owner of the
-                // matched subkey is comparable to the pair's deeper scope and u_
-                // literals satisfiable (e1/e2 comparable by the validity check above).
-                const IntEncodedExpr* sortedPtrs[2] = { &sorted[0], &sorted[1] };
-                if (ownerKeyAccepts(mem.normalizedEncodedSubkeys, buf, len,
-                                    body.nameMap, sortedPtrs, 2)) {
-                    outStumps[nOut].idx0 = filt1Buf[i];
-                    outStumps[nOut].idx1 = filt2Buf[j];
-                    ++nOut;
-                }
-            }
+            // The pair's rendezvous (D-267):
+            // rejectedMapOrdis2 is keyed by disjunct clean GROUND texts —
+            // the demand's own key language — so this keyed probe IS the
+            // wake. A parked or filed under a text byte-equal to the
+            // demand is un-known and re-deposited; the absorb re-runs the
+            // opener, whose route (c) reads the fresh entry above and
+            // opens (consuming it). A probe miss (no filed head yet, or a
+            // never-parked text) is a defined no-op — the demand entry
+            // stands and a later deposit's route-(c) probe covers the
+            // demand-first order. The OLD rejectedMapOrdis is deliberately
+            // NOT probed here (different key language; a cross-probe would
+            // double-wake operator-application disjuncts).
+            this->revisitRejectedOrdis2(StrSpan(rec.expression), memoryBlock,
+                                        StrSpan(rec.validityName));
         }
-        return nOut;
     }
 
     // ------------------------------------------------------------------
@@ -3498,6 +4806,12 @@ namespace gl {
                                   boundaryTok);
             });
         }
+        // The carrier index: a carrier registered at a closed scope leaves
+        // with its scope (its rules leave through wipeHashMem below; the
+        // owner maps keep their owners — I-49).
+        compactExpansions.eraseBlobIf([&](int64_t k) {
+            return inClosedBit(Codec<StatementKey>::decode(k).validity);
+        });
         // Packed template-space twins — same low-16-bits validity
         // predicate as the other packed sweeps.
         auto filterPackedSet = [&](ColdHashSet<PodKeyStore<int64_t>>& s) {
@@ -3557,34 +4871,11 @@ namespace gl {
             wipeEncodedMapForClosed(hm.encodedMap, closedBits, nameHighWater,
                                     gArena);
 
-            // 10b. Four owner-set maps (COLD blob maps): zero-decode
-            //      blob-byte filter — drop owners whose scope (the LOW half
-            //      of the packed composite id, D-105) is closed, drop keys
-            //      whose owner-set empties, splice survivors verbatim.
-            //      normalizedEncodedKeys' dropped keys are collected (as
-            //      encoded key bytes — Codec<NormKey>::serialize is
-            //      byte-identical to the key encode) so 10c can prune the
-            //      secondary index too. Fresh per HashMemory instance,
-            //      matching the former per-hm unordered_set scoping.
-            DirtyState droppedDirty = DirtyState::Clean;
-            ColdHashSet<BytesKeyStore> droppedKeys(&gArena, &droppedDirty);
-            wipeOwnerSetMapForClosed(hm.normalizedEncodedKeys, closedBits,
-                                     nameHighWater, gArena, &droppedKeys);
-            wipeOwnerSetMapForClosed(hm.normalizedEncodedSubkeys, closedBits,
-                                     nameHighWater, gArena, nullptr);
-            wipeOwnerSetMapForClosed(hm.normalizedEncodedSubkeysMinusOne,
-                                     closedBits, nameHighWater, gArena,
-                                     nullptr);
-            wipeOwnerSetMapForClosed(hm.normalizedEncodedSubkeysMinusTwo,
-                                     closedBits, nameHighWater, gArena,
-                                     nullptr);
-
-            // 10c. remainingArgsNormalizedEncodedMap secondary index: a
-            //      record IS an encoded NormKey, so membership against the
-            //      dropped-key byte set is a raw byte-peek — no decode.
-            wipeRemainingArgsForClosed(hm.remainingArgsNormalizedEncodedMap,
-                                       hm.remainingArgsReverseIndex,
-                                       droppedKeys, gArena);
+            // The two normalized-key indexes and the remaining-args index are
+            // NOT scope-wiped (D-303, I-49): they carry no owner record, so
+            // there is nothing to filter, and a stale key is a sound
+            // over-approximation — its request reaches the firing site, whose
+            // encodedMap lookup (wiped in 10a) misses and skips it.
 
             // Cold admission/rejection containers
             // (D-172, D-173)
@@ -3598,8 +4889,21 @@ namespace gl {
             hm.rejectedMap.eraseBlobIf(coldScopeWipe);
             hm.admissionMapIntegration.eraseBlobIf(coldScopeWipe);
             hm.rejectedMapIntegration.eraseBlobIf(coldScopeWipe);
-            hm.consumedAdmissionKeys.eraseIf(coldScopeWipe);
+            // Parked or-cohorts of wiped subproof scopes must not leak: the
+            // key's validity half carries the cohort parent, so the same
+            // closed-bit predicate covers the ordis park.
+            hm.rejectedMapOrdis.eraseBlobIf(coldScopeWipe);
+            // Demand entries of wiped subproof scopes must not survive to
+            // open cohorts in a dead scope — same closed-bit predicate on
+            // the key's validity half (D-267).
+            hm.admissionMapOrdis2.eraseBlobIf(coldScopeWipe);
+            // The ordis2 park index files under the same cohort-parent
+            // validity as rejectedMapOrdis — same closed-bit predicate
+            // (D-267).
+            hm.rejectedMapOrdis2.eraseBlobIf(coldScopeWipe);
             hm.revisitInProgress.eraseIf(coldScopeWipe);
+            hm.ordisRevisitInProgress.eraseIf(coldScopeWipe);
+            hm.ordis2RevisitInProgress.eraseIf(coldScopeWipe);
             hm.admissionSetIntegration.eraseIf(coldScopeWipe);
             hm.triggersForAdmissionSetIntegration.eraseIf(coldScopeWipe);
         };
@@ -4127,6 +5431,11 @@ namespace gl {
         pendingDisprovedGoals.resetToFresh();
         pendingDeadOrBranches.resetToFresh();
         orRetiredDisjuncts.resetToFresh();
+        pendingOrReleases.resetToFresh();
+        orStarterPick.resetToFresh();
+        processedOrLedger.resetToFresh();
+        orLiveBranches.resetToFresh();
+        frozenOrBranches.resetToFresh();
         persistentArena.releaseAll();
         lbMemory.clearDischargeableContainers();
         lbMemory.reshuffle(scr);
@@ -4175,7 +5484,15 @@ namespace gl {
     /// @param directory The deload directory the image lives in.
     void Memory::ensureLoadedForRead(const std::string& directory) {
         if (lbMemory.manager.resident()) return;
-        reloadFromImage(directory);
+        // No request generation follows a read-only reload — every consumer of
+        // this door reads origin history only (the chapter export's walk and
+        // `repairTierCitationOrigins`). The reverse membership indexes exist
+        // solely for the firing-check candidate probe, so rebuilding them here
+        // is pure cost; on the contradiction-twin probe it dominated the whole
+        // chapter export. They are marked unbuilt instead, which turns any
+        // future reader on this path into an assert rather than a silent
+        // empty-candidate answer.
+        reloadFromImage(directory, /*rebuildDerivedIndexes=*/false);
     }
 
     // Export-phase reload sink (declared in memory.hpp). Null except during
@@ -4190,7 +5507,16 @@ namespace gl {
     ///        asserts.
     ///
     /// @param directory The deload directory the image lives in.
-    void Memory::reloadFromImage(const std::string& directory) {
+    /// @param rebuildDerivedIndexes When true (the default, and every
+    ///        work-path caller), the canonical branch re-derives the four
+    ///        `ReverseArgsIndex` membership indexes, which the canonical
+    ///        stream deliberately omits (`I-117` / `I-154`). When false — the
+    ///        read-only door — the rebuild is skipped and each index is marked
+    ///        unbuilt, because no request generation follows. The RAW branch
+    ///        ignores this: its whole-arena image restores the indexes
+    ///        verbatim, so there is nothing to rebuild or to skip.
+    void Memory::reloadFromImage(const std::string& directory,
+                                 bool rebuildDerivedIndexes) {
         // The image reference is the extent slab on the raw-extent path, the
         // recorded file set otherwise.
         const bool extentRaw = deloadKind == DeloadKind::Raw
@@ -4229,6 +5555,15 @@ namespace gl {
             // twin of the cold-map family's KeysView -> rebuildIndex reload hook.
             // The RAW branch above needs no rebuild (the whole-arena image
             // restored these pages verbatim, I-154).
+            //
+            // A read-only reload skips this: it is proportional to hash-memory
+            // size and only request generation ever reads the result.
+            if (!rebuildDerivedIndexes) {
+                lbMemory.overallHashMemory.remainingArgsReverseIndex.markUnbuilt();
+                lbMemory.localHashMemory.remainingArgsReverseIndex.markUnbuilt();
+                lbMemory.localHashMemoryDelta.remainingArgsReverseIndex.markUnbuilt();
+                lbMemory.workingMemory.remainingArgsReverseIndex.markUnbuilt();
+            } else {
             const unsigned revSlot =
                 (ExpressionAnalyzer::g_currentCoreId >= 0)
                     ? static_cast<unsigned>(ExpressionAnalyzer::g_currentCoreId)
@@ -4248,6 +5583,7 @@ namespace gl {
                 lbMemory.workingMemory.remainingArgsNormalizedEncodedMap,
                 revArena);
             revArena.popTo(revMark);
+            }
         }
         // The rebuild's clear()+push_back escalate the dirty state, but
         // reload by definition re-establishes RAM == disk: reset so an
@@ -4264,8 +5600,8 @@ namespace gl {
     // Explicit instantiation of the request-generator member template for the
     // streaming consumer (the only consumer; see BurstSink in prover.hpp).
     template void ExpressionAnalyzer::generateEncodedRequestsStatic<BurstSink>(
-        const Memory&, const HashMemory&, NameId, const Stump*, NameId,
-        IntStmtView, IntStmtView, const SplitStumpRef&, unsigned, BurstSink&);
+        const Memory&, const HashMemory&, const MandatoryTerm*, NameId,
+        const SplitStumpRef&, unsigned, BurstSink&);
 
     // ---- NameMap::encodePush (span overload) --------------------------------
     // Out-of-line: the heap-free canonical build reaches the string scratch

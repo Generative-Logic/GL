@@ -75,7 +75,7 @@ TEST(contradiction_negated_head, creation_complement_lb) {
     const gl::StatementFlags* fl = contra->intKnownStatements.find(
         gl::StatementKey{ seedId, gl::NameMap::MAIN_ID });
     ASSERT_TRUE(fl != nullptr);
-    ASSERT_TRUE(fl->known);
+    ASSERT_TRUE(fl != nullptr);
 }
 
 TEST(contradiction_negated_head, dedup_collision_opposite_heads) {

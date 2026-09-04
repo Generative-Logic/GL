@@ -556,9 +556,9 @@ TEST(deloadable_mail_out, statement_multiplicity) {
     ASSERT_EQ(m.statements.size(), static_cast<std::size_t>(2));  // {1} and {2}
 }
 
-TEST(deloadable_mail_out, origin_cap_foundation_displaces_convenience) {
-    // D-49 at cap=1: a foundational origin overwrites an equality-convenience
-    // slot; mirrors ExpressionAnalyzer::addOrigin's string policy.
+TEST(deloadable_mail_out, origin_cap_existing_rows_win) {
+    // At cap=1 the existing row wins: a later foundational origin is dropped;
+    // mirrors ExpressionAnalyzer::addOrigin's string policy.
     gl::Memory mem;
     mem.addMailOutOrigin(ev("(=[a,b])"),
         std::make_pair("equality1", std::vector<gl::ExpressionWithValidity>()), 1);
@@ -569,7 +569,7 @@ TEST(deloadable_mail_out, origin_cap_foundation_displaces_convenience) {
         mem.mailOut, mem.mailOutInterner);
     ASSERT_EQ(m.exprOriginMap.at(ev("(=[a,b])")).size(),
               static_cast<std::size_t>(1));
-    ASSERT_TRUE(m.exprOriginMap.at(ev("(=[a,b])"))[0].first == "implication");
+    ASSERT_TRUE(m.exprOriginMap.at(ev("(=[a,b])"))[0].first == "equality1");
 }
 
 // Run-door byte-twin: depositing the same statements through the
@@ -650,6 +650,69 @@ TEST(routing_cold_mail_codec, serialize_matches_toheapmail_bytes) {
     const gl::Mail r = gl::Codec<gl::Mail>::deserialize(
         direct.data(), static_cast<int32_t>(direct.size()));
     ASSERT_TRUE(gl::Codec<gl::Mail>::serialize(r) == direct);
+}
+
+// The statement-flag side column: pack/unpack/merge helpers, the sender door
+// (private ids), the wire section, and the receiver probe (GLOBAL ids). The
+// flag never touches the statement set key, the heap-Mail deserialize consumes
+// the section and stays flag-free, and an unflagged statement reads
+// kMailStatementFlagNone / -1.
+TEST(routing_cold_mail_codec, statement_flag_round_trip) {
+    // pack / unpack / merge.
+    const int32_t p3 = gl::packMailStatementFlag(
+        gl::kMailStatementFlagExternalDisintegrate, 3);
+    ASSERT_EQ(gl::unpackMailStatementFlagCode(p3),
+              gl::kMailStatementFlagExternalDisintegrate);
+    ASSERT_EQ(gl::unpackMailStatementFlagIteration(p3), 3);
+    ASSERT_EQ(gl::unpackMailStatementFlagCode(0), gl::kMailStatementFlagNone);
+    ASSERT_EQ(gl::unpackMailStatementFlagIteration(0), -1);
+    const int32_t none = gl::packMailStatementFlag(
+        gl::kMailStatementFlagNone, -1);
+    ASSERT_EQ(gl::mergeMailStatementFlag(none, p3), p3);   // 5 wins over none
+    const int32_t p7 = gl::packMailStatementFlag(
+        gl::kMailStatementFlagExternalDisintegrate, 7);
+    ASSERT_EQ(gl::unpackMailStatementFlagIteration(
+        gl::mergeMailStatementFlag(p7, p3)), 3);           // iterations min-merge
+    ASSERT_EQ(gl::unpackMailStatementFlagIteration(
+        gl::mergeMailStatementFlag(p3, none)), 3);         // -1 loses to real
+
+    // Sender side: two statements, one marked flag 5 (generation 2); repeated
+    // marking merges instead of duplicating.
+    gl::Memory mem;
+    mem.insertMailOutStatement(ev("(existence1[1,x,y,4])"), std::set<int>{ 1, 2 });
+    mem.insertMailOutStatement(ev("(in[a,N])"), std::set<int>{});
+    mem.setMailOutStatementFlag(gl::StrSpan("(existence1[1,x,y,4])"),
+        gl::StrSpan("main"), gl::kMailStatementFlagExternalDisintegrate, 2);
+    mem.setMailOutStatementFlag(gl::StrSpan("(existence1[1,x,y,4])"),
+        gl::StrSpan("main"), gl::kMailStatementFlagExternalDisintegrate, 6);
+    ASSERT_TRUE(mem.mailOutPending);
+    ASSERT_EQ(mem.mailOut.statementFlags_.count(), 1);
+
+    // Wire: serialize -> deserializeInto; probe by GLOBAL ids.
+    const std::vector<char> blob =
+        gl::Codec<gl::Mail>::serialize(mem.mailOut, mem.mailOutInterner);
+    gl::RoutingColdMail inbox;
+    gl::Codec<gl::Mail>::deserializeInto(
+        blob.data(), static_cast<int32_t>(blob.size()), inbox);
+    const int64_t flaggedKey = gl::packOriginKey(
+        gl::mailInterner().intern(gl::StrSpan("(existence1[1,x,y,4])")),
+        gl::mailInterner().intern(gl::StrSpan("main")));
+    int32_t code = 0, iter = 0;
+    inbox.getStatementFlag(flaggedKey, code, iter);
+    ASSERT_EQ(code, gl::kMailStatementFlagExternalDisintegrate);
+    ASSERT_EQ(iter, 2);   // min-merged at the sender door
+    const int64_t plainKey = gl::packOriginKey(
+        gl::mailInterner().intern(gl::StrSpan("(in[a,N])")),
+        gl::mailInterner().intern(gl::StrSpan("main")));
+    inbox.getStatementFlag(plainKey, code, iter);
+    ASSERT_EQ(code, gl::kMailStatementFlagNone);
+    ASSERT_EQ(iter, -1);
+
+    // Statement set identity untouched; the heap twin consumes the flag
+    // section and stays flag-free.
+    const gl::Mail heap = gl::Codec<gl::Mail>::deserialize(
+        blob.data(), static_cast<int32_t>(blob.size()));
+    ASSERT_EQ(heap.statements.size(), static_cast<std::size_t>(2));
 }
 
 // Codec<Mail>::deserializeInto folds a blob STRAIGHT into a routing mailIn (GLOBAL

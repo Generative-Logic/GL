@@ -233,3 +233,64 @@ TEST(reverse_args_index, clear_then_rebuild_is_identical) {
     for (std::size_t i = 0; i < probeUniverse().size(); ++i)
         ASSERT_TRUE(reverseOwners(rev, probeUniverse()[i]) == before[i]);
 }
+
+// removeEdge: unlinking (NormKey -> forward key id) edges leaves the reverse
+// answer equal to the brute-force scan of a forward map from which the same
+// NormKeys were removed; untouched edges survive, chains with an unlinked
+// head, middle and tail node all stay consistent, and a NormKey whose every
+// edge left answers empty (its entry stays interned).
+TEST(reverse_args_index, remove_edge_matches_brute_force) {
+    gl::GlobalMemoryManager g;
+    g.init(kRevCfg);
+    gl::LbArena lb(&g);
+    gl::DirtyState d = gl::DirtyState::Clean;
+    Forward fwd(&lb, &d);
+    gl::ReverseArgsIndex rev(&lb);
+
+    // Three forward keys sharing NormKeys: A in all three, B in two, C in one.
+    const gl::NormKey A = nk(1, { 10, 20 });
+    const gl::NormKey B = nk(1, { 10, 30 });
+    const gl::NormKey C = nk(2, { 40 });
+    buildForward(fwd,
+        { ik({ 1 }), ik({ 2 }), ik({ 3 }) },
+        { { A, B, C }, { A, B }, { A } });
+    rev.rebuildReverseIndex(fwd, lb);
+    ASSERT_TRUE(reverseOwners(rev, A) == bruteForceOwners(fwd, A));
+
+    // Unlink A from key 2 (a middle node of A's chain -- appends prepend, so
+    // the chain is 3,2,1), then C from key 1 (the only node), then A from
+    // key 3 (the head) and from key 1 (the tail). Mirror each in the forward map.
+    const auto dropFromForward = [&](const gl::Int16SetKey& key, const gl::NormKey& k) {
+        const int32_t id = fwd.lookup(key);
+        ASSERT_TRUE(id != 0);
+        std::vector<gl::NormKey> run = fwd.recordsAt(id);
+        run.erase(std::find(run.begin(), run.end(), k));
+        fwd.assignRun(key, run);
+    };
+    dropFromForward(ik({ 2 }), A);
+    rev.removeEdge(gl::StrSpan(nkBytes(A)), 2);
+    ASSERT_TRUE(reverseOwners(rev, A) == bruteForceOwners(fwd, A));
+    ASSERT_TRUE((reverseOwners(rev, A) == std::vector<int32_t>{ 1, 3 }));
+
+    dropFromForward(ik({ 1 }), C);
+    rev.removeEdge(gl::StrSpan(nkBytes(C)), 1);
+    ASSERT_TRUE(reverseOwners(rev, C).empty());
+    ASSERT_TRUE(bruteForceOwners(fwd, C).empty());
+
+    dropFromForward(ik({ 3 }), A);
+    rev.removeEdge(gl::StrSpan(nkBytes(A)), 3);
+    dropFromForward(ik({ 1 }), A);
+    rev.removeEdge(gl::StrSpan(nkBytes(A)), 1);
+    ASSERT_TRUE(reverseOwners(rev, A).empty());
+
+    // B untouched throughout.
+    ASSERT_TRUE((reverseOwners(rev, B) == std::vector<int32_t>{ 1, 2 }));
+    for (const gl::NormKey& key : probeUniverse())
+        ASSERT_TRUE(reverseOwners(rev, key) == bruteForceOwners(fwd, key));
+
+    // A wholesale rebuild from the mutated forward map agrees.
+    gl::ReverseArgsIndex fresh(&lb);
+    fresh.rebuildReverseIndex(fwd, lb);
+    for (const gl::NormKey& key : probeUniverse())
+        ASSERT_TRUE(reverseOwners(fresh, key) == reverseOwners(rev, key));
+}

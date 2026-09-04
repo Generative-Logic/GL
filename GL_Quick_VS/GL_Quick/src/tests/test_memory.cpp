@@ -467,58 +467,12 @@ TEST(memory, namemap_lazy_seed_on_first_encode) {
     ASSERT_EQ(nm.ancAt(a, 1), a);          // self at back
 }
 
-// D-105 — the request-generation validity prune
-// predicate. A main-scope request is always kept (cannot prune — main is the
-// root ancestor); a non-main request is kept iff some owner scope is
-// comparable, and pruned (false) when every owner diverges.
-TEST(prover, ownerset_has_comparable_validity_prune) {
-    NameMapRig nmRig;
-    gl::NameMap& nm = nmRig.nm;
-    const gl::NameId mainId = gl::NameMap::MAIN_ID;
-    const gl::NameId child = nm.encodePush(mainId, "hypo_child");
-    const gl::NameId sibling = nm.encodePush(mainId, "hypo_sibling");   // diverges from child
-
-    // main request: trivially kept even against an empty owner set (the skip).
-    gl::OwnerSet empty;
-    ASSERT_TRUE(gl::ExpressionAnalyzer::ownerSetHasComparable(empty, mainId, nm));
-
-    // Owners are packed composite ids; the prune reads the LOW half (the
-    // scope validity id). The high half (the implication id) is arbitrary
-    // for this test.
-    const gl::NameId ruleId = nm.encodePush(mainId, "rule_impl");
-
-    // owner at main is an ancestor of the child request -> comparable -> kept.
-    gl::OwnerSet atMain;
-    atMain.partitionIds.insert(gl::makePartitionId(ruleId, mainId));
-    ASSERT_TRUE(gl::ExpressionAnalyzer::ownerSetHasComparable(atMain, child, nm));
-
-    // owner at the equal scope -> comparable -> kept.
-    gl::OwnerSet atChild;
-    atChild.partitionIds.insert(gl::makePartitionId(ruleId, child));
-    ASSERT_TRUE(gl::ExpressionAnalyzer::ownerSetHasComparable(atChild, child, nm));
-
-    // the only owner diverges from the child request -> not comparable -> pruned.
-    gl::OwnerSet atSibling;
-    atSibling.partitionIds.insert(gl::makePartitionId(ruleId, sibling));
-    ASSERT_FALSE(gl::ExpressionAnalyzer::ownerSetHasComparable(atSibling, child, nm));
-
-    // mixed owner set: one diverging + one comparable -> kept (short-circuit).
-    gl::OwnerSet mixed;
-    mixed.partitionIds.insert(gl::makePartitionId(ruleId, sibling));
-    mixed.partitionIds.insert(gl::makePartitionId(ruleId, mainId));
-    ASSERT_TRUE(gl::ExpressionAnalyzer::ownerSetHasComparable(mixed, child, nm));
-}
-
-// OwnerSetBlob reads hasLooseOwner / partitionCount / partitionId / uSigOffset
-// straight off the Codec<OwnerSet> bytes -- the no-decode peek the cold owner-set
-// maps' prune uses instead of materializing the OwnerSet. The view's offsets must
-// match the codec's layout.
+// OwnerSetBlob reads hasLooseOwner / uSigOffset straight off the
+// Codec<OwnerSet> bytes -- the no-decode peek the subkey probe uses instead of
+// materializing the OwnerSet. The view's offsets must match the codec's layout.
 TEST(memory, ownerset_blob_view_field_readers) {
     gl::OwnerSet os;
     os.hasLooseOwner = false;
-    os.partitionIds.insert(7);
-    os.partitionIds.insert(-3);
-    os.partitionIds.insert(100000);
     os.uSignatures.insert(
         std::vector<std::pair<gl::NameId, gl::NameId>>{ { 2, 5 }, { 0, 9 } });
     os.uSignatures.insert(std::vector<std::pair<gl::NameId, gl::NameId>>{ { 1, 4 } });
@@ -527,82 +481,21 @@ TEST(memory, ownerset_blob_view_field_readers) {
     const gl::OwnerSetBlob v{ buf.data(), static_cast<int32_t>(buf.size()) };
 
     ASSERT_TRUE(v.hasLooseOwner() == os.hasLooseOwner);
-    ASSERT_EQ(v.partitionCount(), static_cast<int32_t>(os.partitionIds.size()));
-    int32_t i = 0;                          // partitionIds is a set -> ascending
-    for (int32_t id : os.partitionIds) ASSERT_EQ(v.partitionId(i++), id);
-    // uSigOffset points at the uSignatures count int32.
+    // uSigOffset points at the uSignatures count int32, right after byte 0.
+    ASSERT_EQ(v.uSigOffset(), 1);
     ASSERT_EQ(gl::OwnerSetBlob::rdI32(v.p + v.uSigOffset()),
               static_cast<int32_t>(os.uSignatures.size()));
 
     // The loose flag round-trips as true too.
     gl::OwnerSet loose;
     loose.hasLooseOwner = true;
-    loose.partitionIds.insert(1);
     std::vector<char> lbuf = gl::Codec<gl::OwnerSet>::serialize(loose);
     const gl::OwnerSetBlob lv{ lbuf.data(), static_cast<int32_t>(lbuf.size()) };
     ASSERT_TRUE(lv.hasLooseOwner());
-}
-
-// partitionAccepts(OwnerSetBlob) (the no-decode twin) must return the SAME verdict
-// as partitionAccepts(const std::set&) for every executor index, including the
-// unsplit short-circuit.
-TEST(memory, ownerset_blob_partition_accepts_matches_set) {
-    const int savedCount = gl::g_splitCount;
-    const int savedPid = gl::g_splitProcessID;
-
-    gl::OwnerSet os;
-    os.partitionIds.insert(gl::makePartitionId(10, 0));
-    os.partitionIds.insert(gl::makePartitionId(11, 1));
-    os.partitionIds.insert(gl::makePartitionId(12, 2));
-    os.partitionIds.insert(gl::makePartitionId(13, 3));
-    std::vector<char> buf = gl::Codec<gl::OwnerSet>::serialize(os);
-    const gl::OwnerSetBlob v{ buf.data(), static_cast<int32_t>(buf.size()) };
-
-    gl::g_splitCount = 1;                    // unsplit: both keep unconditionally
-    gl::g_splitProcessID = 0;
-    ASSERT_TRUE(gl::partitionAccepts(os.partitionIds));
-    ASSERT_TRUE(gl::partitionAccepts(v));
-
-    for (int N = 2; N <= 4; ++N) {
-        gl::g_splitCount = N;
-        for (int n = 0; n < N; ++n) {
-            gl::g_splitProcessID = n;
-            ASSERT_TRUE(gl::partitionAccepts(v) ==
-                        gl::partitionAccepts(os.partitionIds));
-        }
-    }
-
-    gl::g_splitCount = savedCount;           // restore (thread_local persists)
-    gl::g_splitProcessID = savedPid;
-}
-
-// ownerSetHasComparable(OwnerSetBlob) must agree with the const-OwnerSet& overload
-// across every (owner-set, request-scope) pair the value-form test covers.
-TEST(prover, ownerset_blob_has_comparable_matches_value) {
-    NameMapRig nmRig;
-    gl::NameMap& nm = nmRig.nm;
-    const gl::NameId mainId = gl::NameMap::MAIN_ID;
-    const gl::NameId child = nm.encodePush(mainId, "hypo_child");
-    const gl::NameId sibling = nm.encodePush(mainId, "hypo_sibling");
-    const gl::NameId ruleId = nm.encodePush(mainId, "rule_impl");
-
-    std::vector<gl::OwnerSet> cases(4);
-    cases[0].partitionIds.insert(gl::makePartitionId(ruleId, mainId));
-    cases[1].partitionIds.insert(gl::makePartitionId(ruleId, child));
-    cases[2].partitionIds.insert(gl::makePartitionId(ruleId, sibling));
-    cases[3].partitionIds.insert(gl::makePartitionId(ruleId, sibling));
-    cases[3].partitionIds.insert(gl::makePartitionId(ruleId, mainId));
-
-    const gl::NameId reqVids[3] = { mainId, child, sibling };
-    for (const gl::OwnerSet& os : cases) {
-        std::vector<char> buf = gl::Codec<gl::OwnerSet>::serialize(os);
-        const gl::OwnerSetBlob v{ buf.data(), static_cast<int32_t>(buf.size()) };
-        for (gl::NameId reqVid : reqVids) {
-            ASSERT_TRUE(
-                gl::ExpressionAnalyzer::ownerSetHasComparable(v, reqVid, nm) ==
-                gl::ExpressionAnalyzer::ownerSetHasComparable(os, reqVid, nm));
-        }
-    }
+    // loose byte + zero signature count + zero owner count.
+    ASSERT_EQ(static_cast<int>(lbuf.size()), 9);
+    ASSERT_EQ(lv.ownersOffset(), 5);
+    ASSERT_EQ(lv.ownerCount(lv.ownersOffset()), 0);
 }
 
 // ---- NameId 32-bit-widening battery (int16 -> int32 migration) --------------
@@ -637,36 +530,11 @@ TEST(memory, validity_node_is_8_bytes) {
     ASSERT_EQ(n.ownSubId, 1000000);
 }
 
-// makePartitionId packs two NameId halves into an int64; halves past 65535 no
-// longer alias, the composite stays non-negative (bit 63 clear), and id % N
-// lands in [0, N) so the LB-split partitionAccepts test is well-defined.
-TEST(memory, makepartitionid_nonnegative_large_id) {
-    const gl::NameId ids[] = { 0, 1, 65535, 65536, 70000, 200000, 1000000 };
-    for (gl::NameId a : ids) {
-        for (gl::NameId b : ids) {
-            const int64_t p = gl::makePartitionId(a, b);
-            ASSERT_TRUE(p >= 0);                    // non-negative
-            ASSERT_EQ(gl::Codec<gl::StatementKey>::decode(p).orig, a);
-            ASSERT_EQ(gl::Codec<gl::StatementKey>::decode(p).validity, b);
-            for (int N = 1; N <= 8; ++N) {
-                const int64_t r = p % N;
-                ASSERT_TRUE(r >= 0 && r < N);
-            }
-        }
-    }
-    // Distinct large halves never collide (the aliasing bug the migration fixes).
-    ASSERT_TRUE(gl::makePartitionId(70000, 4464) != gl::makePartitionId(4464, 70000));
-    ASSERT_TRUE(gl::makePartitionId(1u << 16, 0) != gl::makePartitionId(0, 1u << 16));
-}
-
-// Codec<OwnerSet> + OwnerSetBlob round-trip with partition ids AND u_-signature
-// ids past the old 16-bit ceiling — the LB-split owner blob must carry full
-// 32-bit halves (partition ids int64, uSig pairs (int32, NameId)).
+// Codec<OwnerSet> + OwnerSetBlob round-trip with u_-signature ids past the old
+// 16-bit ceiling — the subkey blob must carry full 32-bit ids (uSig pairs
+// (int32, NameId)).
 TEST(memory, owner_set_blob_roundtrip_wide_id) {
     gl::OwnerSet os;
-    os.partitionIds.insert(gl::makePartitionId(70000, 200000));
-    os.partitionIds.insert(gl::makePartitionId(1000000, 3));
-    os.partitionIds.insert(gl::makePartitionId(5, 999999));
     os.hasLooseOwner = false;
     os.uSignatures.insert(
         std::vector<std::pair<int32_t, gl::NameId>>{ { 2, 70000 }, { 0, 1000000 } });
@@ -675,11 +543,6 @@ TEST(memory, owner_set_blob_roundtrip_wide_id) {
 
     const std::vector<char> buf = gl::Codec<gl::OwnerSet>::serialize(os);
     const gl::OwnerSetBlob v{ buf.data(), static_cast<int32_t>(buf.size()) };
-
-    // partitionIds — a std::set iterates ascending; the blob preserves order.
-    ASSERT_EQ(v.partitionCount(), static_cast<int32_t>(os.partitionIds.size()));
-    int32_t pi = 0;
-    for (int64_t id : os.partitionIds) ASSERT_EQ(v.partitionId(pi++), id);
 
     // uSignatures — walk the blob and compare each wide (slot, id) pair.
     ASSERT_EQ(v.uSigCount(), static_cast<int32_t>(os.uSignatures.size()));
@@ -696,7 +559,6 @@ TEST(memory, owner_set_blob_roundtrip_wide_id) {
     // Full decode round-trips.
     const gl::OwnerSet back =
         gl::Codec<gl::OwnerSet>::deserialize(buf.data(), static_cast<int32_t>(buf.size()));
-    ASSERT_TRUE(back.partitionIds == os.partitionIds);
     ASSERT_TRUE(back.uSignatures == os.uSignatures);
 }
 
@@ -1147,6 +1009,109 @@ TEST(prover, prepare_integration_flattens_nested_or_once) {
     }
 }
 
+// prepareIntegrationCore commits ONE entity per distinct instantiated
+// signature: a degenerate or instance (two argument slots bound to the same
+// term, as produced by an equivalence-class collapse under an assumed
+// equality) instantiates both disjunct templates to the same text, and the
+// second occurrence must reuse the first unfold instead of re-unfolding with
+// fresh — divergent — `pi_lev_` placeholders. The divergent duplicate is
+// exactly the state flattenOrLeaves' duplicate-identity assert catches, so
+// the flatten call here doubles as the crash regression. A non-degenerate
+// control keeps two distinct disjunct entities and two witness mints.
+TEST(prover, prepare_integration_core_dedups_duplicate_signature) {
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 1 << 20, 1 << 18 });
+    gl::LbArena lb(&g);
+
+    gl::ExpressionAnalyzer ea("Peano");
+    // Existence-category disjunct template modeled on preorder
+    // (a<=b := exists k: a+k=b) with bound variable k9, plus the or over its
+    // two argument orders (totality shape). `in` / `in3` resolve to Peano's
+    // compiled atomics during recursion.
+    ea.compiledExpressions["pre90"] = gl::LogicalEntity(
+        "existence", { "(in[k9,u_1])", "(in3[u_2,k9,u_3,u_1])" },
+        "(pre90[u_1,u_2,u_3])", 3);
+    ea.compiledExpressions["or90"] = gl::LogicalEntity(
+        "or", { "(pre90[u_1,u_2,u_3])", "(pre90[u_1,u_3,u_2])" },
+        "(or90[u_1,u_2,u_3])", 3);
+
+    const auto signatureIndex = [](const gl::WorkInstruction& wi,
+                                   const std::string& sig) -> int32_t {
+        for (int32_t e = 0; e < wi.entityCount(); ++e)
+            if (gl::equalSpans(wi.signature(e), gl::StrSpan(sig))) return e;
+        return -1;
+    };
+    const auto signaturesDistinct = [](const gl::WorkInstruction& wi) -> bool {
+        for (int32_t a = 0; a < wi.entityCount(); ++a)
+            for (int32_t b = a + 1; b < wi.entityCount(); ++b)
+                if (gl::equalSpans(wi.signature(a), wi.signature(b)))
+                    return false;
+        return true;
+    };
+
+    // Degenerate instance: u_2 == u_3, both disjuncts instantiate to the
+    // same text.
+    {
+        gl::WorkInstruction wi(&lb);
+        gl::Memory memory;
+        memory.level = 4;
+        const int piBefore = memory.startIntPi;
+        const std::string expr = "(or90[u_9,u_8,u_8])";
+        ea.prepareIntegrationCore(gl::StrSpan(expr), wi, memory,
+                                  gl::StrSpan());
+
+        // One or node, ONE pre90 unfold, its two atoms — no duplicate.
+        ASSERT_EQ(wi.entityCount(), 4);
+        ASSERT_TRUE(signaturesDistinct(wi));
+        ASSERT_EQ(memory.startIntPi, piBefore + 1);
+
+        const std::string pi = "pi_lev_" + std::to_string(memory.level) + "_"
+            + std::to_string(piBefore);
+        ASSERT_TRUE(signatureIndex(wi, "(pre90[u_9,u_8,u_8])") >= 0);
+        ASSERT_TRUE(signatureIndex(wi, "(in[" + pi + ",u_9])") >= 0);
+        ASSERT_TRUE(signatureIndex(wi, "(in3[u_8," + pi + ",u_8,u_9])") >= 0);
+
+        // Crash regression: pre-dedup, the divergent duplicate aborted this
+        // walk on the duplicate-identity assert.
+        const int32_t root = signatureIndex(wi, expr);
+        ASSERT_TRUE(root >= 0);
+        gl::StrSpan leaves[gl::ExecutionParameters::MAX_INSTRUCTION_ELEMENTS];
+        const int32_t n = ea.flattenOrLeaves(
+            wi, root, leaves, gl::ExecutionParameters::MAX_INSTRUCTION_ELEMENTS);
+        ASSERT_EQ(n, 2);
+        const std::string leafAA = "(pre90[u_9,u_8,u_8])";
+        ASSERT_TRUE(gl::equalSpans(leaves[0], gl::StrSpan(leafAA)));
+        ASSERT_TRUE(gl::equalSpans(leaves[0], leaves[1]));
+    }
+
+    // Non-degenerate control: distinct signatures keep per-occurrence
+    // unfolds — two pre90 entities, two witness mints, two distinct leaves.
+    {
+        gl::WorkInstruction wi(&lb);
+        gl::Memory memory;
+        memory.level = 4;
+        const int piBefore = memory.startIntPi;
+        const std::string expr = "(or90[u_9,u_8,u_7])";
+        ea.prepareIntegrationCore(gl::StrSpan(expr), wi, memory,
+                                  gl::StrSpan());
+
+        ASSERT_EQ(wi.entityCount(), 7);
+        ASSERT_TRUE(signaturesDistinct(wi));
+        ASSERT_EQ(memory.startIntPi, piBefore + 2);
+
+        const int32_t root = signatureIndex(wi, expr);
+        ASSERT_TRUE(root >= 0);
+        gl::StrSpan leaves[gl::ExecutionParameters::MAX_INSTRUCTION_ELEMENTS];
+        const int32_t n = ea.flattenOrLeaves(
+            wi, root, leaves, gl::ExecutionParameters::MAX_INSTRUCTION_ELEMENTS);
+        ASSERT_EQ(n, 2);
+        const std::string leafAB = "(pre90[u_9,u_8,u_7])";
+        const std::string leafBA = "(pre90[u_9,u_7,u_8])";
+        ASSERT_TRUE(gl::equalSpans(leaves[0], gl::StrSpan(leafAB)));
+        ASSERT_TRUE(gl::equalSpans(leaves[1], gl::StrSpan(leafBA)));
+    }
+}
+
 // Goal-carrying integration scopes: with a non-empty rootGoal, every Case A /
 // Case OR scope minted ON MAIN carries `<goal>_subproof_` in its payload, the
 // prep gates are goal-qualified (a second goal re-preps its own copies), and
@@ -1420,7 +1385,7 @@ TEST(prover, drain_disproved_goals_wipes_goal_machinery) {
     gl::upsertStatementKey(closed.intKnownStatements,
         gl::packStatementKey(closed.nameMap.encode("(implication90[1,2])"),
                              gl::NameMap::MAIN_ID),
-        /*local=*/true, /*registered=*/true, /*known=*/true);
+        /*local=*/true);
     closed.pendingDisprovedGoals.mint(goalA);
     analyzer.drainDisprovedGoals(closed);
     ASSERT_TRUE(closed.intToBeProved.lookup(pkC) == 0);
@@ -1446,6 +1411,137 @@ TEST(prover, drain_disproved_goals_wipes_goal_machinery) {
     ASSERT_EQ(queuedOr, 2);
 }
 
+// Proof-direction settlement (D-279): a deposited
+// seed whose NEGATION matches a MAIN goal closes that goal with the ordinary
+// success-path semantics — the goal row leaves intToBeProved and the
+// goal-owned MAIN scopes queue for the radical wipe, while the integration
+// gates, the origin history, and a sibling goal all survive. Both seed
+// orientations are covered: a positive goal settles from its `!`-seed, and a
+// negated goal settles from its bare seed (double-negation cancellation — the
+// B10 row-29 shape).
+TEST(prover, drain_settles_proved_goal_via_negated_seed) {
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 1 << 20, 1 << 18 });
+    gl::LbArena lb(&g);
+
+    const auto buildWi = [&](gl::WorkInstruction& wi) {
+        const auto addEntity = [&](const char* category, const char* signature,
+                                   const std::initializer_list<const char*>& elements) {
+            const int32_t mark = wi.elemMark();
+            for (const char* element : elements)
+                wi.addElement(gl::StrSpan(
+                    element, static_cast<int32_t>(std::strlen(element))));
+            wi.commitEntity(
+                gl::StrSpan(category, static_cast<int32_t>(std::strlen(category))),
+                gl::StrSpan(signature, static_cast<int32_t>(std::strlen(signature))),
+                gl::StrSpan(), static_cast<int32_t>(elements.size()), mark);
+        };
+        addEntity("implication", "(implication90[u_1,u_2])",
+                  { "(=[u_1,X])", "(=[u_2,X])" });
+        addEntity("or", "(or90[u_1,u_2])",
+                  { "(=[u_1,X])", "(=[u_2,X])" });
+    };
+
+    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::Memory memory;
+    const char* GOAL_T = "(interval[1,4,2,7,10])";   // target — proved by twin
+    const char* GOAL_S = "(interval[1,4,2,6,10])";   // sibling — untouched
+    const gl::StrSpan goalT(GOAL_T, static_cast<int32_t>(std::strlen(GOAL_T)));
+    const gl::StrSpan goalS(GOAL_S, static_cast<int32_t>(std::strlen(GOAL_S)));
+
+    const gl::NameId mainId = memory.nameMap.encode("main");
+    ASSERT_EQ(mainId, gl::NameMap::MAIN_ID);
+    const gl::NameId idT = memory.nameMap.encode(goalT);
+    const gl::NameId idS = memory.nameMap.encode(goalS);
+    const int64_t pkT = gl::packStatementKey(idT, gl::NameMap::MAIN_ID);
+    const int64_t pkS = gl::packStatementKey(idS, gl::NameMap::MAIN_ID);
+    memory.intToBeProved.assignSet(pkT, nullptr, 0);
+    memory.intToBeProved.assignSet(pkS, nullptr, 0);
+    memory.integrationPrepared.mint(gl::mintTemplateKey(
+        memory.templateInterner, memory.nameMap, goalT,
+        gl::StrSpan("main", 4)));
+    memory.integrationStartIntMap.insert(
+        memory.templateInterner.encode(goalT), 5);
+
+    // Spawn both goals' integration machinery (goal-carrying scopes, orint
+    // branches, scoped subgoals, origin rows).
+    {
+        gl::WorkInstruction wi(&lb);
+        buildWi(wi);
+        analyzer.prepareIntegrationCore2(
+            wi, nullptr, 0, memory, gl::StrSpan("main", 4), goalT);
+    }
+    {
+        gl::WorkInstruction wi(&lb);
+        buildWi(wi);
+        analyzer.prepareIntegrationCore2(
+            wi, nullptr, 0, memory, gl::StrSpan("main", 4), goalS);
+    }
+    const int32_t originsBefore = memory.exprOriginMap.count();
+
+    // The proof twin's seed is negate(goal): for the positive GOAL_T that is
+    // the `!`-prefixed form.
+    const std::string seedT = std::string("!") + GOAL_T;
+    memory.pendingDisprovedGoals.mint(gl::StrSpan(
+        seedT.c_str(), static_cast<int32_t>(seedT.size())));
+    analyzer.drainDisprovedGoals(memory);
+
+    // Goal row gone, sibling untouched, inbox drained.
+    ASSERT_TRUE(memory.intToBeProved.lookup(pkT) == 0);
+    ASSERT_TRUE(memory.intToBeProved.lookup(pkS) != 0);
+    ASSERT_EQ(memory.pendingDisprovedGoals.count(), 0);
+
+    // SUCCESS semantics: gates and origin history SURVIVE (contrast the
+    // disproof direction, which erases both).
+    {
+        int64_t gatePk = 0;
+        ASSERT_TRUE(gl::lookupTemplateKey(memory.templateInterner,
+                        memory.nameMap, goalT, gl::StrSpan("main", 4), gatePk));
+        ASSERT_TRUE(memory.integrationPrepared.contains(gatePk));
+        ASSERT_TRUE(memory.integrationStartIntMap.lookup(
+                        memory.templateInterner.encode(goalT)) != 0);
+    }
+    ASSERT_EQ(memory.exprOriginMap.count(), originsBefore);
+
+    // Every GOAL_T-owned MAIN scope queued for the wipe (subproof + orint
+    // branches) and filter-blocked; GOAL_S's scopes untouched.
+    int32_t queuedT = 0;
+    for (gl::NameId id = 2; id <= memory.nameMap.nameCount(); ++id) {
+        if (static_cast<std::size_t>(id)
+                >= static_cast<std::size_t>(memory.nameMap.stackSize())
+            || memory.nameMap.stackEmpty(id))
+            continue;
+        gl::StrSpan gOut, bOut;
+        if (!analyzer.splitSubproofPayload(
+                memory.nameMap.decodeSubView(memory.nameMap.stackBack(id)),
+                gOut, bOut))
+            continue;
+        const bool queued = memory.pendingWipeScopes.lookup(id) != 0;
+        if (gOut.toStdString() == std::string(GOAL_T)) {
+            ASSERT_TRUE(queued);
+            ASSERT_TRUE(memory.intValidityNamesToFilter.contains(id));
+            ++queuedT;
+        } else {
+            ASSERT_FALSE(queued);
+        }
+    }
+    ASSERT_EQ(queuedT, 3);   // 1 subproof + 2 orint branch scopes
+
+    // Orientation 2 — the B10 row-29 shape: a NEGATED goal settles from the
+    // twin's BARE seed (negate cancels the double negation).
+    gl::Memory neg;
+    neg.nameMap.encode("main");
+    const char* GOAL_N = "!(strictOrder[1,4,9,10])";
+    const gl::NameId idN = neg.nameMap.encode(GOAL_N);
+    const int64_t pkN = gl::packStatementKey(idN, gl::NameMap::MAIN_ID);
+    neg.intToBeProved.assignSet(pkN, nullptr, 0);
+    const char* SEED_N = "(strictOrder[1,4,9,10])";
+    neg.pendingDisprovedGoals.mint(gl::StrSpan(
+        SEED_N, static_cast<int32_t>(std::strlen(SEED_N))));
+    analyzer.drainDisprovedGoals(neg);
+    ASSERT_TRUE(neg.intToBeProved.lookup(pkN) == 0);
+}
+
 // Dead _ordis_ branch retirement: a branch deposit whose asserted disjunct is
 // refuted at an ancestor stages the branch vid; the end-of-burst drain queues
 // the branch wipe, blocks future inserts, shrinks the cohort's disjunct count
@@ -1453,6 +1549,92 @@ TEST(prover, drain_disproved_goals_wipes_goal_machinery) {
 // convergence for a surviving row that reaches the reduced count. A branch
 // with an unrefuted disjunct never stages; a staged branch whose cohort has
 // no count row is a defined no-op.
+// Or convergence ships every branch derivation's history to mailOut before
+// the per-branch removal erases the branch rows from the per-step delta
+// (D-311): a descendant that walks
+// the mailed `or convergence` row finds each cited branch derivation.
+TEST(prover, ordis_convergence_ships_branch_derivations_to_mail_out) {
+    gl::ExpressionAnalyzer analyzer("Peano");
+    analyzer.parameters.trackHistory = true;
+    gl::Memory memory;
+    const gl::NameId mainId = memory.nameMap.encode("main");
+    ASSERT_EQ(mainId, gl::NameMap::MAIN_ID);
+
+    const auto push = [&](gl::NameId parent, const char* payload) {
+        return memory.nameMap.encodePush(
+            parent, gl::StrSpan(
+                payload, static_cast<int32_t>(std::strlen(payload))));
+    };
+    // Two-branch cohort under main.
+    const gl::NameId brA = push(mainId, "ordis_(or93[2,6])_((=[2,6]))");
+    const gl::NameId brB = push(mainId, "ordis_(or93[2,6])_((=[6,6]))");
+    const std::string nameA = std::string(memory.nameMap.decode(brA));
+    const std::string nameB = std::string(memory.nameMap.decode(brB));
+    const int32_t cohortId = gl::mintOrCohortId(memory.lbStateInterner,
+        memory.lbStateInterner.encode(gl::StrSpan("main", 4)),
+        memory.lbStateInterner.encode(gl::StrSpan("(or93[2,6])", 11)));
+    memory.orDisjunctCount.insert(cohortId, 2);
+
+    // Each branch derived exprX by an equality1 rewrite of a main fact —
+    // the history lives in the LB's own exprOriginMap only.
+    const std::string exprX = "(p[2])";
+    const int cap = 8;
+    gl::addOriginEncoded(memory.exprOriginMap, memory.originInterner,
+        gl::ExpressionWithValidity(exprX, nameA),
+        std::make_pair(std::string("equality1"),
+            std::vector<gl::ExpressionWithValidity>{
+                gl::ExpressionWithValidity("(p[6])", "main"),
+                gl::ExpressionWithValidity("(=[2,6])", nameA) }),
+        cap);
+    gl::addOriginEncoded(memory.exprOriginMap, memory.originInterner,
+        gl::ExpressionWithValidity(exprX, nameB),
+        std::make_pair(std::string("equality1"),
+            std::vector<gl::ExpressionWithValidity>{
+                gl::ExpressionWithValidity("(p[6])", "main"),
+                gl::ExpressionWithValidity("(=[6,6])", nameB) }),
+        cap);
+    ASSERT_TRUE(gl::decodeMailOutOrigins(
+        memory.mailOut, memory.mailOutInterner).empty());
+
+    // First branch: no convergence, nothing shipped yet.
+    int lv0[1] = { 0 };
+    analyzer.ordisMerge(gl::StrSpan(exprX), gl::StrSpan(nameA), lv0, 1, memory);
+    ASSERT_TRUE(gl::decodeMailOutOrigins(
+        memory.mailOut, memory.mailOutInterner).empty());
+
+    // Second branch: convergence fires; both branch derivations are shipped
+    // with their full history lines.
+    analyzer.ordisMerge(gl::StrSpan(exprX), gl::StrSpan(nameB), lv0, 1, memory);
+    bool shippedA = false, shippedB = false;
+    for (const auto& row : gl::decodeMailOutOrigins(
+             memory.mailOut, memory.mailOutInterner)) {
+        if (row.first.original != exprX) continue;
+        ASSERT_EQ(row.second.size(), static_cast<std::size_t>(1));
+        ASSERT_EQ(row.second[0].first, std::string("equality1"));
+        ASSERT_EQ(row.second[0].second.size(), static_cast<std::size_t>(2));
+        ASSERT_EQ(row.second[0].second[0].original, std::string("(p[6])"));
+        if (row.first.validityName == nameA) {
+            ASSERT_EQ(row.second[0].second[1].original, std::string("(=[2,6])"));
+            shippedA = true;
+        }
+        if (row.first.validityName == nameB) {
+            ASSERT_EQ(row.second[0].second[1].original, std::string("(=[6,6])"));
+            shippedB = true;
+        }
+    }
+    ASSERT_TRUE(shippedA);
+    ASSERT_TRUE(shippedB);
+
+    // The convergence itself still lands on the same-iteration channel.
+    bool promoted = false;
+    for (const auto& row : gl::decodeInternalMailStatements(
+             memory.sameIterationInternalMail, memory.nameMap)) {
+        if (row.first.original == exprX && row.first.validityName == "main")
+            promoted = true;
+    }
+    ASSERT_TRUE(promoted);
+}
+
 TEST(prover, drain_dead_or_branches_retires_refuted_branch) {
     gl::ExpressionAnalyzer analyzer("Peano");
     gl::Memory memory;
@@ -1480,7 +1662,7 @@ TEST(prover, drain_dead_or_branches_retires_refuted_branch) {
     // The refutation of A's assumption, known at main.
     gl::upsertStatementKey(memory.intKnownStatements,
         gl::packStatementKey(memory.nameMap.encode("!(=[2,6])"), mainId),
-        /*local=*/true, /*registered=*/true, /*known=*/true);
+        /*local=*/true);
 
     // Deposits through ordisMerge (the staging site): exprX lands in A and B,
     // exprY in B and C, exprZ in A only. Nothing converges (count 3).
@@ -1615,7 +1797,7 @@ TEST(prover, drain_dead_or_branches_retires_refuted_branch) {
             gl::packStatementKey(memory.nameMap.encode(
                 gl::StrSpan(neg, static_cast<int32_t>(std::strlen(neg)))),
                 mainId),
-            /*local=*/true, /*registered=*/true, /*known=*/true);
+            /*local=*/true);
     }
     const gl::StrSpan exprW("(w[1])", 6);
     deposit(exprW, std::string(memory.nameMap.decode(brD)));
@@ -1632,6 +1814,710 @@ TEST(prover, drain_dead_or_branches_retires_refuted_branch) {
     ASSERT_TRUE(memory.pendingWipeScopes.lookup(brE) != 0);
     ASSERT_TRUE(memory.pendingWipeScopes.lookup(brF) != 0);
     ASSERT_TRUE(memory.intValidityNamesToFilter.lookup(brD) != 0);
+}
+
+// Dead-scope gate for the equi-class apply (D-262):
+// `refutedOrBranchAtOrAbove` resolves a validity scope to the refuted
+// `_ordis_` branch on its ancestor chain — probing the branch's asserted
+// disjunct's negation `known` at the branch scope or an ancestor (the
+// ordisMerge staging predicate) — and stages the hit so the end-of-burst
+// drain retires it. A live branch, a non-ordis scope, and main all resolve
+// to 0 with nothing staged; a leading-`!` disjunct negates by slicing.
+TEST(prover, refuted_or_branch_at_or_above_probes_and_stages) {
+    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::Memory memory;
+    const gl::NameId mainId = memory.nameMap.encode("main");
+    ASSERT_EQ(mainId, gl::NameMap::MAIN_ID);
+
+    const auto push = [&](gl::NameId parent, const char* payload) {
+        return memory.nameMap.encodePush(
+            parent, gl::StrSpan(
+                payload, static_cast<int32_t>(std::strlen(payload))));
+    };
+    const gl::NameId brA = push(mainId, "ordis_(or90[2,6])_((=[2,6]))");
+    const gl::NameId brB = push(mainId, "ordis_(or90[2,6])_((=[6,6]))");
+    const gl::NameId below = push(brA, "hypo_(h[1])");
+    const gl::NameId brNeg = push(mainId, "ordis_(or91[2,6])_(!(p[2]))");
+
+    // A's refutation known at MAIN (an ancestor of both brA and `below`).
+    gl::upsertStatementKey(memory.intKnownStatements,
+        gl::packStatementKey(memory.nameMap.encode("!(=[2,6])"), mainId),
+        /*local=*/true);
+
+    // Probe path from a scope BELOW the refuted branch: resolves to brA and
+    // stages it.
+    ASSERT_EQ(analyzer.refutedOrBranchAtOrAbove(below, memory), brA);
+    ASSERT_TRUE(memory.pendingDeadOrBranches.lookup(brA) != 0);
+    ASSERT_EQ(memory.pendingDeadOrBranches.count(), 1);
+
+    // Staged fast path: the branch scope itself now returns without a
+    // re-probe (and without a duplicate mint — the pod set dedups).
+    ASSERT_EQ(analyzer.refutedOrBranchAtOrAbove(brA, memory), brA);
+    ASSERT_EQ(memory.pendingDeadOrBranches.count(), 1);
+
+    // Live branch: nothing known refutes (=[6,6]) — no hit, nothing staged.
+    ASSERT_EQ(analyzer.refutedOrBranchAtOrAbove(brB, memory), 0);
+    ASSERT_TRUE(memory.pendingDeadOrBranches.lookup(brB) == 0);
+
+    // main and a non-ordis scope: no ordis branch on the chain at all.
+    ASSERT_EQ(analyzer.refutedOrBranchAtOrAbove(mainId, memory), 0);
+    const gl::NameId plain = push(mainId, "hypo_(g[1])");
+    ASSERT_EQ(analyzer.refutedOrBranchAtOrAbove(plain, memory), 0);
+    ASSERT_EQ(memory.pendingDeadOrBranches.count(), 1);
+
+    // Negated asserted disjunct: negate slices the leading `!` — before the
+    // POSITIVE form `(p[2])` is known the branch is live; once known at
+    // main, the `!(p[2])` branch is refuted and stages.
+    ASSERT_EQ(analyzer.refutedOrBranchAtOrAbove(brNeg, memory), 0);
+    gl::upsertStatementKey(memory.intKnownStatements,
+        gl::packStatementKey(memory.nameMap.encode("(p[2])"), mainId),
+        /*local=*/true);
+    ASSERT_EQ(analyzer.refutedOrBranchAtOrAbove(brNeg, memory), brNeg);
+    ASSERT_TRUE(memory.pendingDeadOrBranches.lookup(brNeg) != 0);
+    ASSERT_EQ(memory.pendingDeadOrBranches.count(), 2);
+}
+
+// Keep-last delta-class dedup (D-261): the linear
+// pre-pass flags an entry exactly when a LATER entry carries the same
+// (validity, member set). Grown members, a different validity, and the
+// last snapshot itself are never flagged.
+TEST(prover, fill_delta_keep_last_flags) {
+    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::Memory memory;
+    const gl::NameId mainId = memory.nameMap.encode("main");
+    const gl::NameId hypoId = memory.nameMap.encodePush(
+        mainId, gl::StrSpan("hypo_(h[1])", 11));
+    const gl::NameId idA = memory.nameMap.encode("a");
+    const gl::NameId idB = memory.nameMap.encode("b");
+    const gl::NameId idC = memory.nameMap.encode("c");
+
+    gl::EquivalenceClass ab;
+    ab.memberIds = { idA, idB };
+    gl::EquivalenceClass abc;
+    abc.memberIds = { idA, idB, idC };
+
+    memory.changedClassesThisStep.push(mainId, ab);   // k=0: dup of k=3
+    memory.changedClassesThisStep.push(mainId, abc);  // k=1: grown members
+    memory.changedClassesThisStep.push(hypoId, ab);   // k=2: other validity
+    memory.changedClassesThisStep.push(mainId, ab);   // k=3: the survivor
+
+    gl::ScratchArena& scratch = gl::genScratchArenas().forSlot(
+        gl::genScratchArenas().slotCount() - 1);
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::ColdHashSet<gl::BytesKeyStore> seen(&scratch, &dirty);
+    gl::PagedVector<uint8_t> flags(&scratch, &dirty);
+    analyzer.fillDeltaKeepLastFlags(memory, scratch, seen, flags);
+    ASSERT_EQ(flags.size(), 4);
+    ASSERT_EQ(flags[0], 1);
+    ASSERT_EQ(flags[1], 0);
+    ASSERT_EQ(flags[2], 0);
+    ASSERT_EQ(flags[3], 0);
+}
+
+// Sequenced or-disintegration ranking: non-equality disjuncts release first
+// (most tokens first, byte-lex ties), bare equalities after, anchor-argument
+// equalities dead last; a negated equality ranks as a non-equality.
+TEST(prover, pick_top_or_disjunct_ranking) {
+    gl::ExpressionAnalyzer analyzer("Peano");
+    const gl::StrSpan anchorArgs[2] = { gl::StrSpan("2", 1),
+                                        gl::StrSpan("6", 1) };
+
+    // Tier order: existence (tier 0) beats bare equality (tier 1) beats
+    // anchor-argument equality (tier 2).
+    {
+        const gl::StrSpan djs[3] = {
+            gl::StrSpan("(=[m,2])", 8),
+            gl::StrSpan("(existence3[1,m,3])", 19),
+            gl::StrSpan("(=[m,n])", 8) };
+        ASSERT_EQ(analyzer.pickTopOrDisjunct(djs, 3, anchorArgs, 2), 1);
+    }
+    // Descending token count within one tier.
+    {
+        const gl::StrSpan djs[2] = {
+            gl::StrSpan("(p[1])", 6),
+            gl::StrSpan("(existence3[1,m,3])", 19) };
+        ASSERT_EQ(analyzer.pickTopOrDisjunct(djs, 2, nullptr, 0), 1);
+    }
+    // Byte-lex tie-break at equal tier and token count.
+    {
+        const gl::StrSpan djs[2] = {
+            gl::StrSpan("(q[1])", 6),
+            gl::StrSpan("(p[1])", 6) };
+        ASSERT_EQ(analyzer.pickTopOrDisjunct(djs, 2, nullptr, 0), 1);
+    }
+    // A negated equality is tier 0 — it beats the bare equality.
+    {
+        const gl::StrSpan djs[2] = {
+            gl::StrSpan("(=[m,n])", 8),
+            gl::StrSpan("!(=[m,2])", 9) };
+        ASSERT_EQ(analyzer.pickTopOrDisjunct(djs, 2, anchorArgs, 2), 1);
+    }
+    // An anchor-argument equality loses to a bare equality.
+    {
+        const gl::StrSpan djs[2] = {
+            gl::StrSpan("(=[m,2])", 8),
+            gl::StrSpan("(=[m,n])", 8) };
+        ASSERT_EQ(analyzer.pickTopOrDisjunct(djs, 2, anchorArgs, 2), 1);
+    }
+}
+
+// The ranking's anchor-argument set comes from the parentMemory chain's
+// anchor exprKey; a chain without an anchor element yields the empty set.
+TEST(prover, collect_anchor_args_from_chain) {
+    gl::ExpressionAnalyzer analyzer("Peano");
+    analyzer.anchorInfo.name = "AnchorTest90";
+    gl::Memory root;
+    gl::Memory anchorLb;
+    gl::Memory leaf;
+    anchorLb.parentMemory = &root;
+    leaf.parentMemory = &anchorLb;
+    anchorLb.setExprKey("(AnchorTest90[7,2,1,3])");
+    leaf.setExprKey("(=[7,2])");
+    gl::StrSpan out[gl::ExecutionParameters::MAX_ARITY];
+    const int32_t n = analyzer.collectAnchorArgs(
+        leaf, out, gl::ExecutionParameters::MAX_ARITY);
+    ASSERT_EQ(n, 4);
+    ASSERT_TRUE(gl::equalSpans(out[0], gl::StrSpan("7", 1)));
+    ASSERT_TRUE(gl::equalSpans(out[1], gl::StrSpan("2", 1)));
+    ASSERT_TRUE(gl::equalSpans(out[2], gl::StrSpan("1", 1)));
+    ASSERT_TRUE(gl::equalSpans(out[3], gl::StrSpan("3", 1)));
+
+    gl::Memory lone;
+    lone.setExprKey("(=[1,1])");
+    ASSERT_EQ(analyzer.collectAnchorArgs(
+        lone, out, gl::ExecutionParameters::MAX_ARITY), 0);
+}
+
+// Sequenced release staging — goal probe: a branch-scope deposit matching a
+// toBeProved goal on the branch's parent chain stages the cohort; a non-goal
+// deposit does not.
+TEST(prover, ordis_goal_probe_stages_release) {
+    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::Memory memory;
+    const gl::NameId mainId = memory.nameMap.encode("main");
+    ASSERT_EQ(mainId, gl::NameMap::MAIN_ID);
+    const gl::NameId br = memory.nameMap.encodePush(mainId,
+        gl::StrSpan("ordis_(or93[4,5])_((existence3[1,4,3]))", 39));
+    const std::string brName = std::string(memory.nameMap.decode(br));
+    const int32_t cohortId = gl::mintOrCohortId(memory.lbStateInterner,
+        memory.lbStateInterner.encode(gl::StrSpan("main", 4)),
+        memory.lbStateInterner.encode(gl::StrSpan("(or93[4,5])", 11)));
+    memory.orDisjunctCount.insert(cohortId, 2);
+    memory.orPendingBranches.insertSorted(cohortId,
+        memory.lbStateInterner.encode(gl::StrSpan("((=[4,5]))", 10)),
+        gl::DecodedIdLess{ &memory.lbStateInterner });
+
+    const gl::NameId goalId = memory.nameMap.encode("(preorder[1,4,5,4])");
+    memory.intToBeProved.assignSet(
+        gl::packStatementKey(goalId, mainId), nullptr, 0);
+
+    int lv0[1] = { 0 };
+    // Non-goal deposit (interned but not a goal): registers, does not stage.
+    memory.nameMap.encode("(p[1])");
+    analyzer.ordisMerge(gl::StrSpan("(p[1])", 6), gl::StrSpan(brName),
+        lv0, 1, memory);
+    ASSERT_EQ(memory.pendingOrReleases.count(), 0);
+    // Goal deposit: stages the cohort exactly once.
+    analyzer.ordisMerge(gl::StrSpan("(preorder[1,4,5,4])", 19),
+        gl::StrSpan(brName), lv0, 1, memory);
+    ASSERT_TRUE(memory.pendingOrReleases.lookup(cohortId) != 0);
+    ASSERT_EQ(memory.pendingOrReleases.count(), 1);
+}
+
+// Live-branch sighting: ordisMerge registers the branch on its first deposit;
+// a frozen, dead-staged or filtered branch is never registered.
+TEST(prover, ordis_merge_registers_live_branch) {
+    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::Memory memory;
+    const gl::NameId mainId = memory.nameMap.encode("main");
+    ASSERT_EQ(mainId, gl::NameMap::MAIN_ID);
+    const gl::NameId br = memory.nameMap.encodePush(mainId,
+        gl::StrSpan("ordis_(or93[4,5])_((existence3[1,4,3]))", 39));
+    const gl::NameId br2 = memory.nameMap.encodePush(mainId,
+        gl::StrSpan("ordis_(or93[4,5])_((=[4,5]))", 28));
+    const std::string brName = std::string(memory.nameMap.decode(br));
+    const std::string br2Name = std::string(memory.nameMap.decode(br2));
+    const int32_t cohortId = gl::mintOrCohortId(memory.lbStateInterner,
+        memory.lbStateInterner.encode(gl::StrSpan("main", 4)),
+        memory.lbStateInterner.encode(gl::StrSpan("(or93[4,5])", 11)));
+    memory.orDisjunctCount.insert(cohortId, 2);
+    int lv0[1] = { 0 };
+    memory.nameMap.encode("(p[1])");
+    memory.nameMap.encode("(q[1])");
+
+    analyzer.ordisMerge(gl::StrSpan("(p[1])", 6), gl::StrSpan(brName),
+        lv0, 1, memory);
+    ASSERT_TRUE(memory.orLiveBranches.lookup(br) != 0);
+    ASSERT_EQ(memory.orLiveBranches.count(), 1);
+    // Repeat deposit: the pod set dedups.
+    analyzer.ordisMerge(gl::StrSpan("(p[1])", 6), gl::StrSpan(brName),
+        lv0, 1, memory);
+    ASSERT_EQ(memory.orLiveBranches.count(), 1);
+    // Frozen branch: a later deposit does not resurrect it as live.
+    memory.orLiveBranches.resetToFresh();
+    memory.frozenOrBranches.mint(br);
+    analyzer.ordisMerge(gl::StrSpan("(p[1])", 6), gl::StrSpan(brName),
+        lv0, 1, memory);
+    ASSERT_EQ(memory.orLiveBranches.count(), 0);
+    // Filtered branch: never registered.
+    memory.intValidityNamesToFilter.mint(br2);
+    analyzer.ordisMerge(gl::StrSpan("(q[1])", 6), gl::StrSpan(br2Name),
+        lv0, 1, memory);
+    ASSERT_EQ(memory.orLiveBranches.count(), 0);
+}
+
+// Freeze sweep: a live branch freezes when every toBeProved goal on its chain
+// (cohort parent up to main) is known at the branch or a strict ancestor; the
+// goals stay registered.
+TEST(prover, freeze_resolved_or_branches_all_chain_goals_known) {
+    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::Memory memory;
+    const gl::NameId mainId = memory.nameMap.encode("main");
+    ASSERT_EQ(mainId, gl::NameMap::MAIN_ID);
+    const gl::NameId br = memory.nameMap.encodePush(mainId,
+        gl::StrSpan("ordis_(or93[4,5])_((existence3[1,4,3]))", 39));
+    const gl::NameId goalA = memory.nameMap.encode("(preorder[1,4,5,4])");
+    const gl::NameId goalB = memory.nameMap.encode("(q[1])");
+    memory.intToBeProved.assignSet(
+        gl::packStatementKey(goalA, mainId), nullptr, 0);
+    memory.intToBeProved.assignSet(
+        gl::packStatementKey(goalB, mainId), nullptr, 0);
+    memory.orLiveBranches.mint(br);
+
+    // Nothing known: stays live, nothing frozen.
+    analyzer.freezeResolvedOrBranches(memory);
+    ASSERT_EQ(memory.frozenOrBranches.count(), 0);
+    ASSERT_TRUE(memory.orLiveBranches.lookup(br) != 0);
+
+    // One of two chain goals known at the branch: still live.
+    gl::upsertStatementKey(memory.intKnownStatements,
+        gl::packStatementKey(goalA, br), /*local=*/true);
+    analyzer.freezeResolvedOrBranches(memory);
+    ASSERT_EQ(memory.frozenOrBranches.count(), 0);
+    ASSERT_EQ(memory.orLiveBranches.count(), 1);
+
+    // Second goal known at a strict ancestor (main — the Site F refusal
+    // case): resolved -> frozen, dropped from the live set; both goals stay.
+    gl::upsertStatementKey(memory.intKnownStatements,
+        gl::packStatementKey(goalB, mainId), /*local=*/true);
+    analyzer.freezeResolvedOrBranches(memory);
+    ASSERT_TRUE(memory.frozenOrBranches.lookup(br) != 0);
+    ASSERT_EQ(memory.orLiveBranches.count(), 0);
+    ASSERT_EQ(memory.intToBeProved.count(), 2);
+}
+
+// Freeze sweep: chain membership, descendant-only knowledge, the vacuous
+// freeze, the filtered drop and the one-way latch.
+TEST(prover, freeze_resolved_or_branches_chain_scope_and_latch) {
+    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::Memory memory;
+    const gl::NameId mainId = memory.nameMap.encode("main");
+    ASSERT_EQ(mainId, gl::NameMap::MAIN_ID);
+    const gl::NameId hyp = memory.nameMap.encodePush(mainId,
+        gl::StrSpan("hypo_(h[1])", 11));
+    const gl::NameId br = memory.nameMap.encodePush(hyp,
+        gl::StrSpan("ordis_(or93[4,5])_((existence3[1,4,3]))", 39));
+    const gl::NameId sib = memory.nameMap.encodePush(mainId,
+        gl::StrSpan("hypo_(h[2])", 11));
+    const gl::NameId gc = memory.nameMap.encodePush(br,
+        gl::StrSpan("hypo_(h[3])", 11));
+    const gl::NameId goalA = memory.nameMap.encode("(preorder[1,4,5,4])");
+    const gl::NameId goalS = memory.nameMap.encode("(q[1])");
+
+    // An off-chain goal (sibling scope) is ignored: with no chain goal the
+    // branch freezes vacuously.
+    memory.intToBeProved.assignSet(
+        gl::packStatementKey(goalS, sib), nullptr, 0);
+    memory.orLiveBranches.mint(br);
+    analyzer.freezeResolvedOrBranches(memory);
+    ASSERT_TRUE(memory.frozenOrBranches.lookup(br) != 0);
+    ASSERT_EQ(memory.orLiveBranches.count(), 0);
+
+    // Latch: a chain goal registered afterwards does not thaw the branch.
+    memory.intToBeProved.assignSet(
+        gl::packStatementKey(goalA, hyp), nullptr, 0);
+    analyzer.freezeResolvedOrBranches(memory);
+    ASSERT_TRUE(memory.frozenOrBranches.lookup(br) != 0);
+    ASSERT_EQ(memory.orLiveBranches.count(), 0);
+
+    // Re-live the branch: the hypo-scope goal is a chain goal; known only at
+    // a DESCENDANT of the branch does not count.
+    memory.frozenOrBranches.resetToFresh();
+    memory.orLiveBranches.mint(br);
+    gl::upsertStatementKey(memory.intKnownStatements,
+        gl::packStatementKey(goalA, gc), /*local=*/true);
+    analyzer.freezeResolvedOrBranches(memory);
+    ASSERT_EQ(memory.frozenOrBranches.count(), 0);
+    ASSERT_EQ(memory.orLiveBranches.count(), 1);
+    // Known at the intermediate ancestor (hyp): resolved.
+    gl::upsertStatementKey(memory.intKnownStatements,
+        gl::packStatementKey(goalA, hyp), /*local=*/true);
+    analyzer.freezeResolvedOrBranches(memory);
+    ASSERT_TRUE(memory.frozenOrBranches.lookup(br) != 0);
+    ASSERT_EQ(memory.orLiveBranches.count(), 0);
+
+    // Filtered (retired / wipe-closed) branch: dropped from the live set
+    // without freezing.
+    const gl::NameId br2 = memory.nameMap.encodePush(hyp,
+        gl::StrSpan("ordis_(or93[4,5])_((=[4,5]))", 28));
+    memory.orLiveBranches.mint(br2);
+    memory.intValidityNamesToFilter.mint(br2);
+    analyzer.freezeResolvedOrBranches(memory);
+    ASSERT_EQ(memory.orLiveBranches.count(), 0);
+    ASSERT_TRUE(memory.frozenOrBranches.lookup(br2) == 0);
+}
+
+// Sequenced release staging — retirement: a refuted live branch with pending
+// siblings stages its cohort for the release drain.
+TEST(prover, dead_branch_retirement_stages_release) {
+    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::Memory memory;
+    const gl::NameId mainId = memory.nameMap.encode("main");
+    ASSERT_EQ(mainId, gl::NameMap::MAIN_ID);
+    const gl::NameId brA = memory.nameMap.encodePush(mainId,
+        gl::StrSpan("ordis_(or94[4,5])_((=[4,5]))", 28));
+    const std::string nameA = std::string(memory.nameMap.decode(brA));
+    const int32_t cohortId = gl::mintOrCohortId(memory.lbStateInterner,
+        memory.lbStateInterner.encode(gl::StrSpan("main", 4)),
+        memory.lbStateInterner.encode(gl::StrSpan("(or94[4,5])", 11)));
+    memory.orDisjunctCount.insert(cohortId, 2);
+    memory.orPendingBranches.insertSorted(cohortId,
+        memory.lbStateInterner.encode(gl::StrSpan("((existence3[1,4,3]))", 21)),
+        gl::DecodedIdLess{ &memory.lbStateInterner });
+    gl::upsertStatementKey(memory.intKnownStatements,
+        gl::packStatementKey(memory.nameMap.encode("!(=[4,5])"), mainId),
+        /*local=*/true);
+
+    int lv0[1] = { 0 };
+    analyzer.ordisMerge(gl::StrSpan("(z[1])", 6), gl::StrSpan(nameA),
+        lv0, 1, memory);
+    ASSERT_TRUE(memory.pendingDeadOrBranches.lookup(brA) != 0);
+
+    analyzer.drainDeadOrBranches(memory);
+
+    // Count shrunk, branch retired, and the cohort staged for release.
+    const int32_t cntRow = memory.orDisjunctCount.lookup(cohortId);
+    ASSERT_TRUE(cntRow != 0);
+    ASSERT_EQ(memory.orDisjunctCount.valueAt(cntRow), 1);
+    ASSERT_TRUE(memory.pendingOrReleases.lookup(cohortId) != 0);
+}
+
+// Branch-contradiction refutation: a branch deposit whose negation is known
+// on the parent chain emits negate(assertedDisjunct) at the cohort parent
+// with a two-antecedent `contradiction` origin; once that refutation is
+// known, the next branch deposit stages the branch for retirement.
+TEST(prover, ordis_branch_contradiction_emits_refutation) {
+    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::Memory memory;
+    const gl::NameId mainId = memory.nameMap.encode("main");
+    ASSERT_EQ(mainId, gl::NameMap::MAIN_ID);
+    const gl::NameId brA = memory.nameMap.encodePush(mainId,
+        gl::StrSpan("ordis_(or99[4,5])_((=[4,5]))", 28));
+    const std::string nameA = std::string(memory.nameMap.decode(brA));
+    const int32_t cohortId = gl::mintOrCohortId(memory.lbStateInterner,
+        memory.lbStateInterner.encode(gl::StrSpan("main", 4)),
+        memory.lbStateInterner.encode(gl::StrSpan("(or99[4,5])", 11)));
+    memory.orDisjunctCount.insert(cohortId, 2);
+
+    // The ambient negation of a branch derivation, known at main with its
+    // own level row (level 3 — the premise side the union must carry).
+    gl::upsertStatementKey(memory.intKnownStatements,
+        gl::packStatementKey(memory.nameMap.encode("!(pre90[9,10])"), mainId),
+        /*local=*/true);
+    int lvNeg[1] = { 3 };
+    memory.intStatementLevelsMap.assignSet(
+        gl::packStatementKey(memory.nameMap.encode("!(pre90[9,10])"), mainId),
+        lvNeg, 1);
+
+    int lv0[1] = { 0 };
+    analyzer.ordisMerge(gl::StrSpan("(pre90[9,10])", 13), gl::StrSpan(nameA),
+        lv0, 1, memory);
+
+    // Not staged (the disjunct's own negation was unknown), but the
+    // refutation was emitted at the cohort parent — with the UNION of the
+    // branch derivation's levels and the ambient negation's levels — and
+    // the contradiction origin citing both antecedents.
+    ASSERT_EQ(memory.pendingDeadOrBranches.count(), 0);
+    bool sawRefutation = false;
+    for (const auto& row : gl::decodeInternalMailStatements(
+             memory.sameIterationInternalMail, memory.nameMap)) {
+        if (row.first.original == "!(=[4,5])"
+            && row.first.validityName == "main") {
+            sawRefutation = true;
+            ASSERT_EQ(row.second, (std::set<int>{ 0, 3 }));
+        }
+    }
+    ASSERT_TRUE(sawRefutation);
+    bool sawDepBranch = false, sawDepMain = false;
+    for (const auto& row : gl::decodeInternalMailOrigins(
+             memory.sameIterationInternalMail, memory.originInterner)) {
+        if (row.first.original != "!(=[4,5])"
+            || row.first.validityName != "main") continue;
+        for (const auto& lineRec : row.second) {
+            if (lineRec.first != "contradiction") continue;
+            for (const auto& dep : lineRec.second) {
+                if (dep.original == "(pre90[9,10])"
+                    && dep.validityName == nameA) sawDepBranch = true;
+                if (dep.original == "!(pre90[9,10])"
+                    && dep.validityName == "main") sawDepMain = true;
+            }
+        }
+    }
+    ASSERT_TRUE(sawDepBranch);
+    ASSERT_TRUE(sawDepMain);
+
+    // Once the refutation is known at main, the next branch deposit stages
+    // the branch for retirement.
+    gl::upsertStatementKey(memory.intKnownStatements,
+        gl::packStatementKey(memory.nameMap.encode("!(=[4,5])"), mainId),
+        /*local=*/true);
+    analyzer.ordisMerge(gl::StrSpan("(q90[1])", 8), gl::StrSpan(nameA),
+        lv0, 1, memory);
+    ASSERT_TRUE(memory.pendingDeadOrBranches.lookup(brA) != 0);
+}
+
+// The release drain mints the top-ranked pending branch: seed statement plus
+// `or disintegration` origin on sameIterationInternalMail at the branch
+// scope with the cohort's stored level run; the released disjunct leaves the
+// queue; a stale staging and a filtered parent are defined skips.
+// No goals, no or branches: the release drain releases nothing in an LB whose
+// goal registry is empty — the staging drops, the queue stays untouched.
+TEST(prover, drain_pending_or_releases_goalless_lb_releases_nothing) {
+    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::Memory memory;
+    const gl::NameId mainId = memory.nameMap.encode("main");
+    ASSERT_EQ(mainId, gl::NameMap::MAIN_ID);
+    const int32_t cohortId = gl::mintOrCohortId(memory.lbStateInterner,
+        memory.lbStateInterner.encode(gl::StrSpan("main", 4)),
+        memory.lbStateInterner.encode(gl::StrSpan("(or95[4,5])", 11)));
+    memory.orDisjunctCount.insert(cohortId, 2);
+    const gl::DecodedIdLess djLess{ &memory.lbStateInterner };
+    memory.orPendingBranches.insertSorted(cohortId,
+        memory.lbStateInterner.encode(gl::StrSpan("((=[4,5]))", 10)), djLess);
+    const auto intLess = [](int32_t a, int32_t b) { return a < b; };
+    memory.orPendingLevels.insertSorted(cohortId, 0, intLess);
+    memory.pendingOrReleases.mint(cohortId);
+
+    analyzer.drainPendingOrReleases(memory);
+    ASSERT_EQ(memory.pendingOrReleases.count(), 0);
+    ASSERT_EQ(gl::decodeInternalMailStatements(
+        memory.sameIterationInternalMail, memory.nameMap).size(),
+        static_cast<std::size_t>(0));
+    const int32_t pRow = memory.orPendingBranches.lookup(cohortId);
+    ASSERT_TRUE(pRow != 0);
+    ASSERT_EQ(memory.orPendingBranches.runLen(pRow), 1);
+
+    // With a goal the same staging releases the queued disjunct.
+    memory.intToBeProved.assignSet(gl::packStatementKey(
+        memory.nameMap.encode("(freeze_goal[1])"), mainId), nullptr, 0);
+    memory.pendingOrReleases.mint(cohortId);
+    analyzer.drainPendingOrReleases(memory);
+    ASSERT_EQ(gl::decodeInternalMailStatements(
+        memory.sameIterationInternalMail, memory.nameMap).size(),
+        static_cast<std::size_t>(1));
+}
+
+TEST(prover, drain_pending_or_releases_releases_top_ranked) {
+    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::Memory memory;
+    const gl::NameId mainId = memory.nameMap.encode("main");
+    ASSERT_EQ(mainId, gl::NameMap::MAIN_ID);
+    memory.intToBeProved.assignSet(gl::packStatementKey(
+        memory.nameMap.encode("(freeze_goal[1])"), gl::NameMap::MAIN_ID),
+        nullptr, 0);   // no goals, no or branches: keep the cohort opening live
+    const int32_t cohortId = gl::mintOrCohortId(memory.lbStateInterner,
+        memory.lbStateInterner.encode(gl::StrSpan("main", 4)),
+        memory.lbStateInterner.encode(gl::StrSpan("(or95[4,5])", 11)));
+    memory.orDisjunctCount.insert(cohortId, 3);
+    const gl::DecodedIdLess djLess{ &memory.lbStateInterner };
+    memory.orPendingBranches.insertSorted(cohortId,
+        memory.lbStateInterner.encode(gl::StrSpan("((=[4,5]))", 10)), djLess);
+    memory.orPendingBranches.insertSorted(cohortId,
+        memory.lbStateInterner.encode(
+            gl::StrSpan("((existence3[1,4,3]))", 21)), djLess);
+    const auto intLess = [](int32_t a, int32_t b) { return a < b; };
+    memory.orPendingLevels.insertSorted(cohortId, 0, intLess);
+    memory.orPendingLevels.insertSorted(cohortId, 2, intLess);
+    memory.pendingOrReleases.mint(cohortId);
+
+    analyzer.drainPendingOrReleases(memory);
+
+    // The existence disjunct (tier 0) released first, at its branch scope,
+    // with the stored level run.
+    const std::string expectBranch =
+        "main_boundary_ordis_(or95[4,5])_((existence3[1,4,3]))";
+    bool sawSeed = false;
+    for (const auto& row : gl::decodeInternalMailStatements(
+             memory.sameIterationInternalMail, memory.nameMap)) {
+        if (row.first.original == "(existence3[1,4,3])"
+            && row.first.validityName == expectBranch) {
+            sawSeed = true;
+            ASSERT_EQ(row.second, (std::set<int>{ 0, 2 }));
+        }
+    }
+    ASSERT_TRUE(sawSeed);
+    bool sawOrigin = false;
+    for (const auto& row : gl::decodeInternalMailOrigins(
+             memory.sameIterationInternalMail, memory.originInterner)) {
+        if (row.first.original != "(existence3[1,4,3])"
+            || row.first.validityName != expectBranch) continue;
+        for (const auto& lineRec : row.second) {
+            if (lineRec.first != "or disintegration") continue;
+            for (const auto& dep : lineRec.second) {
+                if (dep.original == "(or95[4,5])"
+                    && dep.validityName == "main") sawOrigin = true;
+            }
+        }
+    }
+    ASSERT_TRUE(sawOrigin);
+
+    // Inbox drained; the equality stays pending; the level row survives a
+    // non-empty queue.
+    ASSERT_EQ(memory.pendingOrReleases.count(), 0);
+    const int32_t pRow = memory.orPendingBranches.lookup(cohortId);
+    ASSERT_TRUE(pRow != 0);
+    ASSERT_EQ(memory.orPendingBranches.runLen(pRow), 1);
+    ASSERT_EQ(memory.orPendingBranches.valueAt(pRow, 0),
+        memory.lbStateInterner.encode(gl::StrSpan("((=[4,5]))", 10)));
+    ASSERT_TRUE(memory.orPendingLevels.lookup(cohortId) != 0);
+
+    // Second release empties the queue and drops the level row.
+    memory.pendingOrReleases.mint(cohortId);
+    analyzer.drainPendingOrReleases(memory);
+    ASSERT_TRUE(memory.orPendingBranches.lookup(cohortId) == 0);
+    ASSERT_TRUE(memory.orPendingLevels.lookup(cohortId) == 0);
+
+    // Stale staging (no count row): consumed, nothing released.
+    const int32_t cohortGone = gl::mintOrCohortId(memory.lbStateInterner,
+        memory.lbStateInterner.encode(gl::StrSpan("main", 4)),
+        memory.lbStateInterner.encode(gl::StrSpan("(or96[7])", 9)));
+    memory.pendingOrReleases.mint(cohortGone);
+    analyzer.drainPendingOrReleases(memory);
+    ASSERT_EQ(memory.pendingOrReleases.count(), 0);
+
+    // Filtered parent: the staging is consumed but the queue stays intact.
+    const gl::NameId subId = memory.nameMap.encodePush(mainId,
+        gl::StrSpan("hypo_x", 6));
+    const std::string subName = std::string(memory.nameMap.decode(subId));
+    const int32_t cohortFiltered = gl::mintOrCohortId(memory.lbStateInterner,
+        memory.lbStateInterner.encode(gl::StrSpan(subName)),
+        memory.lbStateInterner.encode(gl::StrSpan("(or97[7])", 9)));
+    memory.orDisjunctCount.insert(cohortFiltered, 2);
+    memory.orPendingBranches.insertSorted(cohortFiltered,
+        memory.lbStateInterner.encode(gl::StrSpan("((=[7,7]))", 10)), djLess);
+    memory.intValidityNamesToFilter.mint(subId);
+    memory.pendingOrReleases.mint(cohortFiltered);
+    analyzer.drainPendingOrReleases(memory);
+    ASSERT_TRUE(memory.orPendingBranches.lookup(cohortFiltered) != 0);
+}
+
+// Sequenced or-disintegration bootstrap: an admitted or cohort registers the
+// FULL structural count, queues EVERY leaf, and stages the cohort — it mints
+// no branch and sends no mail itself (the drain's step-3 clear would wipe a
+// mid-drain insert); the end-of-burst release drain then mints the
+// top-ranked branch. A re-disintegration of the same or at the same parent
+// is the bootstrap-guard no-op.
+TEST(prover, sequenced_ordis_bootstrap_mints_one_branch) {
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 1 << 20, 1 << 18 });
+    gl::LbArena lb(&g);
+    gl::WorkInstruction wi(&lb);
+    const auto addEntity = [&](const char* category, const char* signature,
+                               const std::initializer_list<const char*>& elements) {
+        const int32_t mark = wi.elemMark();
+        for (const char* element : elements)
+            wi.addElement(gl::StrSpan(
+                element, static_cast<int32_t>(std::strlen(element))));
+        wi.commitEntity(
+            gl::StrSpan(category, static_cast<int32_t>(std::strlen(category))),
+            gl::StrSpan(signature, static_cast<int32_t>(std::strlen(signature))),
+            gl::StrSpan(), static_cast<int32_t>(elements.size()), mark);
+    };
+    addEntity("or", "(or98[u_4,u_5])",
+              { "(existence3[u_1,u_4,u_3])", "(=[u_4,u_5])" });
+
+    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::Memory memory;
+    ASSERT_EQ(memory.nameMap.encode("main"), gl::NameMap::MAIN_ID);
+    memory.intToBeProved.assignSet(gl::packStatementKey(
+        memory.nameMap.encode("(freeze_goal[1])"), gl::NameMap::MAIN_ID),
+        nullptr, 0);   // no goals, no or branches: keep the cohort opening live
+    gl::ExpressionAnalyzer::CollectedArena collected(&lb);
+    gl::ExpressionAnalyzer::NewVarStore newVarMap(&lb);
+    int seedLv[1] = { 0 };
+    analyzer.disintegrateExprCore2(gl::StrSpan("(or98[u_4,u_5])", 15), wi,
+        memory, 0, collected, newVarMap, gl::StrSpan("main", 4),
+        /*trackHistoryLocal=*/true, /*allowOrDisintegration=*/true,
+        seedLv, 1);
+
+    // Full structural count registered; BOTH leaves queued with the seed
+    // level run; the cohort staged; nothing on internal mail yet.
+    const int32_t cohortId = gl::mintOrCohortId(memory.lbStateInterner,
+        memory.lbStateInterner.encode(gl::StrSpan("main", 4)),
+        memory.lbStateInterner.encode(gl::StrSpan("(or98[4,5])", 11)));
+    const int32_t cntRow = memory.orDisjunctCount.lookup(cohortId);
+    ASSERT_TRUE(cntRow != 0);
+    ASSERT_EQ(memory.orDisjunctCount.valueAt(cntRow), 2);
+    ASSERT_EQ(gl::decodeInternalMailStatements(
+        memory.sameIterationInternalMail, memory.nameMap).size(),
+        static_cast<std::size_t>(0));
+    {
+        const int32_t pRow = memory.orPendingBranches.lookup(cohortId);
+        ASSERT_TRUE(pRow != 0);
+        ASSERT_EQ(memory.orPendingBranches.runLen(pRow), 2);
+    }
+    const int32_t lRow = memory.orPendingLevels.lookup(cohortId);
+    ASSERT_TRUE(lRow != 0);
+    ASSERT_EQ(memory.orPendingLevels.runLen(lRow), 1);
+    ASSERT_EQ(memory.orPendingLevels.valueAt(lRow, 0), 0);
+    ASSERT_TRUE(memory.pendingOrReleases.lookup(cohortId) != 0);
+
+    // The end-of-burst release drain mints the top-ranked branch: the
+    // existence disjunct (tier 0) seeds with the level run and its
+    // `or disintegration` origin; the equality stays queued.
+    analyzer.drainPendingOrReleases(memory);
+    const std::string expectBranch =
+        "main_boundary_ordis_(or98[4,5])_((existence3[1,4,3]))";
+    const auto mailRows = gl::decodeInternalMailStatements(
+        memory.sameIterationInternalMail, memory.nameMap);
+    ASSERT_EQ(mailRows.size(), static_cast<std::size_t>(1));
+    ASSERT_TRUE(mailRows[0].first.original == "(existence3[1,4,3])");
+    ASSERT_TRUE(mailRows[0].first.validityName == expectBranch);
+    ASSERT_EQ(mailRows[0].second, (std::set<int>{ 0 }));
+    bool sawOrigin = false;
+    for (const auto& row : gl::decodeInternalMailOrigins(
+             memory.sameIterationInternalMail, memory.originInterner)) {
+        if (row.first.original != "(existence3[1,4,3])"
+            || row.first.validityName != expectBranch) continue;
+        for (const auto& lineRec : row.second) {
+            if (lineRec.first != "or disintegration") continue;
+            for (const auto& dep : lineRec.second) {
+                if (dep.original == "(or98[4,5])"
+                    && dep.validityName == "main") sawOrigin = true;
+            }
+        }
+    }
+    ASSERT_TRUE(sawOrigin);
+    const int32_t pRow = memory.orPendingBranches.lookup(cohortId);
+    ASSERT_TRUE(pRow != 0);
+    ASSERT_EQ(memory.orPendingBranches.runLen(pRow), 1);
+    ASSERT_EQ(memory.orPendingBranches.valueAt(pRow, 0),
+        memory.lbStateInterner.encode(gl::StrSpan("((=[4,5]))", 10)));
+
+    // Bootstrap guard: a second disintegration of the same or at the same
+    // parent re-emits only the flat K rules — no re-queue, no count reset,
+    // no re-staging of a fresh release.
+    analyzer.disintegrateExprCore2(gl::StrSpan("(or98[u_4,u_5])", 15), wi,
+        memory, 0, collected, newVarMap, gl::StrSpan("main", 4),
+        /*trackHistoryLocal=*/true, /*allowOrDisintegration=*/true,
+        seedLv, 1);
+    ASSERT_EQ(gl::decodeInternalMailStatements(
+        memory.sameIterationInternalMail, memory.nameMap).size(),
+        static_cast<std::size_t>(1));
+    ASSERT_EQ(memory.orDisjunctCount.valueAt(cntRow), 2);
+    ASSERT_EQ(memory.orPendingBranches.runLen(
+        memory.orPendingBranches.lookup(cohortId)), 1);
+    ASSERT_EQ(memory.pendingOrReleases.count(), 0);
 }
 
 // Equal compiled OR signatures can be prepared under different validity
@@ -1678,6 +2564,43 @@ TEST(prover, or_integration_cleanup_is_parent_scoped) {
     ASSERT_FALSE(memory.intValidityNamesToFilter.contains(otherSignature));
 }
 
+// Normalize-recognize-skip: a head-switched mirror that is the same
+// statement up to bound-variable renaming (the totality shape) is
+// recognized as an alpha-variant; a mirror that swaps predicates (the
+// Peano or0 parents) or whose binder guards break the symmetry is not.
+TEST(prover, mirror_alpha_variant_recognition) {
+    gl::ExpressionAnalyzer analyzer("Peano");
+
+    // Totality shape: symmetric binder prefix, identical (in[.,1]) guards —
+    // the mirror renames 9<->10 and is the SAME statement.
+    const std::string totality =
+        "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])"
+        "(>[9](in[9,1])(>[10](in[10,1])"
+        "(>[]!(preorder[1,4,9,10])(preorder[1,4,10,9])))))";
+    const std::string totalityMirror = analyzer.headSwitchOne(totality);
+    ASSERT_TRUE(!totalityMirror.empty());
+    ASSERT_TRUE(analyzer.mirrorIsAlphaVariant(totality, totalityMirror));
+
+    // Peano or0 parent: the mirror swaps PREDICATES (=[7,2] vs existence3),
+    // not variables — a genuinely different statement.
+    const std::string or0Parent =
+        "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])"
+        "(>[7](in[7,1])(>[]!(=[7,2])(existence3[1,7,3]))))";
+    const std::string or0Mirror = analyzer.headSwitchOne(or0Parent);
+    ASSERT_TRUE(!or0Mirror.empty());
+    ASSERT_TRUE(!analyzer.mirrorIsAlphaVariant(or0Parent, or0Mirror));
+
+    // Broken symmetry: the second binder's guard (in2[10,9,3]) references
+    // the first variable, so no renaming maps the mirror onto the source.
+    const std::string asymmetric =
+        "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])"
+        "(>[9](in[9,1])(>[10](in2[10,9,3])"
+        "(>[]!(preorder[1,4,9,10])(preorder[1,4,10,9])))))";
+    const std::string asymmetricMirror = analyzer.headSwitchOne(asymmetric);
+    ASSERT_TRUE(!asymmetricMirror.empty());
+    ASSERT_TRUE(!analyzer.mirrorIsAlphaVariant(asymmetric, asymmetricMirror));
+}
+
 // A scoped goal can close from a fact that was already known at an ancestor
 // before the goal was prepared. Root-to-goal visibility selects main over a
 // nearer ancestor, and the emitted origin/levels identify that strongest
@@ -1707,7 +2630,7 @@ TEST(prover, ancestor_visible_goal_uses_shallowest_source) {
             gl::packStatementKey(knownExpressionId, validityId);
         memory.intKnownStatements.insert(
             gl::StatementKey{ knownExpressionId, validityId },
-            gl::StatementFlags{ true, false, true, true });
+            gl::StatementFlags{ true, false });
         memory.intStatementLevelsMap.insertSorted(packed, level);
     };
     addKnown(expressionId, mainId, 2);
@@ -1773,7 +2696,7 @@ TEST(prover, ancestor_visible_goal_closes_after_fact_arrival) {
         gl::packStatementKey(source.originalId, source.validityId);
     memory.intKnownStatements.insert(
         gl::StatementKey{ source.originalId, source.validityId },
-        gl::StatementFlags{ true, false, true, true });
+        gl::StatementFlags{ true, false });
     memory.intStatementLevelsMap.insertSorted(packedSource, 5);
     memory.intLocalEncodedStatementsDelta.push_back(source);
 
@@ -1830,7 +2753,7 @@ TEST(prover, sibling_fact_does_not_close_scoped_goal) {
         gl::packStatementKey(source.originalId, source.validityId);
     memory.intKnownStatements.insert(
         gl::StatementKey{ source.originalId, source.validityId },
-        gl::StatementFlags{ true, false, true, true });
+        gl::StatementFlags{ true, false });
     memory.intStatementLevelsMap.insertSorted(packedSource, 6);
     memory.intLocalEncodedStatementsDelta.push_back(source);
 
@@ -2594,7 +3517,7 @@ TEST(prover, check_for_equivalence_hits_existing_variant) {
     m.assignClassesById(gl::NameMap::MAIN_ID, { cls });
     gl::upsertStatementKey(m.intKnownStatements,
         gl::packStatementKey(m.nameMap.encode("(in2[b,7,3])"), gl::NameMap::MAIN_ID),
-        /*local=*/true, /*registered=*/true, /*known=*/true,
+        /*local=*/true,
         /*fullyDisintegrated=*/true);
 
     ASSERT_TRUE(ea.checkForEquivalence("(in2[a,7,3])", "main", m));
@@ -2613,7 +3536,7 @@ TEST(prover, check_for_equivalence_ignores_not_fully_disintegrated_variant) {
     // Variant registered, even local, but not fully disintegrated.
     gl::upsertStatementKey(m.intKnownStatements,
         gl::packStatementKey(m.nameMap.encode("(in2[b,7,3])"), gl::NameMap::MAIN_ID),
-        /*local=*/true, /*registered=*/true, /*known=*/true,
+        /*local=*/true,
         /*fullyDisintegrated=*/false);
 
     ASSERT_FALSE(ea.checkForEquivalence("(in2[a,7,3])", "main", m));
@@ -2630,7 +3553,7 @@ TEST(prover, check_for_equivalence_misses_unknown_variants) {
     m.assignClassesById(gl::NameMap::MAIN_ID, { cls });
     gl::upsertStatementKey(m.intKnownStatements,
         gl::packStatementKey(m.nameMap.encode("(in2[c,7,3])"), gl::NameMap::MAIN_ID),
-        /*local=*/true, /*registered=*/true, /*known=*/true,
+        /*local=*/true,
         /*fullyDisintegrated=*/true);
 
     ASSERT_FALSE(ea.checkForEquivalence("(in2[a,7,3])", "main", m));
@@ -2653,7 +3576,7 @@ TEST(prover_span_twins, check_for_equivalence_span_matches_string) {
         m.assignClassesById(gl::NameMap::MAIN_ID, { cls });
         gl::upsertStatementKey(m.intKnownStatements,
             gl::packStatementKey(m.nameMap.encode("(in2[b,7,3])"), gl::NameMap::MAIN_ID),
-            /*local=*/true, /*registered=*/true, /*known=*/true,
+            /*local=*/true,
             /*fullyDisintegrated=*/true);
         const bool viaString = ea.checkForEquivalence(exprStr, valStr, m);
         const bool viaSpan = ea.checkForEquivalence(
@@ -2669,7 +3592,7 @@ TEST(prover_span_twins, check_for_equivalence_span_matches_string) {
         m.assignClassesById(gl::NameMap::MAIN_ID, { cls });
         gl::upsertStatementKey(m.intKnownStatements,
             gl::packStatementKey(m.nameMap.encode("(in2[c,7,3])"), gl::NameMap::MAIN_ID),
-            /*local=*/true, /*registered=*/true, /*known=*/true,
+            /*local=*/true,
             /*fullyDisintegrated=*/true);
         const bool viaString = ea.checkForEquivalence(exprStr, valStr, m);
         const bool viaSpan = ea.checkForEquivalence(
@@ -2802,6 +3725,51 @@ TEST(prover, count_pattern_occurrences_matches_regex_oracle) {
     ASSERT_EQ(ea.countPatternOccurrences(gl::StrSpan(buf.data() + 2, 12),
                   m.overallHashMemory, m.nameMap),
               oracle(std::string(buf.data() + 2, 12)));
+}
+
+// enrichProductsOfRecursionFromChangedClasses
+// (D-285) — a changed MAIN-scope class holding a
+// productsOfRecursion member mints every classmate into the set; a class with
+// no product member and a non-main-scope class stay untouched.
+TEST(prover, classmate_por_enrichment) {
+    gl::ExpressionAnalyzer ea("Peano");
+    gl::Memory m;
+    // Intern "main" first so id 1 stays the MAIN scope (I-105).
+    const gl::NameId mainVid = m.nameMap.encode("main");
+    ASSERT_EQ(mainVid, gl::NameMap::MAIN_ID);
+    const gl::NameId a = m.nameMap.encode("9");
+    const gl::NameId b = m.nameMap.encode("it_0_lev_3_78");
+    const gl::NameId c = m.nameMap.encode("it_0_lev_4_94");
+    const gl::NameId d = m.nameMap.encode("it_0_lev_4_10");
+    const gl::NameId e = m.nameMap.encode("it_0_lev_4_11");
+    const gl::NameId f = m.nameMap.encode("it_0_lev_4_12");
+    const gl::NameId g = m.nameMap.encode("it_0_lev_4_13");
+    m.overallHashMemory.productsOfRecursionIds.mint(a);
+    m.overallHashMemory.productsOfRecursionIds.mint(f);
+
+    gl::EquivalenceClass cls1;   // holds the product a -> b, c minted
+    cls1.memberIds = { a, b, c };
+    m.changedClassesThisStep.push(gl::NameMap::MAIN_ID, cls1);
+    gl::EquivalenceClass cls2;   // no product member -> untouched
+    cls2.memberIds = { d, e };
+    m.changedClassesThisStep.push(gl::NameMap::MAIN_ID, cls2);
+    gl::EquivalenceClass cls3;   // non-main scope -> untouched despite f
+    cls3.memberIds = { f, g };
+    const gl::NameId hypoVid = m.nameMap.encode("main_hypo_x");
+    m.changedClassesThisStep.push(hypoVid, cls3);
+
+    ea.enrichProductsOfRecursionFromChangedClasses(m);
+
+    ASSERT_TRUE(m.overallHashMemory.productsOfRecursionIds.contains(b));
+    ASSERT_TRUE(m.overallHashMemory.productsOfRecursionIds.contains(c));
+    ASSERT_TRUE(!m.overallHashMemory.productsOfRecursionIds.contains(d));
+    ASSERT_TRUE(!m.overallHashMemory.productsOfRecursionIds.contains(e));
+    ASSERT_TRUE(!m.overallHashMemory.productsOfRecursionIds.contains(g));
+
+    // Idempotent: a second walk mints nothing new and keeps the verdicts.
+    ea.enrichProductsOfRecursionFromChangedClasses(m);
+    ASSERT_TRUE(m.overallHashMemory.productsOfRecursionIds.contains(b));
+    ASSERT_TRUE(!m.overallHashMemory.productsOfRecursionIds.contains(d));
 }
 
 // extractMaxIterationNumber (S6c item 6b) — the regex-free span form returns the
@@ -3058,6 +4026,14 @@ TEST(prover, apply_equi_admission_drops_and_rekeys) {
         gl::genScratchArenas().slotCount() - 1);
     gl::insertAdmissionValue(m.overallHashMemory.admissionMap, oldPk,
                              value, m.valueInterner, tArena);
+    // A second, ordis-tagged value on the same key: the re-key must CARRY
+    // the tag (an ordis demand stays an ordis demand under the canon name).
+    gl::AdmissionMapValue ordisValue;
+    ordisValue.key = encodeValueVectorOracle(
+        std::vector<std::string>{ "(in3[it_5_lev_1_2,9,3])" }, m.valueInterner);
+    ordisValue.ordisOnly = true;
+    gl::insertAdmissionValue(m.overallHashMemory.admissionMap, oldPk,
+                             ordisValue, m.valueInterner, tArena);
     m.overallHashMemory.admissionStatusMap.upsert(oldPk,
                                                   static_cast<uint8_t>(1));
     m.overallHashMemory.varsInAdmissionMapKeys.mint(
@@ -3085,44 +4061,629 @@ TEST(prover, apply_equi_admission_drops_and_rekeys) {
     ASSERT_TRUE(itStatus != nullptr);
     ASSERT_TRUE(*itStatus != 0);
     bool foundRewritten = false;
+    bool foundTaggedRewritten = false;
     const gl::AdmissionValueSet newAdmVals = gl::admissionRecordsAt(
         m.overallHashMemory.admissionMap, newPk, m.valueInterner);
     for (const gl::AdmissionMapValue& v : newAdmVals) {
         for (const int32_t elId : v.key) {
-            if (m.valueInterner.decode(elId) == "(in2[it_0_lev_1_2,7,3])") foundRewritten = true;
+            if (m.valueInterner.decode(elId) == "(in2[it_0_lev_1_2,7,3])") {
+                foundRewritten = true;
+                ASSERT_TRUE(!v.ordisOnly);
+            }
+            if (m.valueInterner.decode(elId) == "(in3[it_0_lev_1_2,9,3])") {
+                foundTaggedRewritten = true;
+                ASSERT_TRUE(v.ordisOnly);
+            }
         }
     }
     ASSERT_TRUE(foundRewritten);
+    ASSERT_TRUE(foundTaggedRewritten);
 }
+
+// admissionRunHasRegularValue — the value-level presence probe: false on a
+// never-minted key, false on an ordis-only run, true on a mixed run and on
+// an untagged-only run. The Pass-B parking rendezvous consumes this so an
+// ordis-only key never wakes the general rejectedMap.
+TEST(memory, admission_run_has_regular_value_probe) {
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 1 << 20, 1 << 18 });
+    gl::LbArena lb(&g);
+    gl::DirtyState d = gl::DirtyState::Clean;
+    gl::ColdStringTable valTable(&lb, &d);
+    gl::ValueInterner vi;
+    vi.bind(&valTable);
+    gl::TypedColdBlobMap<int64_t, gl::AdmissionMapValue> m(&lb, &d);
+    gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
+        gl::genScratchArenas().slotCount() - 1);
+
+    const int32_t k1 = vi.encode("(in2[marker,m,3])");
+    const int64_t pkOrdisOnly = 7;
+    const int64_t pkMixed = 8;
+    const int64_t pkRegular = 9;
+
+    // Never-minted key: defined miss.
+    ASSERT_TRUE(!gl::admissionRunHasRegularValue(m, pkOrdisOnly, tArena));
+
+    gl::AdmissionMapValue tagged({ k1 }, {}, 2, 3, false, true);
+    gl::AdmissionMapValue untagged({ k1 }, {}, 2, 3, false, false);
+
+    gl::insertAdmissionValue(m, pkOrdisOnly, tagged, vi, tArena);
+    ASSERT_TRUE(!gl::admissionRunHasRegularValue(m, pkOrdisOnly, tArena));
+
+    gl::insertAdmissionValue(m, pkMixed, tagged, vi, tArena);
+    gl::insertAdmissionValue(m, pkMixed, untagged, vi, tArena);
+    ASSERT_TRUE(gl::admissionRunHasRegularValue(m, pkMixed, tArena));
+
+    gl::insertAdmissionValue(m, pkRegular, untagged, vi, tArena);
+    ASSERT_TRUE(gl::admissionRunHasRegularValue(m, pkRegular, tArena));
+}
+
+// isAdmitted is BLIND to ordis-only runs: a key holding only tagged values
+// answers false (general Pass-B admission sees nothing), and the same key
+// answers true once an untagged value joins the run (the mixed-run case —
+// "untagged wins" is emergent, no flag rewrite involved).
+TEST(prover, is_admitted_blind_to_ordis_only_runs) {
+    gl::ExpressionAnalyzer ea("Peano");
+    gl::Memory m;
+    gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
+        gl::genScratchArenas().slotCount() - 1);
+
+    const int64_t markedPk = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+        "(in2[it_5_lev_1_2,marker,3])", "main");
+    m.overallHashMemory.admissionStatusMap.upsert(markedPk,
+                                                  static_cast<uint8_t>(0));
+
+    // Key elements deliberately unrelated to expr, so the match loop inside
+    // isAdmitted never fires updateAdmissionMap — the test isolates the
+    // tagged-value skip.
+    gl::AdmissionMapValue tagged;
+    tagged.key = encodeValueVectorOracle(
+        std::vector<std::string>{ "(in3[a,b,c,4])" }, m.valueInterner);
+    tagged.standardMaxAdmissionDepth = 30;
+    tagged.standardMaxSecondaryNumber = 1;
+    tagged.ordisOnly = true;
+    gl::insertAdmissionValue(m.overallHashMemory.admissionMap, markedPk,
+                             tagged, m.valueInterner, tArena);
+
+    // Named locals: StrSpan("literal") would bind the std::string ctor and
+    // dangle past the statement (09c pitfall 1).
+    const std::string exprStr = "(in2[it_5_lev_1_2,q_w,3])";
+    const std::string varStr = "q_w";
+    const std::string markedStr = "(in2[it_5_lev_1_2,marker,3])";
+    const std::string vldStr = "main";
+
+    ASSERT_TRUE(!ea.isAdmitted(m, gl::StrSpan(exprStr), gl::StrSpan(varStr),
+                               gl::StrSpan(markedStr), gl::StrSpan(vldStr)));
+
+    gl::AdmissionMapValue untagged = tagged;
+    untagged.ordisOnly = false;
+    gl::insertAdmissionValue(m.overallHashMemory.admissionMap, markedPk,
+                             untagged, m.valueInterner, tArena);
+
+    ASSERT_TRUE(ea.isAdmitted(m, gl::StrSpan(exprStr), gl::StrSpan(varStr),
+                              gl::StrSpan(markedStr), gl::StrSpan(vldStr)));
+}
+
+// isAdmittedIncludingAncestors walks the deposit scope's strict-ancestor
+// chain: a key at "main" admits a probe at a DESCENDANT validity that the
+// exact-validity probe alone misses (D-288 —
+// a fired demand key lands at deeperOf(subkey constituents) while the
+// witness-minting disintegration deposits in a descendant scope).
+TEST(prover, is_admitted_including_ancestors_walks_parent_scopes) {
+    gl::ExpressionAnalyzer ea("Peano");
+    gl::Memory m;
+    gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
+        gl::genScratchArenas().slotCount() - 1);
+
+    const int64_t markedPk = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+        "(in2[it_5_lev_1_2,marker,3])", "main");
+    m.overallHashMemory.admissionStatusMap.upsert(markedPk,
+                                                  static_cast<uint8_t>(0));
+
+    // Key elements deliberately unrelated to expr (as in the blind test),
+    // isolating the validity walk from the replKey propagation.
+    gl::AdmissionMapValue untagged;
+    untagged.key = encodeValueVectorOracle(
+        std::vector<std::string>{ "(in3[a,b,c,4])" }, m.valueInterner);
+    untagged.standardMaxAdmissionDepth = 30;
+    untagged.standardMaxSecondaryNumber = 1;
+    untagged.ordisOnly = false;
+    gl::insertAdmissionValue(m.overallHashMemory.admissionMap, markedPk,
+                             untagged, m.valueInterner, tArena);
+
+    const gl::NameId mainId = m.nameMap.encode(std::string("main"));
+    const gl::NameId childId =
+        m.nameMap.encodePush(mainId, std::string("childscope"));
+    const std::string childName = m.nameMap.decode(childId);
+
+    const std::string exprStr = "(in2[it_5_lev_1_2,q_w,3])";
+    const std::string varStr = "q_w";
+    const std::string markedStr = "(in2[it_5_lev_1_2,marker,3])";
+
+    // Exact-validity probe at the child scope: miss — the key lives at
+    // "main".
+    ASSERT_TRUE(!ea.isAdmitted(m, gl::StrSpan(exprStr), gl::StrSpan(varStr),
+                               gl::StrSpan(markedStr), gl::StrSpan(childName)));
+
+    // The ancestor-inclusive twin reaches the "main" key from the child
+    // scope.
+    ASSERT_TRUE(ea.isAdmittedIncludingAncestors(m, gl::StrSpan(exprStr),
+        gl::StrSpan(varStr), gl::StrSpan(markedStr), gl::StrSpan(childName)));
+}
+
+namespace {
+    /// Span run over caller-stable std::string storage for the ordis tests
+    /// (a StrSpan over a literal would dangle — 09c pitfall 1).
+    struct SpanRun {
+        std::vector<std::string> storage;
+        std::vector<gl::StrSpan> spans;
+        explicit SpanRun(std::vector<std::string> s) : storage(std::move(s)) {
+            for (const std::string& e : storage) spans.push_back(gl::StrSpan(e));
+        }
+        const gl::StrSpan* data() const { return spans.data(); }
+        int32_t count() const { return static_cast<int32_t>(spans.size()); }
+    };
+
+    /// Count encodedMap LMV records, split by the ordisOnly tag.
+    void countLmvRecords(gl::TypedColdBlobMap<gl::NormKey, gl::LocalMemoryValue>& em,
+                         int32_t& tagged, int32_t& untagged) {
+        tagged = 0;
+        untagged = 0;
+        for (int32_t id = 1; id <= em.count(); ++id) {
+            for (int32_t j = 0; j < em.runLen(id); ++j) {
+                const gl::LocalMemoryValue v = em.recordAt(id, j);
+                if (v.ordisOnly) ++tagged; else ++untagged;
+            }
+        }
+    }
+
+    /// True when an installed derivative LMV retains an anchor premise.
+    bool lmvKeyContainsAnchor(const gl::LocalMemoryValue& lmv,
+                              const gl::ValueInterner& interner) {
+        for (const int32_t id : lmv.keyIds) {
+            const std::string elem = interner.decode(id);
+            if (elem.rfind("(Anchor", 0) == 0) return true;
+        }
+        return false;
+    }
+} // namespace
+
+// Admission keys normalize equality classes rather than pinning source names.
+// A lone premise therefore cannot distinguish which anchor slot supplied an
+// argument. Retaining the anchor restores that distinction while preserving
+// ordinary alpha-renaming of the complete anchored key.
+TEST(prover, admission_normalization_retained_anchor_preserves_bindings) {
+    gl::ExpressionAnalyzer ea("Peano");
+    gl::Memory m;
+    const auto normalized = [&](const std::vector<std::string>& expressions) {
+        std::vector<gl::IntEncodedExpr> encoded;
+        encoded.reserve(expressions.size());
+        for (const std::string& expression : expressions) {
+            encoded.push_back(gl::encodeExpression(
+                gl::StrSpan(expression), gl::StrSpan("main", 4), m.nameMap));
+        }
+        gl::NameId buffer[gl::ExecutionParameters::MAX_KEY_SLOTS];
+        const gl::NameId length = ea.makeIntNormalizedKeyFromEncoded(
+            encoded.data(), static_cast<gl::NameId>(encoded.size()), false,
+            buffer, gl::ExecutionParameters::MAX_KEY_SLOTS);
+        return gl::NormKey{ static_cast<int32_t>(encoded.size()),
+                            std::vector<gl::NameId>(buffer, buffer + length) };
+    };
+
+    const gl::NormKey loneSlot6 = normalized({ "(preorder[1,4,6,9])" });
+    const gl::NormKey loneSlot2 = normalized({ "(preorder[1,4,2,9])" });
+    ASSERT_TRUE(loneSlot6 == loneSlot2);
+
+    const gl::NormKey anchoredSlot6 = normalized({
+        "(AnchorFTA[1,2,3,4,5,6,7,8])", "(preorder[1,4,6,9])" });
+    const gl::NormKey anchoredSlot2 = normalized({
+        "(AnchorFTA[1,2,3,4,5,6,7,8])", "(preorder[1,4,2,9])" });
+    ASSERT_FALSE(anchoredSlot6 == anchoredSlot2);
+
+    const gl::NormKey renamedSlot6 = normalized({
+        "(AnchorFTA[11,12,13,14,15,16,17,18])",
+        "(preorder[11,14,16,19])" });
+    ASSERT_TRUE(anchoredSlot6 == renamedSlot6);
+}
+
+// ordisRouteQualifies — the shape gate of the ordis-only admission route:
+// every non-anchor element + the head must be operator applications; the
+// count (head included, anchors excluded) must reach
+// kOrdisMinOperatorExpressions (4). Row 34 (3 premises + head) passes at
+// the boundary; equalities, typing atoms, and negations disqualify.
+TEST(prover, ordis_route_qualifies_predicate) {
+    gl::ExpressionAnalyzer ea("Peano");
+
+    const std::string head = "(in3[10,11,9,4])";
+
+    // Row-34 shape: 3 operator premises + operator head = 4 -> qualifies.
+    SpanRun row34({ "(in3[7,8,9,4])", "(in2[8,10,3])", "(in2[11,7,3])" });
+    ASSERT_TRUE(ea.ordisRouteQualifies(row34.data(), row34.count(),
+                                       gl::StrSpan(head)));
+
+    // Boundary fail: 2 premises + head = 3 < 4.
+    SpanRun threeOps({ "(in3[7,8,9,4])", "(in2[8,10,3])" });
+    ASSERT_TRUE(!ea.ordisRouteQualifies(threeOps.data(), threeOps.count(),
+                                        gl::StrSpan(head)));
+
+    // An anchor element is excluded from requirement AND count: anchor + 3
+    // premises + head still = 4 (passes); anchor + 2 premises + head = 3.
+    SpanRun withAnchor({ "(AnchorPeano[1,2,3,4,5,6])", "(in3[7,8,9,4])",
+                         "(in2[8,10,3])", "(in2[11,7,3])" });
+    ASSERT_TRUE(ea.ordisRouteQualifies(withAnchor.data(), withAnchor.count(),
+                                       gl::StrSpan(head)));
+    SpanRun anchorShort({ "(AnchorPeano[1,2,3,4,5,6])", "(in3[7,8,9,4])",
+                          "(in2[8,10,3])" });
+    ASSERT_TRUE(!ea.ordisRouteQualifies(anchorShort.data(), anchorShort.count(),
+                                        gl::StrSpan(head)));
+
+    // Non-operator elements disqualify: equality, typing atom, negation.
+    SpanRun withEquality({ "(in3[7,8,9,4])", "(in2[8,10,3])", "(=[11,7])" });
+    ASSERT_TRUE(!ea.ordisRouteQualifies(withEquality.data(),
+                                        withEquality.count(), gl::StrSpan(head)));
+    SpanRun withTyping({ "(in3[7,8,9,4])", "(in2[8,10,3])", "(in[11,1])" });
+    ASSERT_TRUE(!ea.ordisRouteQualifies(withTyping.data(), withTyping.count(),
+                                        gl::StrSpan(head)));
+    SpanRun withNegation({ "(in3[7,8,9,4])", "(in2[8,10,3])", "!(in2[11,7,3])" });
+    ASSERT_TRUE(!ea.ordisRouteQualifies(withNegation.data(),
+                                        withNegation.count(), gl::StrSpan(head)));
+
+    // Equality HEAD disqualifies.
+    const std::string eqHead = "(=[10,11])";
+    ASSERT_TRUE(!ea.ordisRouteQualifies(row34.data(), row34.count(),
+                                        gl::StrSpan(eqHead)));
+}
+
+// The ordis candidate loop end-to-end through makeNormalizedKeysForAdmission:
+// the row-34 shape (fails every regular gate) installs ordisOnly-tagged
+// marker LMVs for candidate 11 — at a config input slot of its premise,
+// present at a head input slot, confined, concrete. The per-candidate
+// negatives (head-slot miss, confinement, concreteness) install nothing.
+TEST(prover, ordis_route_installs_tagged_marker) {
+    const std::string vld = "main";
+    const std::string origImpl = "(row34-original)";
+    const auto install = [&](const std::vector<std::string>& key,
+                             const std::string& head, bool expectAnchor,
+                             int32_t& tagged, int32_t& untagged) {
+        gl::ExpressionAnalyzer ea("Peano");
+        gl::Memory m;
+        SpanRun run(key);
+        ea.makeNormalizedKeysForAdmission(run.data(), run.count(),
+            m.overallHashMemory, m.nameMap, m.ruleInterner,
+            gl::StrSpan(head), 2, gl::StrSpan(origImpl), gl::StrSpan(vld));
+        countLmvRecords(m.overallHashMemory.encodedMap, tagged, untagged);
+        for (int32_t id = 1; id <= m.overallHashMemory.encodedMap.count(); ++id) {
+            for (int32_t j = 0;
+                 j < m.overallHashMemory.encodedMap.runLen(id); ++j) {
+                const gl::LocalMemoryValue lmv =
+                    m.overallHashMemory.encodedMap.recordAt(id, j);
+                if (!lmv.ordisOnly) continue;
+                ASSERT_EQ(lmvKeyContainsAnchor(lmv, m.ruleInterner), expectAnchor);
+            }
+        }
+    };
+
+    int32_t tagged = 0, untagged = 0;
+
+    // Positive: candidate 11 in (in2[11,7,3]) — marker LMVs land tagged;
+    // the regular route contributes nothing (all regular gates fail).
+    install({ "(in3[7,8,9,4])", "(in2[8,10,3])", "(in2[11,7,3])" },
+            "(in3[10,11,9,4])", false, tagged, untagged);
+    ASSERT_TRUE(tagged > 0);
+    ASSERT_EQ(untagged, 0);
+
+    // The same non-anchor shape and eligibility count with an anchor retains
+    // that anchor in every installed ordis-only derivative key.
+    install({ "(AnchorPeano[1,2,3,4,5,6])", "(in3[7,8,9,4])",
+              "(in2[8,10,3])", "(in2[11,7,3])" },
+            "(in3[10,11,9,4])", true, tagged, untagged);
+    ASSERT_TRUE(tagged > 0);
+    ASSERT_EQ(untagged, 0);
+
+    // Head-slot negative: 11 not at a head input slot (head inputs {10,7};
+    // the 7 candidate then fails confinement against (in2[11,7,3])).
+    install({ "(in3[7,8,9,4])", "(in2[8,10,3])", "(in2[11,7,3])" },
+            "(in3[10,7,9,4])", false, tagged, untagged);
+    ASSERT_EQ(tagged, 0);
+    ASSERT_EQ(untagged, 0);
+
+    // Confinement negative: 11 also appears in the first premise.
+    install({ "(in3[11,8,9,4])", "(in2[8,10,3])", "(in2[11,7,3])" },
+            "(in3[10,11,9,4])", false, tagged, untagged);
+    ASSERT_EQ(tagged, 0);
+    ASSERT_EQ(untagged, 0);
+
+    // Concreteness negative: the marked premise's other arg 3 is bound
+    // nowhere in the subkey (premise 2 now carries 5 instead of 3).
+    install({ "(in3[7,8,9,4])", "(in2[8,10,5])", "(in2[11,7,3])" },
+            "(in3[10,11,9,4])", false, tagged, untagged);
+    ASSERT_EQ(tagged, 0);
+    ASSERT_EQ(untagged, 0);
+
+    // Shape negative: dropping a premise (3 operator expressions) installs
+    // nothing at all.
+    install({ "(in3[7,8,9,4])", "(in2[11,7,3])" },
+            "(in3[10,11,9,4])", false, tagged, untagged);
+    ASSERT_EQ(tagged, 0);
+    ASSERT_EQ(untagged, 0);
+}
+
+// The regular route never selects the anchor as the missing premise and keeps
+// it in the derivative key even when it contains the selected output argument.
+TEST(prover, regular_admission_route_retains_anchor_context) {
+    gl::ExpressionAnalyzer ea("Peano");
+    gl::Memory m;
+    SpanRun run({ "(AnchorPeano[1,2,3,4,5,6])", "(in2[7,2,3])",
+                  "(in2[9,10,3])", "(in2[11,12,3])",
+                  "(in3[13,14,15,4])", "(in3[16,17,18,4])" });
+    ea.makeNormalizedKeysForAdmission(run.data(), run.count(),
+        m.overallHashMemory, m.nameMap, m.ruleInterner,
+        gl::StrSpan("(=[1,1])"), 100, gl::StrSpan("(regular-original)"),
+        gl::StrSpan("main"));
+
+    int regularCount = 0;
+    bool foundAnchorBoundOutput = false;
+    for (int32_t id = 1; id <= m.overallHashMemory.encodedMap.count(); ++id) {
+        for (int32_t j = 0; j < m.overallHashMemory.encodedMap.runLen(id); ++j) {
+            const gl::LocalMemoryValue lmv =
+                m.overallHashMemory.encodedMap.recordAt(id, j);
+            if (lmv.ordisOnly || lmv.ordis2Demand) continue;
+            ++regularCount;
+            ASSERT_TRUE(lmvKeyContainsAnchor(lmv, m.ruleInterner));
+            const std::string value = m.ruleInterner.decode(lmv.valueId);
+            ASSERT_FALSE(value.rfind("(Anchor", 0) == 0);
+            if (value == "(in2[7,marker,3])") {
+                foundAnchorBoundOutput = true;
+                ASSERT_EQ(lmv.keyIds.size(), static_cast<std::size_t>(5));
+            }
+        }
+    }
+    ASSERT_TRUE(regularCount > 0);
+    ASSERT_TRUE(foundAnchorBoundOutput);
+}
+
+namespace {
+
+    /// Mint `main -> childscope` and return the child's canonical name.
+    std::string mintChildScope(gl::Memory& m, gl::NameId& childIdOut) {
+        const gl::NameId mainId = m.nameMap.encode(std::string("main"));
+        childIdOut = m.nameMap.encodePush(mainId, std::string("childscope"));
+        return m.nameMap.decode(childIdOut);
+    }
+
+} // namespace
 
 // applyEquivalenceClassToRejectedMap — drops the changed key and mails the
 // rewritten compound onto sameIterationInternalMail (drop + mail, never a
 // direct re-key into rejectedMap).
-TEST(prover, apply_equi_rejected_drops_and_mails) {
+// Re-key in place (D-308): a park whose key names a
+// non-canonical class member and whose rewritten product is not demanded is
+// re-inserted under the canonical key with every text rewritten, its levels
+// kept, and one complete `equality1` history row for the rewritten product
+// at the park scope; nothing is mailed.
+TEST(prover, apply_equi_rejected_rekeys_in_place_when_undemanded) {
     gl::ExpressionAnalyzer ea("Peano");
     gl::Memory m;
+    auto& rm = m.overallHashMemory.rejectedMap;
+
+    const int64_t oldPk = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+        "(in2[it_5_lev_1_2,marker,3])", "main");
+    gl::RejectedMapValue rv;
+    rv.expression = m.valueInterner.encode("(existence0[1,it_5_lev_1_2,3])");
+    rv.renamedExpression = m.valueInterner.encode("(in3[it_5_lev_1_2,7,3,plus])");
+    rv.concreteConstituent = rv.renamedExpression;
+    rv.siblings = { m.valueInterner.encode("(in[it_9_lev_1_1,1])") };
+    rv.levels = std::set<int>{ 0 };
+    gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
+        gl::genScratchArenas().slotCount() - 1);
+    gl::insertRejectedValue(rm, oldPk, rv, m.valueInterner, tArena);
+
+    gl::EquivalenceClass cls;
+    cls.setMembersFromNames({ "it_0_lev_1_2", "it_5_lev_1_2" }, m.nameMap);
+
+    gl::DirtyState bucketDirty = gl::DirtyState::Clean;
+    gl::RejectedValidityBuckets buckets(&tArena, &bucketDirty);
+    const int32_t hits =
+        ea.applyEquivalenceClassToRejectedMap(cls, m, gl::StrSpan("main", 4), buckets);
+    ASSERT_EQ(hits, 1);
+
+    // Old key gone, canonical key present with the rewritten record.
+    ASSERT_TRUE(rm.lookup(oldPk) == 0);
+    int64_t newPk = 0;
+    ASSERT_TRUE(gl::lookupTemplateKey(m.templateInterner, m.nameMap,
+        gl::StrSpan(std::string("(in2[it_0_lev_1_2,marker,3])")), gl::StrSpan("main", 4), newPk));
+    ASSERT_TRUE(rm.lookup(newPk) != 0);
+    ASSERT_EQ(rm.count(), 1);
+    const gl::RejectedValueSet recs = gl::rejectedRecordsAt(rm, newPk, m.valueInterner);
+    ASSERT_EQ(recs.size(), static_cast<std::size_t>(1));
+    const gl::RejectedMapValue& v = *recs.begin();
+    ASSERT_TRUE(m.valueInterner.decode(v.expression) == "(existence0[1,it_0_lev_1_2,3])");
+    ASSERT_TRUE(m.valueInterner.decode(v.renamedExpression) == "(in3[it_0_lev_1_2,7,3,plus])");
+    ASSERT_TRUE(m.valueInterner.decode(v.concreteConstituent) == "(in3[it_0_lev_1_2,7,3,plus])");
+    ASSERT_EQ(v.siblings.size(), static_cast<std::size_t>(1));
+    ASSERT_TRUE(m.valueInterner.decode(v.siblings[0]) == "(in[it_9_lev_1_1,1])");
+    ASSERT_TRUE(v.levels == (std::set<int>{ 0 }));
+    ASSERT_TRUE(m.mutatedThisBurst);
+
+    // Nothing mailed.
+    ASSERT_EQ(gl::decodeInternalMailStatements(m.sameIterationInternalMail,
+        m.nameMap).size(), static_cast<std::size_t>(0));
+
+    // One complete equality1 row for the rewritten product at the park scope:
+    // source = the pre-rewrite product, justifier = the pair that fired. The
+    // unchanged sibling gets no row.
+    const auto rows = gl::decodeOriginMapSorted(m.exprOriginMap, m.originInterner);
+    ASSERT_EQ(rows.size(), static_cast<std::size_t>(1));
+    ASSERT_TRUE(rows[0].first.first == "(in3[it_0_lev_1_2,7,3,plus])");
+    ASSERT_TRUE(rows[0].first.second == "main");
+    ASSERT_EQ(rows[0].second.size(), static_cast<std::size_t>(1));
+    ASSERT_TRUE(rows[0].second[0].first == "equality1");
+    ASSERT_EQ(rows[0].second[0].second.size(), static_cast<std::size_t>(2));
+    ASSERT_TRUE(rows[0].second[0].second[0].original == "(in3[it_5_lev_1_2,7,3,plus])");
+    ASSERT_TRUE(rows[0].second[0].second[0].validityName == "main");
+    ASSERT_TRUE(rows[0].second[0].second[1].original == "(=[it_5_lev_1_2,it_0_lev_1_2])");
+    ASSERT_TRUE(rows[0].second[0].second[1].validityName == "main");
+}
+
+// Site-F parity: a park whose rewritten compound is already local at the
+// scope (or known at a strict ancestor) is dropped, not re-keyed — exactly
+// what the absorb did to the re-sent compound.
+TEST(prover, apply_equi_rejected_drops_park_covered_by_known_compound) {
+    gl::ExpressionAnalyzer ea("Peano");
+    gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
+        gl::genScratchArenas().slotCount() - 1);
+    auto park = [&](gl::Memory& m, const char* scope) {
+        const int64_t pk = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+            "(in2[it_5_lev_1_2,marker,3])", scope);
+        gl::RejectedMapValue rv;
+        rv.expression = m.valueInterner.encode("(existence0[1,it_5_lev_1_2,3])");
+        rv.renamedExpression = m.valueInterner.encode("(in3[it_5_lev_1_2,7,3,plus])");
+        rv.concreteConstituent = rv.renamedExpression;
+        rv.levels = std::set<int>{ 0 };
+        gl::insertRejectedValue(m.overallHashMemory.rejectedMap, pk, rv,
+                                m.valueInterner, tArena);
+        return pk;
+    };
+    auto classOf = [&](gl::Memory& m) {
+        gl::EquivalenceClass cls;
+        cls.setMembersFromNames({ "it_0_lev_1_2", "it_5_lev_1_2" }, m.nameMap);
+        return cls;
+    };
+
+    // (a) rewritten compound LOCAL at the park scope -> dropped.
+    {
+        gl::Memory m;
+        const int64_t pk = park(m, "main");
+        const gl::NameId mainId = m.nameMap.encode(std::string("main"));
+        const gl::NameId cId = m.nameMap.encode(std::string("(existence0[1,it_0_lev_1_2,3])"));
+        gl::upsertStatementKey(m.intKnownStatements,
+            gl::packStatementKey(cId, mainId), /*local=*/true);
+        m.intLocalEncodedStatementsSet.mint(gl::packStatementKey(cId, mainId));
+        const gl::EquivalenceClass cls = classOf(m);
+        gl::DirtyState d = gl::DirtyState::Clean;
+        gl::RejectedValidityBuckets b(&tArena, &d);
+        ASSERT_EQ(ea.applyEquivalenceClassToRejectedMap(cls, m, gl::StrSpan("main", 4), b), 1);
+        ASSERT_TRUE(m.overallHashMemory.rejectedMap.lookup(pk) == 0);
+        ASSERT_EQ(m.overallHashMemory.rejectedMap.count(), 0);
+        ASSERT_EQ(gl::decodeInternalMailStatements(m.sameIterationInternalMail,
+            m.nameMap).size(), static_cast<std::size_t>(0));
+        ASSERT_EQ(gl::decodeOriginMapSorted(m.exprOriginMap, m.originInterner).size(),
+                  static_cast<std::size_t>(0));
+    }
+    // (b) rewritten compound KNOWN at a strict ancestor of the park scope -> dropped.
+    {
+        gl::Memory m;
+        gl::NameId childId = 0;
+        const std::string childName = mintChildScope(m, childId);
+        const int64_t pk = park(m, childName.c_str());
+        const gl::NameId mainId = m.nameMap.encode(std::string("main"));
+        const gl::NameId cId = m.nameMap.encode(std::string("(existence0[1,it_0_lev_1_2,3])"));
+        gl::upsertStatementKey(m.intKnownStatements,
+            gl::packStatementKey(cId, mainId), /*local=*/false);
+        const gl::EquivalenceClass cls = classOf(m);
+        gl::DirtyState d = gl::DirtyState::Clean;
+        gl::RejectedValidityBuckets b(&tArena, &d);
+        ASSERT_EQ(ea.applyEquivalenceClassToRejectedMap(cls, m, gl::StrSpan(childName), b), 1);
+        ASSERT_TRUE(m.overallHashMemory.rejectedMap.lookup(pk) == 0);
+        ASSERT_EQ(m.overallHashMemory.rejectedMap.count(), 0);
+    }
+    // (c) rewritten compound known at the park scope but NOT local (mailed in)
+    //     -> re-keyed (the absorb would have wiped and re-disintegrated it).
+    {
+        gl::Memory m;
+        const int64_t pk = park(m, "main");
+        const gl::NameId mainId = m.nameMap.encode(std::string("main"));
+        const gl::NameId cId = m.nameMap.encode(std::string("(existence0[1,it_0_lev_1_2,3])"));
+        gl::upsertStatementKey(m.intKnownStatements,
+            gl::packStatementKey(cId, mainId), /*local=*/false);
+        const gl::EquivalenceClass cls = classOf(m);
+        gl::DirtyState d = gl::DirtyState::Clean;
+        gl::RejectedValidityBuckets b(&tArena, &d);
+        ASSERT_EQ(ea.applyEquivalenceClassToRejectedMap(cls, m, gl::StrSpan("main", 4), b), 1);
+        ASSERT_TRUE(m.overallHashMemory.rejectedMap.lookup(pk) == 0);
+        ASSERT_EQ(m.overallHashMemory.rejectedMap.count(), 1);
+    }
+}
+
+// D-280 under the re-key: the re-keyed record's level run is the parked run
+// UNIONED with the fired pair's stored levels.
+TEST(prover, apply_equi_rejected_rekey_unions_pair_levels) {
+    gl::ExpressionAnalyzer ea("Peano");
+    gl::Memory m;
+    auto& rm = m.overallHashMemory.rejectedMap;
 
     const int64_t oldPk = gl::mintTemplateKey(m.templateInterner, m.nameMap,
         "(in2[it_5_lev_1_2,marker,3])", "main");
     gl::RejectedMapValue rv;
     rv.expression = m.valueInterner.encode("(in3[it_5_lev_1_2,7,3,plus])");
-    rv.renamedExpression = m.valueInterner.encode("(in3[it_5_lev_1_2,7,3,plus])");
-    rv.concreteConstituent = m.valueInterner.encode("(in3[it_5_lev_1_2,7,3,plus])");
+    rv.renamedExpression = rv.expression;
+    rv.concreteConstituent = rv.expression;
     rv.levels = std::set<int>{ 0 };
     gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
         gl::genScratchArenas().slotCount() - 1);
-    gl::insertRejectedValue(m.overallHashMemory.rejectedMap, oldPk,
-                            rv, m.valueInterner, tArena);
+    gl::insertRejectedValue(rm, oldPk, rv, m.valueInterner, tArena);
+
+    gl::EquivalenceClass cls;
+    cls.setMembersFromNames({ "it_0_lev_1_2", "it_5_lev_1_2" }, m.nameMap);
+    cls.intEqualityLevelsMap[gl::packEqPairKey(
+        m.nameMap.encode("it_0_lev_1_2"),
+        m.nameMap.encode("it_5_lev_1_2"))] = std::set<int>{ 1, 3 };
+
+    gl::DirtyState bucketDirty = gl::DirtyState::Clean;
+    gl::RejectedValidityBuckets buckets(&tArena, &bucketDirty);
+    ea.applyEquivalenceClassToRejectedMap(cls, m, gl::StrSpan("main", 4), buckets);
+
+    int64_t newPk = 0;
+    ASSERT_TRUE(gl::lookupTemplateKey(m.templateInterner, m.nameMap,
+        gl::StrSpan(std::string("(in2[it_0_lev_1_2,marker,3])")), gl::StrSpan("main", 4), newPk));
+    const gl::RejectedValueSet recs = gl::rejectedRecordsAt(rm, newPk, m.valueInterner);
+    ASSERT_EQ(recs.size(), static_cast<std::size_t>(1));
+    ASSERT_TRUE(recs.begin()->levels == (std::set<int>{ 0, 1, 3 }));
+}
+
+// The fork: a rewritten product that is demanded right now (a regular
+// admission entry under the canonical key at the park scope) takes the old
+// path — the key is dropped and the rewritten compound is mailed with its
+// equality1 history line, so the absorb's Pass B admits it; no park is
+// written under the canonical key.
+TEST(prover, apply_equi_rejected_demanded_compound_still_mails) {
+    gl::ExpressionAnalyzer ea("Peano");
+    gl::Memory m;
+    auto& rm = m.overallHashMemory.rejectedMap;
+    gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
+        gl::genScratchArenas().slotCount() - 1);
+
+    const int64_t oldPk = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+        "(in2[it_5_lev_1_2,marker,3])", "main");
+    gl::RejectedMapValue rv;
+    rv.expression = m.valueInterner.encode("(in3[it_5_lev_1_2,7,3,plus])");
+    rv.renamedExpression = rv.expression;
+    rv.concreteConstituent = rv.expression;
+    rv.levels = std::set<int>{ 0 };
+    gl::insertRejectedValue(rm, oldPk, rv, m.valueInterner, tArena);
+
+    // The demand: a regular admission entry under the canonical key.
+    const int64_t demandPk = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+        "(in2[it_0_lev_1_2,marker,3])", "main");
+    gl::AdmissionMapValue value;
+    value.key = encodeValueVectorOracle(
+        std::vector<std::string>{ "(in2[it_0_lev_1_2,7,3])" }, m.valueInterner);
+    gl::insertAdmissionValue(m.overallHashMemory.admissionMap, demandPk,
+                             value, m.valueInterner, tArena);
 
     gl::EquivalenceClass cls;
     cls.setMembersFromNames({ "it_0_lev_1_2", "it_5_lev_1_2" }, m.nameMap);
 
-    ea.applyEquivalenceClassToRejectedMap(cls, m, gl::StrSpan("main", 4));
+    gl::DirtyState bucketDirty = gl::DirtyState::Clean;
+    gl::RejectedValidityBuckets buckets(&tArena, &bucketDirty);
+    const int32_t hits =
+        ea.applyEquivalenceClassToRejectedMap(cls, m, gl::StrSpan("main", 4), buckets);
+    ASSERT_EQ(hits, 1);
 
-    // Old key dropped (never re-keyed directly into rejectedMap).
-    ASSERT_TRUE(m.overallHashMemory.rejectedMap.lookup(oldPk) == 0);
+    ASSERT_TRUE(rm.lookup(oldPk) == 0);
+    ASSERT_TRUE(rm.lookup(demandPk) == 0);   // no park under the canonical key
+    ASSERT_EQ(rm.count(), 0);
 
-    // Rewritten compound mailed onto sameIterationInternalMail at "main".
     bool foundMail = false;
     const gl::Mail mailSnap = gl::makeHeapMail(m.sameIterationInternalMail,
                                                m.nameMap, m.originInterner);
@@ -3130,16 +4691,97 @@ TEST(prover, apply_equi_rejected_drops_and_mails) {
         if (pr.first.original == "(in3[it_0_lev_1_2,7,3,plus])"
             && pr.first.validityName == "main") {
             foundMail = true;
+            ASSERT_TRUE(pr.second == (std::set<int>{ 0 }));
         }
     }
     ASSERT_TRUE(foundMail);
+    bool foundOrigin = false;
+    for (const auto& o : mailSnap.exprOriginMap) {
+        if (o.first.original == "(in3[it_0_lev_1_2,7,3,plus])"
+            && o.first.validityName == "main") {
+            foundOrigin = true;
+            ASSERT_EQ(o.second.size(), static_cast<std::size_t>(1));
+            ASSERT_TRUE(o.second[0].first == "equality1");
+            ASSERT_EQ(o.second[0].second.size(), static_cast<std::size_t>(2));
+            ASSERT_TRUE(o.second[0].second[0].original == "(in3[it_5_lev_1_2,7,3,plus])");
+            ASSERT_TRUE(o.second[0].second[1].original == "(=[it_5_lev_1_2,it_0_lev_1_2])");
+        }
+    }
+    ASSERT_TRUE(foundOrigin);
+    // The re-key writes no exprOriginMap row on this route.
+    ASSERT_EQ(gl::decodeOriginMapSorted(m.exprOriginMap, m.originInterner).size(),
+              static_cast<std::size_t>(0));
 }
 
-// addInternalMailOrigin's D-49 cap-full preference (the new id-form wrapper):
-// below cap append-if-absent; at cap a foundation (non-convenience) record
-// displaces the first equality-convenience slot; a duplicate or another
-// convenience record cannot. Read back through makeHeapMail (id -> string).
-TEST(memory, internal_mail_origin_cap_full_preference) {
+// Integration twin: the park is re-keyed under the bare canonical key with
+// concrete / compound / siblings rewritten, the canonical key's arguments
+// join varsInRejectedMapIntegrationKeys, the rewritten product gets its
+// equality1 row, the unchanged sibling none; nothing is mailed.
+TEST(prover, apply_equi_rejected_integration_rekeys_in_place) {
+    gl::ExpressionAnalyzer ea("Peano");
+    gl::Memory m;
+    auto& rmi = m.overallHashMemory.rejectedMapIntegration;
+    gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
+        gl::genScratchArenas().slotCount() - 1);
+
+    const std::string marked   = "(in2[q,marker,3])";
+    const std::string concrete = "(in2[q,int_lev_1_9,3])";
+    const std::string compound = "(existence0[1,q,3])";
+    const std::string sibling  = "(in[int_lev_1_9,1])";
+    const int32_t sibIds[1] = { m.valueInterner.encode(gl::StrSpan(sibling)) };
+    const int64_t oldPk = gl::mintTemplateKey(m.templateInterner, m.nameMap,
+                                              marked, std::string("main"));
+    gl::insertRejectedIntegrationIdsBlob(rmi, oldPk,
+        m.valueInterner.encode(gl::StrSpan(concrete)),
+        m.valueInterner.encode(gl::StrSpan(compound)),
+        sibIds, 1, m.valueInterner, tArena);
+    m.overallHashMemory.varsInRejectedMapIntegrationKeys.mint(
+        m.templateInterner.encode("q"));
+
+    gl::EquivalenceClass cls;
+    cls.setMembersFromNames({ "p", "q" }, m.nameMap);   // canonical: p
+
+    gl::DirtyState bucketDirty = gl::DirtyState::Clean;
+    gl::RejectedValidityBuckets buckets(&tArena, &bucketDirty);
+    const int32_t hits = ea.applyEquivalenceClassToRejectedMapIntegration(
+        cls, m, gl::StrSpan("main", 4), buckets);
+    ASSERT_EQ(hits, 1);
+
+    ASSERT_TRUE(rmi.lookup(oldPk) == 0);
+    int64_t newPk = 0;
+    ASSERT_TRUE(gl::lookupTemplateKey(m.templateInterner, m.nameMap,
+        gl::StrSpan(std::string("(in2[p,marker,3])")), gl::StrSpan("main", 4), newPk));
+    ASSERT_TRUE(rmi.lookup(newPk) != 0);
+    ASSERT_EQ(rmi.count(), 1);
+    const gl::RejectedIntegrationValueSet recs =
+        gl::rejectedIntegrationRecordsAt(rmi, newPk, m.valueInterner);
+    ASSERT_EQ(recs.size(), static_cast<std::size_t>(1));
+    const gl::RejectedMapIntegrationValue& v = *recs.begin();
+    ASSERT_TRUE(m.valueInterner.decode(v.concreteConstituent) == "(in2[p,int_lev_1_9,3])");
+    ASSERT_TRUE(m.valueInterner.decode(v.compoundExpression) == "(existence0[1,p,3])");
+    ASSERT_EQ(v.siblings.size(), static_cast<std::size_t>(1));
+    ASSERT_TRUE(m.valueInterner.decode(v.siblings[0]) == sibling);
+    ASSERT_TRUE(m.overallHashMemory.varsInRejectedMapIntegrationKeys.contains(
+        m.templateInterner.lookup(gl::StrSpan("p", 1))));
+    ASSERT_TRUE(m.mutatedThisBurst);
+    ASSERT_EQ(gl::decodeInternalMailStatements(m.sameIterationInternalMail,
+        m.nameMap).size(), static_cast<std::size_t>(0));
+
+    const auto rows = gl::decodeOriginMapSorted(m.exprOriginMap, m.originInterner);
+    ASSERT_EQ(rows.size(), static_cast<std::size_t>(1));
+    ASSERT_TRUE(rows[0].first.first == "(in2[p,int_lev_1_9,3])");
+    ASSERT_TRUE(rows[0].first.second == "main");
+    ASSERT_EQ(rows[0].second.size(), static_cast<std::size_t>(1));
+    ASSERT_TRUE(rows[0].second[0].first == "equality1");
+    ASSERT_EQ(rows[0].second[0].second.size(), static_cast<std::size_t>(2));
+    ASSERT_TRUE(rows[0].second[0].second[0].original == concrete);
+    ASSERT_TRUE(rows[0].second[0].second[1].original == "(=[q,p])");
+}
+
+// addInternalMailOrigin's cap policy (the id-form wrapper): below the cap
+// append-if-absent; at the cap the existing rows win — a duplicate or any
+// newcomer is dropped. Read back through makeHeapMail (id -> string).
+TEST(memory, internal_mail_origin_cap_existing_wins) {
     gl::Memory m;
     gl::ColdMail& cm = m.sameIterationInternalMail;
     const gl::ExpressionWithValidity k("(h[1])", "main");
@@ -3156,14 +4798,14 @@ TEST(memory, internal_mail_origin_cap_full_preference) {
     gl::addInternalMailOrigin(cm, m.originInterner, k, line("equality1", "q", "main"), cap);
     gl::addInternalMailOrigin(cm, m.originInterner, k, line("disintegration", "p", "main"), cap); // dup
     gl::addInternalMailOrigin(cm, m.originInterner, k, line("premise", "r", "main"), cap);
-    gl::addInternalMailOrigin(cm, m.originInterner, k, line("equality2", "s", "main"), cap); // can't displace
+    gl::addInternalMailOrigin(cm, m.originInterner, k, line("equality2", "s", "main"), cap); // dropped
 
     const gl::Mail hm = gl::makeHeapMail(cm, m.nameMap, m.originInterner);
     auto it = hm.exprOriginMap.find(k);
     ASSERT_TRUE(it != hm.exprOriginMap.end());
     ASSERT_EQ(static_cast<int>(it->second.size()), 2);
     ASSERT_TRUE(it->second[0].first == "disintegration");
-    ASSERT_TRUE(it->second[1].first == "premise");   // equality1 displaced
+    ASSERT_TRUE(it->second[1].first == "equality1");   // existing rows win
 }
 
 // insertInternalStatement span door (L4 statement sink): the StrSpan overload
@@ -3427,22 +5069,23 @@ TEST(memory, insert_admission_ids_blob_matches_value_form) {
     const int32_t k2 = vi.encode("aa_key");
     const int32_t r1 = vi.encode("mm_rem");
     const int32_t r2 = vi.encode("bb_rem");
-    struct Rec { std::vector<int32_t> key; std::vector<int32_t> rem; int depth; int sec; bool flag; };
+    struct Rec { std::vector<int32_t> key; std::vector<int32_t> rem; int depth; int sec; bool flag; bool ordis; };
     const std::vector<Rec> recs = {
-        { {k1, k2}, {r1, r2}, 3, 4, false },
-        { {k2}, {}, 1, 2, true },              // empty rem
-        { {}, {r2}, 5, 0, false },             // empty key
-        { {k1}, {r1}, 7, 8, true },
-        { {k1, k2}, {r1, r2}, 3, 4, false },   // duplicate of the first
+        { {k1, k2}, {r1, r2}, 3, 4, false, false },
+        { {k2}, {}, 1, 2, true, false },              // empty rem
+        { {}, {r2}, 5, 0, false, false },             // empty key
+        { {k1}, {r1}, 7, 8, true, false },
+        { {k1, k2}, {r1, r2}, 3, 4, false, false },   // duplicate of the first
+        { {k1, k2}, {r1, r2}, 3, 4, false, true },    // ordis twin of the first
     };
     const int64_t pk = 42;
     for (const Rec& rc : recs) {
-        gl::AdmissionMapValue v(rc.key, rc.rem, rc.depth, rc.sec, rc.flag);
+        gl::AdmissionMapValue v(rc.key, rc.rem, rc.depth, rc.sec, rc.flag, rc.ordis);
         gl::insertAdmissionValue(mapV, pk, v, vi, tArena);
         gl::insertAdmissionIdsBlob(mapB, pk, rc.depth, rc.sec, rc.flag,
             rc.key.empty() ? nullptr : rc.key.data(), static_cast<int32_t>(rc.key.size()),
             rc.rem.empty() ? nullptr : rc.rem.data(), static_cast<int32_t>(rc.rem.size()),
-            vi, tArena);
+            vi, tArena, rc.ordis);
     }
     const int32_t idV = mapV.lookup(pk);
     const int32_t idB = mapB.lookup(pk);
@@ -3648,7 +5291,7 @@ TEST(memory, snapshot_rejected_integration_run_matches_set) {
 
 // serializeMailOriginTo (batch3 row 225): the stack-buffer serializer emits the
 // exact bytes Codec<IntMailOrigin>::serialize produces — the oracle — across
-// empty, single, and multi-dependency records, including the D-49 policy's
+// empty, single, and multi-dependency records, including the at-cap policy's
 // equality1/equality2 convenience tags.
 TEST(memory, serialize_mail_origin_to_matches_codec) {
     const std::vector<gl::IntMailOrigin> cases = {
@@ -3684,28 +5327,12 @@ static void addMailOriginRecordHeapOracle(
         else col.assignRun(key, std::vector<gl::IntMailOrigin>{ record });
         return;
     }
-    if (std::find(vec.begin(), vec.end(), record) != vec.end()) return;
-    auto isEqualityConvenienceTag = [](uint8_t tag) {
-        return tag == static_cast<uint8_t>(gl::OriginTag::equality1)
-            || tag == static_cast<uint8_t>(gl::OriginTag::equality2);
-    };
-    if (!isEqualityConvenienceTag(record.tag)) {
-        std::vector<gl::IntMailOrigin> updated = vec;
-        for (gl::IntMailOrigin& slot : updated) {
-            if (isEqualityConvenienceTag(slot.tag)) {
-                slot = record;
-                col.assignRun(key, updated);
-                return;
-            }
-        }
-    }
+    // At the cap the existing rows win: nothing is written.
 }
 
 // addMailOriginRecord (batch3 row 225): the stack-buffer RMW writes runs
-// byte-identical to the heap oracle across every D-49 policy branch:
-// append-new-key, append-existing, dedup no-op, cap-full convenience-replace,
-// cap-full existing-wins (convenience-tag new record), and cap-full with no
-// convenience slot left.
+// byte-identical to the heap oracle across every at-cap policy branch:
+// append-new-key, append-existing, dedup no-op, and cap-full drops (existing rows win).
 TEST(memory, add_mail_origin_record_rmw_matches_heap) {
     gl::GlobalMemoryManager g;
     g.init(gl::StaticMemoryConfig{ 1 << 20, 1 << 18 });
@@ -3751,10 +5378,10 @@ TEST(memory, add_mail_origin_record_rmw_matches_heap) {
     step(B);   // append on an existing key (below cap)
     step(A);   // duplicate — the no-op insert
     step(C);   // append reaching the cap (empty-deps blob)
-    step(D);   // cap-full: non-convenience displaces the equality1 slot (B)
-    step(E);   // cap-full: convenience-tag new record — existing wins, no write
+    step(D);   // cap-full: dropped — existing rows win
+    step(E);   // cap-full: dropped — existing rows win
     step(D);   // cap-full duplicate — no-op
-    step(F);   // cap-full: no convenience slot left — no write
+    step(F);   // cap-full: dropped — existing rows win
 }
 
 // serializeOriginTo (batch3 row 227): the stack-buffer serializer emits the
@@ -3793,25 +5420,11 @@ static void addOriginIdColdHeapOracle(
         else map.assignRun(key, std::vector<gl::IdOrigin>{ origin });
         return;
     }
-    if (std::find(vec.begin(), vec.end(), origin) != vec.end()) return;
-    auto isEqualityConvenienceTag = [](gl::OriginTag tag) {
-        return tag == gl::OriginTag::equality1
-            || tag == gl::OriginTag::equality2;
-    };
-    if (!isEqualityConvenienceTag(origin.first)) {
-        std::vector<gl::IdOrigin> updated = vec;
-        for (auto& slot : updated) {
-            if (isEqualityConvenienceTag(slot.first)) {
-                slot = origin;
-                map.assignRun(key, updated);
-                return;
-            }
-        }
-    }
+    // At the cap the existing rows win: nothing is written.
 }
 
 // addOriginId cold overload (batch3 row 227): the stack-buffer RMW writes runs
-// byte-identical to the heap oracle across every D-49 policy branch (same
+// byte-identical to the heap oracle across every at-cap policy branch (same
 // battery as the addMailOriginRecord twin).
 TEST(memory, add_origin_id_cold_rmw_matches_heap) {
     gl::GlobalMemoryManager g;
@@ -3858,10 +5471,10 @@ TEST(memory, add_origin_id_cold_rmw_matches_heap) {
     step(B);   // append on an existing key (below cap)
     step(A);   // duplicate — the no-op insert
     step(C);   // append reaching the cap (empty-deps blob)
-    step(D);   // cap-full: non-convenience displaces the equality1 slot (B)
-    step(E);   // cap-full: convenience-tag new record — existing wins, no write
+    step(D);   // cap-full: dropped — existing rows win
+    step(E);   // cap-full: dropped — existing rows win
     step(D);   // cap-full duplicate — no-op
-    step(F);   // cap-full: no convenience slot left — no write
+    step(F);   // cap-full: dropped — existing rows win
 }
 
 // ---- Batch6 c5: origin POD dep-run substrate twins ----
@@ -3955,7 +5568,7 @@ TEST(memory, add_origin_id_cold_pod_matches_idorigin) {
     step(gl::IdOrigin(gl::OriginTag::equality1, { 3 }));
     step(gl::IdOrigin(gl::OriginTag::disintegration, { 1, 2 }));  // dup
     step(gl::IdOrigin(gl::OriginTag::theorem, {}));               // reach cap
-    step(gl::IdOrigin(gl::OriginTag::premise, { 4, 5, 6 }));      // displace eq1
+    step(gl::IdOrigin(gl::OriginTag::premise, { 4, 5, 6 }));      // dropped (existing wins)
     step(gl::IdOrigin(gl::OriginTag::equality2, { 9 }));          // conv -> existing wins
     step(gl::IdOrigin(gl::OriginTag::premise, { 4, 5, 6 }));      // cap-full dup
     step(gl::IdOrigin(gl::OriginTag::broadcast, { 7 }));          // no conv slot left
@@ -4003,7 +5616,7 @@ TEST(memory, add_mail_origin_record_pod_matches_intmailorigin) {
     step({ static_cast<uint8_t>(gl::OriginTag::equality1), { 3 } });
     step({ static_cast<uint8_t>(gl::OriginTag::disintegration), { 1, 2 } }); // dup
     step({ static_cast<uint8_t>(gl::OriginTag::theorem), {} });              // reach cap
-    step({ static_cast<uint8_t>(gl::OriginTag::premise), { 4, 5, 6 } });     // displace eq1
+    step({ static_cast<uint8_t>(gl::OriginTag::premise), { 4, 5, 6 } });     // dropped (existing wins)
     step({ static_cast<uint8_t>(gl::OriginTag::equality2), { 9 } });         // conv -> existing
     step({ static_cast<uint8_t>(gl::OriginTag::premise), { 4, 5, 6 } });     // cap-full dup
     step({ static_cast<uint8_t>(gl::OriginTag::broadcast), { 7 } });         // no conv slot
@@ -4038,7 +5651,7 @@ TEST(memory, add_origin_id_heap_pod_matches_idorigin) {
     step(gl::IdOrigin(gl::OriginTag::equality1, { 3 }));
     step(gl::IdOrigin(gl::OriginTag::disintegration, { 1, 2 }));  // dup
     step(gl::IdOrigin(gl::OriginTag::theorem, {}));               // reach cap
-    step(gl::IdOrigin(gl::OriginTag::premise, { 4, 5, 6 }));      // displace eq1
+    step(gl::IdOrigin(gl::OriginTag::premise, { 4, 5, 6 }));      // dropped (existing wins)
     step(gl::IdOrigin(gl::OriginTag::equality2, { 9 }));          // conv -> existing wins
     step(gl::IdOrigin(gl::OriginTag::premise, { 4, 5, 6 }));      // cap-full dup
     step(gl::IdOrigin(gl::OriginTag::broadcast, { 7 }));          // no conv slot left
@@ -4104,10 +5717,10 @@ TEST(memory, mint_origin_deps_from_ewv_into_matches_encode_origin) {
 }
 
 // exprOriginRunReplace: the 0% heap serialize+memcmp raw-door run-replace is
-// byte-identical to the retired heap `newRun` + typed `assignRun` merge
-// (updateEquivalenceClasses' origin sync). Covers class-lines-only, a
-// class+body dedup hit, cap-gated body truncation, and a page-straddling body
-// blob. exprOriginMap is verifier-walked process documentation (Rule 16), so
+// byte-identical to the heap `newRun` + typed `assignRun` oracle
+// (updateEquivalenceClasses' origin sync; body lines first, class lines
+// dedup-appended below the cap). Covers class-lines-only, a class+body dedup
+// hit, cap-gated class truncation, and a page-straddling body blob. exprOriginMap is verifier-walked process documentation (Rule 16), so
 // this is byte-insurance on the batch's only novel composition.
 TEST(memory, expr_origin_run_replace_matches_heap) {
     using gl::OriginTag;
@@ -4117,22 +5730,17 @@ TEST(memory, expr_origin_run_replace_matches_heap) {
                               int64_t key,
                               const gl::MergeClassAccum::LineView& lines, int cap) {
         std::vector<IdOrigin> newRun;
-        newRun.reserve(static_cast<std::size_t>(lines.size()));
+        const int32_t bid = map.lookup(key);
+        if (bid != 0) newRun = map.recordsAt(bid);   // body first, verbatim
         for (int32_t t = 0; t < lines.size(); ++t) {
+            if (newRun.size() >= static_cast<std::size_t>(cap)) break;
             std::vector<int64_t> deps;
             deps.reserve(static_cast<std::size_t>(lines.depCount(t)));
             for (int32_t dd = 0; dd < lines.depCount(t); ++dd)
                 deps.push_back(lines.dep(t, dd));
-            newRun.emplace_back(lines.tag(t), std::move(deps));
-        }
-        const int32_t bid = map.lookup(key);
-        if (bid != 0) {
-            const std::vector<IdOrigin> body = map.recordsAt(bid);
-            for (const IdOrigin& bl : body) {
-                if (newRun.size() >= static_cast<std::size_t>(cap)) break;
-                if (std::find(newRun.begin(), newRun.end(), bl) == newRun.end())
-                    newRun.push_back(bl);
-            }
+            IdOrigin cand(lines.tag(t), std::move(deps));
+            if (std::find(newRun.begin(), newRun.end(), cand) == newRun.end())
+                newRun.push_back(std::move(cand));
         }
         map.assignRun(key, newRun);
     };
@@ -4398,42 +6006,6 @@ TEST(memory, encode_norm_key_into_matches_codec) {
     }
 }
 
-// mergeOwnerRecord raw-key overload == the owning-NormKey overload (empty encList
-// so recordUSignature adds no signature — the partitionId merge is the observable).
-TEST(memory, merge_owner_record_raw_matches_owning) {
-    gl::GlobalMemoryManager g;
-    g.init(gl::StaticMemoryConfig{ 1 << 20, 1 << 18 });
-    gl::LbArena lb(&g);
-    gl::DirtyState d = gl::DirtyState::Clean;
-    gl::TypedColdBlobMap<gl::NormKey, gl::OwnerSet> mapOwn(&lb, &d);
-    gl::TypedColdBlobMap<gl::NormKey, gl::OwnerSet> mapRaw(&lb, &d);
-    gl::NameMap nm;   // (void)nm inside — unused
-
-    struct M { gl::NameId ne; std::vector<gl::NameId> data; int32_t pid; };
-    const std::vector<M> ms = {
-        { 3, { 1, 2 }, 100 }, { 3, { 1, 2 }, 200 }, { 2, { 5 }, 100 },
-        { 3, { 1, 2 }, 100 },   // duplicate partitionId (set no-op)
-    };
-    std::vector<gl::NormKey> keys;
-    for (const M& m : ms) {
-        const gl::NormKey nk{ m.ne, m.data };
-        gl::ExpressionAnalyzer::mergeOwnerRecord(mapOwn, nk, m.pid,
-            static_cast<const gl::IntEncodedExpr*>(nullptr), 0, nm);
-        gl::ExpressionAnalyzer::mergeOwnerRecord(mapRaw, m.ne,
-            m.data.empty() ? nullptr : m.data.data(),
-            static_cast<int32_t>(m.data.size()), m.pid,
-            static_cast<const gl::IntEncodedExpr*>(nullptr), 0, nm);
-        keys.push_back(nk);
-    }
-    for (const gl::NormKey& nk : keys) {
-        const int32_t io = mapOwn.lookup(nk);
-        const int32_t ir = mapRaw.lookup(nk);
-        ASSERT_TRUE(io != 0 && ir != 0);
-        ASSERT_TRUE(gl::Codec<gl::OwnerSet>::serialize(mapOwn.recordAt(io, 0))
-                 == gl::Codec<gl::OwnerSet>::serialize(mapRaw.recordAt(ir, 0)));
-    }
-}
-
 // buildUSignatureRunInto == the (slot, argFullId) run + hasUArg flag that the
 // IntEncodedExpr recordUSignature builds before it range-constructs the
 // signature vector. Covers a tight owner (two premises, cross-expression slot
@@ -4478,12 +6050,12 @@ TEST(memory, build_usignature_run_matches_record_usignature) {
     ASSERT_TRUE(osLoose.hasLooseOwner);
 }
 
-// Blob-native mergeOwnerRecord raw overload == the owning IntEncodedExpr
-// overload (recordUSignature + Codec<OwnerSet>::serialize) across a SEQUENCE of
-// merges exercising: fresh key + u_ sig, a second partitionId (dup sig no-op),
-// a second DISTINCT sig, a dup partitionId + dup sig, and a LOOSE owner. Both
-// paths accumulate on the SAME key; serialize(recordAt) must match at each step.
-TEST(memory, merge_owner_record_raw_blob_matches_owning) {
+// Blob-native mergeSubkeySignatures == the heap oracle (recordUSignature +
+// Codec<OwnerSet>::serialize) across a SEQUENCE of merges on ONE 3-premise
+// subkey: fresh key + u_ sig, a dup sig (no-op), a second DISTINCT sig, another
+// dup, and a LOOSE owner. serialize(recordAt) must match the oracle at each
+// step, and the record never carries an owner scope.
+TEST(memory, merge_subkey_signatures_raw_blob_matches_record_usignature) {
     NameMapRig nmRig;
     gl::NameMap& nm = nmRig.nm;
 
@@ -4491,40 +6063,78 @@ TEST(memory, merge_owner_record_raw_blob_matches_owning) {
     g.init(gl::StaticMemoryConfig{ 1 << 20, 1 << 18 });
     gl::LbArena lb(&g);
     gl::DirtyState d = gl::DirtyState::Clean;
-    gl::TypedColdBlobMap<gl::NormKey, gl::OwnerSet> mapOwn(&lb, &d);
     gl::TypedColdBlobMap<gl::NormKey, gl::OwnerSet> mapRaw(&lb, &d);
 
-    gl::EncodedExpression eA("(in3[a,b,u_p])", "main");  // u_p @ slot 2
-    gl::EncodedExpression eB("(in3[c,u_q,f])", "main");  // u_q @ slot 4
+    gl::EncodedExpression eA("(in3[a,b,u_p])", "main");  // u_p @ slot 2 + 4
+    gl::EncodedExpression eB("(in3[c,u_q,f])", "main");  // u_q @ slot 1 + 4
     gl::EncodedExpression eC("(in2[a,b])", "main");      // no u_ (loose)
-    gl::IntEncodedExpr iA = gl::encodeExpression(eA, nm);
-    gl::IntEncodedExpr iB = gl::encodeExpression(eB, nm);
-    gl::IntEncodedExpr iC = gl::encodeExpression(eC, nm);
+    const gl::IntEncodedExpr r1 =
+        gl::encodeExpression(gl::EncodedExpression("(in[a,b])", "main"), nm);
+    const gl::IntEncodedExpr r2 =
+        gl::encodeExpression(gl::EncodedExpression("(in[b,c])", "main"), nm);
+    const gl::IntEncodedExpr iA = gl::encodeExpression(eA, nm);
+    const gl::IntEncodedExpr iB = gl::encodeExpression(eB, nm);
+    const gl::IntEncodedExpr iC = gl::encodeExpression(eC, nm);
 
     const gl::NameId ne = 3;
     const std::vector<gl::NameId> data = { 1, 2 };
     const gl::NormKey nk{ ne, data };
 
-    struct Step { int32_t pid; std::vector<gl::IntEncodedExpr> enc; };
-    const std::vector<Step> steps = {
-        { 100, { iA } },   // fresh key + u_ sig {(2,p)}
-        { 200, { iA } },   // second partitionId, same sig (dup no-op)
-        { 100, { iB } },   // dup partitionId, a SECOND distinct sig {(4,q)}
-        { 300, { iA } },   // third partition, sig {(2,p)} (dup no-op)
-        { 400, { iC } },   // a LOOSE owner -> hasLooseOwner set, no new sig
+    // Each step is one owner's install; owners arrive out of sorted order so
+    // the sorted owner list and the signature-index renumbering (the second
+    // distinct signature sorts BELOW the first: eB's slot 5 < eA's slot 6) are
+    // both exercised. The last step repeats an owner (the same rule reaching
+    // the subkey through a second permutation) — a no-op.
+    const std::vector<std::pair<std::vector<gl::IntEncodedExpr>, gl::RuleOwner>> steps = {
+        { { r1, r2, iA }, gl::packRuleOwner(9, 1) },   // fresh key + u_ sig
+        { { r1, r2, iA }, gl::packRuleOwner(3, 1) },   // same sig, new owner
+        { { r1, r2, iB }, gl::packRuleOwner(5, 2) },   // a SECOND distinct sig
+        { { r1, r2, iA }, gl::packRuleOwner(1, 1) },   // dup sig, new owner
+        { { r1, r2, iC }, gl::packRuleOwner(7, 1) },   // a LOOSE owner -> hasLooseOwner set, no new sig
+        { { r1, r2, iA }, gl::packRuleOwner(3, 1) },   // repeated owner -> no-op
     };
 
-    for (const Step& s : steps) {
-        gl::ExpressionAnalyzer::mergeOwnerRecord(mapOwn, nk, s.pid,
-            s.enc.data(), static_cast<gl::NameId>(s.enc.size()), nm);
-        gl::ExpressionAnalyzer::mergeOwnerRecord(mapRaw, ne, data.data(),
-            static_cast<int32_t>(data.size()), s.pid,
-            s.enc.data(), static_cast<gl::NameId>(s.enc.size()), nm);
-        const int32_t io = mapOwn.lookup(nk);
+    gl::OwnerSet oracle;
+    for (const auto& step : steps) {
+        const auto& enc = step.first;
+        gl::recordSubkeyOwner(oracle, enc.data(), static_cast<gl::NameId>(enc.size()),
+                              step.second);
+        gl::ExpressionAnalyzer::mergeSubkeySignatures(mapRaw, ne, data.data(),
+            static_cast<int32_t>(data.size()),
+            enc.data(), static_cast<gl::NameId>(enc.size()), step.second);
         const int32_t ir = mapRaw.lookup(nk);
-        ASSERT_TRUE(io != 0 && ir != 0);
-        ASSERT_TRUE(gl::Codec<gl::OwnerSet>::serialize(mapOwn.recordAt(io, 0))
+        ASSERT_TRUE(ir != 0);
+        ASSERT_TRUE(gl::Codec<gl::OwnerSet>::serialize(oracle)
                  == gl::Codec<gl::OwnerSet>::serialize(mapRaw.recordAt(ir, 0)));
+    }
+    ASSERT_TRUE(oracle.hasLooseOwner);
+    ASSERT_EQ(static_cast<int>(oracle.uSignatures.size()), 2);
+    ASSERT_EQ(static_cast<int>(oracle.owners.size()), 5);
+    // Sorted by owner; eB's signature is index 0, eA's index 1, the loose
+    // owner -1.
+    ASSERT_EQ(oracle.owners[0].first, gl::packRuleOwner(1, 1));
+    ASSERT_EQ(oracle.owners[0].second, 1);
+    ASSERT_EQ(oracle.owners[1].first, gl::packRuleOwner(3, 1));
+    ASSERT_EQ(oracle.owners[1].second, 1);
+    ASSERT_EQ(oracle.owners[2].first, gl::packRuleOwner(5, 2));
+    ASSERT_EQ(oracle.owners[2].second, 0);
+    ASSERT_EQ(oracle.owners[3].first, gl::packRuleOwner(7, 1));
+    ASSERT_EQ(oracle.owners[3].second, -1);
+    ASSERT_EQ(oracle.owners[4].first, gl::packRuleOwner(9, 1));
+    ASSERT_EQ(oracle.owners[4].second, 1);
+    // The zero-copy view walks the owner section identically.
+    {
+        const int32_t ir = mapRaw.lookup(nk);
+        std::vector<char> blob;
+        int32_t blen = 0;
+        const char* bp = mapRaw.peekRecordBytes(ir, 0, blen, blob);
+        const gl::OwnerSetBlob v{ bp, blen };
+        const int32_t oo = v.ownersOffset();
+        ASSERT_EQ(v.ownerCount(oo), 5);
+        for (int32_t i = 0; i < 5; ++i) {
+            ASSERT_EQ(v.ownerAt(oo, i), oracle.owners[static_cast<std::size_t>(i)].first);
+            ASSERT_EQ(v.ownerSigIndexAt(oo, i), oracle.owners[static_cast<std::size_t>(i)].second);
+        }
     }
 }
 
@@ -4596,14 +6206,16 @@ TEST(memory, append_lmv_ids_record_head_matches_value) {
                bool isMarker; std::vector<int32_t> keyIds;
                std::vector<int32_t> remIds; int32_t origImpl; gl::NameId vid;
                std::vector<int> levels; gl::RuleJustification just; bool pod;
-               bool da; };
+               bool da; bool ordis; };
     const std::vector<H> hs = {
         { 3, { 1, 2 }, 42, false, { 7, 8 }, { 9 }, 100, 5,
-          { 1, 3, 7 }, gl::RuleJustification::implication, true, true },
+          { 1, 3, 7 }, gl::RuleJustification::implication, true, true, false },
         { 3, { 1, 2 }, 43, false, {}, {}, 100, 5,
-          {}, gl::RuleJustification::integration, false, false },   // same key, empty levels
+          {}, gl::RuleJustification::integration, false, false, false },   // same key, empty levels
         { 2, { 5 }, 44, true, { 1, 2, 3 }, { 4, 5 }, 200, 1,
-          { 2 }, gl::RuleJustification::implication, false, false },
+          { 2 }, gl::RuleJustification::implication, false, false, false },
+        { 2, { 6 }, 45, true, { 1, 2 }, { 4 }, 201, 1,
+          {}, gl::RuleJustification::none, false, true, true },   // ordis-route marker
     };
     std::vector<gl::NormKey> keys;
     for (const H& h : hs) {
@@ -4618,6 +6230,7 @@ TEST(memory, append_lmv_ids_record_head_matches_value) {
         lmv.justification = h.just;
         lmv.productOfDisintegration = h.pod;
         lmv.disintegrationAllowed = h.da;
+        lmv.ordisOnly = h.ordis;
         const gl::NormKey nk{ h.ne, h.data };
         mapOwn.appendRecord(nk, lmv);
         gl::appendLmvIdsRecord(mapRaw, h.ne,
@@ -4628,7 +6241,8 @@ TEST(memory, append_lmv_ids_record_head_matches_value) {
             h.remIds.empty() ? nullptr : h.remIds.data(),
             static_cast<int32_t>(h.remIds.size()), h.origImpl, h.vid, tArena,
             h.levels.empty() ? nullptr : h.levels.data(),
-            static_cast<int32_t>(h.levels.size()), h.just, h.pod, h.da);
+            static_cast<int32_t>(h.levels.size()), h.just, h.pod, h.da,
+            h.ordis);
         keys.push_back(nk);
     }
     for (const gl::NormKey& nk : keys) {
@@ -5546,6 +7160,10 @@ TEST(memory, lmv_blob_view_matches_codec) {
                   static_cast<int>(back.justification));
         ASSERT_EQ(view.isMarker(), v.isMarker);
         ASSERT_EQ(view.productOfDisintegration(), v.productOfDisintegration);
+        ASSERT_EQ(view.subsetExclusion(), v.subsetExclusion);
+        ASSERT_EQ(view.subsetExclusion(), back.subsetExclusion);
+        ASSERT_EQ(view.ordis2Demand(), v.ordis2Demand);
+        ASSERT_EQ(view.ordis2Demand(), back.ordis2Demand);
         // levelAt(i) reproduces the ascending std::set<int> iteration order.
         {
             int32_t i = 0;
@@ -5571,6 +7189,18 @@ TEST(memory, lmv_blob_view_matches_codec) {
         mkLmv(9, 3, 7, false, true, { 2, 5, 11 }, { 1, 2 }, { 8, 9, 20 });
     jv.justification = gl::RuleJustification::integration;
     check(jv);
+    // The subsetExclusion byte @20 (park-first tag) round-trips and shifts
+    // no neighbouring section.
+    gl::LocalMemoryValue sx =
+        mkLmv(11, 4, 6, false, true, { 1, 3 }, { 7 }, { 5, 6 });
+    sx.subsetExclusion = true;
+    check(sx);
+    // The ordis2Demand byte @21 (qualifying-slot marker variant)
+    // round-trips independently of its neighbours.
+    gl::LocalMemoryValue o2d =
+        mkLmv(12, 5, 8, true, false, { 2 }, { 3, 4 }, { 9 });
+    o2d.ordis2Demand = true;
+    check(o2d);
 }
 
 // eradicateEncodedMapForImpl (S4 C6): the two-pass verbatim splice + chain
@@ -5821,118 +7451,6 @@ TEST(memory, tbp_snapshot_idx_sort_matches_decode_to_be_proved_sorted) {
     for (std::size_t k = 0; k < rows.size(); ++k) {
         ASSERT_EQ(keys[static_cast<std::size_t>(idx[k])], rows[k].key);
     }
-}
-
-// sanitizeHashMemory snapshot order (C5): the packed-key idx sort — the
-// production comparator copied verbatim (compareSpans on the decoded
-// lbStateInterner hi half, tie on the decoded lo half) — reproduces the
-// retired decoded-EWV std::sort (ExpressionWithValidity::operator<) row for
-// row, on strings whose mint order deliberately differs from lex order, with
-// a shared original across two validities and shared validities (both
-// tie-break directions).
-TEST(memory, expimpl_snapshot_idx_sort_matches_ewv_sort) {
-    gl::Memory m;
-    // Mint order deliberately differs from lex order ("(implication9..." first).
-    const int32_t zImpl = m.lbStateInterner.encode("(implication9[z,q])");
-    const int32_t aImpl = m.lbStateInterner.encode("(implication1[a,b])");
-    const int32_t mImpl = m.lbStateInterner.encode("(implication5[m,n])");
-    const int32_t vMain = m.lbStateInterner.encode("main");
-    const int32_t vSub = m.lbStateInterner.encode("main_boundary_(impl1[s])");
-
-    const std::vector<int64_t> keys = {
-        gl::packLbStateKey(zImpl, vMain),
-        gl::packLbStateKey(aImpl, vSub),
-        gl::packLbStateKey(aImpl, vMain),   // shares the original with prev
-        gl::packLbStateKey(mImpl, vMain),   // shares the main validity
-        gl::packLbStateKey(zImpl, vSub),
-        gl::packLbStateKey(mImpl, vSub),
-    };
-
-    // The production comparator, copied verbatim from sanitizeHashMemory
-    // (today's exact unpack casts).
-    std::vector<int32_t> idx(keys.size());
-    for (std::size_t k = 0; k < keys.size(); ++k)
-        idx[k] = static_cast<int32_t>(k);
-    std::sort(idx.begin(), idx.end(), [&](int32_t a, int32_t b) {
-        const int64_t ka = keys[static_cast<std::size_t>(a)];
-        const int64_t kb = keys[static_cast<std::size_t>(b)];
-        const int c = gl::compareSpans(
-            m.lbStateInterner.decodeView(
-                static_cast<int32_t>(static_cast<uint64_t>(ka) >> 32)),
-            m.lbStateInterner.decodeView(
-                static_cast<int32_t>(static_cast<uint64_t>(kb) >> 32)));
-        if (c != 0) return c < 0;
-        return gl::compareSpans(
-            m.lbStateInterner.decodeView(
-                static_cast<int32_t>(ka & 0xFFFFFFFFLL)),
-            m.lbStateInterner.decodeView(
-                static_cast<int32_t>(kb & 0xFFFFFFFFLL))) < 0;
-    });
-
-    // ORACLE — decode each key exactly as the retired snapshot did, then
-    // std::sort under ExpressionWithValidity::operator<.
-    std::vector<gl::ExpressionWithValidity> rows;
-    for (const int64_t pk : keys) {
-        rows.emplace_back(
-            std::string(m.lbStateInterner.decode(
-                static_cast<int32_t>(static_cast<uint64_t>(pk) >> 32))),
-            std::string(m.lbStateInterner.decode(
-                static_cast<int32_t>(pk & 0xFFFFFFFFLL))));
-    }
-    std::sort(rows.begin(), rows.end());
-
-    ASSERT_EQ(rows.size(), keys.size());
-    for (std::size_t k = 0; k < keys.size(); ++k) {
-        const int64_t pk = keys[static_cast<std::size_t>(idx[k])];
-        ASSERT_EQ(m.lbStateInterner.decode(
-                      static_cast<int32_t>(static_cast<uint64_t>(pk) >> 32)),
-                  rows[k].original);
-        ASSERT_EQ(m.lbStateInterner.decode(
-                      static_cast<int32_t>(pk & 0xFFFFFFFFLL)),
-                  rows[k].validityName);
-    }
-}
-
-// sanitizeHashMemory apply-time levels probe (C5): the runLen/valueAt run
-// copy equals the retired coldIntSetAt set element-for-element across empty /
-// single / multi-level runs, and the span lookupStatementLevels miss path
-// (never-interned pair) returns 0 — the empty case on both forms.
-TEST(memory, sanitize_levels_run_probe_matches_cold_int_set) {
-    gl::Memory m;
-    const std::string valid = "main";
-    const char* exprs[] = { "(p[a])", "(p[b])", "(p[c])" };
-    const std::set<int> sets[] = { {}, { 0 }, { 1, 3, 7 } };
-    for (int i = 0; i < 3; ++i) {
-        m.intStatementLevelsMap.assignSetRange(
-            gl::packStatementKey(m.nameMap.encode(std::string(exprs[i])),
-                                 m.nameMap.encode(valid)),
-            sets[i].begin(), sets[i].end());
-    }
-    for (int i = 0; i < 3; ++i) {
-        const std::string e(exprs[i]);
-        const int32_t id = gl::lookupStatementLevels(
-            m.intStatementLevelsMap, m.nameMap,
-            gl::StrSpan(e), gl::StrSpan(valid));
-        ASSERT_NE(id, 0);
-        const std::set<int> oracle =
-            gl::coldIntSetAt(m.intStatementLevelsMap, id);
-        // NEW — the apply-time run copy loop.
-        std::vector<int> run;
-        const int32_t nLv = m.intStatementLevelsMap.runLen(id);
-        for (int32_t j = 0; j < nLv; ++j)
-            run.push_back(m.intStatementLevelsMap.valueAt(id, j));
-        ASSERT_EQ(run.size(), oracle.size());
-        std::size_t k = 0;
-        for (const int x : oracle) {
-            ASSERT_EQ(run[k], x);
-            ++k;
-        }
-    }
-    // The id-0 miss path: a never-interned pair probes to 0.
-    const std::string ghost = "(never[q])";
-    ASSERT_EQ(gl::lookupStatementLevels(m.intStatementLevelsMap, m.nameMap,
-                                        gl::StrSpan(ghost), gl::StrSpan(valid)),
-              0);
 }
 
 // coldIntRunAt byte-twin: the stack-run fill equals coldIntSetAt (the retained
@@ -6418,10 +7936,9 @@ TEST(memory, encodeexpression_arity_at_cap) {
 
 // =============================================================================
 // Phase 8 tests — for prover.hpp Part B (hash engine inline methods).
-// addOrigin's cap-full preference policy is the most easily-tested inline
-// method. These tests construct a synthetic origin map, push records, and
-// verify the foundation-displaces-convenience contract documented in
-// the doxygen at addOrigin.
+// addOrigin's cap policy is the most easily-tested inline method. These
+// tests construct a synthetic origin map, push records, and verify the
+// existing-records-win contract documented in the doxygen at addOrigin.
 // =============================================================================
 
 // addOrigin under cap — append-with-dedupe semantics. Below the cap,
@@ -6445,10 +7962,10 @@ TEST(prover, addorigin_under_cap_dedupes) {
     ASSERT_EQ(m[ev].size(), static_cast<std::size_t>(1));
 }
 
-// addOrigin at cap — foundation tag (e.g. "implication") DISPLACES an
-// equality-convenience tag (equality1/equality2). Pins the D-49 / I-35
-// preference policy.
-TEST(prover, addorigin_at_cap_foundation_displaces_convenience) {
+// addOrigin at cap — the existing record wins whatever the tags: a later
+// foundation tag (e.g. "implication") does NOT displace an earlier equality1
+// record. Pins I-216.
+TEST(prover, addorigin_at_cap_existing_wins) {
     gl::ExpressionAnalyzer ea("Peano");
     std::map<gl::ExpressionWithValidity,
              std::vector<std::pair<std::string,
@@ -6464,13 +7981,13 @@ TEST(prover, addorigin_at_cap_foundation_displaces_convenience) {
     ASSERT_EQ(m[ev].size(),         static_cast<std::size_t>(1));
     ASSERT_EQ(m[ev][0].first,       std::string("equality1"));
 
-    // Now insert a foundation tag — must displace the convenience slot.
+    // Now insert a foundation tag — dropped: the existing record wins.
     std::pair<std::string, std::vector<gl::ExpressionWithValidity>> originFnd;
     originFnd.first = "implication";
     originFnd.second.push_back(gl::ExpressionWithValidity("(q[a])", "main"));
     ea.addOrigin(m, ev, originFnd, 1);
     ASSERT_EQ(m[ev].size(),         static_cast<std::size_t>(1));
-    ASSERT_EQ(m[ev][0].first,       std::string("implication"));
+    ASSERT_EQ(m[ev][0].first,       std::string("equality1"));
 }
 
 // =============================================================================
@@ -7106,11 +8623,9 @@ TEST(memory, hashmemory_clear_after_populate) {
     gl::NormKey nk{ 1, std::vector<gl::NameId>(buf, buf + 2) };
     hm.encodedMap.assignRun(nk,
         std::vector<gl::LocalMemoryValue>{ gl::LocalMemoryValue{} });
-    // D-72: the owner maps are cold blob maps too; assignRun one key (one
-    // OwnerSet blob, run-length-1) for the count checks.
+    // The whole-key index is a bare key set: mint one key for the count checks.
     gl::NormKey nkOwner{ 1, std::vector<gl::NameId>(buf, buf + 2) };
-    hm.normalizedEncodedKeys.assignRun(nkOwner,
-        std::vector<gl::OwnerSet>{ gl::OwnerSet{} });
+    hm.normalizedEncodedKeys.assignRun(nkOwner, std::vector<gl::RuleOwnerRec>{ { gl::packRuleOwner(1, 1) } });
     hm.maxKeyLength = 5;
     ASSERT_EQ(hm.encodedMap.count(),            1);
     ASSERT_EQ(hm.normalizedEncodedKeys.count(), 1);
@@ -7131,8 +8646,7 @@ TEST(memory, hashmemory_clear_preserves_struct_validity) {
     // Struct still valid for re-use: insert a fresh entry.
     gl::NameId buf[1] = {7};
     gl::NormKey nk{ 1, std::vector<gl::NameId>(buf, buf + 1) };
-    hm.normalizedEncodedKeys.assignRun(nk,
-        std::vector<gl::OwnerSet>{ gl::OwnerSet{} });
+    hm.normalizedEncodedKeys.assignRun(nk, std::vector<gl::RuleOwnerRec>{ { gl::packRuleOwner(1, 1) } });
     ASSERT_EQ(hm.normalizedEncodedKeys.count(), 1);
 }
 
@@ -7711,7 +9225,6 @@ TEST(memory, ownerset_blob_u_satisfied_matches_value) {
     // Loose owner-set: both keep unconditionally (reads only the hasLooseOwner byte).
     gl::OwnerSet loose;
     loose.hasLooseOwner = true;
-    loose.partitionIds.insert(1);
     std::vector<char> lbuf = gl::Codec<gl::OwnerSet>::serialize(loose);
     const gl::OwnerSetBlob lv{ lbuf.data(), static_cast<int32_t>(lbuf.size()) };
     ASSERT_TRUE(gl::ownerSetUSatisfied(lv, badE, 1));
@@ -7741,72 +9254,6 @@ TEST(memory, ownerset_blob_u_satisfied_matches_value) {
     ASSERT_TRUE(gl::ownerSetUSatisfied(v2, prune2E, 1) == gl::ownerSetUSatisfied(os2, prune2E, 1));
     ASSERT_TRUE(gl::ownerSetUSatisfied(v2, keep2E, 1));    // matches the 2nd sig
     ASSERT_FALSE(gl::ownerSetUSatisfied(v2, prune2E, 1));  // matches neither
-}
-
-// mergeOwnerRecord RMWs the whole OwnerSet into a cold owner-set map: two merges
-// into the same key accumulate both partition ids under one key; the u_ signature
-// is recorded (loose for a no-u_ premise).
-TEST(memory, merge_owner_record_rmw) {
-    gl::GlobalMemoryManager g;
-    g.init(gl::StaticMemoryConfig{ 1 << 20, 1 << 18 });
-    gl::LbArena lb(&g);
-    gl::DirtyState d = gl::DirtyState::Clean;
-    gl::TypedColdBlobMap<gl::NormKey, gl::OwnerSet> map(&lb, &d);
-
-    NameMapRig nmRig;
-    gl::NameMap& nm = nmRig.nm;
-    gl::NameId buf[2] = { 1, 2 };
-    gl::NormKey key{ 1, std::vector<gl::NameId>(buf, buf + 2) };
-    std::vector<gl::EncodedExpression> enc = {
-        gl::EncodedExpression("(in[a,b])", "main") };
-
-    gl::ExpressionAnalyzer::mergeOwnerRecord(map, key, 111, enc, nm);
-    gl::ExpressionAnalyzer::mergeOwnerRecord(map, key, 222, enc, nm);
-
-    const int32_t id = map.lookup(key);
-    ASSERT_TRUE(id != 0);
-    ASSERT_EQ(map.count(), 1);                        // still ONE key
-    const gl::OwnerSet os = map.recordAt(id, 0);
-    ASSERT_EQ(static_cast<int>(os.partitionIds.size()), 2);
-    ASSERT_TRUE(os.partitionIds.count(111) == 1);
-    ASSERT_TRUE(os.partitionIds.count(222) == 1);
-    ASSERT_TRUE(os.hasLooseOwner);                    // (in[a,b]) has no u_ args
-}
-
-// A wide (origId > 65535) makePartitionId composite survives the
-// mergeOwnerRecord store round-trip with BOTH halves intact: the stored
-// partition id must decode back to the nonzero orig, never a zero high half
-// (a caller-side int32_t truncation of the int64 composite drops the orig
-// half — the decode(0) crash the NameId-int32 migration fixed at the two
-// addToHashMemory install sites).
-TEST(memory, merge_owner_record_wide_orig_id_roundtrip) {
-    gl::GlobalMemoryManager g;
-    g.init(gl::StaticMemoryConfig{ 1 << 20, 1 << 18 });
-    gl::LbArena lb(&g);
-    gl::DirtyState d = gl::DirtyState::Clean;
-    gl::TypedColdBlobMap<gl::NormKey, gl::OwnerSet> map(&lb, &d);
-
-    NameMapRig nmRig;
-    gl::NameMap& nm = nmRig.nm;
-    gl::NameId buf[2] = { 1, 2 };
-    gl::NormKey key{ 1, std::vector<gl::NameId>(buf, buf + 2) };
-    std::vector<gl::EncodedExpression> enc = {
-        gl::EncodedExpression("(in[a,b])", "main") };
-
-    const gl::NameId wideOrig = 70001;                 // past the int16 ceiling
-    const gl::NameId scopeVid = 3;
-    const int64_t pid = gl::makePartitionId(wideOrig, scopeVid);
-    gl::ExpressionAnalyzer::mergeOwnerRecord(map, key, pid, enc, nm);
-
-    const int32_t id = map.lookup(key);
-    ASSERT_TRUE(id != 0);
-    const gl::OwnerSet os = map.recordAt(id, 0);
-    ASSERT_EQ(static_cast<int>(os.partitionIds.size()), 1);
-    const int64_t stored = *os.partitionIds.begin();
-    ASSERT_EQ(stored, pid);
-    ASSERT_EQ(gl::Codec<gl::StatementKey>::decode(stored).orig, wideOrig);
-    ASSERT_TRUE(gl::Codec<gl::StatementKey>::decode(stored).orig != 0);
-    ASSERT_EQ(gl::Codec<gl::StatementKey>::decode(stored).validity, scopeVid);
 }
 
 // insertRemainingArgsNormKey RMWs a NormKey into the cold secondary index: two
@@ -7864,6 +9311,7 @@ TEST(memory, insert_remaining_args_batch_matches_sequential) {
     gl::TypedColdBlobMap<gl::Int16SetKey, gl::NormKey> mapBatch(&lbBatch, &dBatch);
     gl::ReverseArgsIndex revSeq(&lbSeq);
     gl::ReverseArgsIndex revBatch(&lbBatch);
+    gl::TypedColdBlobMap<gl::IdVecKey, gl::RuleOwnerRec> ownersBatch(&lbBatch, &dBatch);
 
     const std::set<gl::NameId> key{ 1, 2 };
     gl::NameId keyArr[2] = { 1, 2 };
@@ -7906,8 +9354,43 @@ TEST(memory, insert_remaining_args_batch_matches_sequential) {
             batch.push_back(gl::ExpressionAnalyzer::RemArgsBatchBlob{ off, bl });
         }
         gl::ExpressionAnalyzer::insertRemainingArgsNormKeyBatch(
-            mapBatch, revBatch, keyArr, 2, batch, lbScratch);
+            mapBatch, revBatch, ownersBatch, keyArr, 2, batch,
+            gl::packRuleOwner(7, 1), lbScratch);
         lbScratch.popTo(bMark);
+    }
+
+    // Owner edges: one per DISTINCT batch key ({20}, {10}, {30}, {5,6,7} —
+    // the already-present {30} included), each with the one owner; a second
+    // batch by another rule adds its owner to the shared edges only.
+    ASSERT_EQ(ownersBatch.count(), 4);
+    for (int32_t id = 1; id <= ownersBatch.count(); ++id) {
+        ASSERT_EQ(ownersBatch.runLen(id), 1);
+        ASSERT_EQ(ownersBatch.recordAt(id, 0).owner, gl::packRuleOwner(7, 1));
+    }
+    {
+        const gl::ArenaOffset bMark = lbScratch.cursor();
+        gl::DirtyState bDirty = gl::DirtyState::Clean;
+        gl::PagedVector<gl::ExpressionAnalyzer::RemArgsBatchBlob> batch(&lbScratch, &bDirty);
+        const std::vector<char> bytes = gl::Codec<gl::NormKey>::serialize(gl::NormKey{ 1, { 20 } });
+        const int32_t bl = static_cast<int32_t>(bytes.size());
+        const gl::ArenaOffset off = lbScratch.alloc(bl, 1);
+        std::memcpy(lbScratch.resolve(off), bytes.data(), static_cast<std::size_t>(bl));
+        batch.push_back(gl::ExpressionAnalyzer::RemArgsBatchBlob{ off, bl });
+        gl::ExpressionAnalyzer::insertRemainingArgsNormKeyBatch(
+            mapBatch, revBatch, ownersBatch, keyArr, 2, batch,
+            gl::packRuleOwner(2, 1), lbScratch);
+        lbScratch.popTo(bMark);
+        ASSERT_EQ(ownersBatch.count(), 4);
+        gl::NameId edgeArgs[3] = { 2, 1, 2 };
+        char eBuf[gl::ExpressionAnalyzer::kMaxRemArgsEdgeKeyBytes];
+        const int32_t eLen = gl::ExpressionAnalyzer::remArgsEdgeKeyInto(
+            edgeArgs, 3, bytes.data(), bl,
+            eBuf, gl::ExpressionAnalyzer::kMaxRemArgsEdgeKeyBytes);
+        const int32_t eid = ownersBatch.inner().lookup(gl::StrSpan(eBuf, eLen));
+        ASSERT_TRUE(eid != 0);
+        ASSERT_EQ(ownersBatch.runLen(eid), 2);
+        ASSERT_EQ(ownersBatch.recordAt(eid, 0).owner, gl::packRuleOwner(2, 1));
+        ASSERT_EQ(ownersBatch.recordAt(eid, 1).owner, gl::packRuleOwner(7, 1));
     }
 
     // Forward run byte-identical.
@@ -7950,6 +9433,7 @@ TEST(memory, insert_remaining_args_batch_widening_preserves_existing_run) {
     gl::DirtyState dirty = gl::DirtyState::Clean;
     gl::TypedColdBlobMap<gl::Int16SetKey, gl::NormKey> map(&lbMap, &dirty);
     gl::ReverseArgsIndex rev(&lbMap);
+    gl::TypedColdBlobMap<gl::IdVecKey, gl::RuleOwnerRec> owners(&lbMap, &dirty);
 
     constexpr int32_t kExisting = 512;
     std::vector<char> concat;
@@ -7994,7 +9478,7 @@ TEST(memory, insert_remaining_args_batch_widening_preserves_existing_run) {
         addedOff, static_cast<int32_t>(addedBytes.size()) });
     gl::NameId keyArr[2] = { 1, 2 };
     gl::ExpressionAnalyzer::insertRemainingArgsNormKeyBatch(
-        map, rev, keyArr, 2, batch, lbScratch);
+        map, rev, owners, keyArr, 2, batch, gl::packRuleOwner(1, 1), lbScratch);
     lbScratch.popTo(mark);
 
     const int32_t id = map.lookup(typedKey);
@@ -8004,9 +9488,132 @@ TEST(memory, insert_remaining_args_batch_widening_preserves_existing_run) {
     ASSERT_TRUE(actual == expected);
 }
 
-// ownerKeyAccepts: a present key at a comparable (main) scope with a loose owner
-// is kept; an absent key is a lookup miss (false) before any predicate runs.
-TEST(memory, owner_key_accepts_lookup_and_prune) {
+// wholeKeyPresent / addWholeKeyOwner: the whole-key index maps a key to its
+// owner run. An installed key is present; a second owner joins the run (same
+// count, run of two, ascending); a repeated owner is a no-op; the same payload
+// under another premise count and an absent key are false.
+TEST(memory, whole_key_present_reads_presence_only) {
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 1 << 20, 1 << 18 });
+    gl::LbArena lb(&g);
+    gl::DirtyState d = gl::DirtyState::Clean;
+    gl::TypedColdBlobMap<gl::NormKey, gl::RuleOwnerRec> map(&lb, &d);
+    gl::ScratchArena& arena = gl::genScratchArenas().forSlot(
+        gl::genScratchArenas().slotCount() - 1);
+
+    gl::NameId kb[3] = { 5, 6, 7 };
+    gl::ExpressionAnalyzer::addWholeKeyOwner(map, 1, kb, 3, gl::packRuleOwner(9, 1), arena);
+    ASSERT_EQ(map.count(), 1);
+    gl::ExpressionAnalyzer::addWholeKeyOwner(map, 1, kb, 3, gl::packRuleOwner(4, 2), arena);
+    gl::ExpressionAnalyzer::addWholeKeyOwner(map, 1, kb, 3, gl::packRuleOwner(9, 1), arena);
+    ASSERT_EQ(map.count(), 1);
+    ASSERT_TRUE(gl::ExpressionAnalyzer::wholeKeyPresent(map, kb, 3, 1));
+    ASSERT_FALSE(gl::ExpressionAnalyzer::wholeKeyPresent(map, kb, 3, 2));
+    gl::NameId miss[3] = { 9, 9, 9 };
+    ASSERT_FALSE(gl::ExpressionAnalyzer::wholeKeyPresent(map, miss, 3, 1));
+    // The owning-key door agrees with the raw one; the run is sorted-unique.
+    const gl::NormKey key{ 1, std::vector<gl::NameId>(kb, kb + 3) };
+    const int32_t id = map.lookup(key);
+    ASSERT_TRUE(id != 0);
+    ASSERT_EQ(map.runLen(id), 2);
+    ASSERT_EQ(map.recordAt(id, 0).owner, gl::packRuleOwner(4, 2));
+    ASSERT_EQ(map.recordAt(id, 1).owner, gl::packRuleOwner(9, 1));
+}
+
+// addOwnerToRun: the shared owner-run door — a new key gets the one-owner
+// run; owners inserted in any order land ascending; a repeated owner returns
+// false and leaves the run untouched; the typed codec reads the raw bytes.
+TEST(memory, add_owner_to_run_sorted_unique) {
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 1 << 20, 1 << 18 });
+    gl::LbArena lb(&g);
+    gl::DirtyState d = gl::DirtyState::Clean;
+    gl::TypedColdBlobMap<gl::IdVecKey, gl::RuleOwnerRec> map(&lb, &d);
+    gl::ScratchArena& arena = gl::genScratchArenas().forSlot(
+        gl::genScratchArenas().slotCount() - 1);
+    const std::string kA = gl::Codec<gl::IdVecKey>::encode(gl::IdVecKey{ { 1, 2, 3 } });
+    const std::string kB = gl::Codec<gl::IdVecKey>::encode(gl::IdVecKey{ { 4 } });
+
+    ASSERT_TRUE(gl::ExpressionAnalyzer::addOwnerToRun(map, gl::StrSpan(kA), gl::packRuleOwner(5, 1), arena));
+    ASSERT_TRUE(gl::ExpressionAnalyzer::addOwnerToRun(map, gl::StrSpan(kA), gl::packRuleOwner(2, 7), arena));
+    ASSERT_TRUE(gl::ExpressionAnalyzer::addOwnerToRun(map, gl::StrSpan(kA), gl::packRuleOwner(8, 0), arena));
+    ASSERT_FALSE(gl::ExpressionAnalyzer::addOwnerToRun(map, gl::StrSpan(kA), gl::packRuleOwner(5, 1), arena));
+    ASSERT_TRUE(gl::ExpressionAnalyzer::addOwnerToRun(map, gl::StrSpan(kB), gl::packRuleOwner(5, 1), arena));
+    ASSERT_EQ(map.count(), 2);
+    const int32_t ia = map.inner().lookup(gl::StrSpan(kA));
+    const int32_t ib = map.inner().lookup(gl::StrSpan(kB));
+    ASSERT_TRUE(ia != 0 && ib != 0);
+    ASSERT_EQ(map.runLen(ia), 3);
+    ASSERT_EQ(map.runLen(ib), 1);
+    const std::vector<gl::RuleOwnerRec> runA = map.recordsAt(ia);
+    ASSERT_EQ(runA[0].owner, gl::packRuleOwner(2, 7));
+    ASSERT_EQ(runA[1].owner, gl::packRuleOwner(5, 1));
+    ASSERT_EQ(runA[2].owner, gl::packRuleOwner(8, 0));
+    ASSERT_EQ(map.recordAt(ib, 0).owner, gl::packRuleOwner(5, 1));
+}
+
+// remArgsEdgeKeyInto: the edge key is the arg-set run followed by the NormKey
+// blob's NameId run, as one IdVecKey-shaped id run (count first) — decodable
+// by Codec<IdVecKey>.
+TEST(memory, rem_args_edge_key_layout) {
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 1 << 20, 1 << 18 });
+    gl::LbArena lb(&g);
+    const gl::NameId argKey[3] = { 2, 11, 12 };
+    const std::vector<char> nk = gl::Codec<gl::NormKey>::serialize(gl::NormKey{ 1, { 7, 8 } });
+    char buf[gl::ExpressionAnalyzer::kMaxRemArgsEdgeKeyBytes];
+    const int32_t len = gl::ExpressionAnalyzer::remArgsEdgeKeyInto(
+        argKey, 3, nk.data(), static_cast<int32_t>(nk.size()),
+        buf, gl::ExpressionAnalyzer::kMaxRemArgsEdgeKeyBytes);
+    const gl::IdVecKey back = gl::Codec<gl::IdVecKey>::decode(gl::StrSpan(buf, len));
+    const std::vector<int32_t> expected = { 2, 11, 12, 1, 2, 7, 8 };
+    ASSERT_TRUE(back.ids == expected);
+    (void)lb;
+}
+
+// G-72 regression: the edge key used to be built at the arena cursor and read
+// back at the pre-allocation cursor mark. `LbArena::alloc` pads to the next
+// block when the request would straddle the current block (and aligns the
+// cursor), so near a block end the returned offset is NOT the mark and the
+// mark reads the poisoned tail of the previous block (0xCDCDCDCD — exactly the
+// bytes the aborting removal looked up). The key now lives in a caller
+// buffer, so its bytes are position-independent; the second half of the test
+// pins the arena behaviour that made the old pattern wrong.
+TEST(memory, rem_args_edge_key_independent_of_block_wrap) {
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 1 << 20, 1 << 18 });
+    gl::LbArena lb(&g);
+    const gl::NameId argKey[3] = { 2, 11, 12 };
+    const std::vector<char> nk = gl::Codec<gl::NormKey>::serialize(gl::NormKey{ 1, { 7, 8 } });
+    const std::vector<int32_t> expected = { 2, 11, 12, 1, 2, 7, 8 };
+    const int32_t edgeBytes = static_cast<int32_t>((1 + expected.size()) * sizeof(int32_t));
+    // Park the cursor 8 bytes before the end of the first block.
+    const gl::ArenaOffset base = lb.cursor();
+    (void)lb.alloc(lb.blockBytes() - 8, 1);
+    const gl::ArenaOffset mark = lb.cursor();
+    ASSERT_EQ(static_cast<int32_t>(mark - base), lb.blockBytes() - 8);
+    // The key is correct regardless of where the cursor sits.
+    char buf[gl::ExpressionAnalyzer::kMaxRemArgsEdgeKeyBytes];
+    const int32_t len = gl::ExpressionAnalyzer::remArgsEdgeKeyInto(
+        argKey, 3, nk.data(), static_cast<int32_t>(nk.size()),
+        buf, gl::ExpressionAnalyzer::kMaxRemArgsEdgeKeyBytes);
+    ASSERT_EQ(len, edgeBytes);
+    ASSERT_TRUE(gl::Codec<gl::IdVecKey>::decode(gl::StrSpan(buf, len)).ids == expected);
+    ASSERT_EQ(lb.cursor(), mark);   // no arena state touched
+    // The hazard the old pattern hit: an allocation that would straddle the
+    // block is placed at the NEXT block, not at the mark.
+    const gl::ArenaOffset off = lb.alloc(edgeBytes, static_cast<int32_t>(alignof(int32_t)));
+    ASSERT_TRUE(off != mark);
+    ASSERT_EQ(static_cast<int32_t>(off - base), lb.blockBytes());
+    lb.popTo(base);
+}
+
+// subkeyUSatisfied: the growth probe reads presence + the u_ signature and
+// nothing else, and the signature only from kSubkeyUCheckMinElements (3)
+// premises on. A 1-premise subkey holds the empty record and keeps any
+// request; a 3-premise subkey's signature record (no owner id) prunes a "q"
+// request and keeps a "p" request at flattened slot 6; an absent key is false.
+TEST(memory, subkey_u_satisfied_reads_signature_only) {
     gl::GlobalMemoryManager g;
     g.init(gl::StaticMemoryConfig{ 1 << 20, 1 << 18 });
     gl::LbArena lb(&g);
@@ -8015,27 +9622,120 @@ TEST(memory, owner_key_accepts_lookup_and_prune) {
 
     NameMapRig nmRig;
     gl::NameMap& nm = nmRig.nm;
+    ASSERT_EQ(gl::ExpressionAnalyzer::kSubkeyUCheckMinElements, 3);
+    gl::EncodedExpression rule("(in3[a,b,u_p])", "main");
+    gl::encodeExpression(rule, nm);                // intern "p": the signature is tight
+
+    // 1-premise subkey: the empty record, presence only.
+    gl::NameId kb[3] = { 5, 6, 7 };
+    gl::ExpressionAnalyzer::addShortSubkeyOwner(map, 1, kb, 3, gl::packRuleOwner(1, 1));
+    gl::IntEncodedExpr ok =
+        gl::encodeExpression(gl::EncodedExpression("(in3[1,2,p])", "main"), nm);
+    gl::IntEncodedExpr bad =
+        gl::encodeExpression(gl::EncodedExpression("(in3[1,2,q])", "main"), nm);
+    const gl::IntEncodedExpr* okE[1] = { &ok };
+    const gl::IntEncodedExpr* badE[1] = { &bad };
+    ASSERT_TRUE(gl::ExpressionAnalyzer::subkeyUSatisfied(map, kb, 3, okE, 1));
+    ASSERT_TRUE(gl::ExpressionAnalyzer::subkeyUSatisfied(map, kb, 3, badE, 1));
+    gl::NameId miss[3] = { 9, 9, 9 };
+    ASSERT_FALSE(gl::ExpressionAnalyzer::subkeyUSatisfied(map, miss, 3, okE, 1));
+
+    // 3-premise subkey: the signature record decides. u_p sits at flattened
+    // slot 6 (2 + 2 + 3 args); the record carries no owner id.
+    gl::IntEncodedExpr owner3[3] = {
+        gl::encodeExpression(gl::EncodedExpression("(in[a,b])", "main"), nm),
+        gl::encodeExpression(gl::EncodedExpression("(in[b,c])", "main"), nm),
+        gl::encodeExpression(rule, nm) };
+    gl::NameId kb3[7] = { 5, 6, 7, 8, 9, 10, 11 };
+    gl::ExpressionAnalyzer::mergeSubkeySignatures(map, 3, kb3, 7, owner3, 3, gl::packRuleOwner(1, 1));
+    {
+        const gl::OwnerSet os = map.recordAt(
+            gl::ExpressionAnalyzer::normKeyLookup(map, kb3, 7, 3), 0);
+        ASSERT_FALSE(os.hasLooseOwner);
+        ASSERT_EQ((int)os.uSignatures.size(), 1);
+    }
+    gl::IntEncodedExpr r1 =
+        gl::encodeExpression(gl::EncodedExpression("(in[1,2])", "main"), nm);
+    gl::IntEncodedExpr r2 =
+        gl::encodeExpression(gl::EncodedExpression("(in[2,3])", "main"), nm);
+    const gl::IntEncodedExpr* ok3[3]  = { &r1, &r2, &ok };
+    const gl::IntEncodedExpr* bad3[3] = { &r1, &r2, &bad };
+    ASSERT_TRUE(gl::ExpressionAnalyzer::subkeyUSatisfied(map, kb3, 7, ok3, 3));
+    ASSERT_FALSE(gl::ExpressionAnalyzer::subkeyUSatisfied(map, kb3, 7, bad3, 3));
+}
+
+// addShortSubkeyOwner: an absent short subkey receives the signature-free
+// record (loose, no signatures) with the one owner; further owners join the
+// sorted owner list (same key id); a repeated owner is a no-op; the record
+// matches the heap oracle byte for byte. A signature record of a longer key
+// gains owners through mergeSubkeySignatures only.
+TEST(memory, short_subkey_owner_record) {
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 1 << 20, 1 << 18 });
+    gl::LbArena lb(&g);
+    gl::DirtyState d = gl::DirtyState::Clean;
+    gl::TypedColdBlobMap<gl::NormKey, gl::OwnerSet> map(&lb, &d);
+    NameMapRig nmRig;
+    gl::NameMap& nm = nmRig.nm;
+
     gl::NameId kb[2] = { 5, 6 };
-    gl::NormKey key{ 1, std::vector<gl::NameId>(kb, kb + 2) };
-    std::vector<gl::EncodedExpression> enc = {
-        gl::EncodedExpression("(in[a,b])", "main") };
-    gl::ExpressionAnalyzer::mergeOwnerRecord(
-        map, key, gl::makePartitionId(3, gl::NameMap::MAIN_ID), enc, nm);
+    gl::OwnerSet oracle;
+    const gl::RuleOwner o1 = gl::packRuleOwner(9, 1);
+    const gl::RuleOwner o2 = gl::packRuleOwner(2, 1);
+    gl::ExpressionAnalyzer::addShortSubkeyOwner(map, 1, kb, 2, o1);
+    gl::recordSubkeyOwner(oracle, nullptr, 0, o1);
+    const int32_t id = gl::ExpressionAnalyzer::normKeyLookup(map, kb, 2, 1);
+    ASSERT_TRUE(id != 0);
+    {
+        const gl::OwnerSet os = map.recordAt(id, 0);
+        ASSERT_TRUE(os.hasLooseOwner);
+        ASSERT_TRUE(os.uSignatures.empty());
+        ASSERT_EQ(static_cast<int>(os.owners.size()), 1);
+        ASSERT_EQ(os.owners[0].first, o1);
+        ASSERT_EQ(os.owners[0].second, -1);
+        ASSERT_TRUE(gl::Codec<gl::OwnerSet>::serialize(oracle)
+                 == gl::Codec<gl::OwnerSet>::serialize(os));
+    }
+    // A second owner joins, sorted below the first; a repeated owner is a no-op.
+    gl::ExpressionAnalyzer::addShortSubkeyOwner(map, 1, kb, 2, o2);
+    gl::recordSubkeyOwner(oracle, nullptr, 0, o2);
+    gl::ExpressionAnalyzer::addShortSubkeyOwner(map, 1, kb, 2, o1);
+    gl::recordSubkeyOwner(oracle, nullptr, 0, o1);
+    ASSERT_EQ(gl::ExpressionAnalyzer::normKeyLookup(map, kb, 2, 1), id);
+    {
+        const gl::OwnerSet os = map.recordAt(id, 0);
+        ASSERT_TRUE(os.uSignatures.empty());
+        ASSERT_EQ(static_cast<int>(os.owners.size()), 2);
+        ASSERT_EQ(os.owners[0].first, o2);
+        ASSERT_EQ(os.owners[1].first, o1);
+        ASSERT_TRUE(gl::Codec<gl::OwnerSet>::serialize(oracle)
+                 == gl::Codec<gl::OwnerSet>::serialize(os));
+    }
 
-    gl::IntEncodedExpr req =
-        gl::encodeExpression(gl::EncodedExpression("(in[a,b])", "main"), nm);
-    const gl::IntEncodedExpr* exprs[1] = { &req };
-
-    // Present key, main scope, loose owner -> kept.
-    ASSERT_TRUE(gl::ExpressionAnalyzer::ownerKeyAccepts(map, kb, 2, nm, exprs, 1));
-    // Absent key -> false (lookup miss, no predicate run).
-    gl::NameId miss[2] = { 9, 9 };
-    ASSERT_FALSE(
-        gl::ExpressionAnalyzer::ownerKeyAccepts(map, miss, 2, nm, exprs, 1));
+    // A 3-premise key: two owners with the same signature share it.
+    gl::EncodedExpression rule("(in3[a,b,u_p])", "main");
+    gl::encodeExpression(rule, nm);
+    gl::IntEncodedExpr owner3[3] = {
+        gl::encodeExpression(gl::EncodedExpression("(in[a,b])", "main"), nm),
+        gl::encodeExpression(gl::EncodedExpression("(in[b,c])", "main"), nm),
+        gl::encodeExpression(rule, nm) };
+    gl::NameId kb3[7] = { 5, 6, 7, 8, 9, 10, 11 };
+    gl::ExpressionAnalyzer::mergeSubkeySignatures(map, 3, kb3, 7, owner3, 3, o1);
+    gl::ExpressionAnalyzer::mergeSubkeySignatures(map, 3, kb3, 7, owner3, 3, o2);
+    const int32_t id3 = gl::ExpressionAnalyzer::normKeyLookup(map, kb3, 7, 3);
+    ASSERT_TRUE(id3 != 0);
+    const gl::OwnerSet os3 = map.recordAt(id3, 0);
+    ASSERT_EQ((int)os3.uSignatures.size(), 1);
+    ASSERT_FALSE(os3.hasLooseOwner);
+    ASSERT_EQ(static_cast<int>(os3.owners.size()), 2);
+    ASSERT_EQ(os3.owners[0].first, o2);
+    ASSERT_EQ(os3.owners[0].second, 0);
+    ASSERT_EQ(os3.owners[1].first, o1);
+    ASSERT_EQ(os3.owners[1].second, 0);
 }
 
 // requestGatesPass: the three map-independent gates preEvaluateFromEncoded runs
-// before probing an owner-set map. Split out so the unified request generator can
+// before probing a normalized-key index. Split out so the unified request generator can
 // build the key once and probe two maps with it; the gates must keep the exact
 // verdicts the inlined version gave.
 //
@@ -8193,52 +9893,155 @@ TEST(memory, filter_int_encoded_statements_also_accept_full_keys) {
     const gl::IntEncodedExpr& s = m.intEncodedStatements[0];
     gl::NameId keyBuf[6] = { s.nameId, s.negation, 1, 0, 2, 0 };
     const gl::NormKey key{ 1, std::vector<gl::NameId>(keyBuf, keyBuf + 6) };
-    std::vector<gl::EncodedExpression> owner = { src };
 
     gl::NameId out[8];
 
     // --- key registered nowhere: dropped under both flags.
-    ASSERT_EQ(ea.filterIntEncodedStatements(stmts, m.overallHashMemory, nm,
+    ASSERT_EQ(ea.filterIntEncodedStatements(stmts, m.overallHashMemory, m,
                                             false, out, 8), 0);
-    ASSERT_EQ(ea.filterIntEncodedStatements(stmts, m.overallHashMemory, nm,
+    ASSERT_EQ(ea.filterIntEncodedStatements(stmts, m.overallHashMemory, m,
                                             true, out, 8), 0);
 
     // --- key registered as a FULL key only: the flag decides.
-    gl::ExpressionAnalyzer::mergeOwnerRecord(
-        m.overallHashMemory.normalizedEncodedKeys, key,
-        gl::makePartitionId(3, gl::NameMap::MAIN_ID), owner, nm);
-    ASSERT_EQ(ea.filterIntEncodedStatements(stmts, m.overallHashMemory, nm,
+    m.overallHashMemory.normalizedEncodedKeys.assignRun(key, std::vector<gl::RuleOwnerRec>{ { gl::packRuleOwner(1, 1) } });
+    ASSERT_EQ(ea.filterIntEncodedStatements(stmts, m.overallHashMemory, m,
                                             false, out, 8), 0);
-    ASSERT_EQ(ea.filterIntEncodedStatements(stmts, m.overallHashMemory, nm,
+    ASSERT_EQ(ea.filterIntEncodedStatements(stmts, m.overallHashMemory, m,
                                             true, out, 8), 1);
     ASSERT_EQ(out[0], 0);
 
     // --- also registered as a SUBKEY: kept under both flags.
-    gl::ExpressionAnalyzer::mergeOwnerRecord(
-        m.overallHashMemory.normalizedEncodedSubkeys, key,
-        gl::makePartitionId(3, gl::NameMap::MAIN_ID), owner, nm);
-    ASSERT_EQ(ea.filterIntEncodedStatements(stmts, m.overallHashMemory, nm,
+    gl::ExpressionAnalyzer::addShortSubkeyOwner(
+        m.overallHashMemory.normalizedEncodedSubkeys, 1, keyBuf, 6,
+        gl::packRuleOwner(1, 1));
+    ASSERT_EQ(ea.filterIntEncodedStatements(stmts, m.overallHashMemory, m,
                                             false, out, 8), 1);
-    ASSERT_EQ(ea.filterIntEncodedStatements(stmts, m.overallHashMemory, nm,
+    ASSERT_EQ(ea.filterIntEncodedStatements(stmts, m.overallHashMemory, m,
                                             true, out, 8), 1);
 }
 
-// generateEncodedRequestsStatic: one function, three stump lengths.
+// filterIntEncodedStatements: a statement whose scope is a frozen _ordis_
+// branch or any descendant of one leaves the request universe; the main-scope
+// statement and a statement under a sibling branch survive.
+TEST(memory, filter_int_encoded_statements_excludes_frozen_subtree) {
+    gl::ExpressionAnalyzer ea("Peano");
+    gl::Memory m;
+    gl::NameMap& nm = m.nameMap;
+    const gl::NameId mainId = nm.encode("main");
+    ASSERT_EQ(mainId, gl::NameMap::MAIN_ID);
+    const gl::NameId br = nm.encodePush(mainId,
+        gl::StrSpan("ordis_(or90[2,6])_((=[2,6]))", 28));
+    const gl::NameId gc = nm.encodePush(br, gl::StrSpan("hypo_(h[1])", 11));
+    const gl::NameId ggc = nm.encodePush(gc, gl::StrSpan("hypo_(h[2])", 11));
+    const gl::NameId sib = nm.encodePush(mainId,
+        gl::StrSpan("ordis_(or90[2,6])_((in[2,6]))", 29));
+
+    // Four copies of one statement: main, the branch, its grandchild, a
+    // sibling branch.
+    for (const gl::NameId vid : { mainId, br, ggc, sib }) {
+        const gl::EncodedExpression src("(in[a,b])", nm.decode(vid));
+        m.intEncodedStatements.push_back(gl::encodeExpression(src, nm));
+    }
+    const gl::IntStmtView stmts(m.intEncodedStatements);
+    const gl::IntEncodedExpr& s = m.intEncodedStatements[0];
+    gl::NameId keyBuf[6] = { s.nameId, s.negation, 1, 0, 2, 0 };
+    gl::ExpressionAnalyzer::addShortSubkeyOwner(
+        m.overallHashMemory.normalizedEncodedSubkeys, 1, keyBuf, 6,
+        gl::packRuleOwner(1, 1));
+    gl::NameId out[8];
+
+    // Nothing frozen: all four survive.
+    ASSERT_EQ(ea.filterIntEncodedStatements(stmts, m.overallHashMemory, m,
+                                            false, out, 8), 4);
+    // Freeze the branch: the branch copy and the grandchild copy drop; main
+    // and the sibling branch survive, in ascending index order.
+    m.frozenOrBranches.mint(br);
+    ASSERT_EQ(ea.filterIntEncodedStatements(stmts, m.overallHashMemory, m,
+                                            false, out, 8), 2);
+    ASSERT_EQ(out[0], 0);
+    ASSERT_EQ(out[1], 3);
+    ASSERT_EQ(ea.filterIntEncodedStatements(stmts, m.overallHashMemory, m,
+                                            true, out, 8), 2);
+    // Discharge-style reset: all four again.
+    m.frozenOrBranches.resetToFresh();
+    ASSERT_EQ(ea.filterIntEncodedStatements(stmts, m.overallHashMemory, m,
+                                            false, out, 8), 4);
+}
+
+// generateEncodedRequestsStatic: a frozen _ordis_ branch's statements produce
+// no request; the reset restores the whole key's request.
+TEST(memory, generate_encoded_requests_static_skips_frozen_subtree) {
+    gl::ExpressionAnalyzer ea("Peano");
+    gl::Memory m;
+    gl::NameMap& nm = m.nameMap;
+    const gl::NameId mainId = nm.encode("main");
+    ASSERT_EQ(mainId, gl::NameMap::MAIN_ID);
+    const gl::NameId br = nm.encodePush(mainId,
+        gl::StrSpan("ordis_(or90[2,6])_((=[2,6]))", 28));
+    const std::string brName = nm.decode(br);
+
+    const gl::EncodedExpression srcA("(in[a,b])", brName);
+    const gl::EncodedExpression srcB("(in2[a,b,c])", brName);
+    m.intEncodedStatements.push_back(gl::encodeExpression(srcA, nm));
+    m.intEncodedStatements.push_back(gl::encodeExpression(srcB, nm));
+    const gl::IntEncodedExpr* pA = &m.intEncodedStatements[0];
+    const gl::IntEncodedExpr* pB = &m.intEncodedStatements[1];
+    m.overallHashMemory.maxKeyLength = static_cast<gl::NameId>(2);
+
+    gl::NameId kb[gl::ExecutionParameters::MAX_KEY_SLOTS];
+    const auto normKey = [&](const gl::IntEncodedExpr* const* ptrs, gl::NameId n) {
+        const gl::NameId len = ea.makeIntNormalizedKeyFromEncoded(
+            ptrs, n, kb, gl::ExecutionParameters::MAX_KEY_SLOTS);
+        return gl::NormKey{ n, std::vector<gl::NameId>(kb, kb + len) };
+    };
+    const gl::IntEncodedExpr* justA[1] = { pA };
+    const gl::IntEncodedExpr* justB[1] = { pB };
+    const gl::IntEncodedExpr* bothAB[2] = { pA, pB };
+    const gl::NormKey k1A = normKey(justA, 1);
+    const gl::NormKey k1B = normKey(justB, 1);
+    const gl::NormKey k2AB = normKey(bothAB, 2);
+    m.overallHashMemory.normalizedEncodedKeys.assignRun(k2AB, std::vector<gl::RuleOwnerRec>{ { gl::packRuleOwner(1, 1) } });
+    for (const gl::NormKey* k : { &k1A, &k1B }) {
+        gl::ExpressionAnalyzer::addShortSubkeyOwner(
+            m.overallHashMemory.normalizedEncodedSubkeys, k->numberExpressions,
+            k->data.data(), static_cast<int32_t>(k->data.size()),
+            gl::packRuleOwner(1, 1));
+    }
+    ea.ceFilteringActive = false;
+    gl::SealedPageSet pages;
+    pages.bind(&gl::staticMemory());
+    std::atomic<int64_t> doomLine{ gl::kNoDoomLine };
+    const auto run = [&]() {
+        gl::ExpressionAnalyzer::g_growthMatchCount = 0;
+        gl::BurstSink sink{ &ea, &m, 0u, &pages, &doomLine, 0,
+                            gl::SealedRecordCursor<gl::FiringRecord>(pages) };
+        ea.generateEncodedRequestsStatic(m, m.overallHashMemory, nullptr, 0,
+                                         gl::SplitStumpRef{}, 0u, sink);
+        gl::genScratchArenas().forSlot(0).releaseAll();
+        return sink.produced;
+    };
+    ASSERT_EQ(run(), 1);
+    m.frozenOrBranches.mint(br);
+    ASSERT_EQ(run(), 0);
+    m.frozenOrBranches.resetToFresh();
+    ASSERT_EQ(run(), 1);
+}
+
+// generateEncodedRequestsStatic: the grow search reaches a whole key on its own.
 //
 // The world: two main-scope statements A = (in[a,b]) and B = (in2[a,b,c]), one
 // installed two-element key {A,B} (name order "in" < "in2"), and both of its
-// one-element subkeys registered as subkeys AND as key-minus-one.
+// one-element subkeys registered as growable subkeys.
 //
-// Every stump length must find the SAME single request {A,B} — but by a different
-// route, which is exactly what makes this a unification test:
-//   stump 2  -> the SEED emits it (the stump alone is already a whole key).
-//   stump 1  -> the MERGE emits it (grow to {A}, attach the stump {B}).
-//   stump 0  -> the GROW emits it (the search reaches {A,B}, which is a whole key).
+// There is no obligatory stump to attach and no seed phase: a candidate IS the
+// request, so the search itself has to reach {A,B}. Three cases — an empty term
+// list, a term every candidate satisfies (which must behave identically), and
+// the whole key un-installed, which must emit nothing.
 //
 // BurstSink is the production consumer. Its dependency skip drops every request
 // before firing, because `intKnownStatements` is empty here — but `produced` is
 // bumped first, so it counts exactly the emitted requests.
-TEST(memory, generate_encoded_requests_static_all_stump_lengths) {
+TEST(memory, generate_encoded_requests_static_grow_reaches_the_whole_key) {
     gl::ExpressionAnalyzer ea("Peano");
     gl::Memory m;
     gl::NameMap& nm = m.nameMap;
@@ -8267,51 +10070,43 @@ TEST(memory, generate_encoded_requests_static_all_stump_lengths) {
     const gl::NormKey k1B = normKey(justB, 1);
     const gl::NormKey k2AB = normKey(bothAB, 2);
 
-    std::vector<gl::EncodedExpression> ownerAB = { srcA, srcB };
-    const auto pid = gl::makePartitionId(3, gl::NameMap::MAIN_ID);
-    gl::ExpressionAnalyzer::mergeOwnerRecord(
-        m.overallHashMemory.normalizedEncodedKeys, k2AB, pid, ownerAB, nm);
+    m.overallHashMemory.normalizedEncodedKeys.assignRun(k2AB, std::vector<gl::RuleOwnerRec>{ { gl::packRuleOwner(1, 1) } });
     for (const gl::NormKey* k : { &k1A, &k1B }) {
-        gl::ExpressionAnalyzer::mergeOwnerRecord(
-            m.overallHashMemory.normalizedEncodedSubkeys, *k, pid, ownerAB, nm);
-        gl::ExpressionAnalyzer::mergeOwnerRecord(
-            m.overallHashMemory.normalizedEncodedSubkeysMinusOne, *k, pid, ownerAB, nm);
+        gl::ExpressionAnalyzer::addShortSubkeyOwner(
+            m.overallHashMemory.normalizedEncodedSubkeys, k->numberExpressions,
+            k->data.data(), static_cast<int32_t>(k->data.size()),
+            gl::packRuleOwner(1, 1));
     }
 
-    // One unsplit part; the empty-stump path asserts on this.
-    gl::g_splitCount = 1;
-    gl::g_splitProcessID = 0;
     ea.ceFilteringActive = false;
 
     gl::SealedPageSet pages;
     pages.bind(&gl::staticMemory());
-    std::atomic<bool> stop{ false };
+    std::atomic<int64_t> doomLine{ gl::kNoDoomLine };
 
-    const auto runWith = [&](gl::NameId stumpLen, const gl::Stump* stumps,
-                             gl::NameId stumpCount, gl::IntStmtView src1) {
+    const auto runWith = [&](const gl::MandatoryTerm* terms,
+                             gl::NameId termCount) {
         gl::ExpressionAnalyzer::g_growthMatchCount = 0;
-        gl::BurstSink sink{ &ea, &m, 0u, &pages, &stop,
+        gl::BurstSink sink{ &ea, &m, 0u, &pages, &doomLine, 0,
                             gl::SealedRecordCursor<gl::FiringRecord>(pages) };
-        ea.generateEncodedRequestsStatic(m, m.overallHashMemory, stumpLen,
-                                         stumps, stumpCount, all, src1,
+        ea.generateEncodedRequestsStatic(m, m.overallHashMemory,
+                                         terms, termCount,
                                          gl::SplitStumpRef{}, 0u, sink);
         gl::genScratchArenas().forSlot(0).releaseAll();
         return sink.produced;
     };
 
-    // --- stump 2: the seed emits {A,B}; grow depth is 0 so nothing else runs.
-    const gl::Stump pair[1] = { { 0, 1 } };
-    ASSERT_EQ(runWith(2, pair, 1, all), 1);
+    // --- Empty term list: nothing is mandatory, so the whole key is a request.
+    ASSERT_EQ(runWith(nullptr, 0), 1);
 
-    // --- stump 1 (the stump is B): grow finds {A}, the merge attaches B.
-    // The {B} base candidate merges with stump B and is dropped as a duplicate.
-    const gl::Stump single[1] = { { 1, -1 } };
-    ASSERT_EQ(runWith(1, single, 1, gl::IntStmtView()), 1);
+    // --- A term naming the whole statement view is satisfied by every candidate,
+    // so it must produce exactly what the empty list produced.
+    gl::MandatoryTerm allTerm[1];
+    allTerm[0].views[0] = all;
+    allTerm[0].viewCount = 1;
+    ASSERT_EQ(runWith(allTerm, 1), 1);
 
-    // --- stump 0: no element is obligatory; the search itself reaches {A,B}.
-    ASSERT_EQ(runWith(0, nullptr, 0, gl::IntStmtView()), 1);
-
-    // --- stump 0 with the whole key un-installed: nothing to find, no request.
+    // --- The whole key un-installed: nothing to find, no request.
     gl::Memory m2;
     gl::NameMap& nm2 = m2.nameMap;
     m2.intEncodedStatements.push_back(gl::encodeExpression(srcA, nm2));
@@ -8321,16 +10116,16 @@ TEST(memory, generate_encoded_requests_static_all_stump_lengths) {
     const gl::NameId lenA2 = ea.makeIntNormalizedKeyFromEncoded(
         justA2, 1, kb, gl::ExecutionParameters::MAX_KEY_SLOTS);
     const gl::NormKey k1A2{ 1, std::vector<gl::NameId>(kb, kb + lenA2) };
-    std::vector<gl::EncodedExpression> ownerA = { srcA };
-    gl::ExpressionAnalyzer::mergeOwnerRecord(
-        m2.overallHashMemory.normalizedEncodedSubkeys, k1A2, pid, ownerA, nm2);
+    gl::ExpressionAnalyzer::addShortSubkeyOwner(
+        m2.overallHashMemory.normalizedEncodedSubkeys, k1A2.numberExpressions,
+        k1A2.data.data(), static_cast<int32_t>(k1A2.data.size()),
+        gl::packRuleOwner(1, 1));
 
     gl::ExpressionAnalyzer::g_growthMatchCount = 0;
-    gl::BurstSink sink2{ &ea, &m2, 0u, &pages, &stop,
+    gl::BurstSink sink2{ &ea, &m2, 0u, &pages, &doomLine, 0,
                          gl::SealedRecordCursor<gl::FiringRecord>(pages) };
-    ea.generateEncodedRequestsStatic(m2, m2.overallHashMemory, 0, nullptr, 0,
-                                     gl::IntStmtView(m2.intEncodedStatements),
-                                     gl::IntStmtView(), gl::SplitStumpRef{}, 0u, sink2);
+    ea.generateEncodedRequestsStatic(m2, m2.overallHashMemory, nullptr, 0,
+                                     gl::SplitStumpRef{}, 0u, sink2);
     gl::genScratchArenas().forSlot(0).releaseAll();
     ASSERT_EQ(sink2.produced, 0);
 }
@@ -8340,6 +10135,10 @@ namespace {
 /// A three-statement world for the stump producer: "in", "in2", "in3" all sort
 /// distinctly by name. Each caller installs whichever owner-set entries its case
 /// needs; nothing is installed here.
+void putSubkey(gl::ExpressionAnalyzer& ea, gl::Memory& m,
+               gl::TypedColdBlobMap<gl::NormKey, gl::OwnerSet>& map,
+               const gl::IntEncodedExpr* const* ptrs, gl::NameId n);
+
 struct StumpWorld {
     gl::Memory m;
     gl::EncodedExpression srcA{ "(in[a,b])", "main" };
@@ -8354,18 +10153,10 @@ struct StumpWorld {
 
     const gl::IntEncodedExpr* at(int i) { return &m.intEncodedStatements[i]; }
 
-    /// Install `ptrs[0..n)` as a subkey owned by the rule with `origId`.
+    /// Install `ptrs[0..n)` as a subkey through the production door by length.
     void installSubkey(gl::ExpressionAnalyzer& ea,
-                       const gl::IntEncodedExpr* const* ptrs, gl::NameId n,
-                       gl::NameId origId,
-                       std::vector<gl::EncodedExpression> owner) {
-        gl::NameId kb[gl::ExecutionParameters::MAX_KEY_SLOTS];
-        const gl::NameId len = ea.makeIntNormalizedKeyFromEncoded(
-            ptrs, n, kb, gl::ExecutionParameters::MAX_KEY_SLOTS);
-        const gl::NormKey k{ n, std::vector<gl::NameId>(kb, kb + len) };
-        gl::ExpressionAnalyzer::mergeOwnerRecord(
-            m.overallHashMemory.normalizedEncodedSubkeys, k,
-            gl::makePartitionId(origId, gl::NameMap::MAIN_ID), owner, m.nameMap);
+                       const gl::IntEncodedExpr* const* ptrs, gl::NameId n) {
+        putSubkey(ea, m, m.overallHashMemory.normalizedEncodedSubkeys, ptrs, n);
     }
 };
 
@@ -8378,17 +10169,38 @@ std::vector<std::vector<gl::NameId>> drainStumps(gl::SealedPageSet& pages) {
     return got;
 }
 
-/// Install one owner record for `ptrs[0..n)` into `map`.
-void putKey(gl::ExpressionAnalyzer& ea, gl::Memory& m,
-            gl::TypedColdBlobMap<gl::NormKey, gl::OwnerSet>& map,
-            const gl::IntEncodedExpr* const* ptrs, gl::NameId n,
-            const std::vector<gl::EncodedExpression>& owner) {
+/// Install `ptrs[0..n)` as a whole key (one test owner).
+void putWholeKey(gl::ExpressionAnalyzer& ea,
+                 gl::TypedColdBlobMap<gl::NormKey, gl::RuleOwnerRec>& map,
+                 const gl::IntEncodedExpr* const* ptrs, gl::NameId n) {
     gl::NameId kb[gl::ExecutionParameters::MAX_KEY_SLOTS];
     const gl::NameId len = ea.makeIntNormalizedKeyFromEncoded(
         ptrs, n, kb, gl::ExecutionParameters::MAX_KEY_SLOTS);
-    gl::ExpressionAnalyzer::mergeOwnerRecord(
-        map, gl::NormKey{ n, std::vector<gl::NameId>(kb, kb + len) },
-        gl::makePartitionId(3, gl::NameMap::MAIN_ID), owner, m.nameMap);
+    gl::ScratchArena& arena = gl::genScratchArenas().forSlot(
+        gl::genScratchArenas().slotCount() - 1);
+    gl::ExpressionAnalyzer::addWholeKeyOwner(map, n, kb, len,
+                                             gl::packRuleOwner(1, 1), arena);
+}
+
+/// Install `ptrs[0..n)` as a subkey exactly as the install sites do: the
+/// empty record below kSubkeyUCheckMinElements, the signature record of the
+/// subkey's own premises from there on.
+void putSubkey(gl::ExpressionAnalyzer& ea, gl::Memory& m,
+               gl::TypedColdBlobMap<gl::NormKey, gl::OwnerSet>& map,
+               const gl::IntEncodedExpr* const* ptrs, gl::NameId n) {
+    (void)m;
+    gl::NameId kb[gl::ExecutionParameters::MAX_KEY_SLOTS];
+    const gl::NameId len = ea.makeIntNormalizedKeyFromEncoded(
+        ptrs, n, kb, gl::ExecutionParameters::MAX_KEY_SLOTS);
+    if (n < gl::ExpressionAnalyzer::kSubkeyUCheckMinElements) {
+        gl::ExpressionAnalyzer::addShortSubkeyOwner(map, n, kb, len,
+                                                    gl::packRuleOwner(1, 1));
+        return;
+    }
+    gl::IntEncodedExpr prem[gl::ExecutionParameters::MAX_EXPRESSIONS];
+    for (gl::NameId k = 0; k < n; ++k) prem[k] = *ptrs[k];
+    gl::ExpressionAnalyzer::mergeSubkeySignatures(map, n, kb, len, prem, n,
+                                                  gl::packRuleOwner(1, 1));
 }
 
 /// Run one request-generator pass and return the number of requests emitted.
@@ -8403,25 +10215,23 @@ gl::ExpressionStump makeStump(const std::vector<gl::NameId>& idx,
     return s;
 }
 
-int splitStumpRun(gl::ExpressionAnalyzer& ea, gl::Memory& m, gl::NameId stumpLen,
-                  const gl::Stump* stumps, gl::NameId stumpCount,
-                   gl::IntStmtView src1, const std::vector<gl::NameId>& splitStump,
+int splitStumpRun(gl::ExpressionAnalyzer& ea, gl::Memory& m,
+                   const std::vector<gl::NameId>& splitStump,
                    gl::NameId ordinal = 0, gl::NameId total = -1,
-                   bool terminalOnly = false) {
-    gl::g_splitCount = 1;
-    gl::g_splitProcessID = 0;
+                   bool terminalOnly = false,
+                   const gl::MandatoryTerm* terms = nullptr,
+                   gl::NameId termCount = 0) {
     ea.ceFilteringActive = false;
     gl::SealedPageSet pages;
     pages.bind(&gl::staticMemory());
-    std::atomic<bool> stop{ false };
+    std::atomic<int64_t> doomLine{ gl::kNoDoomLine };
     gl::ExpressionAnalyzer::g_growthMatchCount = 0;
-    gl::BurstSink sink{ &ea, &m, 0u, &pages, &stop,
+    gl::BurstSink sink{ &ea, &m, 0u, &pages, &doomLine, 0,
                         gl::SealedRecordCursor<gl::FiringRecord>(pages) };
     if (total < 0) total = static_cast<gl::NameId>(splitStump.empty() ? 0 : 1);
     const gl::ExpressionStump one = makeStump(splitStump, terminalOnly);
     ea.generateEncodedRequestsStatic(
-        m, m.overallHashMemory, stumpLen, stumps, stumpCount,
-        gl::IntStmtView(m.intEncodedStatements), src1,
+        m, m.overallHashMemory, terms, termCount,
         gl::SplitStumpRef{ splitStump.empty() ? nullptr : &one,
                            static_cast<gl::NameId>(splitStump.empty() ? 0 : 1),
                            ordinal, total },
@@ -8434,24 +10244,21 @@ int splitStumpRun(gl::ExpressionAnalyzer& ea, gl::Memory& m, gl::NameId stumpLen
 }
 
 /// Run the generator with a whole BUCKET of stumps; returns the requests emitted.
-int splitStumpBucketRun(gl::ExpressionAnalyzer& ea, gl::Memory& m, gl::NameId stumpLen,
-                        const gl::Stump* stumps, gl::NameId stumpCount,
-                        gl::IntStmtView src1,
-                        const std::vector<std::vector<gl::NameId>>& bucket) {
-    gl::g_splitCount = 1;
-    gl::g_splitProcessID = 0;
+int splitStumpBucketRun(gl::ExpressionAnalyzer& ea, gl::Memory& m,
+                        const std::vector<std::vector<gl::NameId>>& bucket,
+                        const gl::MandatoryTerm* terms = nullptr,
+                        gl::NameId termCount = 0) {
     ea.ceFilteringActive = false;
     std::vector<gl::ExpressionStump> run;
     for (const auto& s : bucket) run.push_back(makeStump(s));
     gl::SealedPageSet pages;
     pages.bind(&gl::staticMemory());
-    std::atomic<bool> stop{ false };
+    std::atomic<int64_t> doomLine{ gl::kNoDoomLine };
     gl::ExpressionAnalyzer::g_growthMatchCount = 0;
-    gl::BurstSink sink{ &ea, &m, 0u, &pages, &stop,
+    gl::BurstSink sink{ &ea, &m, 0u, &pages, &doomLine, 0,
                         gl::SealedRecordCursor<gl::FiringRecord>(pages) };
     ea.generateEncodedRequestsStatic(
-        m, m.overallHashMemory, stumpLen, stumps, stumpCount,
-        gl::IntStmtView(m.intEncodedStatements), src1,
+        m, m.overallHashMemory, terms, termCount,
         gl::SplitStumpRef{ run.data(), static_cast<gl::NameId>(run.size()), 0, 1 },
         0u, sink);
     gl::genScratchArenas().forSlot(0).releaseAll();
@@ -8463,125 +10270,84 @@ int splitStumpBucketRun(gl::ExpressionAnalyzer& ea, gl::Memory& m, gl::NameId st
 
 }  // namespace
 
-TEST(memory, split_stump_search_covers_the_unsplit_request_set) {
+TEST(memory, split_stump_search_partitions_the_unsplit_request_set) {
     // One 3-premise rule (in, in2, in3). Obligatory stump = "in3"; unsplit, the
     // search records the three 2-element base candidates and the merge emits the
-    // one whole key. Split on each of the three expressions in turn: every request
-    // the unsplit run emits is emitted by at least one sub-part, and a sub-part
-    // emits only requests containing its own stump.
+    // one whole key. Split on each of the three expressions in turn: the stumps'
+    // subtrees PARTITION the unsplit enumeration, so the per-stump counts sum to
+    // the unsplit count exactly — every request emitted once, by one sub-part.
     gl::ExpressionAnalyzer ea("Peano");
     StumpWorld w;
     w.m.overallHashMemory.maxKeyLength = 3;
     const std::vector<gl::EncodedExpression> owner = { w.srcA, w.srcB, w.srcC };
     auto& hm = w.m.overallHashMemory;
     const gl::IntEncodedExpr* all3[3] = { w.at(0), w.at(1), w.at(2) };
-    putKey(ea, w.m, hm.normalizedEncodedKeys, all3, 3, owner);
-    putKey(ea, w.m, hm.normalizedEncodedSubkeys, all3, 3, owner);
+    putWholeKey(ea, hm.normalizedEncodedKeys, all3, 3);
+    putSubkey(ea, w.m, hm.normalizedEncodedSubkeys, all3, 3);
     for (int i = 0; i < 3; ++i) {
         const gl::IntEncodedExpr* one[1] = { w.at(i) };
-        putKey(ea, w.m, hm.normalizedEncodedSubkeys, one, 1, owner);
+        putSubkey(ea, w.m, hm.normalizedEncodedSubkeys, one, 1);
         for (int j = i + 1; j < 3; ++j) {
             const gl::IntEncodedExpr* two[2] = { w.at(i), w.at(j) };
-            putKey(ea, w.m, hm.normalizedEncodedSubkeys, two, 2, owner);
-            // A 3-element key's minus-one subkeys are its 2-element subsets.
-            putKey(ea, w.m, hm.normalizedEncodedSubkeysMinusOne, two, 2, owner);
+            putSubkey(ea, w.m, hm.normalizedEncodedSubkeys, two, 2);
         }
     }
 
-    const gl::Stump oblig[1] = { { 2, -1 } };  // the obligatory statement is "in3"
-    const gl::IntStmtView none;
+    ASSERT_EQ(splitStumpRun(ea, w.m, {}), 1);  // unsplit
 
-    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 1, none, {}), 1);  // unsplit
+    // Stump "in" seeds the search at node {in} and grows it onward to the whole
+    // key {in,in2,in3}. Stump "in2" seeds at node {in2} and grows only PAST it,
+    // reaching {in2,in3} alone — {in,in2,in3} lies in "in"'s subtree and is not
+    // reachable from here, which is exactly the duplicate the partition drops.
+    // Stump "in3" is last in name order and has nothing to grow into.
+    const int s0 = splitStumpRun(ea, w.m, { 0 });
+    const int s1 = splitStumpRun(ea, w.m, { 1 });
+    const int s2 = splitStumpRun(ea, w.m, { 2 });
+    ASSERT_EQ(s0, 1);
+    ASSERT_EQ(s1, 0);
+    ASSERT_EQ(s2, 0);
+    // THE partition property: the split generates the unsplit request set, once.
+    ASSERT_EQ(s0 + s1 + s2, splitStumpRun(ea, w.m, {}));
 
-    // Stump "in": the search reaches {in,in2} and the merge attaches "in3". Stump
-    // "in2" reaches the same request by the other route — the duplication a stump
-    // split trades for its per-part work. Stump "in3" can only build candidates
-    // already containing "in3", every one of which the merge drops as a repeat of
-    // the obligatory statement.
-    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 1, none, { 0 }), 1);
-    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 1, none, { 1 }), 1);
-    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 1, none, { 2 }), 0);
-
-    // A 2-element stump spends the whole grow depth, so the search adds nothing —
-    // but the stump alone completes the key with the obligatory statement.
-    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 1, none, { 0, 1 }), 1);
+    // A 2-element stump leaves room for exactly one more element, which is what
+    // the whole key needs.
+    ASSERT_EQ(splitStumpRun(ea, w.m, { 0, 1 }), 1);
 }
 
-TEST(memory, a_stump_bucket_searches_once_per_stump_and_dedups_the_overlap) {
-    // The same 3-premise world. Stumped on "in" the sub-part emits the request;
-    // stumped on "in2" it emits the same request by the other route. Given BOTH as
-    // one bucket, the sub-part searches once per stump over one filtered list and
-    // the emitter collapses the overlap — one request, not two. That collapse is
-    // the reason a bucket beats one sub-part per stump: two separate sub-parts
-    // would each have fired it, and each firing is a record the finalize must sort.
+TEST(memory, a_stump_bucket_searches_once_per_stump_over_disjoint_subtrees) {
+    // The same 3-premise world. A bucket runs one search per stump over one
+    // filtered list — the filter is the fixed cost a bucket exists to pay once.
+    // The stumps' subtrees are disjoint, so the bucket's yield is their sum with
+    // nothing to collapse: "in" owns the request, "in2" owns none of it.
     gl::ExpressionAnalyzer ea("Peano");
     StumpWorld w;
     w.m.overallHashMemory.maxKeyLength = 3;
     const std::vector<gl::EncodedExpression> owner = { w.srcA, w.srcB, w.srcC };
     auto& hm = w.m.overallHashMemory;
     const gl::IntEncodedExpr* all3[3] = { w.at(0), w.at(1), w.at(2) };
-    putKey(ea, w.m, hm.normalizedEncodedKeys, all3, 3, owner);
-    putKey(ea, w.m, hm.normalizedEncodedSubkeys, all3, 3, owner);
+    putWholeKey(ea, hm.normalizedEncodedKeys, all3, 3);
+    putSubkey(ea, w.m, hm.normalizedEncodedSubkeys, all3, 3);
     for (int i = 0; i < 3; ++i) {
         const gl::IntEncodedExpr* one[1] = { w.at(i) };
-        putKey(ea, w.m, hm.normalizedEncodedSubkeys, one, 1, owner);
+        putSubkey(ea, w.m, hm.normalizedEncodedSubkeys, one, 1);
         for (int j = i + 1; j < 3; ++j) {
             const gl::IntEncodedExpr* two[2] = { w.at(i), w.at(j) };
-            putKey(ea, w.m, hm.normalizedEncodedSubkeys, two, 2, owner);
-            putKey(ea, w.m, hm.normalizedEncodedSubkeysMinusOne, two, 2, owner);
+            putSubkey(ea, w.m, hm.normalizedEncodedSubkeys, two, 2);
         }
     }
-    const gl::Stump oblig[1] = { { 2, -1 } };  // "in3"
-    const gl::IntStmtView none;
 
-    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 1, none, { 0 }), 1);
-    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 1, none, { 1 }), 1);
-    ASSERT_EQ(splitStumpBucketRun(ea, w.m, 1, oblig, 1, none, { {0}, {1} }), 1);
+    ASSERT_EQ(splitStumpRun(ea, w.m, { 0 }), 1);
+    ASSERT_EQ(splitStumpRun(ea, w.m, { 1 }), 0);
+    ASSERT_EQ(splitStumpBucketRun(ea, w.m, { {0}, {1} }), 1);
 
     // A bucket also covers what its stumps cover separately, no more and no less:
     // adding the stump that emits nothing changes nothing.
-    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 1, none, { 2 }), 0);
-    ASSERT_EQ(splitStumpBucketRun(ea, w.m, 1, oblig, 1, none, { {0}, {1}, {2} }), 1);
+    ASSERT_EQ(splitStumpRun(ea, w.m, { 2 }), 0);
+    ASSERT_EQ(splitStumpBucketRun(ea, w.m, { {0}, {1}, {2} }), 1);
 
     // A stump too long for the grow depth is skipped, and the bucket's others still
     // run: {in,in2,in3} spends all three slots, leaving no room for a base candidate.
-    ASSERT_EQ(splitStumpBucketRun(ea, w.m, 1, oblig, 1, none, { {0,1,2}, {0} }), 1);
-}
-
-TEST(memory, seed_phase_requests_are_dealt_across_the_stump_sub_parts) {
-    // A seed request IS the obligatory stump — the case where that stump is
-    // already a whole key. It contains no split stump, so without the deal every
-    // sub-part of a rule-part would emit every one of them.
-    //
-    // Three single-expression keys, each its own obligatory stump. maxKeyLength 1
-    // leaves no grow depth, so the seed phase is the whole burst.
-    gl::ExpressionAnalyzer ea("Peano");
-    StumpWorld w;
-    w.m.overallHashMemory.maxKeyLength = 1;
-    for (int i = 0; i < 3; ++i) {
-        const gl::IntEncodedExpr* one[1] = { w.at(i) };
-        const std::vector<gl::EncodedExpression> owner = {
-            i == 0 ? w.srcA : (i == 1 ? w.srcB : w.srcC) };
-        putKey(ea, w.m, w.m.overallHashMemory.normalizedEncodedKeys, one, 1, owner);
-    }
-    const gl::Stump oblig[3] = { { 0, -1 }, { 1, -1 }, { 2, -1 } };
-    const gl::IntStmtView none;
-
-    // Unsplit: all three seeds emitted by the one part.
-    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 3, none, {}), 3);
-
-    // Three sub-parts: obligatory-stump index i goes to sub-part i % 3, so each
-    // sub-part emits exactly one and the three together emit each seed once.
-    int total = 0;
-    for (gl::NameId p = 0; p < 3; ++p) {
-        const int got = splitStumpRun(ea, w.m, 1, oblig, 3, none, { p }, p, 3);
-        ASSERT_EQ(got, 1);
-        total += got;
-    }
-    ASSERT_EQ(total, 3);
-
-    // A single sub-part owns every seed — the deal is inert at total 1.
-    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 3, none, { 0 }, 0, 1), 3);
+    ASSERT_EQ(splitStumpBucketRun(ea, w.m, { {0,1,2}, {0} }), 1);
 }
 
 TEST(memory, split_stump_alone_is_recorded_as_a_base_candidate) {
@@ -8597,34 +10363,27 @@ TEST(memory, split_stump_alone_is_recorded_as_a_base_candidate) {
     const gl::IntEncodedExpr* pairAC[2] = { w.at(0), w.at(2) };
     const gl::IntEncodedExpr* justA[1] = { w.at(0) };
     const gl::IntEncodedExpr* justC[1] = { w.at(2) };
-    putKey(ea, w.m, hm.normalizedEncodedKeys, pairAC, 2, owner);
-    putKey(ea, w.m, hm.normalizedEncodedSubkeys, pairAC, 2, owner);
+    putWholeKey(ea, hm.normalizedEncodedKeys, pairAC, 2);
+    putSubkey(ea, w.m, hm.normalizedEncodedSubkeys, pairAC, 2);
     for (const gl::IntEncodedExpr* const* one : { justA, justC }) {
-        putKey(ea, w.m, hm.normalizedEncodedSubkeys, one, 1, owner);
-        // A 2-element key's minus-one subkeys are its single elements.
-        putKey(ea, w.m, hm.normalizedEncodedSubkeysMinusOne, one, 1, owner);
+        putSubkey(ea, w.m, hm.normalizedEncodedSubkeys, one, 1);
     }
 
-    const gl::Stump oblig[1] = { { 2, -1 } };  // "in3"
-    const gl::IntStmtView none;
+    ASSERT_EQ(splitStumpRun(ea, w.m, {}), 1);     // unsplit
+    ASSERT_EQ(splitStumpRun(ea, w.m, { 0 }), 1);  // grows {in} to {in,in3}
 
-    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 1, none, {}), 1);     // unsplit
-    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 1, none, { 0 }), 1);  // the C = {} node
-
-    // A stump that IS the obligatory statement: recorded as a base candidate, then
-    // dropped by the merge as a repeat. Nothing is lost — the request {in, in3}
-    // belongs to the sub-part stumped on "in", asserted directly above.
-    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 1, none, { 2 }), 0);
+    // "in3" is last in name order, so its subtree holds nothing larger.
+    ASSERT_EQ(splitStumpRun(ea, w.m, { 2 }), 0);
 
     // A stump the subkey map rejects can neither be recorded nor grow.
-    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 1, none, { 1 }), 0);
+    ASSERT_EQ(splitStumpRun(ea, w.m, { 1 }), 0);
 }
 
 TEST(memory, terminal_pre_stump_is_checked_but_does_not_grow) {
-    // With obligatory "in3", base {in} completes the 2-premise request while
-    // growing it with "in2" completes the 3-premise request. A regular stump
-    // reaches both. A terminal pre-stump owns only its shallow node, so it emits
-    // the 2-premise request and leaves the larger one to the producer's children.
+    // Three whole keys nested along one path: {in}, {in,in3} and {in,in2,in3}. A
+    // regular stump on {in} reaches all three. A terminal pre-stump owns only its
+    // own shallow node, so it emits {in} and leaves the two larger requests to the
+    // producer's children — which is the whole point of retaining it (I-157).
     gl::ExpressionAnalyzer ea("Peano");
     StumpWorld w;
     w.m.overallHashMemory.maxKeyLength = 3;
@@ -8639,22 +10398,132 @@ TEST(memory, terminal_pre_stump_is_checked_but_does_not_grow) {
     const gl::IntEncodedExpr* pairBC[2] = { w.at(1), w.at(2) };
     const gl::IntEncodedExpr* all3[3] = { w.at(0), w.at(1), w.at(2) };
 
-    putKey(ea, w.m, hm.normalizedEncodedKeys, pairAC, 2, owner2);
-    putKey(ea, w.m, hm.normalizedEncodedKeys, all3, 3, owner3);
+    putWholeKey(ea, hm.normalizedEncodedKeys, oneA, 1);
+    putWholeKey(ea, hm.normalizedEncodedKeys, pairAC, 2);
+    putWholeKey(ea, hm.normalizedEncodedKeys, all3, 3);
     for (const gl::IntEncodedExpr* const* one : { oneA, oneB, oneC })
-        putKey(ea, w.m, hm.normalizedEncodedSubkeys, one, 1, owner3);
-    for (const gl::IntEncodedExpr* const* pair : { pairAB, pairAC, pairBC }) {
-        putKey(ea, w.m, hm.normalizedEncodedSubkeys, pair, 2, owner3);
-        putKey(ea, w.m, hm.normalizedEncodedSubkeysMinusOne, pair, 2, owner3);
-    }
-    putKey(ea, w.m, hm.normalizedEncodedSubkeys, all3, 3, owner3);
-    putKey(ea, w.m, hm.normalizedEncodedSubkeysMinusOne, oneA, 1, owner2);
+        putSubkey(ea, w.m, hm.normalizedEncodedSubkeys, one, 1);
+    for (const gl::IntEncodedExpr* const* pair : { pairAB, pairAC, pairBC })
+        putSubkey(ea, w.m, hm.normalizedEncodedSubkeys, pair, 2);
+    putSubkey(ea, w.m, hm.normalizedEncodedSubkeys, all3, 3);
 
-    const gl::Stump oblig[1] = { { 2, -1 } };  // "in3"
-    const gl::IntStmtView none;
-    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 1, none, { 0 }), 2);
-    ASSERT_EQ(splitStumpRun(ea, w.m, 1, oblig, 1, none, { 0 }, 0, 1,
+    ASSERT_EQ(splitStumpRun(ea, w.m, { 0 }), 3);
+    ASSERT_EQ(splitStumpRun(ea, w.m, { 0 }, 0, 1,
                             /*terminalOnly=*/true), 1);
+}
+
+// The mandatory-containment control, unsplit: no obligatory stump, so the search
+// grows to the whole key and the terms decide whether the finished candidate
+// leaves. A term is satisfied when the candidate holds a statement from EVERY
+// view the term names; terms are OR-ed.
+//
+// World: three statements "in" / "in2" / "in3", the whole key {in, in2}
+// installed with both singletons as subkeys, so the search reaches exactly one
+// two-element request and (in the last case) one one-element request.
+TEST(memory, generate_encoded_requests_static_mandatory_containment) {
+    gl::ExpressionAnalyzer ea("Peano");
+    StumpWorld w;
+    gl::HashMemory& hm = w.m.overallHashMemory;
+    hm.maxKeyLength = static_cast<gl::NameId>(2);
+
+    const gl::IntEncodedExpr* oneA[1] = { w.at(0) };   // "in"
+    const gl::IntEncodedExpr* oneB[1] = { w.at(1) };   // "in2"
+    const gl::IntEncodedExpr* pairAB[2] = { w.at(0), w.at(1) };
+    const std::vector<gl::EncodedExpression> owner = { w.srcA, w.srcB };
+    putWholeKey(ea, hm.normalizedEncodedKeys, pairAB, 2);
+    putSubkey(ea, w.m, hm.normalizedEncodedSubkeys, oneA, 1);
+    putSubkey(ea, w.m, hm.normalizedEncodedSubkeys, oneB, 1);
+
+    // The two mandatory views: "delta" holds "in", "mail" holds "in2".
+    w.m.intLocalEncodedStatementsDelta.push_back(w.m.intEncodedStatements[0]);
+    w.m.intExternalStatements.push_back(w.m.intEncodedStatements[1]);
+    const gl::IntStmtView deltaView(w.m.intLocalEncodedStatementsDelta);
+    const gl::IntStmtView mailView(w.m.intExternalStatements);
+    const gl::IntStmtView emptyView;
+
+
+    const auto run = [&](const gl::MandatoryTerm* terms, gl::NameId termCount) {
+        return splitStumpRun(ea, w.m, {}, 0, -1, false,
+                             terms, termCount);
+    };
+
+    // One view, satisfied: {in, in2} holds "in".
+    gl::MandatoryTerm t1[1];
+    t1[0].views[0] = deltaView;
+    t1[0].viewCount = 1;
+    ASSERT_EQ(run(t1, 1), 1);
+
+    // One view, unsatisfiable: nothing is in an empty view.
+    gl::MandatoryTerm tEmpty[1];
+    tEmpty[0].views[0] = emptyView;
+    tEmpty[0].viewCount = 1;
+    ASSERT_EQ(run(tEmpty, 1), 0);
+
+    // Two views AND-ed, both hit by the one request.
+    gl::MandatoryTerm tPair[1];
+    tPair[0].views[0] = mailView;
+    tPair[0].views[1] = deltaView;
+    tPair[0].viewCount = 2;
+    ASSERT_EQ(run(tPair, 1), 1);
+
+    // Two views AND-ed, one of them unreachable: the whole term fails even
+    // though the other view is hit.
+    gl::MandatoryTerm tHalf[1];
+    tHalf[0].views[0] = deltaView;
+    tHalf[0].views[1] = emptyView;
+    tHalf[0].viewCount = 2;
+    ASSERT_EQ(run(tHalf, 1), 0);
+
+    // Two terms OR-ed: the first cannot be satisfied, the second can.
+    gl::MandatoryTerm tOr[2];
+    tOr[0] = tHalf[0];
+    tOr[1] = t1[0];
+    ASSERT_EQ(run(tOr, 2), 1);
+
+    // A whole key of ONE statement is reached by the search itself — the job the
+    // retired seed phase did for a stump that was already a complete key.
+    putWholeKey(ea, hm.normalizedEncodedKeys, oneA, 1);
+    ASSERT_EQ(run(t1, 1), 2);
+}
+
+// The containment control under the expression split: the stumps partition the
+// same enumeration, so the split emits the unsplit request set exactly once.
+TEST(memory, mandatory_containment_survives_the_expression_split) {
+    gl::ExpressionAnalyzer ea("Peano");
+    StumpWorld w;
+    gl::HashMemory& hm = w.m.overallHashMemory;
+    hm.maxKeyLength = static_cast<gl::NameId>(2);
+
+    const gl::IntEncodedExpr* oneA[1] = { w.at(0) };
+    const gl::IntEncodedExpr* oneB[1] = { w.at(1) };
+    const gl::IntEncodedExpr* oneC[1] = { w.at(2) };
+    const gl::IntEncodedExpr* pairAB[2] = { w.at(0), w.at(1) };
+    const gl::IntEncodedExpr* pairAC[2] = { w.at(0), w.at(2) };
+    const std::vector<gl::EncodedExpression> owner = { w.srcA, w.srcB, w.srcC };
+    putWholeKey(ea, hm.normalizedEncodedKeys, pairAB, 2);
+    putWholeKey(ea, hm.normalizedEncodedKeys, pairAC, 2);
+    putSubkey(ea, w.m, hm.normalizedEncodedSubkeys, oneA, 1);
+    putSubkey(ea, w.m, hm.normalizedEncodedSubkeys, oneB, 1);
+    putSubkey(ea, w.m, hm.normalizedEncodedSubkeys, oneC, 1);
+
+    w.m.intLocalEncodedStatementsDelta.push_back(w.m.intEncodedStatements[0]);
+    gl::MandatoryTerm term[1];
+    term[0].views[0] = gl::IntStmtView(w.m.intLocalEncodedStatementsDelta);
+    term[0].viewCount = 1;
+
+
+    // Unsplit: both whole keys carry "in", so both are emitted.
+    ASSERT_EQ(splitStumpRun(ea, w.m, {}, 0, -1, false,
+                            term, 1), 2);
+
+    // Split at the "in" node: its subtree owns both requests, and the sibling
+    // stumps own subtrees that contain none.
+    ASSERT_EQ(splitStumpRun(ea, w.m, { 0 }, 0, 3, false,
+                            term, 1), 2);
+    ASSERT_EQ(splitStumpRun(ea, w.m, { 1 }, 1, 3, false,
+                            term, 1), 0);
+    ASSERT_EQ(splitStumpRun(ea, w.m, { 2 }, 2, 3, false,
+                            term, 1), 0);
 }
 
 TEST(memory, produce_expression_stumps_level_one_covers_every_filtered_statement) {
@@ -8667,10 +10536,8 @@ TEST(memory, produce_expression_stumps_level_one_covers_every_filtered_statement
     w.m.overallHashMemory.maxKeyLength = 3;
     for (int i = 0; i < 3; ++i) {
         const gl::IntEncodedExpr* one[1] = { w.at(i) };
-        w.installSubkey(ea, one, 1, 3, { i == 0 ? w.srcA : (i == 1 ? w.srcB : w.srcC) });
+        w.installSubkey(ea, one, 1);
     }
-    gl::g_splitCount = 1;
-    gl::g_splitProcessID = 0;
 
     gl::SealedPageSet pages;
     pages.bind(&gl::staticMemory());
@@ -8699,15 +10566,13 @@ TEST(memory, produce_expression_stumps_grows_a_short_list_one_whole_level) {
     std::vector<gl::EncodedExpression> owner = { w.srcA, w.srcB, w.srcC };
     for (int i = 0; i < 3; ++i) {
         const gl::IntEncodedExpr* one[1] = { w.at(i) };
-        w.installSubkey(ea, one, 1, 3, owner);
+        w.installSubkey(ea, one, 1);
     }
     for (int i = 0; i < 3; ++i)
         for (int j = i + 1; j < 3; ++j) {
             const gl::IntEncodedExpr* two[2] = { w.at(i), w.at(j) };
-            w.installSubkey(ea, two, 2, 3, owner);
+            w.installSubkey(ea, two, 2);
         }
-    gl::g_splitCount = 1;
-    gl::g_splitProcessID = 0;
 
     gl::SealedPageSet pages;
     pages.bind(&gl::staticMemory());
@@ -8745,17 +10610,15 @@ TEST(memory, produce_expression_stumps_retains_recordable_dropped_nodes) {
     const std::vector<gl::EncodedExpression> owner = { w.srcA, w.srcB, w.srcC };
     for (int i = 0; i < 3; ++i) {
         const gl::IntEncodedExpr* one[1] = { w.at(i) };
-        w.installSubkey(ea, one, 1, 3, owner);
+        w.installSubkey(ea, one, 1);
     }
     for (int i = 0; i < 3; ++i)
         for (int j = i + 1; j < 3; ++j) {
             const gl::IntEncodedExpr* two[2] = { w.at(i), w.at(j) };
-            w.installSubkey(ea, two, 2, 3, owner);
+            w.installSubkey(ea, two, 2);
         }
     const gl::IntEncodedExpr* oneA[1] = { w.at(0) };
-    putKey(ea, w.m, hm.normalizedEncodedSubkeysMinusOne, oneA, 1, owner);
-    gl::g_splitCount = 1;
-    gl::g_splitProcessID = 0;
+    putWholeKey(ea, hm.normalizedEncodedKeys, oneA, 1);
 
     gl::SealedPageSet pages;
     pages.bind(&gl::staticMemory());
@@ -8780,49 +10643,34 @@ TEST(memory, produce_expression_stumps_retains_recordable_dropped_nodes) {
     pages.freePages();
 }
 
-TEST(memory, produce_expression_stumps_are_rule_specific_and_deterministic) {
-    // The producer runs inside the rule-part that hit the wall, so the split
-    // thread-locals are still that part's: partitionAccepts inside ownerKeyAccepts
-    // prunes the filter to the rules that part owns. Owner ids 3 and 4 at scope
-    // "main" pack to composite ids whose residue mod 3 is 1 and 2, so part 1 sees
-    // only "in", part 2 only "in2", part 0 neither.
+TEST(memory, produce_expression_stumps_are_deterministic) {
+    // The producer's filter is the subkey growth probe (subkeyUSatisfied): the
+    // same world produces the same two 1-stumps on every call, byte-identical.
     gl::ExpressionAnalyzer ea("Peano");
     StumpWorld w;
     w.m.overallHashMemory.maxKeyLength = 2;
     const gl::IntEncodedExpr* oneA[1] = { w.at(0) };
     const gl::IntEncodedExpr* oneB[1] = { w.at(1) };
-    w.installSubkey(ea, oneA, 1, 3, { w.srcA });
-    w.installSubkey(ea, oneB, 1, 4, { w.srcB });
-    ASSERT_EQ(gl::makePartitionId(3, gl::NameMap::MAIN_ID) % 3, 1);
-    ASSERT_EQ(gl::makePartitionId(4, gl::NameMap::MAIN_ID) % 3, 2);
+    w.installSubkey(ea, oneA, 1);
+    w.installSubkey(ea, oneB, 1);
 
-    const auto runPart = [&](int processID) {
-        gl::g_splitCount = 3;
-        gl::g_splitProcessID = processID;
+    const auto run = [&]() {
         gl::SealedPageSet pages;
         pages.bind(&gl::staticMemory());
         ea.produceExpressionStumps(w.m, 0u, /*target=*/1, pages);
         gl::genScratchArenas().forSlot(0).releaseAll();
         const auto got = drainStumps(pages);
         pages.seal();
-    pages.freePages();
+        pages.freePages();
         return got;
     };
 
-    const auto p0 = runPart(0);
-    const auto p1 = runPart(1);
-    const auto p2 = runPart(2);
-    ASSERT_TRUE(p0.empty());
-    ASSERT_EQ(p1.size(), 1u);
-    ASSERT_EQ(p1[0][0], 0);  // "in"
-    ASSERT_EQ(p2.size(), 1u);
-    ASSERT_EQ(p2[0][0], 1);  // "in2"
-
-    // Deterministic: the same part twice yields byte-identical stump runs.
-    ASSERT_TRUE(runPart(1) == p1);
-    ASSERT_TRUE(runPart(2) == p2);
-    gl::g_splitCount = 1;
-    gl::g_splitProcessID = 0;
+    const auto p0 = run();
+    ASSERT_EQ(p0.size(), 2u);
+    ASSERT_EQ(p0[0][0], 0);  // "in"
+    ASSERT_EQ(p0[1][0], 1);  // "in2"
+    ASSERT_TRUE(run() == p0);
+    ASSERT_TRUE(run() == p0);
 }
 
 TEST(memory, produce_expression_stumps_empty_when_nothing_survives_the_filter) {
@@ -8832,8 +10680,6 @@ TEST(memory, produce_expression_stumps_empty_when_nothing_survives_the_filter) {
     gl::ExpressionAnalyzer ea("Peano");
     StumpWorld w;
     w.m.overallHashMemory.maxKeyLength = 2;
-    gl::g_splitCount = 1;
-    gl::g_splitProcessID = 0;
 
     gl::SealedPageSet pages;
     pages.bind(&gl::staticMemory());
@@ -8909,7 +10755,7 @@ TEST(memory, clone_facts_template_deep_copy_outlives_template) {
     tmpl->intEncodedStatements.push_back(gl::encodeExpression(e, tmpl->nameMap));
     tmpl->intStatementLevelsMap.insertSorted(gl::packStatementKey(oid, vid), 0);
     tmpl->intKnownStatements.insert(
-        gl::StatementKey{ oid, vid }, gl::StatementFlags{ true, false, true, true });
+        gl::StatementKey{ oid, vid }, gl::StatementFlags{ true, false });
     tmpl->level = 0;
 
     gl::LbStore cloneStore{ &gl::lbMemory(), sizeof(gl::Memory), alignof(gl::Memory) };
@@ -9109,7 +10955,7 @@ TEST(memory, wipe_subtree_vid_scope_sweep) {
         m.intStatementLevelsMap.insertSorted(pk, 0);
         m.intKnownStatements.insert(
             gl::StatementKey{ ie.originalId, ie.validityId },
-            gl::StatementFlags{ true, false, true, true });
+            gl::StatementFlags{ true, false });
         m.intToBeProved.assignSet(pk, nullptr, 0);
         return pk;
     };
@@ -9254,10 +11100,11 @@ namespace {
             v.levels = { 0, 2, 5 };
             v.keyIds = { 10, -11, 12 };
             break;
-        case 2:   // remainingArgIds, both flags on
+        case 2:   // remainingArgIds, all flags on (incl. the ordis tag)
             v.valueId = -9; v.originalImplicationId = 40;
             v.justification = gl::RuleJustification::integration;
             v.isMarker = true; v.productOfDisintegration = true;
+            v.ordisOnly = true;
             v.remainingArgIds = { 100, 200 };
             break;
         default:  // everything populated, flags off
@@ -9401,256 +11248,6 @@ TEST(memory, wipe_encoded_map_filtered_splice_matches_heap_oracle) {
     }
 }
 
-// wipeOwnerSetMapForClosed — the zero-decode blob-byte filter against a
-// test-local verbatim replica of the former decode-erase-reencode
-// wipeOwnerMap lambda. Cases: all-survive (whole-blob verbatim), partial
-// with non-contiguous survivors, all-dropped (key lands in droppedKeys),
-// hasLooseOwner true and false, and non-empty uSignatures (multi-sig,
-// multi-pair — the verbatim tail). droppedKeys is compared as a SET
-// against the oracle's unordered_set<NormKey> via encoded-byte lookups.
-TEST(memory, wipe_owner_set_map_filtered_matches_heap_oracle) {
-    gl::GlobalMemoryManager g;
-    g.init(gl::StaticMemoryConfig{ 16 << 20, 1 << 18 });
-    gl::LbArena lbA(&g);
-    gl::LbArena lbB(&g);
-    gl::LbArena lbScratch(&g);
-    gl::DirtyState dA = gl::DirtyState::Clean;
-    gl::DirtyState dB = gl::DirtyState::Clean;
-    gl::TypedColdBlobMap<gl::NormKey, gl::OwnerSet> A(&lbA, &dA);
-    gl::TypedColdBlobMap<gl::NormKey, gl::OwnerSet> B(&lbB, &dB);
-
-    // Closed scope vids {3, 7}; ceiling 10. Direct NameId indexing,
-    // matching the production bitmap — no uint16 wrap.
-    const int32_t nameHighWater = 10;
-    uint64_t closedBits[512] = {};
-    for (const gl::NameId id : { gl::NameId{ 3 }, gl::NameId{ 7 } })
-        closedBits[id >> 6] |= (1ull << (id & 63));
-    const auto closedOracle = [](gl::NameId vid) {
-        return vid == 3 || vid == 7;
-    };
-
-    const auto install = [&](const gl::NormKey& k, const gl::OwnerSet& os) {
-        A.assignRun(k, std::vector<gl::OwnerSet>{ os });
-        B.assignRun(k, std::vector<gl::OwnerSet>{ os });
-    };
-    // All survive; loose flag on; multi-sig multi-pair signatures.
-    {
-        gl::OwnerSet os;
-        os.partitionIds = { gl::makePartitionId(10, 2),
-                            gl::makePartitionId(11, 5) };
-        os.hasLooseOwner = true;
-        os.uSignatures = { { { 1, 2 }, { 3, 4 } }, { { 5, 6 } } };
-        install(gl::NormKey{ 1, { 10 } }, os);
-    }
-    // Partial with NON-CONTIGUOUS survivors (closed at positions 1 and 3).
-    {
-        gl::OwnerSet os;
-        os.partitionIds = { gl::makePartitionId(10, 2),
-                            gl::makePartitionId(11, 3),
-                            gl::makePartitionId(12, 5),
-                            gl::makePartitionId(13, 7),
-                            gl::makePartitionId(14, 9) };
-        os.hasLooseOwner = false;
-        os.uSignatures = { { { 7, 8 } } };
-        install(gl::NormKey{ 2, { 20, 21 } }, os);
-    }
-    // All dropped -> the key must land in droppedKeys.
-    {
-        gl::OwnerSet os;
-        os.partitionIds = { gl::makePartitionId(15, 3),
-                            gl::makePartitionId(16, 7) };
-        os.hasLooseOwner = false;
-        install(gl::NormKey{ 1, { 30, 31, 32 } }, os);
-    }
-    // Survivor after the dropped key (key-order pin); loose off, no sigs.
-    {
-        gl::OwnerSet os;
-        os.partitionIds = { gl::makePartitionId(17, 9) };
-        install(gl::NormKey{ 3, { 40 } }, os);
-    }
-
-    // ORACLE on A — verbatim replica of the former wipeOwnerMap lambda
-    // (collectDropped == true).
-    std::unordered_set<gl::NormKey, gl::NormKeyHash> oracleDropped;
-    {
-        const int32_t n = A.count();
-        std::vector<std::pair<gl::NormKey, gl::OwnerSet>> survivors;
-        survivors.reserve(static_cast<std::size_t>(n));
-        for (int32_t id = 1; id <= n; ++id) {
-            gl::OwnerSet os = A.recordAt(id, 0);
-            for (auto oit = os.partitionIds.begin();
-                 oit != os.partitionIds.end(); ) {
-                const gl::NameId scopeVid =
-                    gl::Codec<gl::StatementKey>::decode(*oit).validity;
-                if (closedOracle(scopeVid))
-                    oit = os.partitionIds.erase(oit);
-                else ++oit;
-            }
-            gl::NormKey key = A.decodeKey(id);
-            if (os.partitionIds.empty()) {
-                oracleDropped.insert(std::move(key));
-            } else {
-                survivors.emplace_back(std::move(key), std::move(os));
-            }
-        }
-        A.resetToFresh();
-        for (auto& kv : survivors)
-            A.assignRun(kv.first, std::vector<gl::OwnerSet>{ kv.second });
-    }
-
-    // Production filter on B.
-    gl::DirtyState dDropped = gl::DirtyState::Clean;
-    gl::ColdHashSet<gl::BytesKeyStore> droppedKeys(&lbScratch, &dDropped);
-    gl::wipeOwnerSetMapForClosed(B, closedBits, nameHighWater, lbScratch,
-                                 &droppedKeys);
-
-    // Facet equality: counts, key bytes, run lengths, blob bytes.
-    ASSERT_EQ(A.count(), B.count());
-    for (int32_t id = 1; id <= A.count(); ++id) {
-        ASSERT_TRUE(gl::equalSpans(A.inner().decode(id),
-                                   B.inner().decode(id)));
-        ASSERT_EQ(A.runLen(id), B.runLen(id));
-        for (int32_t j = 0; j < A.runLen(id); ++j) {
-            std::vector<char> bufA, bufB;
-            int32_t la = 0, lb = 0;
-            const char* pa = A.peekRecordBytes(id, j, la, bufA);
-            const char* pb = B.peekRecordBytes(id, j, lb, bufB);
-            ASSERT_EQ(la, lb);
-            ASSERT_TRUE(std::memcmp(pa, pb,
-                                    static_cast<std::size_t>(la)) == 0);
-        }
-    }
-    // droppedKeys == the oracle's dropped set (as SETS: size + per-key
-    // encoded-byte lookup).
-    ASSERT_EQ(droppedKeys.count(),
-              static_cast<int32_t>(oracleDropped.size()));
-    for (const gl::NormKey& nk : oracleDropped) {
-        const std::string enc = gl::Codec<gl::NormKey>::encode(nk);
-        ASSERT_TRUE(droppedKeys.lookup(gl::StrSpan(enc)) != 0);
-    }
-}
-
-// wipeRemainingArgsForClosed — the byte-peek membership prune against a
-// test-local verbatim replica of the former 10c block. Runs mix dropped
-// and kept NormKeys; two NormKeys share identical data but different
-// numberExpressions (the encoding includes both fields, so they must NOT
-// collide). Also pins the droppedKeys-empty gate: the map's facets are
-// untouched (the defined nothing-to-prune branch).
-TEST(memory, wipe_remaining_args_pruned_matches_heap_oracle) {
-    gl::GlobalMemoryManager g;
-    g.init(gl::StaticMemoryConfig{ 16 << 20, 1 << 18 });
-    gl::LbArena lbA(&g);
-    gl::LbArena lbB(&g);
-    gl::LbArena lbScratch(&g);
-    gl::DirtyState dA = gl::DirtyState::Clean;
-    gl::DirtyState dB = gl::DirtyState::Clean;
-    gl::TypedColdBlobMap<gl::Int16SetKey, gl::NormKey> A(&lbA, &dA);
-    gl::TypedColdBlobMap<gl::Int16SetKey, gl::NormKey> B(&lbB, &dB);
-    gl::ReverseArgsIndex revB(&lbB);   // wipe rebuilds it; the test checks B only
-
-    // Dropped set: {1,{50}} and {2,{60,61}} — and the twin {1,{60,61}}
-    // (same data as the second, different numberExpressions) is KEPT.
-    const gl::NormKey dropped1{ 1, { 50 } };
-    const gl::NormKey dropped2{ 2, { 60, 61 } };
-    const gl::NormKey keptTwin{ 1, { 60, 61 } };
-    const gl::NormKey kept1{ 1, { 70 } };
-
-    const auto install = [&](const gl::Int16SetKey& k,
-                             const std::vector<gl::NormKey>& run) {
-        A.assignRun(k, run);
-        B.assignRun(k, run);
-    };
-    install(gl::Int16SetKey{ { 1, 2 } },
-            { kept1, dropped1, keptTwin });          // partial prune
-    install(gl::Int16SetKey{ { 3 } },
-            { dropped1, dropped2 });                 // run empties -> key drops
-    install(gl::Int16SetKey{ { 4, 5, 6 } },
-            { keptTwin, kept1 });                    // untouched
-
-    // The dropped-key byte set (as 10b collects it).
-    gl::DirtyState dDropped = gl::DirtyState::Clean;
-    gl::ColdHashSet<gl::BytesKeyStore> droppedKeys(&lbScratch, &dDropped);
-    for (const gl::NormKey* nk : { &dropped1, &dropped2 }) {
-        const std::string enc = gl::Codec<gl::NormKey>::encode(*nk);
-        droppedKeys.mint(gl::StrSpan(enc));
-    }
-
-    // ORACLE on A — verbatim replica of the former 10c block.
-    {
-        std::unordered_set<gl::NormKey, gl::NormKeyHash> oracleDropped{
-            dropped1, dropped2 };
-        const int32_t raN = A.count();
-        std::vector<std::pair<gl::Int16SetKey,
-                              std::vector<gl::NormKey>>> survivors;
-        survivors.reserve(static_cast<std::size_t>(raN));
-        for (int32_t id = 1; id <= raN; ++id) {
-            std::vector<gl::NormKey> run = A.recordsAt(id);
-            std::vector<gl::NormKey> kept;
-            kept.reserve(run.size());
-            for (gl::NormKey& nk : run)
-                if (!oracleDropped.count(nk)) kept.push_back(std::move(nk));
-            if (!kept.empty())
-                survivors.emplace_back(A.decodeKey(id), std::move(kept));
-        }
-        A.resetToFresh();
-        for (auto& kv : survivors)
-            A.assignRun(kv.first, kv.second);
-    }
-
-    // Production prune on B.
-    gl::wipeRemainingArgsForClosed(B, revB, droppedKeys, lbScratch);
-
-    // Facet equality.
-    ASSERT_EQ(A.count(), B.count());
-    for (int32_t id = 1; id <= A.count(); ++id) {
-        ASSERT_TRUE(gl::equalSpans(A.inner().decode(id),
-                                   B.inner().decode(id)));
-        ASSERT_EQ(A.runLen(id), B.runLen(id));
-        for (int32_t j = 0; j < A.runLen(id); ++j) {
-            std::vector<char> bufA, bufB;
-            int32_t la = 0, lb = 0;
-            const char* pa = A.peekRecordBytes(id, j, la, bufA);
-            const char* pb = B.peekRecordBytes(id, j, lb, bufB);
-            ASSERT_EQ(la, lb);
-            ASSERT_TRUE(std::memcmp(pa, pb,
-                                    static_cast<std::size_t>(la)) == 0);
-        }
-    }
-
-    // Empty-gate pin: an empty dropped set leaves B untouched.
-    std::vector<std::string> keysBefore;
-    std::vector<std::vector<char>> recsBefore;
-    for (int32_t id = 1; id <= B.count(); ++id) {
-        const gl::StrSpan ks = B.inner().decode(id);
-        keysBefore.emplace_back(ks.ptr, static_cast<std::size_t>(ks.len));
-        for (int32_t j = 0; j < B.runLen(id); ++j) {
-            std::vector<char> buf;
-            int32_t bl = 0;
-            const char* bp = B.peekRecordBytes(id, j, bl, buf);
-            recsBefore.emplace_back(bp, bp + bl);
-        }
-    }
-    gl::DirtyState dEmpty = gl::DirtyState::Clean;
-    gl::ColdHashSet<gl::BytesKeyStore> emptyDropped(&lbScratch, &dEmpty);
-    gl::wipeRemainingArgsForClosed(B, revB, emptyDropped, lbScratch);
-    std::size_t cursor = 0;
-    ASSERT_EQ(static_cast<std::size_t>(B.count()), keysBefore.size());
-    for (int32_t id = 1; id <= B.count(); ++id) {
-        const gl::StrSpan ks = B.inner().decode(id);
-        ASSERT_TRUE(gl::equalSpans(
-            ks, gl::StrSpan(keysBefore[static_cast<std::size_t>(id - 1)])));
-        for (int32_t j = 0; j < B.runLen(id); ++j, ++cursor) {
-            std::vector<char> buf;
-            int32_t bl = 0;
-            const char* bp = B.peekRecordBytes(id, j, bl, buf);
-            ASSERT_EQ(static_cast<std::size_t>(bl), recsBefore[cursor].size());
-            ASSERT_TRUE(std::memcmp(bp, recsBefore[cursor].data(),
-                                    static_cast<std::size_t>(bl)) == 0);
-        }
-    }
-    ASSERT_EQ(cursor, recsBefore.size());
-}
-
 // lookupStatementLevels / isLocalEncodedStatement — the non-minting packed-key
 // probes over the statement indexes. Three contract points each: a stored
 // entry hits with its payload intact, an interned-but-absent pair misses, and
@@ -9751,32 +11348,28 @@ TEST(prover, hashmemory_residual_sets_cold_roundtrip) {
     ASSERT_TRUE(hm.productsOfRecursionIds.empty());
 }
 
-// upsertStatementKey — OR-only membership-bit door for the packed statement
-// registry. A fresh key stores all four flags as given; an existing key ORs
-// registered / known / fullyDisintegrated in (never clears) and keeps the
-// first writer's `local`.
+// upsertStatementKey — insert-or-merge door for the packed statement
+// registry. Row presence is the membership; a fresh key stores the two
+// payload flags as given; an existing key ORs fullyDisintegrated in (never
+// clears) and keeps the first writer's `local`.
 TEST(memory, upsert_statement_key_or_only_keep_first_local) {
     gl::Memory mb;
     auto& reg = mb.intKnownStatements;   // the cold registry
     const int64_t k = gl::packStatementKey(7, 1);
 
-    gl::upsertStatementKey(reg, k, /*local=*/false, /*registered=*/true, /*known=*/false);
-    ASSERT_TRUE(reg.inner().find(k)->registered);
-    ASSERT_FALSE(reg.inner().find(k)->known);
+    gl::upsertStatementKey(reg, k, /*local=*/false);
+    ASSERT_TRUE(reg.inner().lookup(k) != 0);
     ASSERT_FALSE(reg.inner().find(k)->local);
     ASSERT_FALSE(reg.inner().find(k)->fullyDisintegrated);
 
-    // Second writer ORs `known` in, cannot clear `registered`, and the
-    // stored `local` keeps the first writer's value.
-    gl::upsertStatementKey(reg, k, /*local=*/true, /*registered=*/false, /*known=*/true);
-    ASSERT_TRUE(reg.inner().find(k)->registered);
-    ASSERT_TRUE(reg.inner().find(k)->known);
+    // Second writer keeps the first writer's `local` (keep-first).
+    gl::upsertStatementKey(reg, k, /*local=*/true);
     ASSERT_FALSE(reg.inner().find(k)->local);
 
     // fullyDisintegrated ORs in and survives a later writer passing false.
-    gl::upsertStatementKey(reg, k, true, true, true, /*fullyDisintegrated=*/true);
+    gl::upsertStatementKey(reg, k, true, /*fullyDisintegrated=*/true);
     ASSERT_TRUE(reg.inner().find(k)->fullyDisintegrated);
-    gl::upsertStatementKey(reg, k, true, true, true, /*fullyDisintegrated=*/false);
+    gl::upsertStatementKey(reg, k, true, /*fullyDisintegrated=*/false);
     ASSERT_TRUE(reg.inner().find(k)->fullyDisintegrated);
     ASSERT_EQ(reg.count(), 1);
 }
@@ -9790,13 +11383,11 @@ TEST(memory, lookup_statement_flags_non_minting_definitive_miss) {
     const gl::NameId oid = mb.nameMap.encode("(p[a])");
     gl::upsertStatementKey(mb.intKnownStatements,
         gl::packStatementKey(oid, gl::NameMap::MAIN_ID),
-        /*local=*/true, /*registered=*/true, /*known=*/false);
+        /*local=*/true);
 
     const gl::StatementFlags* hit = gl::lookupStatementFlags(
         mb.intKnownStatements, mb.nameMap, "(p[a])", "main");
     ASSERT_TRUE(hit != nullptr);
-    ASSERT_TRUE(hit->registered);
-    ASSERT_FALSE(hit->known);
 
     const int32_t mintedBefore = mb.nameMap.nameCount();
     ASSERT_TRUE(gl::lookupStatementFlags(mb.intKnownStatements, mb.nameMap,
@@ -10601,6 +12192,661 @@ TEST(prover, filter_iterations_id_and_string_overloads) {
     ASSERT_TRUE(ea.filterIterations(badId, cNone, m));
 }
 
+// buildSpecialTokenScanView — the memo-independent blob builder's bytes
+// equal the serializeSpecialTokenScan(scanSpecialTokens(text)) codec oracle
+// across mixed / duplicate / substring-fidelity / token-free / near-empty
+// inputs (the I-134 layout coupling, without a NameMap id).
+TEST(memory, build_special_token_scan_view_matches_codec) {
+    gl::ScratchArena arena{ &gl::staticMemory() };
+    gl::ScratchScope scope(arena);
+    const std::string texts[] = {
+        "(in3[int_lev_0_1,it_2_lev_0_3,int_lev_0_1])",
+        "(P[print_lev_3_4])",
+        "(f[it_1_lev_2_3])",
+        "(=[x,zero])",
+        "()",
+    };
+    for (const std::string& text : texts) {
+        const std::vector<char> oracle =
+            gl::serializeSpecialTokenScan(gl::scanSpecialTokens(text));
+        const gl::SpecialTokenScanView v =
+            gl::buildSpecialTokenScanView(gl::StrSpan(text), arena);
+        ASSERT_EQ(v.len, static_cast<int32_t>(oracle.size()));
+        ASSERT_TRUE(std::memcmp(v.p, oracle.data(), oracle.size()) == 0);
+    }
+}
+
+// forEachNonCanonicalMemberToken — the registry filter's instance of the
+// shared walk core (firstSpecialMemberId canonical, no normal source): a
+// collecting sink sees every non-canonical member occurrence in scan order
+// (int tier first, duplicates included) while canonical members, interned
+// non-members, and never-interned tokens never reach it; a stop sink ends
+// the walk at the first hit; a no-special class walks nothing.
+TEST(prover, for_each_non_canonical_member_token_core) {
+    gl::ExpressionAnalyzer ea("Peano");
+    gl::Memory m;
+    gl::ScratchArena arena{ &gl::staticMemory() };
+    gl::ScratchScope scope(arena);
+
+    gl::EquivalenceClass cls;
+    cls.setMembersFromNames(
+        { "int_lev_0_1", "int_lev_0_2", "it_0_lev_1_2", "x" }, m.nameMap);
+    m.nameMap.encode("int_lev_4_4");   // interned non-member
+
+    const std::string text =
+        "(p[int_lev_0_2,int_lev_0_1,int_lev_4_4,int_lev_0_2,it_0_lev_1_2])";
+    const gl::SpecialTokenScanView scan =
+        gl::buildSpecialTokenScanView(gl::StrSpan(text), arena);
+
+    std::vector<std::pair<std::string, std::string>> hits;
+    const bool stopped = ea.forEachNonCanonicalMemberToken(scan, cls, m,
+        [&](gl::StrSpan tok, gl::NameId, gl::NameId canonId) {
+            hits.emplace_back(tok.toStdString(), m.nameMap.decode(canonId));
+            return false;
+        });
+    ASSERT_FALSE(stopped);
+    ASSERT_EQ(hits.size(), static_cast<std::size_t>(3));
+    ASSERT_EQ(hits[0].first, "int_lev_0_2");
+    ASSERT_EQ(hits[1].first, "int_lev_0_2");
+    ASSERT_EQ(hits[2].first, "it_0_lev_1_2");
+    for (const auto& h : hits) ASSERT_EQ(h.second, "int_lev_0_1");
+
+    int calls = 0;
+    ASSERT_TRUE(ea.forEachNonCanonicalMemberToken(scan, cls, m,
+        [&](gl::StrSpan, gl::NameId, gl::NameId) { ++calls; return true; }));
+    ASSERT_EQ(calls, 1);
+
+    gl::EquivalenceClass cNone;
+    cNone.setMembersFromNames({ "a", "b" }, m.nameMap);
+    ASSERT_FALSE(ea.forEachNonCanonicalMemberToken(scan, cNone, m,
+        [&](gl::StrSpan, gl::NameId, gl::NameId) { return true; }));
+}
+
+// forEachNonCanonicalMemberTokenCore with a normal-name source — the
+// canonical door's instance: the caller-chosen canonical (a normal name
+// here) turns every special member into a hit, the two scanned special
+// sections come first, then the bracket tokens the source yields (a normal
+// member that is not the canonical hits; the canonical, a non-member, and
+// a special token the sections already covered do not); a zero canonical
+// walks nothing.
+TEST(prover, for_each_non_canonical_member_token_core_normal_source) {
+    gl::ExpressionAnalyzer ea("Peano");
+    gl::Memory m;
+    gl::ScratchArena arena{ &gl::staticMemory() };
+    gl::ScratchScope scope(arena);
+
+    gl::EquivalenceClass cls;
+    cls.setMembersFromNames(
+        { "int_lev_0_1", "int_lev_0_2", "it_0_lev_1_2", "x", "y" }, m.nameMap);
+    m.nameMap.encode("int_lev_4_4");   // interned non-member
+    m.nameMap.encode("z");             // interned non-member
+    const gl::NameId xId = m.nameMap.encode("x");
+
+    const std::string text =
+        "(p[y,int_lev_0_2,x,z,int_lev_4_4,int_lev_0_1,it_0_lev_1_2])";
+    const gl::SpecialTokenScanView scan =
+        gl::buildSpecialTokenScanView(gl::StrSpan(text), arena);
+    const auto normalSource = [&](auto&& fn) {
+        gl::collectExprTokens(gl::StrSpan(text), fn);
+    };
+
+    std::vector<std::string> hits;
+    const bool stopped = ea.forEachNonCanonicalMemberTokenCore(scan, cls, m,
+        xId, normalSource,
+        [&](gl::StrSpan tok, gl::NameId, gl::NameId canonId) {
+            ASSERT_EQ(canonId, xId);
+            hits.push_back(tok.toStdString());
+            return false;
+        });
+    ASSERT_FALSE(stopped);
+    ASSERT_EQ(hits.size(), static_cast<std::size_t>(4));
+    ASSERT_EQ(hits[0], "int_lev_0_2");
+    ASSERT_EQ(hits[1], "int_lev_0_1");
+    ASSERT_EQ(hits[2], "it_0_lev_1_2");
+    ASSERT_EQ(hits[3], "y");
+
+    int calls = 0;
+    ASSERT_TRUE(ea.forEachNonCanonicalMemberTokenCore(scan, cls, m, xId,
+        normalSource,
+        [&](gl::StrSpan, gl::NameId, gl::NameId) { ++calls; return true; }));
+    ASSERT_EQ(calls, 1);
+
+    ASSERT_FALSE(ea.forEachNonCanonicalMemberTokenCore(scan, cls, m,
+        static_cast<gl::NameId>(0), normalSource,
+        [&](gl::StrSpan, gl::NameId, gl::NameId) { return true; }));
+}
+
+// canonicalFormAtScope — the door's rewrite: every member token that is
+// not the class's chooseCanonicalId representative (normal > int_ > it_)
+// rewrites to it, special tiers and normal names alike; the justifier tail
+// is ascending by member name with `(=[member,canonical])` builds; the
+// pairs' class levels union into the caller's run ascending-unique with
+// negatives skipped; a canonical-only statement returns unchanged with the
+// run untouched; a weak canonical candidate is skipped.
+TEST(prover, canonical_form_at_scope_substitutes_and_records) {
+    gl::ExpressionAnalyzer ea("Peano");
+    gl::Memory m;
+    gl::ScratchArena outArena{ &gl::staticMemory() };
+    gl::ScratchScope outScope(outArena);
+
+    m.nameMap.encode("main");
+    gl::EquivalenceClass cls;
+    cls.setMembersFromNames(
+        { "int_lev_0_1", "int_lev_0_2", "it_0_lev_1_2", "x" }, m.nameMap);
+    const gl::NameId xId = m.nameMap.encode("x");
+    const gl::NameId mInt = m.nameMap.encode("int_lev_0_2");
+    const gl::NameId mIt = m.nameMap.encode("it_0_lev_1_2");
+    cls.intEqualityLevelsMap[gl::packEqPairKey(mInt, xId)] = { -1, 2, 5 };
+    cls.intEqualityLevelsMap[gl::packEqPairKey(mIt, xId)] = { 3 };
+    m.assignClassesById(gl::NameMap::MAIN_ID, { cls });
+
+    const std::string text = "(in3[int_lev_0_2,x,it_0_lev_1_2,7])";
+    int lvRun[8] = { 0, 3 };
+    int32_t levelCount = 2;
+    const gl::ExpressionAnalyzer::CanonicalForm r =
+        ea.canonicalFormAtScope(gl::StrSpan(text), gl::StrSpan("main", 4),
+            m, outArena, lvRun, levelCount, 8);
+    ASSERT_TRUE(r.changed);
+    ASSERT_EQ(r.text.toStdString(), "(in3[x,x,x,7])");
+    ASSERT_EQ(r.eqN, 2);
+    ASSERT_EQ(r.eqJust[0].toStdString(), "(=[int_lev_0_2,x])");
+    ASSERT_EQ(r.eqJust[1].toStdString(), "(=[it_0_lev_1_2,x])");
+    ASSERT_EQ(levelCount, 4);
+    ASSERT_EQ(lvRun[0], 0);
+    ASSERT_EQ(lvRun[1], 2);
+    ASSERT_EQ(lvRun[2], 3);
+    ASSERT_EQ(lvRun[3], 5);
+
+    // The lex-min int_ member is NOT canonical while a normal member exists.
+    const std::string intText = "(in2[int_lev_0_1,7])";
+    int lvRunI[4] = { 1 };
+    int32_t levelCountI = 1;
+    const gl::ExpressionAnalyzer::CanonicalForm rI =
+        ea.canonicalFormAtScope(gl::StrSpan(intText), gl::StrSpan("main", 4),
+            m, outArena, lvRunI, levelCountI, 4);
+    ASSERT_TRUE(rI.changed);
+    ASSERT_EQ(rI.text.toStdString(), "(in2[x,7])");
+    ASSERT_EQ(rI.eqN, 1);
+    ASSERT_EQ(rI.eqJust[0].toStdString(), "(=[int_lev_0_1,x])");
+
+    // Canonical-only statement: unchanged, run untouched.
+    const std::string okText = "(in3[x,x,7])";
+    int lvRun2[4] = { 1 };
+    int32_t levelCount2 = 1;
+    const gl::ExpressionAnalyzer::CanonicalForm r2 =
+        ea.canonicalFormAtScope(gl::StrSpan(okText), gl::StrSpan("main", 4),
+            m, outArena, lvRun2, levelCount2, 4);
+    ASSERT_FALSE(r2.changed);
+    ASSERT_EQ(r2.text.toStdString(), okText);
+    ASSERT_EQ(r2.eqN, 0);
+    ASSERT_EQ(levelCount2, 1);
+
+    // A normal-name class: the lex-min normal member is the canonical.
+    gl::Memory m3;
+    m3.nameMap.encode("main");
+    gl::EquivalenceClass cls3;
+    cls3.setMembersFromNames({ "b", "a", "9_copy", "9" }, m3.nameMap);
+    m3.assignClassesById(gl::NameMap::MAIN_ID, { cls3 });
+    const std::string nText = "(or0[9,9_copy,b,4])";
+    int lvRun3[4] = { 0 };
+    int32_t levelCount3 = 1;
+    const gl::ExpressionAnalyzer::CanonicalForm r3 =
+        ea.canonicalFormAtScope(gl::StrSpan(nText), gl::StrSpan("main", 4),
+            m3, outArena, lvRun3, levelCount3, 4);
+    ASSERT_TRUE(r3.changed);
+    ASSERT_EQ(r3.text.toStdString(), "(or0[9,9,9,4])");
+    ASSERT_EQ(r3.eqN, 2);
+    ASSERT_EQ(r3.eqJust[0].toStdString(), "(=[9_copy,9])");
+    ASSERT_EQ(r3.eqJust[1].toStdString(), "(=[b,9])");
+
+    // A weak canonical candidate is skipped: mark x weak at main -> the
+    // class's representative falls to the lex-min int_ member.
+    m.intWeakVariables.mint(gl::packStatementKey(xId, gl::NameMap::MAIN_ID));
+    const std::string wText = "(in2[x,7])";
+    int lvRunW[4] = { 0 };
+    int32_t levelCountW = 1;
+    const gl::ExpressionAnalyzer::CanonicalForm rW =
+        ea.canonicalFormAtScope(gl::StrSpan(wText), gl::StrSpan("main", 4),
+            m, outArena, lvRunW, levelCountW, 4);
+    ASSERT_TRUE(rW.changed);
+    ASSERT_EQ(rW.text.toStdString(), "(in2[int_lev_0_1,7])");
+}
+
+// canonicalFormAtScope binds ONLY the deposit scope's own class bucket: a
+// class at main does not rewrite a statement deposited at a child scope
+// whose bucket is absent or empty (a fresh scope's seeds keep their raw
+// spelling); the same statement at main rewrites.
+TEST(prover, canonical_form_at_scope_own_scope_only) {
+    gl::ExpressionAnalyzer ea("Peano");
+    gl::Memory m;
+    gl::ScratchArena outArena{ &gl::staticMemory() };
+    gl::ScratchScope outScope(outArena);
+
+    m.nameMap.encode("main");
+    gl::EquivalenceClass cls;
+    cls.setMembersFromNames({ "a", "b" }, m.nameMap);
+    m.assignClassesById(gl::NameMap::MAIN_ID, { cls });
+    const gl::NameId childId = m.nameMap.encodePush(
+        gl::NameMap::MAIN_ID, gl::StrSpan("orint_sig_((in2[b,7]))", 22));
+    const std::string childName = m.nameMap.decode(childId);
+
+    const std::string text = "(in2[b,7])";
+    int lvRun[4] = { 0 };
+    int32_t levelCount = 1;
+
+    // Absent bucket at the child.
+    const gl::ExpressionAnalyzer::CanonicalForm rAbsent =
+        ea.canonicalFormAtScope(gl::StrSpan(text), gl::StrSpan(childName),
+            m, outArena, lvRun, levelCount, 4);
+    ASSERT_FALSE(rAbsent.changed);
+
+    // Empty bucket at the child (the door's own seeding).
+    m.assignClassesById(childId, {});
+    const gl::ExpressionAnalyzer::CanonicalForm rEmpty =
+        ea.canonicalFormAtScope(gl::StrSpan(text), gl::StrSpan(childName),
+            m, outArena, lvRun, levelCount, 4);
+    ASSERT_FALSE(rEmpty.changed);
+    ASSERT_EQ(levelCount, 1);
+
+    // At main the class binds.
+    const gl::ExpressionAnalyzer::CanonicalForm rMain =
+        ea.canonicalFormAtScope(gl::StrSpan(text), gl::StrSpan("main", 4),
+            m, outArena, lvRun, levelCount, 4);
+    ASSERT_TRUE(rMain.changed);
+    ASSERT_EQ(rMain.text.toStdString(), "(in2[a,7])");
+}
+
+// canonicalFormAtScope non-derived tier — a deposit on the {-1} tier
+// gaining real pair levels drops the marker (a level run is either exactly
+// {-1} or all-values-≥0, never mixed — the addStatement door's assert);
+// one whose applied pairs carry only non-derived levels stays the {-1}
+// singleton.
+TEST(prover, canonical_form_at_scope_non_derived_tier) {
+    gl::ExpressionAnalyzer ea("Peano");
+    gl::ScratchArena outArena{ &gl::staticMemory() };
+    gl::ScratchScope outScope(outArena);
+
+    const std::string text = "(in2[int_lev_0_2,7])";
+
+    // {-1} run + real pair levels -> real levels only.
+    gl::Memory m;
+    m.nameMap.encode("main");
+    gl::EquivalenceClass cls;
+    cls.setMembersFromNames({ "int_lev_0_1", "int_lev_0_2" }, m.nameMap);
+    const gl::NameId canonId = m.nameMap.encode("int_lev_0_1");
+    const gl::NameId mInt = m.nameMap.encode("int_lev_0_2");
+    cls.intEqualityLevelsMap[gl::packEqPairKey(mInt, canonId)] = { 2, 5 };
+    m.assignClassesById(gl::NameMap::MAIN_ID, { cls });
+
+    int lvRun[4] = { -1 };
+    int32_t levelCount = 1;
+    const gl::ExpressionAnalyzer::CanonicalForm r =
+        ea.canonicalFormAtScope(gl::StrSpan(text), gl::StrSpan("main", 4),
+            m, outArena, lvRun, levelCount, 4);
+    ASSERT_TRUE(r.changed);
+    ASSERT_EQ(r.text.toStdString(), "(in2[int_lev_0_1,7])");
+    ASSERT_EQ(levelCount, 2);
+    ASSERT_EQ(lvRun[0], 2);
+    ASSERT_EQ(lvRun[1], 5);
+
+    // {-1} run + only non-derived pair levels -> stays the {-1} singleton.
+    gl::Memory m2;
+    m2.nameMap.encode("main");
+    gl::EquivalenceClass cls2;
+    cls2.setMembersFromNames({ "int_lev_0_1", "int_lev_0_2" }, m2.nameMap);
+    const gl::NameId canonId2 = m2.nameMap.encode("int_lev_0_1");
+    const gl::NameId mInt2 = m2.nameMap.encode("int_lev_0_2");
+    cls2.intEqualityLevelsMap[gl::packEqPairKey(mInt2, canonId2)] = { -1 };
+    m2.assignClassesById(gl::NameMap::MAIN_ID, { cls2 });
+
+    int lvRun2[4] = { -1 };
+    int32_t levelCount2 = 1;
+    const gl::ExpressionAnalyzer::CanonicalForm r2 =
+        ea.canonicalFormAtScope(gl::StrSpan(text), gl::StrSpan("main", 4),
+            m2, outArena, lvRun2, levelCount2, 4);
+    ASSERT_TRUE(r2.changed);
+    ASSERT_EQ(levelCount2, 1);
+    ASSERT_EQ(lvRun2[0], -1);
+}
+
+// canonicalFormAtScope shape gates — equalities, negated equalities and
+// anchor predicates (paren, bare, negated) return unchanged even when they
+// cite a non-canonical member; a statement whose tokens are non-members is
+// likewise unchanged. Rule carriers, negated compact existences and or
+// compacts are NOT gated: they rewrite like any statement.
+TEST(prover, canonical_form_at_scope_shape_gates) {
+    gl::ExpressionAnalyzer ea("Peano");
+    gl::Memory m;
+    gl::ScratchArena outArena{ &gl::staticMemory() };
+    gl::ScratchScope outScope(outArena);
+
+    m.nameMap.encode("main");
+    gl::EquivalenceClass cls;
+    cls.setMembersFromNames({ "int_lev_0_1", "int_lev_0_2" }, m.nameMap);
+    m.assignClassesById(gl::NameMap::MAIN_ID, { cls });
+
+    const std::string gated[] = {
+        "(=[int_lev_0_2,zero])",
+        "!(=[int_lev_0_2,zero])",
+        "(AnchorPeano[int_lev_0_2,s])",
+        "AnchorPeano[int_lev_0_2,s]",
+        "!(AnchorPeano[int_lev_0_2,s])",
+        "(in2[int_lev_4_4,7])",   // non-member special token
+        "(in2[q,7])",             // non-member normal token
+    };
+    for (const std::string& text : gated) {
+        int lvRun[4] = { 0 };
+        int32_t levelCount = 1;
+        const gl::ExpressionAnalyzer::CanonicalForm r =
+            ea.canonicalFormAtScope(gl::StrSpan(text),
+                gl::StrSpan("main", 4), m, outArena, lvRun, levelCount, 4);
+        ASSERT_FALSE(r.changed);
+        ASSERT_EQ(r.text.toStdString(), text);
+        ASSERT_EQ(r.eqN, 0);
+        ASSERT_EQ(levelCount, 1);
+    }
+
+    const std::pair<std::string, std::string> rewritten[] = {
+        { "(implication5[int_lev_0_2,a])", "(implication5[int_lev_0_1,a])" },
+        { "!(existence5[int_lev_0_2,a])", "!(existence5[int_lev_0_1,a])" },
+        { "(or0[int_lev_0_2,a])", "(or0[int_lev_0_1,a])" },
+    };
+    for (const auto& pr : rewritten) {
+        int lvRun[4] = { 0 };
+        int32_t levelCount = 1;
+        const gl::ExpressionAnalyzer::CanonicalForm r =
+            ea.canonicalFormAtScope(gl::StrSpan(pr.first),
+                gl::StrSpan("main", 4), m, outArena, lvRun, levelCount, 4);
+        ASSERT_TRUE(r.changed);
+        ASSERT_EQ(r.text.toStdString(), pr.second);
+        ASSERT_EQ(r.eqN, 1);
+        ASSERT_EQ(r.eqJust[0].toStdString(), "(=[int_lev_0_2,int_lev_0_1])");
+    }
+}
+
+// originRowExists + findEqualityCiteScope — the shared origin-row probe
+// (never-interned pair and empty-run pair are both misses; a written line
+// is a hit) and the D-227 cite walk: the class scope wins when its row
+// lives there, else the deepest strict ancestor holding the row.
+TEST(prover, origin_row_exists_and_find_equality_cite_scope) {
+    gl::ExpressionAnalyzer ea("Peano");
+    gl::Memory m;
+    m.nameMap.encode("main");
+    const gl::NameId childId = m.nameMap.encodePush(
+        gl::NameMap::MAIN_ID, gl::StrSpan("orint_sig_((p[1]))", 18));
+    const gl::NameId grandId = m.nameMap.encodePush(
+        childId, gl::StrSpan("ordis_sig_((q[2]))", 18));
+    const std::string child = m.nameMap.decode(childId);
+    const std::string grand = m.nameMap.decode(grandId);
+    const std::string eq = "(=[b,a])";
+
+    ASSERT_FALSE(ea.originRowExists(m, gl::StrSpan(eq), gl::StrSpan("main", 4)));
+    gl::addOriginEncoded(m.exprOriginMap, m.originInterner,
+        gl::ExpressionWithValidity(eq, "main"),
+        std::make_pair(std::string("broadcast"),
+            std::vector<gl::ExpressionWithValidity>{}),
+        4);
+    ASSERT_TRUE(ea.originRowExists(m, gl::StrSpan(eq), gl::StrSpan("main", 4)));
+    ASSERT_FALSE(ea.originRowExists(m, gl::StrSpan(eq), gl::StrSpan(child)));
+
+    // Row at main only: cite main from every scope.
+    ASSERT_EQ(ea.findEqualityCiteScope(m, gl::StrSpan(eq), gl::StrSpan("main", 4))
+                  .toStdString(), "main");
+    ASSERT_EQ(ea.findEqualityCiteScope(m, gl::StrSpan(eq), gl::StrSpan(child))
+                  .toStdString(), "main");
+    ASSERT_EQ(ea.findEqualityCiteScope(m, gl::StrSpan(eq), gl::StrSpan(grand))
+                  .toStdString(), "main");
+
+    // A row at the child: the child wins over main from the child and the
+    // grandchild; main still cites itself.
+    gl::addOriginEncoded(m.exprOriginMap, m.originInterner,
+        gl::ExpressionWithValidity(eq, child),
+        std::make_pair(std::string("broadcast"),
+            std::vector<gl::ExpressionWithValidity>{}),
+        4);
+    ASSERT_EQ(ea.findEqualityCiteScope(m, gl::StrSpan(eq), gl::StrSpan(child))
+                  .toStdString(), child);
+    ASSERT_EQ(ea.findEqualityCiteScope(m, gl::StrSpan(eq), gl::StrSpan(grand))
+                  .toStdString(), child);
+    ASSERT_EQ(ea.findEqualityCiteScope(m, gl::StrSpan(eq), gl::StrSpan("main", 4))
+                  .toStdString(), "main");
+}
+
+namespace {
+    /// @brief Deposit @p expr at the root LB's main through the door with
+    ///        a `taskFormulation` producer line, levels {@p level},
+    ///        disintegration suppressed (the shape policy is the subject,
+    ///        not the decomposition).
+    void doorDeposit(gl::ExpressionAnalyzer& ea, const char* expr, int status,
+                     gl::IntEncodedExpr* registeredOut = nullptr, int level = 0) {
+        const int lv[1] = { level };
+        const gl::TransientOrigin origin{
+            true, gl::OriginTag::taskFormulation, nullptr, 0 };
+        ea.addExprToMemoryBlock(
+            gl::StrSpan(expr, static_cast<int32_t>(std::strlen(expr))),
+            ea.body, 0, status, lv, 1, origin, -1, -1,
+            gl::StrSpan("main", 4), /*doNotDisintegrate=*/true,
+            /*allowOrDisintegration=*/false, registeredOut);
+    }
+
+    /// @brief Seed a two-member normal-name class {a, b} (canonical `a`) at
+    ///        the root LB's main the real way: the equality `(=[b,a])`
+    ///        deposited LOCAL (status 0) at level @p pairLevel through the
+    ///        door, so its registry rows, its mirror and its history lines
+    ///        are the ones a proof leaves behind.
+    void seedDoorClass(gl::ExpressionAnalyzer& ea, int pairLevel) {
+        ea.body.nameMap.encode("main");
+        doorDeposit(ea, "(=[b,a])", 0, nullptr, pairLevel);
+    }
+
+    bool doorKnown(gl::Memory& lb, const char* expr) {
+        return gl::lookupStatementFlags(lb.intKnownStatements, lb.nameMap,
+                   std::string(expr), std::string("main")) != nullptr;
+    }
+}
+
+// The canonical door — a status-1 deposit whose text is non-canonical at
+// its scope registers ONLY its canonical form: the raw text keeps its
+// producer line (and ships it to mailOut), the canonical form gets one
+// equality1 bridge (raw at main, then the justifier at main), the levels
+// row is the deposit's run ∪ the pair's class level, and the out-parameter
+// names the canonical row.
+TEST(prover, door_registers_canonical_form_only) {
+    gl::ExpressionAnalyzer ea("Peano");
+    ea.parameters.trackHistory = true;
+    gl::Memory& lb = ea.body;
+    seedDoorClass(ea, 2);
+
+    gl::IntEncodedExpr registered{};
+    doorDeposit(ea, "(in2[b,7])", 1, &registered);
+
+    ASSERT_TRUE(doorKnown(lb, "(in2[a,7])"));
+    ASSERT_FALSE(doorKnown(lb, "(in2[b,7])"));
+    ASSERT_EQ(registered.originalId, lb.nameMap.encode("(in2[a,7])"));
+    ASSERT_EQ(registered.validityId, gl::NameMap::MAIN_ID);
+
+    const int32_t lvId = gl::lookupStatementLevels(lb.intStatementLevelsMap,
+        lb.nameMap, std::string("(in2[a,7])"), std::string("main"));
+    ASSERT_NE(lvId, 0);
+    int lv[4];
+    const int32_t lvN = gl::coldIntRunAt(lb.intStatementLevelsMap, lvId, lv, 4);
+    ASSERT_EQ(lvN, 2);
+    ASSERT_EQ(lv[0], 0);
+    ASSERT_EQ(lv[1], 2);
+
+    bool rawLine = false, bridge = false;
+    for (const auto& row : gl::decodeOriginMapSorted(lb.exprOriginMap, lb.originInterner)) {
+        if (row.first.first == "(in2[b,7])") {
+            ASSERT_EQ(row.first.second, "main");
+            ASSERT_EQ(row.second.size(), static_cast<std::size_t>(1));
+            ASSERT_EQ(row.second[0].first, "task formulation");
+            rawLine = true;
+        }
+        if (row.first.first == "(in2[a,7])") {
+            ASSERT_EQ(row.second.size(), static_cast<std::size_t>(1));
+            ASSERT_EQ(row.second[0].first, "equality1");
+            ASSERT_EQ(row.second[0].second.size(), static_cast<std::size_t>(2));
+            ASSERT_EQ(row.second[0].second[0].original, "(in2[b,7])");
+            ASSERT_EQ(row.second[0].second[0].validityName, "main");
+            ASSERT_EQ(row.second[0].second[1].original, "(=[b,a])");
+            ASSERT_EQ(row.second[0].second[1].validityName, "main");
+            bridge = true;
+        }
+    }
+    ASSERT_TRUE(rawLine);
+    ASSERT_TRUE(bridge);
+
+    bool shipped = false;
+    for (const auto& row : gl::decodeMailOutOrigins(lb.mailOut, lb.mailOutInterner)) {
+        if (row.first.original == "(in2[b,7])") shipped = true;
+    }
+    ASSERT_TRUE(shipped);
+}
+
+// appliedEqualityIsLocal — the locality a rewrite inherits: a pair whose
+// equality row (either orientation) is a local statement at the class scope
+// or a strict ancestor is local; one whose rows are all non-local is not; a
+// transitively joined pair (no direct row) is local iff any equality between
+// two class members is a local row; a class no equality ever formed is not.
+TEST(prover, applied_equality_is_local_verdicts) {
+    gl::ExpressionAnalyzer ea("Peano");
+    ea.parameters.trackHistory = true;
+    gl::Memory& m = ea.body;
+    gl::ScratchArena arena{ &gl::staticMemory() };
+    gl::ScratchScope scope(arena);
+    m.nameMap.encode("main");
+
+    doorDeposit(ea, "(=[b,a])", 0);   // local equality -> class {a,b}
+    doorDeposit(ea, "(=[d,c])", 3);   // mailed equality -> class {c,d}, non-local
+    doorDeposit(ea, "(=[e,b])", 3);   // mailed: joins e to {a,b} through b
+    gl::EquivalenceClass ab;
+    ab.setMembersFromNames({ "a", "b", "e" }, m.nameMap);
+    gl::EquivalenceClass cd;
+    cd.setMembersFromNames({ "c", "d" }, m.nameMap);
+    gl::EquivalenceClass xy;
+    xy.setMembersFromNames({ "x", "y" }, m.nameMap);
+
+    ASSERT_TRUE(ea.appliedEqualityIsLocal(m, gl::StrSpan("b", 1), gl::StrSpan("a", 1),
+        gl::StrSpan("main", 4), ab, arena));
+    ASSERT_TRUE(ea.appliedEqualityIsLocal(m, gl::StrSpan("a", 1), gl::StrSpan("b", 1),
+        gl::StrSpan("main", 4), ab, arena));                      // mirror orientation
+    ASSERT_FALSE(ea.appliedEqualityIsLocal(m, gl::StrSpan("d", 1), gl::StrSpan("c", 1),
+        gl::StrSpan("main", 4), cd, arena));                      // non-local row only
+    ASSERT_FALSE(ea.appliedEqualityIsLocal(m, gl::StrSpan("e", 1), gl::StrSpan("b", 1),
+        gl::StrSpan("main", 4), ab, arena));                      // direct non-local row
+    ASSERT_TRUE(ea.appliedEqualityIsLocal(m, gl::StrSpan("e", 1), gl::StrSpan("a", 1),
+        gl::StrSpan("main", 4), ab, arena));                      // transitive: (=[b,a]) is local
+    ASSERT_FALSE(ea.appliedEqualityIsLocal(m, gl::StrSpan("y", 1), gl::StrSpan("x", 1),
+        gl::StrSpan("main", 4), xy, arena));                      // no row anywhere
+}
+
+// The canonical door — the rewritten form's locality follows the applied
+// equality: a MAILED (status 3) deposit rewritten under this LB's own
+// (local) equality flips to a local derivation — the canonical row registers
+// LOCAL (the local registry and the per-step delta, the main-goal
+// discharge's source) and the raw form's producer line ships to mailOut so a
+// receiver resolves the bridge; a deposit rewritten under a mailed
+// (non-local) equality keeps the sender's non-local row; an unchanged
+// status-3 deposit stays non-local.
+TEST(prover, door_rewrite_locality_follows_the_applied_equality) {
+    gl::ExpressionAnalyzer ea("Peano");
+    ea.parameters.trackHistory = true;
+    gl::Memory& lb = ea.body;
+    seedDoorClass(ea, 0);              // (=[b,a]) local
+
+    doorDeposit(ea, "(in2[b,7])", 3);
+    const gl::StatementFlags* canon = gl::lookupStatementFlags(
+        lb.intKnownStatements, lb.nameMap, std::string("(in2[a,7])"), std::string("main"));
+    ASSERT_TRUE(canon != nullptr);
+    ASSERT_TRUE(canon->local);
+    ASSERT_NE(lb.intLocalEncodedStatementsSet.lookup(gl::packStatementKey(
+                  lb.nameMap.encode("(in2[a,7])"), gl::NameMap::MAIN_ID)), 0);
+    bool inDelta = false;
+    for (std::size_t i = 0; i < lb.intLocalEncodedStatementsDelta.size(); ++i) {
+        const gl::IntEncodedExpr& row = lb.intLocalEncodedStatementsDelta[i];
+        if (lb.nameMap.decode(row.originalId) == "(in2[a,7])") inDelta = true;
+    }
+    ASSERT_TRUE(inDelta);
+    bool shipped = false;
+    for (const auto& row : gl::decodeMailOutOrigins(lb.mailOut, lb.mailOutInterner)) {
+        if (row.first.original == "(in2[b,7])") shipped = true;
+    }
+    ASSERT_TRUE(shipped);
+
+    // A mailed equality forms a class the sender owns: a rewrite under it
+    // keeps the arrival's locality.
+    doorDeposit(ea, "(=[d,c])", 3);
+    doorDeposit(ea, "(in2[d,7])", 3);
+    const gl::StatementFlags* inherited = gl::lookupStatementFlags(
+        lb.intKnownStatements, lb.nameMap, std::string("(in2[c,7])"), std::string("main"));
+    ASSERT_TRUE(inherited != nullptr);
+    ASSERT_FALSE(inherited->local);
+    ASSERT_EQ(lb.intLocalEncodedStatementsSet.lookup(gl::packStatementKey(
+                  lb.nameMap.encode("(in2[c,7])"), gl::NameMap::MAIN_ID)), 0);
+
+    // An unchanged status-3 deposit keeps the sender's non-local row.
+    doorDeposit(ea, "(in2[a,8])", 3);
+    const gl::StatementFlags* plain = gl::lookupStatementFlags(
+        lb.intKnownStatements, lb.nameMap, std::string("(in2[a,8])"), std::string("main"));
+    ASSERT_TRUE(plain != nullptr);
+    ASSERT_FALSE(plain->local);
+}
+
+// The canonical door — a deposit whose canonical form is already known at
+// the scope ends there: nothing registers, no history line is written for
+// the new raw spelling.
+TEST(prover, door_skips_known_canonical_form) {
+    gl::ExpressionAnalyzer ea("Peano");
+    ea.parameters.trackHistory = true;
+    gl::Memory& lb = ea.body;
+    lb.nameMap.encode("main");
+    gl::EquivalenceClass cls;
+    cls.setMembersFromNames({ "a", "b", "c" }, lb.nameMap);
+    lb.assignClassesById(gl::NameMap::MAIN_ID, { cls });
+    for (const char* eq : { "(=[b,a])", "(=[c,a])" }) {
+        gl::addOriginEncoded(lb.exprOriginMap, lb.originInterner,
+            gl::ExpressionWithValidity(eq, "main"),
+            std::make_pair(std::string("broadcast"),
+                std::vector<gl::ExpressionWithValidity>{}),
+            4);
+    }
+
+    doorDeposit(ea, "(in2[a,7])", 1);
+    ASSERT_TRUE(doorKnown(lb, "(in2[a,7])"));
+    const std::size_t rowsBefore = lb.intEncodedStatements.size();
+
+    gl::IntEncodedExpr registered{};
+    doorDeposit(ea, "(in2[c,7])", 1, &registered);
+    ASSERT_EQ(lb.intEncodedStatements.size(), rowsBefore);
+    ASSERT_FALSE(doorKnown(lb, "(in2[c,7])"));
+    ASSERT_EQ(registered.originalId, 0);
+    ASSERT_FALSE(ea.originRowExists(lb, gl::StrSpan("(in2[c,7])", 10),
+                                     gl::StrSpan("main", 4)));
+}
+
+// The canonical door — the exempt routes: a goal (status 2) enters
+// toBeProved unchanged; a negated equality registers raw; an or compact is
+// NOT exempt and registers canonical.
+TEST(prover, door_exempts_goals_and_equalities_not_or_compacts) {
+    gl::ExpressionAnalyzer ea("Peano");
+    ea.parameters.trackHistory = true;
+    gl::Memory& lb = ea.body;
+    seedDoorClass(ea, 0);
+
+    doorDeposit(ea, "(in2[b,7])", 2);
+    ASSERT_NE(gl::lookupToBeProved(lb.intToBeProved, lb.nameMap,
+                  std::string("(in2[b,7])"), std::string("main")), 0);
+    ASSERT_EQ(gl::lookupToBeProved(lb.intToBeProved, lb.nameMap,
+                  std::string("(in2[a,7])"), std::string("main")), 0);
+
+    doorDeposit(ea, "!(=[b,7])", 1);
+    ASSERT_TRUE(doorKnown(lb, "!(=[b,7])"));
+
+    doorDeposit(ea, "(or0[b,7,1,4])", 1);
+    ASSERT_TRUE(doorKnown(lb, "(or0[a,7,1,4])"));
+    ASSERT_FALSE(doorKnown(lb, "(or0[b,7,1,4])"));
+}
+
 // reduceEqClassIds — weak members dropped via the packed twin; decoded-lex
 // input order preserved; unknown validity keeps every member. Out-param run
 // form (C4 _firing_check): the run matches an inline heap oracle replicating
@@ -10781,7 +13027,7 @@ TEST(memory, statement_index_span_probes_match_string) {
     m.intStatementLevelsMap.insertSorted(pk, 0);
     m.intStatementLevelsMap.insertSorted(pk, 2);
     gl::upsertStatementKey(m.intKnownStatements, pk,
-        /*local=*/true, /*registered=*/true, /*known=*/true);
+        /*local=*/true);
 
     const std::string origS = "(in[1,2])";
     const std::string valS  = "main";
@@ -11239,11 +13485,9 @@ TEST(memory, origin_record_round_trip) {
     ASSERT_TRUE(dec.second[1] == origin.second[1]);
 }
 
-// addOriginId — below-cap dedup append; at-cap D-49 preference: a NEW
-// non-equality record replaces the first equality-convenience slot;
-// equality-vs-equality and foundational-vs-foundational keep insertion
-// order.
-TEST(memory, add_origin_id_cap_policy) {
+// addOriginId — below-cap dedup append; at the cap the existing records win
+// whatever the tags (I-216).
+TEST(memory, add_origin_id_cap_existing_wins) {
     gl::Memory m;
     gl::IdOriginMap map;
     const int64_t key = gl::mintOriginKey(m.originInterner, "(=[a,b])", "main");
@@ -11265,22 +13509,22 @@ TEST(memory, add_origin_id_cap_policy) {
     gl::addOriginId(map, key, impl, 2);
     ASSERT_EQ(map.at(key).size(), static_cast<std::size_t>(2));
 
-    // At cap, NEW foundational record: replaces the equality1 slot.
+    // At cap, NEW foundational record: dropped — the equality1 slot stays.
     gl::addOriginId(map, key, rec, 2);
     ASSERT_EQ(map.at(key).size(), static_cast<std::size_t>(2));
-    ASSERT_TRUE(map.at(key)[0] == rec);   // slot 0 was eq1
+    ASSERT_TRUE(map.at(key)[0] == eq1);
     ASSERT_TRUE(map.at(key)[1] == impl);
 
-    // At cap, NEW equality record: dropped (insertion order wins).
+    // At cap, NEW equality record: dropped.
     gl::IdOrigin eq2(gl::OriginTag::equality2, std::vector<int64_t>{});
     gl::addOriginId(map, key, eq2, 2);
-    ASSERT_TRUE(map.at(key)[0] == rec);
+    ASSERT_TRUE(map.at(key)[0] == eq1);
     ASSERT_TRUE(map.at(key)[1] == impl);
 
-    // At cap, NEW foundational, no equality slot left: dropped.
+    // At cap, another NEW foundational record: dropped.
     gl::IdOrigin theo(gl::OriginTag::theorem, std::vector<int64_t>{});
     gl::addOriginId(map, key, theo, 2);
-    ASSERT_TRUE(map.at(key)[0] == rec);
+    ASSERT_TRUE(map.at(key)[0] == eq1);
     ASSERT_TRUE(map.at(key)[1] == impl);
 }
 
@@ -11429,9 +13673,9 @@ TEST(memory, encode_origin_spans_twin) {
 }
 
 // addOriginEncoded (heap IdOriginMap) span-antecedent door: byte-identical
-// deposit to the EWV/OriginLine overload, INCLUDING the D-49 cap-full preference
-// replacement (a foundational record displaces the first equality-convenience
-// slot). Two independent Memories; compared via the decoded key-sorted snapshot.
+// deposit to the EWV/OriginLine overload, INCLUDING the at-cap drop (the
+// existing records win). Two independent Memories; compared via the decoded
+// key-sorted snapshot.
 TEST(memory, add_origin_encoded_spans_twin) {
     gl::Memory mE, mS;
     gl::IdOriginMap mapE, mapS;
@@ -11453,7 +13697,7 @@ TEST(memory, add_origin_encoded_spans_twin) {
     };
 
     // EWV/OriginLine path: equality1, implication (fills cap), then a
-    // foundational recursion (cap-full: displaces the equality1 slot).
+    // foundational recursion (cap-full: dropped, existing records win).
     gl::addOriginEncoded(mapE, mE.originInterner, ewv(kO, kV),
         ol("equality1", { ewv(a1O, a1V) }), cap);
     gl::addOriginEncoded(mapE, mE.originInterner, ewv(kO, kV),
@@ -11474,10 +13718,10 @@ TEST(memory, add_origin_encoded_spans_twin) {
     const auto rowsE = gl::decodeOriginMapSorted(mapE, mE.originInterner);
     const auto rowsS = gl::decodeOriginMapSorted(mapS, mS.originInterner);
     ASSERT_TRUE(rowsE == rowsS);
-    // The cap-full replacement fired: recursion took equality1's slot.
+    // The at-cap drop fired: equality1 kept its slot, recursion was dropped.
     ASSERT_EQ(rowsS.size(), static_cast<std::size_t>(1));
     ASSERT_EQ(rowsS[0].second.size(), static_cast<std::size_t>(2));
-    ASSERT_EQ(rowsS[0].second[0].first, std::string("recursion"));
+    ASSERT_EQ(rowsS[0].second[0].first, std::string("equality1"));
     ASSERT_EQ(rowsS[0].second[1].first, std::string("implication"));
 }
 
@@ -12008,9 +14252,9 @@ TEST(memory, merge_accum_serialize_matches_heap) {
     ASSERT_TRUE(got == want);
 }
 
-// addOriginId cap-preference (D-49): at cap 1, a non-equality tag replaces the
-// existing equality-convenience line — byte-matches the heap addOriginId twin.
-TEST(memory, merge_accum_add_origin_id_cap_preference) {
+// addOriginId at the cap: at cap 1 a later non-equality tag is dropped, the
+// existing equality1 line wins — byte-matches the heap addOriginId twin.
+TEST(memory, merge_accum_add_origin_id_cap_existing_wins) {
     gl::GlobalMemoryManager g;
     g.init(gl::StaticMemoryConfig{ 1 << 20, 1 << 18 });
     gl::LbArena lb(&g);
@@ -12484,6 +14728,71 @@ TEST(memory, merge_full_serialize_matches_heap) {
 // splice relies on this: a kept class's stored blob equals re-serializing its
 // decoded form (a lossless, deterministic codec), so copying it verbatim ahead
 // of the merged blob yields the same run the high-level path would have written.
+// mergeTwoEquivalenceClasses — member bridge (the same-scope fixpoint pass of
+// updateEquivalenceClasses, D-322): B holds
+// neither equality argument, the classes overlap only through the shared
+// member m, so m is the bridge. Expected: members B ∪ A (decoded-lex), the
+// merged pairs (a,c) = A{m,a} ∪ B{m,c} and (d,c) = A{m,d} ∪ B{m,c} with NO
+// equality levels (levels = nullptr, 0), B's and A's own levels kept, origins
+// B-base + A — the same shape as the argument-bridge case above.
+TEST(memory, merge_two_classes_member_bridge) {
+    gl::ExpressionAnalyzer ea("Peano");
+    gl::Memory m;
+    ea.parameters.trackHistory = false;
+    const int cap = ea.parameters.compressor_mode
+        ? ea.parameters.compressor_max_origins_per_expr
+        : ea.parameters.max_origin_per_expr;
+    gl::LbArena lb{ &gl::staticMemory() };
+    const gl::NameId a = m.nameMap.encode("a"), c = m.nameMap.encode("c"),
+                  d = m.nameMap.encode("d"), mm = m.nameMap.encode("m");
+    const auto overLevels = [](std::map<int64_t, std::set<int> >& dst,
+                               const std::map<int64_t, std::set<int> >& src) {
+        for (const auto& kv : src) dst[kv.first] = kv.second;
+    };
+    gl::EquivalenceClass A, B;
+    A.memberIds = { a, d, mm };
+    A.intEqualityLevelsMap[gl::packEqPairKey(a, mm)] = { 1 };
+    A.intEqualityLevelsMap[gl::packEqPairKey(d, mm)] = { 2 };
+    A.intEqualityLevelsMap[gl::packEqPairKey(a, d)] = { 5 };
+    A.equalityOriginMap[100] = { gl::IdOrigin{ gl::OriginTag::equality1, { 1 } } };
+    B.memberIds = { c, mm };
+    B.intEqualityLevelsMap[gl::packEqPairKey(c, mm)] = { 4 };
+    B.equalityOriginMap[300] = { gl::IdOrigin{ gl::OriginTag::broadcast, { 8 } } };
+    std::map<int64_t, std::set<int> > mergedMap;
+    mergedMap[gl::packEqPairKey(a, c)] = { 1, 4 };
+    mergedMap[gl::packEqPairKey(d, c)] = { 2, 4 };
+    gl::EquivalenceClass exp;
+    exp.memberIds = gl::unionMemberIdsByName(B.memberIds, A.memberIds, m.nameMap);
+    exp.intEqualityLevelsMap = B.intEqualityLevelsMap;
+    overLevels(exp.intEqualityLevelsMap, A.intEqualityLevelsMap);
+    {
+        std::map<int64_t, std::set<int> > tmp = mergedMap;
+        overLevels(tmp, exp.intEqualityLevelsMap);
+        exp.intEqualityLevelsMap = tmp;
+    }
+    exp.equalityOriginMap = B.equalityOriginMap;
+    gl::overwriteOriginsId(exp.equalityOriginMap, A.equalityOriginMap, cap);
+
+    gl::MergeClassAccum accA(&lb);
+    for (const gl::NameId id : A.memberIds) accA.addMember(id);
+    for (const auto& kv : A.intEqualityLevelsMap) {
+        const std::vector<int32_t> lv(kv.second.begin(), kv.second.end());
+        accA.setLevel(kv.first, lv.data(), static_cast<int32_t>(lv.size()));
+    }
+    for (const auto& kv : A.equalityOriginMap)
+        for (const gl::IdOrigin& ln : kv.second)
+            accA.addOriginLine(kv.first, static_cast<uint8_t>(ln.first),
+                               ln.second.data(), static_cast<int32_t>(ln.second.size()));
+    const std::vector<char> bBlob = gl::serializeEquivalenceClass(B);
+    const gl::EquivalenceClassView bView{ bBlob.data(), static_cast<int32_t>(bBlob.size()) };
+    const std::vector<gl::NameId> eqArgsV{ a, d };   // neither in B: no argument bridge
+    ea.mergeTwoEquivalenceClasses(accA, bView, eqArgsV.data(),
+                                  static_cast<int32_t>(eqArgsV.size()),
+                                  nullptr, 0, m, gl::StrSpan("main", 4), gl::StrSpan("main", 4));
+    ASSERT_TRUE(accA.serialize() == gl::serializeEquivalenceClass(exp));
+    ASSERT_EQ(accA.members.size(), 4);
+}
+
 TEST(memory, eqclass_raw_door_run_splice) {
     gl::ExpressionAnalyzer ea("Peano");
     gl::Memory m;
@@ -12580,7 +14889,6 @@ TEST(memory, codec_local_memory_value_round_trip) {
 TEST(memory, codec_owner_set_round_trip) {
     gl::OwnerSet v;
     v.hasLooseOwner = true;
-    v.partitionIds = { -3, 0, 7, 1000 };
     v.uSignatures.insert({ { gl::NameId(1), gl::NameId(2) },
                            { gl::NameId(3), gl::NameId(4) } });
     v.uSignatures.insert({ { gl::NameId(-5), gl::NameId(9) } });
@@ -12588,7 +14896,6 @@ TEST(memory, codec_owner_set_round_trip) {
     const gl::OwnerSet back = gl::Codec<gl::OwnerSet>::deserialize(
         b.data(), static_cast<int32_t>(b.size()));
     ASSERT_TRUE(back.hasLooseOwner);
-    ASSERT_TRUE(back.partitionIds == v.partitionIds);
     ASSERT_TRUE(back.uSignatures == v.uSignatures);
     const std::vector<char> b2 = gl::Codec<gl::OwnerSet>::serialize(back);
     ASSERT_TRUE(b == b2);
@@ -13116,7 +15423,7 @@ namespace {
 
 // AdmissionValueBlobView: per-field peeks equal the codec's deserialize on
 // several shapes (empty key, empty rems, both populated). The framing assert
-// (len == 17 + 4*(keyCount+remCount)) is exercised implicitly by every
+// (len == 18 + 4*(keyCount+remCount)) is exercised implicitly by every
 // construction; the mismatch path aborts and is not harness-testable, per
 // the house convention.
 TEST(memory, admission_value_blob_view_matches_deserialize) {
@@ -13130,6 +15437,7 @@ TEST(memory, admission_value_blob_view_matches_deserialize) {
         ASSERT_EQ(view.depth(), back.standardMaxAdmissionDepth);
         ASSERT_EQ(view.sec(), back.standardMaxSecondaryNumber);
         ASSERT_EQ(view.flagByte(), static_cast<uint8_t>(back.flag ? 1 : 0));
+        ASSERT_EQ(view.ordisByte(), static_cast<uint8_t>(back.ordisOnly ? 1 : 0));
         ASSERT_EQ(view.keyCount(), static_cast<int32_t>(back.key.size()));
         for (int32_t i = 0; i < view.keyCount(); ++i)
             ASSERT_EQ(view.keyId(i), back.key[static_cast<std::size_t>(i)]);
@@ -13143,6 +15451,8 @@ TEST(memory, admission_value_blob_view_matches_deserialize) {
     check(gl::AdmissionMapValue({}, { 8 }, 0, 0, false));
     check(gl::AdmissionMapValue({ 42 }, {}, -1, 2, false));
     check(gl::AdmissionMapValue({}, {}, 1, 1, true));
+    check(gl::AdmissionMapValue({ 7, 3 }, { 5 }, 4, 9, true, true));
+    check(gl::AdmissionMapValue({}, {}, 0, 0, false, true));
 }
 
 // admissionBlobLess == DecodedAdmissionValueLess on blobs, both argument
@@ -13165,6 +15475,8 @@ TEST(memory, admission_blob_less_matches_decoded_set_comparator) {
     vals.push_back(gl::AdmissionMapValue({ zz }, {}, 0, 0, false));         // key differs at [0]
     vals.push_back(gl::AdmissionMapValue({ aa, zz }, { mm }, 3, 2, false)); // depth only
     vals.push_back(gl::AdmissionMapValue({ aa, zz }, { mm }, 1, 7, false)); // sec only
+    vals.push_back(gl::AdmissionMapValue({ aa, zz }, { mm }, 1, 2, false, true)); // ordisOnly only
+    vals.push_back(gl::AdmissionMapValue({ aa, zz }, { mm }, 1, 2, true, true));  // flag + ordisOnly
 
     const gl::DecodedAdmissionValueLess oracle{ &rig.vi };
     std::vector<std::vector<char>> blobs;
@@ -13523,7 +15835,8 @@ TEST(memory, staged_to_arena_blob_matches_id_value_oracle) {
 
     const auto check = [&](std::vector<const char*> keyElems,
                            std::vector<const char*> remElems,
-                           int depth, int sec, bool flag) {
+                           int depth, int sec, bool flag,
+                           bool ordisOnly = false) {
         gl::StagedAdmissionValue sv;
         std::vector<gl::SealedString> keyBuf;
         for (const char* k : keyElems) keyBuf.push_back(sealStr(k));
@@ -13536,6 +15849,7 @@ TEST(memory, staged_to_arena_blob_matches_id_value_oracle) {
         sv.standardMaxAdmissionDepth = depth;
         sv.standardMaxSecondaryNumber = sec;
         sv.flag = flag;
+        sv.ordisOnly = ordisOnly;
 
         const gl::ArenaOffset mark = tArena.cursor();
         const gl::StrSpan got = gl::stagedToArenaBlob(sv, rigA.vi, tArena);
@@ -13552,84 +15866,1765 @@ TEST(memory, staged_to_arena_blob_matches_id_value_oracle) {
     check({ "(in[zz,1])" }, {}, 5, 1, false);
     // Shared strings across calls: dedup mints (same ids on both paths).
     check({ "(in2[a,7,3])" }, { "a" }, 1, 1, true);
+    // Ordis-route staged value: the tag survives the fused fast path.
+    check({ "(in2[marker,m,3])" }, { "m" }, 2, 3, false, true);
 
     pages.seal();
     pages.freePages();
 }
 
-// cleanAdmissionMap span door (S5 C5): the function is fed as spans; gate
-// verdicts and the consume path are unchanged. skip_eq_classes = true — the
-// I-41 closure block is exercised by the full-pipeline batch gate, not this
-// unit (it is byte-verbatim string machinery fed by a single
-// materialization). Cases: (a) non-operator core -> zero state change;
-// (b) operator with marker NOT at an output index -> zero consume;
-// (c) operator + marker at the output index -> consumedAdmissionKeys gains
-// the key and the admissionMap / admissionStatusMap entries are erased
-// (the admissionMapIntegration erase is the documented key-form no-op
-// vestige — integration holds u_-form templates, never this bare-marker
-// form). Driven both string-fed (the three production callers' shape,
-// implicit StrSpan conversion) and mid-buffer span-fed; end states equal.
-TEST(prover, clean_admission_map_span_door_consume_path) {
-    gl::ExpressionAnalyzer ea("Peano");
-    ea.parameters.skip_eq_classes = true;
+// contradictionScopeProductView: the payload parser of contradiction-based
+// integration. Positive: marked payload with a negated-compact tail. Negative:
+// wrong prefix, bare (positive) tail, prefix-only, subproof/orint payloads.
+TEST(prover, contradiction_scope_product_view) {
+    const auto pv = [](const char* s) {
+        return gl::ExpressionAnalyzer::contradictionScopeProductView(
+            gl::StrSpan(s, static_cast<int32_t>(std::strlen(s))));
+    };
+    ASSERT_TRUE(pv("contradiction_!(preorder[1,4,9,rec])").toStdString()
+                == "!(preorder[1,4,9,rec])");
+    ASSERT_TRUE(pv("contradiction_!(strictOrder[1,4,9,10])").toStdString()
+                == "!(strictOrder[1,4,9,10])");
+    ASSERT_TRUE(pv("contradiction_(preorder[1,4,9,rec])").empty());  // bare tail
+    ASSERT_TRUE(pv("contradiction_").empty());                       // no tail
+    ASSERT_TRUE(pv("contradiction_!x").empty());                     // no '('
+    ASSERT_TRUE(pv("orint_(or0[1,7,3,2])_((=[7,2]))").empty());      // other kind
+    ASSERT_TRUE(pv("(goal[1])_subproof_(implication3[1])").empty()); // other kind
+    ASSERT_TRUE(pv("").empty());
+}
+
+// prepareNegatedCompoundContradiction + dischargeContradictionScopes:
+// end-to-end through the real doors. Priming mints the `contradiction_` scope
+// and seeds the positive compact (atom used — the seed path is
+// category-agnostic); re-priming is gated. Discharge: a statement at the scope
+// whose negation is known at main emits the product at main on internal mail
+// with a `contradiction` origin row and queues the scope wipe.
+TEST(prover, contradiction_scope_priming_and_discharge) {
+    gl::ExpressionAnalyzer analyzer("Peano");
+    gl::Memory memory;
+    memory.level = 0;
+
+    const std::string negated = "!(in2[7,8,3])";
+    const std::string positive = "(in2[7,8,3])";
+    const std::string payload = "contradiction_" + negated;
+    const std::string scopeName = "main_boundary_" + payload;
+
+    analyzer.prepareNegatedCompoundContradiction(
+        gl::StrSpan(negated), memory, gl::StrSpan("main", 4));
+
+    // Scope minted; positive seed known at the scope.
+    {
+        const gl::StatementFlags* row = gl::lookupStatementFlags(
+            memory.intKnownStatements, memory.nameMap,
+            gl::StrSpan(positive), gl::StrSpan(scopeName));
+        ASSERT_TRUE(row != nullptr);
+        ASSERT_TRUE(row != nullptr);
+    }
+
+    // Re-priming is a defined no-op (the integrationPrepared gate): the seed's
+    // delta entry count stays put.
+    const int32_t deltaAfterFirst =
+        memory.intLocalEncodedStatementsDelta.size();
+    analyzer.prepareNegatedCompoundContradiction(
+        gl::StrSpan(negated), memory, gl::StrSpan("main", 4));
+    ASSERT_EQ(memory.intLocalEncodedStatementsDelta.size(), deltaAfterFirst);
+
+    // Opposing fact at main: the seed's negation (the scan negates the
+    // scope-level statement and probes the chain up to main). A known
+    // statement always carries its level row (the addStatement invariant
+    // the discharge's level-union assert relies on).
+    gl::upsertStatementKey(memory.intKnownStatements,
+        gl::packStatementKey(memory.nameMap.encode(gl::StrSpan(negated)),
+                             memory.nameMap.encode(gl::StrSpan("main", 4))),
+        true);
+    {
+        int lvMain[1] = { 0 };
+        memory.intStatementLevelsMap.assignSet(
+            gl::packStatementKey(memory.nameMap.encode(gl::StrSpan(negated)),
+                                 memory.nameMap.encode(gl::StrSpan("main", 4))),
+            lvMain, 1);
+    }
+
+    analyzer.dischargeContradictionScopes(memory,
+                                          memory.nextIterationInternalMail);
+
+    // Product emitted at main on the internal-mail channel.
+    {
+        const gl::Mail h = gl::makeHeapMail(memory.nextIterationInternalMail,
+                                            memory.nameMap,
+                                            memory.originInterner);
+        bool sawProduct = false;
+        for (const auto& st : h.statements) {
+            if (st.first.original == negated
+                && st.first.validityName == "main") {
+                sawProduct = true;
+            }
+        }
+        ASSERT_TRUE(sawProduct);
+    }
+
+    // Scope queued for the end-of-burst wipe (both cleanup containers).
+    {
+        const gl::NameId mainId =
+            memory.nameMap.encode(gl::StrSpan("main", 4));
+        gl::NameId scopeId = memory.nameMap.encodePush(
+            mainId, gl::StrSpan(payload));
+        ASSERT_TRUE(memory.pendingWipeScopes.contains(scopeId));
+        ASSERT_TRUE(memory.intValidityNamesToFilter.contains(scopeId));
+    }
+
+    // Second scan is a no-op (pendingWipeScopes doubles as the guard).
+    const gl::Mail before = gl::makeHeapMail(memory.nextIterationInternalMail,
+                                             memory.nameMap,
+                                             memory.originInterner);
+    analyzer.dischargeContradictionScopes(memory,
+                                          memory.nextIterationInternalMail);
+    const gl::Mail after = gl::makeHeapMail(memory.nextIterationInternalMail,
+                                            memory.nameMap,
+                                            memory.originInterner);
+    ASSERT_EQ(static_cast<int>(after.statements.size()),
+              static_cast<int>(before.statements.size()));
+}
+
+// ---------------------------------------------------------------------------
+// Statement-levels contract — the {-1} non-derived tier (commit: one-door
+// levels design). A levels row is never empty; {-1} is the non-derived
+// singleton, transparent to level accounting.
+// ---------------------------------------------------------------------------
+
+TEST(memory, insert_level_sorted_skips_non_derived_tier) {
+    int run[4] = { 0, 2, 0, 0 };
+    int32_t n = 2;
+    n = gl::insertLevelSorted(run, n, -1, 4);
+    ASSERT_EQ(n, 2);
+    ASSERT_EQ(run[0], 0);
+    ASSERT_EQ(run[1], 2);
+    int empty[2];
+    ASSERT_EQ(gl::insertLevelSorted(empty, 0, -1, 2), 0);
+}
+
+TEST(memory, cold_int_run_non_neg_at_filters_negative_tier) {
+    gl::ExpressionAnalyzer analyzer(std::string("FTA"));
+    gl::Memory& memory = analyzer.body;
+    const gl::NameId e1 =
+        memory.nameMap.encode(gl::StrSpan("(in2[7,8,3])"));
+    const gl::NameId vm = memory.nameMap.encode(gl::StrSpan("main", 4));
+    const int64_t k1 = gl::packStatementKey(e1, vm);
+    const int nonDerived[1] = { -1 };
+    memory.intStatementLevelsMap.assignSetRange(k1, nonDerived, nonDerived + 1);
+    const int32_t id1 = memory.intStatementLevelsMap.lookup(k1);
+    ASSERT_TRUE(id1 != 0);
+    int out[4];
+    // The derivation-union read filters the tier; the verbatim read keeps it.
+    ASSERT_EQ(gl::coldIntRunNonNegAt(memory.intStatementLevelsMap, id1, out, 4), 0);
+    ASSERT_EQ(gl::coldIntRunAt(memory.intStatementLevelsMap, id1, out, 4), 1);
+    ASSERT_EQ(out[0], -1);
+}
+
+TEST(prover, add_statement_empty_run_becomes_non_derived_tier) {
+    gl::ExpressionAnalyzer ea(std::string("FTA"));
+    const std::string expr = "(in2[9,7,3])";
+    const gl::TransientOrigin origin{
+        true, gl::OriginTag::taskFormulation, nullptr, 0 };
+    // No level provenance: the door substitutes the {-1} singleton.
+    ea.addExprToMemoryBlock(gl::StrSpan(expr), ea.body, 0, 0, nullptr, 0,
+        origin, -1, -1, gl::StrSpan("main", 4), false);
+    const gl::StatementFlags* row = gl::lookupStatementFlags(
+        ea.body.intKnownStatements, ea.body.nameMap,
+        gl::StrSpan(expr), gl::StrSpan("main", 4));
+    ASSERT_TRUE(row != nullptr);
+    const int32_t lvId = gl::lookupStatementLevels(
+        ea.body.intStatementLevelsMap, ea.body.nameMap,
+        gl::StrSpan(expr), gl::StrSpan("main", 4));
+    ASSERT_TRUE(lvId != 0);
+    ASSERT_EQ(ea.body.intStatementLevelsMap.runLen(lvId), 1);
+    ASSERT_EQ(ea.body.intStatementLevelsMap.valueAt(lvId, 0), -1);
+}
+
+TEST(prover, marker_never_creates_known_without_levels) {
+    gl::ExpressionAnalyzer ea(std::string("FTA"));
+    // maxIterationNumberVariable is 1 in ConfigFTA, so it_9_… is over-cap:
+    // the admission door refuses. The B8 crash shape — a refused statement
+    // must stay completely unknown (no row, no levels); the marker creates
+    // nothing.
+    gl::ExpressionAnalyzer& analyzer = ea;
+    const std::string expr = "(in2[it_9_lev_0_1,7,3])";
+    const gl::TransientOrigin origin{
+        true, gl::OriginTag::taskFormulation, nullptr, 0 };
+    analyzer.addExprToMemoryBlock(gl::StrSpan(expr), analyzer.body, 0, 0,
+        nullptr, 0, origin, -1, -1, gl::StrSpan("main", 4), false);
+    // Row presence IS the membership: the refused statement leaves NO row
+    // (the marker never creates one) and no levels — the B8 known-without-
+    // levels state is unrepresentable.
+    const gl::StatementFlags* row = gl::lookupStatementFlags(
+        analyzer.body.intKnownStatements, analyzer.body.nameMap,
+        gl::StrSpan(expr), gl::StrSpan("main", 4));
+    ASSERT_TRUE(row == nullptr);
+    ASSERT_TRUE(gl::lookupStatementLevels(
+        analyzer.body.intStatementLevelsMap, analyzer.body.nameMap,
+        gl::StrSpan(expr), gl::StrSpan("main", 4)) == 0);
+}
+
+// D-278: goal CLOSURE is level-free, only the
+// global-list registration is gated by the sealed level verdict. The three
+// tests below pin the two seal sites and the refusing drain.
+namespace {
+    const char* kLgConj =
+        "(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8](in2[7,8,3])(=[7,8])))";
+
+    // Registers kLgConj with both contradiction polarities enabled. The
+    // premise-LB chain: root -> (AnchorPeano[...], level 0) -> (in2[7,8,3],
+    // level 1); the twins are level-2 children of the inner LB.
+    void lgRegisterChain(gl::ExpressionAnalyzer& ea) {
+        ea.parameters.try_contradiction = true;
+        ea.parameters.try_contradiction_negated_head = true;
+        ea.parameters.compressor_mode = false;
+        ea.addTheoremToMemory(std::string(kLgConj), ea.body, 0, false,
+                              ea.globalDependencies);
+    }
+
+    gl::Memory* lgInnerOf(gl::ExpressionAnalyzer& ea) {
+        gl::Memory* anchorLB = ea.simpleMapStore.findChild(
+            &ea.body, "(AnchorPeano[1,2,3,4,5,6])");
+        ASSERT_TRUE(anchorLB != nullptr);
+        gl::Memory* innerLB =
+            ea.simpleMapStore.findChild(anchorLB, "(in2[7,8,3])");
+        ASSERT_TRUE(innerLB != nullptr);
+        return innerLB;
+    }
+
+    // Deposits the conjecture head as a known MAIN statement of the inner LB
+    // with the given level run, then runs dischargeToBeProved over the delta.
+    void lgProveHeadAndDischarge(gl::ExpressionAnalyzer& ea,
+                                 gl::Memory& innerLB,
+                                 const int* lvRun, int32_t lvN) {
+        const gl::TransientOrigin origin{
+            true, gl::OriginTag::taskFormulation, nullptr, 0 };
+        ea.addExprToMemoryBlock(gl::StrSpan("(=[7,8])", 8), innerLB, 0, 0,
+            lvRun, lvN, origin, -1, -1, gl::StrSpan("main", 4), false);
+        ea.dischargeToBeProved(innerLB, -1, innerLB.sameIterationInternalMail);
+    }
+
+    // Closure assertions shared by the level-poor and level-complete tests —
+    // proving closure is level-INDEPENDENT: goal row erased, the goal-rooted
+    // MAIN scope queued for the radical wipe, both twins staged.
+    void lgAssertClosed(gl::ExpressionAnalyzer& ea, gl::Memory& innerLB,
+                        int64_t pk) {
+        ASSERT_TRUE(innerLB.intToBeProved.lookup(pk) == 0);
+        const gl::NameId wipeVid = innerLB.nameMap.encodePush(
+            gl::NameMap::MAIN_ID, gl::StrSpan("(=[7,8])", 8));
+        ASSERT_TRUE(innerLB.pendingWipeScopes.lookup(wipeVid) != 0);
+        ASSERT_EQ(static_cast<int>(ea.pendingTwinDeactivations.size()), 2);
+    }
+
+    // Reads the single sealed UpdateGlobalDirectRec and returns its verdict.
+    bool lgSealedVerdict(gl::ExpressionAnalyzer& ea) {
+        int recs = 0;
+        bool verdict = false;
+        ea.updateGlobalDirectPages
+            ->forEachRecord<gl::ExpressionAnalyzer::UpdateGlobalDirectRec>(
+                [&](const gl::ExpressionAnalyzer::UpdateGlobalDirectRec& r) {
+                    ++recs;
+                    verdict = r.allLevelsInvolved;
+                });
+        ASSERT_EQ(recs, 1);
+        return verdict;
+    }
+}
+
+// A MAIN goal whose head is proved with a LEVEL-POOR row ({0} at a level-1
+// LB — neither {0,1} nor {1}) still CLOSES: the goal row leaves intToBeProved,
+// the goal scope queues for the wipe, both twins retire. The sealed record
+// carries verdict=false, and the drain runs the lifecycle while registering
+// the theorem into the proved-not-broadcast tier — recorded with the marker
+// method, never circulated (no compaction staging).
+TEST(prover, level_poor_goal_closes_without_registering) {
+    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    lgRegisterChain(ea);
+    gl::Memory* innerLB = lgInnerOf(ea);
+    ASSERT_EQ(innerLB->level, 1);
+
+    const int64_t pk = gl::packStatementKey(
+        innerLB->nameMap.encode("(=[7,8])"), gl::NameMap::MAIN_ID);
+    ASSERT_TRUE(innerLB->intToBeProved.lookup(pk) != 0);
+
+    ea.updateGlobalDirectPages.emplace();
+    ea.updateGlobalDirectPages->bind(&gl::staticMemory());
+
+    const int lvRun[1] = { 0 };
+    lgProveHeadAndDischarge(ea, *innerLB, lvRun, 1);
+
+    lgAssertClosed(ea, *innerLB, pk);
+    ASSERT_FALSE(lgSealedVerdict(ea));
+
+    // The refusing drain: lifecycle runs (deactivateUnnecessary walks),
+    // first-class registration is skipped — the theorem lands in the
+    // proved-not-broadcast tier instead, with no broadcast staged.
+    const std::size_t compactionsBefore = ea.pendingCompactionQueue.size();
+    ea.drainUpdateGlobalDirect();
+    ASSERT_EQ(static_cast<int>(ea.globalTheoremList.size()), 1);
+    ASSERT_TRUE(std::get<1>(ea.globalTheoremList.back())
+                == std::string("proved not broadcast"));
+    ASSERT_EQ(static_cast<int>(ea.pendingCompactionQueue.size()),
+              static_cast<int>(compactionsBefore));
+}
+
+// The level-complete control: identical closure effects, verdict=true. The
+// registering drain itself is exercised by the pipeline gate, not here (the
+// broadcast/mail-merge machinery needs full kernel state).
+TEST(prover, level_complete_goal_seals_registration_verdict) {
+    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    lgRegisterChain(ea);
+    gl::Memory* innerLB = lgInnerOf(ea);
+
+    const int64_t pk = gl::packStatementKey(
+        innerLB->nameMap.encode("(=[7,8])"), gl::NameMap::MAIN_ID);
+    ASSERT_TRUE(innerLB->intToBeProved.lookup(pk) != 0);
+
+    ea.updateGlobalDirectPages.emplace();
+    ea.updateGlobalDirectPages->bind(&gl::staticMemory());
+
+    const int lvRun[2] = { 0, 1 };
+    lgProveHeadAndDischarge(ea, *innerLB, lvRun, 2);
+
+    lgAssertClosed(ea, *innerLB, pk);
+    ASSERT_TRUE(lgSealedVerdict(ea));
+
+    ea.updateGlobalDirectPages->seal();
+    ea.updateGlobalDirectPages->freePages();
+    ea.updateGlobalDirectPages.reset();
+}
+
+// The twin seal site: dischargeContradiction unions the colliding pair's
+// level rows EXCLUDING the twin's own level (the assumed seed's tier) and
+// seals the same count-based full-run verdict. Collision at {1}+{2} on a
+// level-2 twin -> union minus 2 is {1} = the anchor-free premise run ->
+// true; collision entirely at the seed tier -> empty union -> false.
+TEST(prover, contradiction_twin_seal_carries_level_verdict) {
+    const gl::TransientOrigin origin{
+        true, gl::OriginTag::taskFormulation, nullptr, 0 };
+    {
+        gl::ExpressionAnalyzer ea(std::string("Peano"));
+        lgRegisterChain(ea);
+        gl::Memory* twin = ea.simpleMapStore.findChild(
+            lgInnerOf(ea), "__contradiction__!(=[7,8])");
+        ASSERT_TRUE(twin != nullptr);
+        ASSERT_EQ(twin->level, 2);
+        ASSERT_TRUE(twin->primedForContradiction);
+
+        ea.updateGlobalDirectPages.emplace();
+        ea.updateGlobalDirectPages->bind(&gl::staticMemory());
+
+        const int lv1[1] = { 1 };
+        const int lv2[1] = { 2 };
+        ea.addExprToMemoryBlock(gl::StrSpan("(in[7,1])", 9), *twin, 0, 0,
+            lv1, 1, origin, -1, -1, gl::StrSpan("main", 4), false);
+        ea.addExprToMemoryBlock(gl::StrSpan("!(in[7,1])", 10), *twin, 0, 0,
+            lv2, 1, origin, -1, -1, gl::StrSpan("main", 4), false);
+        ea.dischargeContradiction(*twin, -1);
+
+        ASSERT_FALSE(twin->isActive);
+        ASSERT_TRUE(lgSealedVerdict(ea));
+
+        ea.updateGlobalDirectPages->seal();
+        ea.updateGlobalDirectPages->freePages();
+        ea.updateGlobalDirectPages.reset();
+    }
+    {
+        gl::ExpressionAnalyzer ea(std::string("Peano"));
+        lgRegisterChain(ea);
+        gl::Memory* twin = ea.simpleMapStore.findChild(
+            lgInnerOf(ea), "__contradiction__!(=[7,8])");
+        ASSERT_TRUE(twin != nullptr);
+
+        ea.updateGlobalDirectPages.emplace();
+        ea.updateGlobalDirectPages->bind(&gl::staticMemory());
+
+        const int lv2[1] = { 2 };
+        ea.addExprToMemoryBlock(gl::StrSpan("(in[7,1])", 9), *twin, 0, 0,
+            lv2, 1, origin, -1, -1, gl::StrSpan("main", 4), false);
+        ea.addExprToMemoryBlock(gl::StrSpan("!(in[7,1])", 10), *twin, 0, 0,
+            lv2, 1, origin, -1, -1, gl::StrSpan("main", 4), false);
+        ea.dischargeContradiction(*twin, -1);
+
+        ASSERT_FALSE(twin->isActive);
+        ASSERT_FALSE(lgSealedVerdict(ea));
+
+        ea.updateGlobalDirectPages->seal();
+        ea.updateGlobalDirectPages->freePages();
+        ea.updateGlobalDirectPages.reset();
+    }
+}
+
+// Producer-chain order: byte-lexicographic over the leaf-to-root exprKey
+// chain — a pure function of proof state, so a drain ordered by it stays
+// byte-identical across runs. The scaffold's real chain (root -> anchor ->
+// inner -> twin) exercises depth difference, shared-prefix convergence, and
+// identity.
+TEST(prover, compare_producer_chains_is_deterministic_lb_identity) {
+    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    lgRegisterChain(ea);
+    gl::Memory* innerLB = lgInnerOf(ea);
+    gl::Memory* anchorLB = innerLB->parentMemory;
+    ASSERT_TRUE(anchorLB != nullptr);
+    gl::Memory* twin = ea.simpleMapStore.findChild(
+        innerLB, "__contradiction__!(=[7,8])");
+    ASSERT_TRUE(twin != nullptr);
+
+    // Identity: equal on the same LB, at every depth.
+    ASSERT_EQ(gl::ExpressionAnalyzer::compareProducerChains(innerLB, innerLB), 0);
+    ASSERT_EQ(gl::ExpressionAnalyzer::compareProducerChains(twin, twin), 0);
+
+    // Distinct LBs order by leaf key bytes: "(in2[7,8,3])" < "__contra..."
+    // ('(' < '_'), antisymmetric.
+    ASSERT_TRUE(gl::ExpressionAnalyzer::compareProducerChains(innerLB, twin) < 0);
+    ASSERT_TRUE(gl::ExpressionAnalyzer::compareProducerChains(twin, innerLB) > 0);
+    ASSERT_TRUE(gl::ExpressionAnalyzer::compareProducerChains(anchorLB, twin) < 0);
+
+    // nullptr (producer-less rows) sorts before every real chain.
+    ASSERT_TRUE(gl::ExpressionAnalyzer::compareProducerChains(nullptr, innerLB) < 0);
+    ASSERT_TRUE(gl::ExpressionAnalyzer::compareProducerChains(innerLB, nullptr) > 0);
+    ASSERT_EQ(gl::ExpressionAnalyzer::compareProducerChains(nullptr, nullptr), 0);
+}
+
+// Drain order for one theorem sealed twice with split level verdicts: the
+// level-complete record sorts FIRST regardless of the records' coreIds —
+// the sink's string dedup makes the first-drained record's method the
+// registration, and coreId is a dispatch race outcome. The former
+// (theorem, coreId) order let the worker race pick between first-class and
+// the proved-not-broadcast tier.
+TEST(prover, update_global_direct_order_verdict_beats_core_id) {
+    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    lgRegisterChain(ea);
+    gl::Memory* innerLB = lgInnerOf(ea);
+    gl::Memory* twin = ea.simpleMapStore.findChild(
+        innerLB, "__contradiction__!(=[7,8])");
+    ASSERT_TRUE(twin != nullptr);
+
+    gl::SealedPageSet ps;
+    ps.bind(&gl::staticMemory());
+    const char thm[] = "(>[1](a[1])(b[1]))";
+    const gl::SealedString t1 =
+        gl::SealedString::copyFrom(ps, thm, sizeof(thm) - 1);
+    const gl::SealedString t2 =
+        gl::SealedString::copyFrom(ps, thm, sizeof(thm) - 1);
+
+    // The level-poor record carries the SMALLER coreId — the retired
+    // (theorem, coreId) order drained it first and the tier won the dedup.
+    const gl::ExpressionAnalyzer::UpdateGlobalDirectRec poor{ t1, 0, twin, false };
+    const gl::ExpressionAnalyzer::UpdateGlobalDirectRec full{ t2, 7, innerLB, true };
+    ASSERT_TRUE(gl::ExpressionAnalyzer::updateGlobalDirectLess(full, poor) < 0);
+    ASSERT_TRUE(gl::ExpressionAnalyzer::updateGlobalDirectLess(poor, full) > 0);
+
+    // Equal verdicts: the producer chain decides, coreId-independent —
+    // flipping both coreIds leaves the order unchanged.
+    const gl::ExpressionAnalyzer::UpdateGlobalDirectRec a1{ t1, 9, innerLB, true };
+    const gl::ExpressionAnalyzer::UpdateGlobalDirectRec b1{ t2, 0, twin, true };
+    const gl::ExpressionAnalyzer::UpdateGlobalDirectRec a2{ t1, 0, innerLB, true };
+    const gl::ExpressionAnalyzer::UpdateGlobalDirectRec b2{ t2, 9, twin, true };
+    const int c1 = gl::ExpressionAnalyzer::updateGlobalDirectLess(a1, b1);
+    const int c2 = gl::ExpressionAnalyzer::updateGlobalDirectLess(a2, b2);
+    ASSERT_TRUE(c1 < 0);  // inner's chain sorts before the twin's
+    ASSERT_EQ(c1 < 0, c2 < 0);
+
+    // Different theorems still order by theorem bytes first.
+    const char thmB[] = "(>[1](a[1])(c[1]))";
+    const gl::SealedString t3 =
+        gl::SealedString::copyFrom(ps, thmB, sizeof(thmB) - 1);
+    const gl::ExpressionAnalyzer::UpdateGlobalDirectRec other{ t3, 0, twin, true };
+    ASSERT_TRUE(gl::ExpressionAnalyzer::updateGlobalDirectLess(full, other) < 0);
+
+    ps.seal();
+    ps.freePages();
+}
+
+// RejectedValidityBuckets (D-307): keys grouped by
+// validity in map-id order, an unknown validity is an empty run, a drop keeps
+// the index valid (shrink-only contract) and the map filters it by lookup.
+TEST(memory, rejected_validity_buckets_group_keys_by_validity) {
+    gl::Memory m;
+    auto& rm = m.overallHashMemory.rejectedMap;
     gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
         gl::genScratchArenas().slotCount() - 1);
-
-    const auto seedEntry = [&tArena](gl::Memory& m, const std::string& key) {
-        const int64_t pk = gl::mintTemplateKey(m.templateInterner, m.nameMap,
-                                               key, "main");
-        gl::AdmissionMapValue v;
-        v.key = encodeValueVectorOracle(
-            std::vector<std::string>{ "(in2[5,7,3])" }, m.valueInterner);
-        gl::insertAdmissionValue(m.overallHashMemory.admissionMap, pk, v,
-                                 m.valueInterner, tArena);
-        m.overallHashMemory.admissionStatusMap.upsert(
-            pk, static_cast<uint8_t>(0));
+    auto park = [&](const char* tmpl, const char* vld) {
+        const int64_t pk = gl::mintTemplateKey(m.templateInterner, m.nameMap, tmpl, vld);
+        gl::RejectedMapValue rv;
+        rv.expression = m.valueInterner.encode("(in3[x,7,3,plus])");
+        rv.renamedExpression = rv.expression;
+        rv.concreteConstituent = rv.expression;
+        rv.levels = std::set<int>{ 0 };
+        gl::insertRejectedValue(rm, pk, rv, m.valueInterner, tArena);
         return pk;
     };
+    const int64_t a1 = park("(in2[a,marker,3])", "main");
+    const int64_t b1 = park("(in2[b,marker,3])", "main_boundary_x");
+    const int64_t a2 = park("(in2[c,marker,3])", "main");
+    const int64_t c1 = park("(in2[d,marker,3])", "main_boundary_y");
 
-    // (a) Non-operator core: zero state change (early return).
+    // Production template arguments are NameMap names (statement encoding
+    // mints them); mintTemplateKey interns only template + validity, so the
+    // fixture mints the argument names itself before the index is built.
+    for (const char* nm : { "a", "b", "c", "d", "3" })
+        m.nameMap.encode(gl::StrSpan(nm, static_cast<int32_t>(std::strlen(nm))));
+
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::RejectedValidityBuckets b(&tArena, &dirty);
+    ASSERT_TRUE(!b.built());
+    b.ensureBuilt(rm, m.templateInterner, m.nameMap);
+    ASSERT_TRUE(b.built());
+    ASSERT_EQ(b.countAtBuild(), 4);
+
+    const gl::NameId vMain = m.nameMap.lookup(gl::StrSpan("main", 4));
+    const gl::NameId vX = m.nameMap.lookup(gl::StrSpan("main_boundary_x", 15));
+    const gl::NameId vY = m.nameMap.lookup(gl::StrSpan("main_boundary_y", 15));
+    ASSERT_TRUE(vMain != 0 && vX != 0 && vY != 0);
+    ASSERT_EQ(b.runEnd(vMain) - b.runBegin(vMain), 2);
+    ASSERT_EQ(b.pkAt(b.runBegin(vMain)), a1);       // map-id order within a run
+    ASSERT_EQ(b.pkAt(b.runBegin(vMain) + 1), a2);
+    ASSERT_EQ(b.runEnd(vX) - b.runBegin(vX), 1);
+    ASSERT_EQ(b.pkAt(b.runBegin(vX)), b1);
+    ASSERT_EQ(b.runEnd(vY) - b.runBegin(vY), 1);
+    ASSERT_EQ(b.pkAt(b.runBegin(vY)), c1);
+    // the three runs tile the whole key set
+    ASSERT_EQ(b.runEnd(vMain) - b.runBegin(vMain) + b.runEnd(vX) - b.runBegin(vX)
+              + b.runEnd(vY) - b.runBegin(vY), 4);
+    // a validity that carries no key: empty run
+    const gl::NameId vNone = m.nameMap.encode(gl::StrSpan("main_boundary_none", 18));
+    ASSERT_EQ(b.runBegin(vNone), b.runEnd(vNone));
+
+    // argument postings: (validity, argument) -> the keys naming it
+    const gl::NameId idA = m.nameMap.lookup(gl::StrSpan("a", 1));
+    const gl::NameId idC = m.nameMap.lookup(gl::StrSpan("c", 1));
+    const gl::NameId idB = m.nameMap.lookup(gl::StrSpan("b", 1));
+    ASSERT_TRUE(idA != 0 && idC != 0 && idB != 0);
+    ASSERT_EQ(b.postEnd(vMain, idA) - b.postBegin(vMain, idA), 1);
+    ASSERT_EQ(b.pkAt(b.postAt(b.postBegin(vMain, idA))), a1);
+    ASSERT_EQ(b.postEnd(vMain, idC) - b.postBegin(vMain, idC), 1);
+    ASSERT_EQ(b.pkAt(b.postAt(b.postBegin(vMain, idC))), a2);
+    ASSERT_EQ(b.postBegin(vMain, idB), b.postEnd(vMain, idB));   // b lives at x, not main
+    ASSERT_EQ(b.postEnd(vX, idB) - b.postBegin(vX, idB), 1);
+    ASSERT_EQ(b.pkAt(b.postAt(b.postBegin(vX, idB))), b1);
+    // the shared numeral argument "3" posts every key of its validity once
+    const gl::NameId id3 = m.nameMap.lookup(gl::StrSpan("3", 1));
+    ASSERT_TRUE(id3 != 0);
+    ASSERT_EQ(b.postEnd(vMain, id3) - b.postBegin(vMain, id3), 2);
+    ASSERT_EQ(b.pkAt(b.postAt(b.postBegin(vMain, id3))), a1);
+    ASSERT_EQ(b.pkAt(b.postAt(b.postBegin(vMain, id3) + 1)), a2);
+
+    // a snapshot: a drop leaves the index valid and the map filters it; a
+    // later call never rebuilds
+    rm.eraseBlobIf([&](int64_t k) { return k == a1; });
+    b.ensureBuilt(rm, m.templateInterner, m.nameMap);   // no rebuild
+    ASSERT_EQ(b.countAtBuild(), 4);
+    ASSERT_TRUE(rm.lookup(a1) == 0);
+    ASSERT_TRUE(rm.lookup(a2) != 0);
+    ASSERT_EQ(b.pkAt(b.runBegin(vMain)), a1);     // stale entry, filtered by lookup
+}
+
+// The rejected-map hook walks only the class validity's keys, re-keys exactly
+// the same-validity keys whose template changes under the class, leaves
+// other-validity and member-free keys alone, and returns the hit count.
+TEST(prover, apply_equi_rejected_walks_only_class_validity_and_returns_drops) {
+    gl::ExpressionAnalyzer ea("Peano");
+    gl::Memory m;
+    auto& rm = m.overallHashMemory.rejectedMap;
+    gl::ScratchArena& tArena = gl::genScratchArenas().forSlot(
+        gl::genScratchArenas().slotCount() - 1);
+    auto park = [&](const char* tmpl, const char* vld, const char* expr) {
+        const int64_t pk = gl::mintTemplateKey(m.templateInterner, m.nameMap, tmpl, vld);
+        gl::RejectedMapValue rv;
+        rv.expression = m.valueInterner.encode(expr);
+        rv.renamedExpression = rv.expression;
+        rv.concreteConstituent = rv.expression;
+        rv.levels = std::set<int>{ 0 };
+        gl::insertRejectedValue(rm, pk, rv, m.valueInterner, tArena);
+        return pk;
+    };
+    const int64_t hitA = park("(in2[it_5_lev_1_2,marker,3])", "main",
+                              "(in3[it_5_lev_1_2,7,3,plus])");
+    const int64_t hitB = park("(in2[it_5_lev_1_2,marker,4])", "main",
+                              "(in3[it_5_lev_1_2,7,4,plus])");
+    const int64_t otherScope = park("(in2[it_5_lev_1_2,marker,3])", "main_boundary_z",
+                                    "(in3[it_5_lev_1_2,9,3,plus])");
+    const int64_t noMember = park("(in2[q,marker,3])", "main",
+                                  "(in3[q,7,3,plus])");
+
+    gl::EquivalenceClass cls;
+    cls.setMembersFromNames({ "it_0_lev_1_2", "it_5_lev_1_2" }, m.nameMap);
+
+    gl::DirtyState dirty = gl::DirtyState::Clean;
+    gl::RejectedValidityBuckets buckets(&tArena, &dirty);
+    const int32_t dropped =
+        ea.applyEquivalenceClassToRejectedMap(cls, m, gl::StrSpan("main", 4), buckets);
+
+    ASSERT_EQ(dropped, 2);
+    ASSERT_TRUE(rm.lookup(hitA) == 0);
+    ASSERT_TRUE(rm.lookup(hitB) == 0);
+    ASSERT_TRUE(rm.lookup(otherScope) != 0);   // another validity: never visited
+    ASSERT_TRUE(rm.lookup(noMember) != 0);     // same validity, no member: kept
+    // the two hits are re-keyed in place under their canonical keys
+    int64_t newA = 0, newB = 0;
+    ASSERT_TRUE(gl::lookupTemplateKey(m.templateInterner, m.nameMap,
+        gl::StrSpan(std::string("(in2[it_0_lev_1_2,marker,3])")), gl::StrSpan("main", 4), newA));
+    ASSERT_TRUE(gl::lookupTemplateKey(m.templateInterner, m.nameMap,
+        gl::StrSpan(std::string("(in2[it_0_lev_1_2,marker,4])")), gl::StrSpan("main", 4), newB));
+    ASSERT_TRUE(rm.lookup(newA) != 0);
+    ASSERT_TRUE(rm.lookup(newB) != 0);
+    ASSERT_EQ(rm.count(), 4);
+    ASSERT_EQ(gl::decodeInternalMailStatements(m.sameIterationInternalMail,
+        m.nameMap).size(), static_cast<std::size_t>(0));
+
+    // a second call on the map: the canonical keys are not in the per-apply
+    // index and would not be hits anyway — nothing changes
+    const int32_t again =
+        ea.applyEquivalenceClassToRejectedMap(cls, m, gl::StrSpan("main", 4), buckets);
+    ASSERT_EQ(again, 0);
+    ASSERT_EQ(rm.count(), 4);
+}
+
+// ---------- rule owners on the request-generation indexes ----------
+
+namespace {
+
+/// Every owner run of an owner-run map, flattened to (key id, owner) pairs.
+template <class OwnerMap>
+std::vector<std::pair<int32_t, gl::RuleOwner>> allOwners(const OwnerMap& map) {
+    std::vector<std::pair<int32_t, gl::RuleOwner>> out;
+    for (int32_t id = 1; id <= map.count(); ++id)
+        for (int32_t j = 0; j < map.runLen(id); ++j)
+            out.emplace_back(id, map.recordAt(id, j).owner);
+    return out;
+}
+
+} // namespace
+
+// addToHashMemory records the installing rule as an owner on EVERY entry it
+// mints — whole keys, subkeys (short and signature records), remaining-args
+// edges, the originals chain — exactly once per entry (a symmetric rule reaches
+// the same entry through several permutations). A second rule sharing the
+// premise shape joins the shared entries as a second owner and creates none
+// twice; no entry ever carries an owner that did not install it.
+TEST(memory, add_to_hash_memory_records_owners_everywhere) {
+    gl::ExpressionAnalyzer ea("Peano");
+    gl::HashMemory& hm = ea.body.overallHashMemory;
+    const int lv[1] = { 0 };
+
+    const std::string p0 = "(in[1,u_2])";
+    const std::string p1 = "(in[u_2,3])";
+    const std::string head1 = "(in[1,3])";
+    const std::string impl1 = "(>[1,3](in[1,u_2])(>[](in[u_2,3])(in[1,3])))";
+    const gl::StrSpan chain[2] = { gl::StrSpan(p0), gl::StrSpan(p1) };
+    ea.addToHashMemory(chain, 2, gl::StrSpan(head1), nullptr, 0,
+        ea.body, hm, lv, 1, gl::StrSpan(impl1),
+        ea.parameters.maxIterationNumberVariable,
+        ea.parameters.standardMaxSecondaryNumber, false,
+        ea.parameters.minNumOperatorsKey, gl::StrSpan("implication", 11),
+        false, gl::StrSpan(impl1));
+
+    const gl::RuleOwner o1 = gl::packRuleOwner(
+        ea.body.ruleInterner.lookup(gl::StrSpan(impl1)),
+        ea.body.nameMap.lookup(gl::StrSpan("main", 4)));
+    ASSERT_TRUE(ea.body.ruleInterner.lookup(gl::StrSpan(impl1)) != 0);
+
+    ASSERT_TRUE(hm.normalizedEncodedKeys.count() >= 1);
+    ASSERT_TRUE(hm.normalizedEncodedSubkeys.count() >= 1);
+    ASSERT_TRUE(hm.originals.count() >= 1);
+    ASSERT_TRUE(hm.remainingArgsOwners.count() >= 1);
+    for (const auto& ko : allOwners(hm.normalizedEncodedKeys)) ASSERT_EQ(ko.second, o1);
+    for (const auto& ko : allOwners(hm.originals)) ASSERT_EQ(ko.second, o1);
+    for (const auto& ko : allOwners(hm.remainingArgsOwners)) ASSERT_EQ(ko.second, o1);
+    for (int32_t id = 1; id <= hm.normalizedEncodedKeys.count(); ++id)
+        ASSERT_EQ(hm.normalizedEncodedKeys.runLen(id), 1);
+    for (int32_t id = 1; id <= hm.normalizedEncodedSubkeys.count(); ++id) {
+        const gl::OwnerSet os = hm.normalizedEncodedSubkeys.recordAt(id, 0);
+        // One rule may hold several (owner, signature) pairs on one subkey;
+        // every pair is this rule's and points at a real signature.
+        ASSERT_TRUE(!os.owners.empty());
+        for (const auto& pr : os.owners) {
+            ASSERT_EQ(pr.first, o1);
+            ASSERT_TRUE(pr.second == -1
+                     || pr.second < static_cast<int32_t>(os.uSignatures.size()));
+        }
+    }
+    const int32_t wholeBefore = hm.normalizedEncodedKeys.count();
+    const int32_t subBefore = hm.normalizedEncodedSubkeys.count();
+
+    // A second rule over the same premise shape, another head.
+    const std::string head2 = "(in[3,1])";
+    const std::string impl2 = "(>[1,3](in[1,u_2])(>[](in[u_2,3])(in[3,1])))";
+    ea.addToHashMemory(chain, 2, gl::StrSpan(head2), nullptr, 0,
+        ea.body, hm, lv, 1, gl::StrSpan(impl2),
+        ea.parameters.maxIterationNumberVariable,
+        ea.parameters.standardMaxSecondaryNumber, false,
+        ea.parameters.minNumOperatorsKey, gl::StrSpan("implication", 11),
+        false, gl::StrSpan(impl2));
+    const gl::RuleOwner o2 = gl::packRuleOwner(
+        ea.body.ruleInterner.lookup(gl::StrSpan(impl2)),
+        ea.body.nameMap.lookup(gl::StrSpan("main", 4)));
+    ASSERT_TRUE(o2 != o1);
+
+    // The whole keys and subkeys are the premise shape's — shared, so no new
+    // key appears and every run now holds exactly the two owners ascending.
+    ASSERT_EQ(hm.normalizedEncodedKeys.count(), wholeBefore);
+    ASSERT_EQ(hm.normalizedEncodedSubkeys.count(), subBefore);
+    for (int32_t id = 1; id <= hm.normalizedEncodedKeys.count(); ++id) {
+        ASSERT_EQ(hm.normalizedEncodedKeys.runLen(id), 2);
+        ASSERT_EQ(hm.normalizedEncodedKeys.recordAt(id, 0).owner, std::min(o1, o2));
+        ASSERT_EQ(hm.normalizedEncodedKeys.recordAt(id, 1).owner, std::max(o1, o2));
+    }
+    for (int32_t id = 1; id <= hm.normalizedEncodedSubkeys.count(); ++id) {
+        const gl::OwnerSet os = hm.normalizedEncodedSubkeys.recordAt(id, 0);
+        // Both rules share every subkey with the same signatures: the pairs
+        // come in equal halves, sorted by owner.
+        ASSERT_TRUE(os.owners.size() >= 2 && os.owners.size() % 2 == 0);
+        const std::size_t half = os.owners.size() / 2;
+        for (std::size_t i = 0; i < os.owners.size(); ++i) {
+            ASSERT_EQ(os.owners[i].first, i < half ? std::min(o1, o2) : std::max(o1, o2));
+            ASSERT_EQ(os.owners[i].second, os.owners[(i + half) % os.owners.size()].second);
+        }
+    }
+    // Distinct chains (the head differs): each with its own single owner.
+    ASSERT_EQ(hm.originals.count(), 2);
+    for (int32_t id = 1; id <= hm.originals.count(); ++id)
+        ASSERT_EQ(hm.originals.runLen(id), 1);
+    // Every remaining-args edge owner is one of the two rules.
+    for (const auto& ko : allOwners(hm.remainingArgsOwners))
+        ASSERT_TRUE(ko.second == o1 || ko.second == o2);
+}
+
+// ---------- rule removal (the remove policy on the shared enumeration) ----------
+
+namespace {
+
+/// Heap oracle of one owner's removal from a subkey record: every pair of the
+/// owner leaves, a signature no surviving pair references leaves (survivors
+/// keep their order and are renumbered), the loose byte is recomputed.
+void oracleRemoveSubkeyOwner(gl::OwnerSet& os, gl::RuleOwner owner) {
+    using Sig = std::vector<std::pair<int32_t, gl::NameId>>;
+    const std::vector<Sig> sigs(os.uSignatures.begin(), os.uSignatures.end());
+    std::vector<int> keep(sigs.size(), 0);
+    bool loose = false;
+    std::vector<std::pair<gl::RuleOwner, int32_t>> pairs;
+    for (const auto& p : os.owners) {
+        if (p.first == owner) continue;
+        pairs.push_back(p);
+        if (p.second < 0) loose = true;
+        else keep[static_cast<std::size_t>(p.second)] = 1;
+    }
+    std::vector<int32_t> newIdx(sigs.size(), -1);
+    int32_t c = 0;
+    os.uSignatures.clear();
+    for (std::size_t i = 0; i < sigs.size(); ++i) {
+        if (!keep[i]) continue;
+        newIdx[i] = c++;
+        os.uSignatures.insert(sigs[i]);
+    }
+    for (auto& p : pairs)
+        if (p.second >= 0) p.second = newIdx[static_cast<std::size_t>(p.second)];
+    os.owners = pairs;
+    os.hasLooseOwner = loose;
+}
+
+} // namespace
+
+// removeSubkeyOwner == the heap oracle across a sequence of removals on one
+// 3-premise record: a shared holder of a signature (nothing but its pair
+// leaves), an owner holding two signatures (the one it held alone leaves and
+// the other renumbers), a loose holder (the loose byte clears), and finally
+// the last holder (the nine-byte tombstone, which eraseOwnerlessEntries erases).
+TEST(memory, remove_subkey_owner_matches_oracle) {
+    NameMapRig nmRig;
+    gl::NameMap& nm = nmRig.nm;
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 1 << 20, 1 << 18 });
+    gl::LbArena lb(&g);
+    gl::DirtyState d = gl::DirtyState::Clean;
+    gl::HashMemory hm(&lb, &d);
+    auto& map = hm.normalizedEncodedSubkeys;
+
+    gl::EncodedExpression eA("(in3[a,b,u_p])", "main");
+    gl::EncodedExpression eB("(in3[c,u_q,f])", "main");
+    gl::EncodedExpression eC("(in2[a,b])", "main");
+    const gl::IntEncodedExpr r1 =
+        gl::encodeExpression(gl::EncodedExpression("(in[a,b])", "main"), nm);
+    const gl::IntEncodedExpr r2 =
+        gl::encodeExpression(gl::EncodedExpression("(in[b,c])", "main"), nm);
+    const gl::IntEncodedExpr iA = gl::encodeExpression(eA, nm);
+    const gl::IntEncodedExpr iB = gl::encodeExpression(eB, nm);
+    const gl::IntEncodedExpr iC = gl::encodeExpression(eC, nm);
+    const gl::NameId ne = 3;
+    const std::vector<gl::NameId> data = { 1, 2 };
+    const gl::NormKey nk{ ne, data };
+    const std::vector<std::pair<std::vector<gl::IntEncodedExpr>, gl::RuleOwner>> installs = {
+        { { r1, r2, iA }, gl::packRuleOwner(9, 1) },
+        { { r1, r2, iA }, gl::packRuleOwner(3, 1) },
+        { { r1, r2, iB }, gl::packRuleOwner(5, 2) },
+        { { r1, r2, iB }, gl::packRuleOwner(9, 1) },   // owner 9 holds eA AND eB
+        { { r1, r2, iC }, gl::packRuleOwner(7, 1) },   // loose
+    };
+    gl::OwnerSet oracle;
+    for (const auto& step : installs) {
+        gl::recordSubkeyOwner(oracle, step.first.data(),
+                              static_cast<gl::NameId>(step.first.size()), step.second);
+        gl::ExpressionAnalyzer::mergeSubkeySignatures(map, ne, data.data(), 2,
+            step.first.data(), static_cast<gl::NameId>(step.first.size()), step.second);
+    }
+    const auto same = [&]() {
+        const int32_t id = map.lookup(nk);
+        ASSERT_TRUE(id != 0);
+        ASSERT_TRUE(gl::Codec<gl::OwnerSet>::serialize(oracle)
+                 == gl::Codec<gl::OwnerSet>::serialize(map.recordAt(id, 0)));
+    };
+    same();
+    ASSERT_EQ(static_cast<int>(oracle.owners.size()), 5);
+
+    // Owner 5 leaves: eB is still held by owner 9 -> two signatures stay.
+    ASSERT_EQ(gl::ExpressionAnalyzer::removeSubkeyOwner(map, ne, data.data(), 2, gl::packRuleOwner(5, 2)), 4);
+    oracleRemoveSubkeyOwner(oracle, gl::packRuleOwner(5, 2));
+    same();
+    ASSERT_EQ(static_cast<int>(oracle.uSignatures.size()), 2);
+    // Owner 9 leaves (both its pairs): eB has no holder -> it leaves.
+    ASSERT_EQ(gl::ExpressionAnalyzer::removeSubkeyOwner(map, ne, data.data(), 2, gl::packRuleOwner(9, 1)), 2);
+    oracleRemoveSubkeyOwner(oracle, gl::packRuleOwner(9, 1));
+    same();
+    ASSERT_EQ(static_cast<int>(oracle.uSignatures.size()), 1);
+    ASSERT_EQ(oracle.owners[0].first, gl::packRuleOwner(3, 1));
+    ASSERT_EQ(oracle.owners[0].second, 0);
+    ASSERT_TRUE(oracle.hasLooseOwner);
+    // The loose owner leaves: the loose byte clears.
+    ASSERT_EQ(gl::ExpressionAnalyzer::removeSubkeyOwner(map, ne, data.data(), 2, gl::packRuleOwner(7, 1)), 1);
+    oracleRemoveSubkeyOwner(oracle, gl::packRuleOwner(7, 1));
+    same();
+    ASSERT_FALSE(oracle.hasLooseOwner);
+    // The last owner leaves: the tombstone, then the erasure pass drops the key.
+    ASSERT_EQ(gl::ExpressionAnalyzer::removeSubkeyOwner(map, ne, data.data(), 2, gl::packRuleOwner(3, 1)), 0);
+    oracleRemoveSubkeyOwner(oracle, gl::packRuleOwner(3, 1));
+    same();
+    ASSERT_EQ(map.count(), 1);
+    hm.ownerlessPending = true;
+    gl::ExpressionAnalyzer::eraseOwnerlessEntries(hm, lb);
+    ASSERT_EQ(map.count(), 0);
+    ASSERT_FALSE(hm.ownerlessPending);
+}
+
+// RuleIndexOp::firstVisit: the first visit of a (tag, key) records it and
+// returns true, a repeat returns false, the same key under another tag is a
+// distinct entry.
+TEST(memory, rule_index_op_first_visit_dedups) {
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 1 << 20, 1 << 18 });
+    gl::LbArena lb(&g);
+    gl::LbArena scratch(&g);
+    gl::DirtyState d = gl::DirtyState::Clean;
+    gl::ColdHashSet<gl::BytesKeyStore> visited(&lb, &d);
+    visited.resetToFresh();
+    gl::RuleIndexOp op;
+    op.kind = gl::RuleIndexOp::Kind::Remove;
+    op.visited = &visited;
+    const std::string k1 = "key-one", k2 = "key-two";
+    const gl::RuleOwner oA = gl::packRuleOwner(7, 1), oB = gl::packRuleOwner(8, 1);
+    const gl::ArenaOffset before = scratch.cursor();
+    ASSERT_TRUE(op.firstVisit(gl::RuleIndexOp::WholeKey, gl::StrSpan(k1), oA, scratch));
+    ASSERT_FALSE(op.firstVisit(gl::RuleIndexOp::WholeKey, gl::StrSpan(k1), oA, scratch));
+    ASSERT_TRUE(op.firstVisit(gl::RuleIndexOp::Subkey, gl::StrSpan(k1), oA, scratch));
+    ASSERT_TRUE(op.firstVisit(gl::RuleIndexOp::WholeKey, gl::StrSpan(k2), oA, scratch));
+    ASSERT_FALSE(op.firstVisit(gl::RuleIndexOp::Subkey, gl::StrSpan(k1), oA, scratch));
+    // Another owner (a second multiplication copy) on the same entry is a
+    // first visit of its own.
+    ASSERT_TRUE(op.firstVisit(gl::RuleIndexOp::WholeKey, gl::StrSpan(k1), oB, scratch));
+    ASSERT_FALSE(op.firstVisit(gl::RuleIndexOp::WholeKey, gl::StrSpan(k1), oB, scratch));
+    ASSERT_EQ(visited.count(), 4);
+    ASSERT_TRUE(scratch.cursor() == before);   // every visit key popped
+}
+
+// removeRuleFromHashMemory + finishRuleRemovals: two rules over one premise
+// shape are installed; removing the first deletes exactly its owner from every
+// shared entry (whole keys, subkeys, edges) and its own chain, drops exactly
+// its LMVs in the batched compaction and leaves nothing else; removing the
+// second empties every index, the forward map and the reverse index.
+TEST(memory, remove_rule_from_hash_memory_deletes_exactly_its_owners) {
+    gl::ExpressionAnalyzer ea("Peano");
+    gl::HashMemory& hm = ea.body.overallHashMemory;
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 4 << 20, 1 << 18 });
+    gl::LbArena sets(&g);
+    gl::DirtyState d = gl::DirtyState::Clean;
+    gl::ColdHashSet<gl::BytesKeyStore> visited(&sets, &d);
+    gl::ColdHashSet<gl::PodKeyStore<int64_t>> dropSet(&sets, &d);
+    dropSet.resetToFresh();
+    gl::ScratchArena& gArena = gl::genScratchArenas().forSlot(
+        gl::genScratchArenas().slotCount() - 1);
+    const int lv[1] = { 0 };
+
+    const std::string impl1 = "(>[1,3](in[1,u_2])(>[](in[u_2,3])(in[1,3])))";
+    const std::string impl2 = "(>[1,3](in[1,u_2])(>[](in[u_2,3])(in[3,1])))";
+    // Install exactly as the door does: chain, head and the remaining-arg run
+    // all come from the one decomposition the removal re-runs.
+    const auto install = [&](const std::string& impl) {
+        gl::ScratchArena& kvArena = gl::scratchArenas().forSlot(
+            gl::scratchArenas().slotCount() - 1);
+        gl::ScratchScope kvScope(kvArena);
+        gl::StrSpan chainRun[gl::ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS];
+        int32_t chainRunN = 0;
+        gl::StrSpan headSpan;
+        gl::StrSpan remKeyRun[gl::ExecutionParameters::MAX_ADMISSION_REM_ARGS];
+        int32_t remKeyRunN = 0;
+        ea.decomposeImplicationForInstall(gl::StrSpan(impl), kvArena,
+            chainRun, chainRunN, headSpan, remKeyRun, remKeyRunN);
+        ASSERT_EQ(chainRunN, 2);
+        ea.addToHashMemory(chainRun, chainRunN, headSpan, remKeyRun, remKeyRunN,
+            ea.body, hm, lv, 1, gl::StrSpan(impl),
+            ea.parameters.maxIterationNumberVariable,
+            ea.parameters.standardMaxSecondaryNumber, false,
+            ea.parameters.minNumOperatorsKey, gl::StrSpan("implication", 11),
+            false, gl::StrSpan(impl));
+    };
+    install(impl1);
+    install(impl2);
+    const gl::NameId mainId = ea.body.nameMap.lookup(gl::StrSpan("main", 4));
+    const int32_t id1 = ea.body.ruleInterner.lookup(gl::StrSpan(impl1));
+    const int32_t id2 = ea.body.ruleInterner.lookup(gl::StrSpan(impl2));
+    ASSERT_TRUE(id1 != 0 && id2 != 0 && mainId != 0);
+    const gl::RuleOwner o2 = gl::packRuleOwner(id2, mainId);
+    const int32_t wholeN = hm.normalizedEncodedKeys.count();
+    const int32_t subN = hm.normalizedEncodedSubkeys.count();
+    const int32_t edgeN = hm.remainingArgsOwners.count();
+    const int32_t fwdN = hm.remainingArgsNormalizedEncodedMap.count();
+    int32_t lmvN = 0;
+    for (int32_t id = 1; id <= hm.encodedMap.count(); ++id) lmvN += hm.encodedMap.runLen(id);
+    ASSERT_EQ(hm.originals.count(), 2);
+    // Every forward NormKey, for the reverse-index check at the end.
+    std::vector<gl::NormKey> forwardKeys;
+    for (int32_t id = 1; id <= fwdN; ++id) {
+        const std::vector<gl::NormKey> run = hm.remainingArgsNormalizedEncodedMap.recordsAt(id);
+        forwardKeys.insert(forwardKeys.end(), run.begin(), run.end());
+    }
+    ASSERT_TRUE(!forwardKeys.empty());
+
+    // Remove rule 1.
+    ea.removeRuleFromHashMemory(ea.body, hm, gl::StrSpan(impl1), gl::StrSpan("main", 4),
+                                visited, dropSet);
+    ASSERT_TRUE(hm.ownerlessPending);
+    ASSERT_EQ(dropSet.count(), 1);
+    ASSERT_EQ(hm.normalizedEncodedKeys.count(), wholeN);   // shared keys stay
+    for (int32_t id = 1; id <= wholeN; ++id) {
+        ASSERT_EQ(hm.normalizedEncodedKeys.runLen(id), 1);
+        ASSERT_EQ(hm.normalizedEncodedKeys.recordAt(id, 0).owner, o2);
+    }
+    for (int32_t id = 1; id <= subN; ++id) {
+        const gl::OwnerSet os = hm.normalizedEncodedSubkeys.recordAt(id, 0);
+        ASSERT_TRUE(!os.owners.empty());
+        for (const auto& pr : os.owners) ASSERT_EQ(pr.first, o2);
+    }
+    for (int32_t id = 1; id <= edgeN; ++id) {
+        ASSERT_EQ(hm.remainingArgsOwners.runLen(id), 1);
+        ASSERT_EQ(hm.remainingArgsOwners.recordAt(id, 0).owner, o2);
+    }
     {
-        gl::Memory m;
-        const int64_t pk = seedEntry(m, "(zzz[5,marker])");
-        ea.cleanAdmissionMap(std::string("(zzz[5,marker])"),
-                             std::string("main"), m);
-        ASSERT_TRUE(m.overallHashMemory.admissionMap.lookup(pk) != 0);
-        ASSERT_FALSE(m.overallHashMemory.consumedAdmissionKeys.contains(pk));
+        int32_t emptyChains = 0, keptChains = 0;
+        for (int32_t id = 1; id <= hm.originals.count(); ++id) {
+            if (hm.originals.runLen(id) == 0) { ++emptyChains; continue; }
+            ++keptChains;
+            ASSERT_EQ(hm.originals.recordAt(id, 0).owner, o2);
+        }
+        ASSERT_EQ(emptyChains, 1);
+        ASSERT_EQ(keptChains, 1);
+    }
+    // The LMVs are still there until the batched compaction.
+    {
+        int32_t n = 0;
+        for (int32_t id = 1; id <= hm.encodedMap.count(); ++id) n += hm.encodedMap.runLen(id);
+        ASSERT_EQ(n, lmvN);
+    }
+    gl::ExpressionAnalyzer::finishRuleRemovals(hm, dropSet, gArena);
+    ASSERT_FALSE(hm.ownerlessPending);
+    ASSERT_EQ(hm.originals.count(), 1);
+    ASSERT_EQ(hm.normalizedEncodedKeys.count(), wholeN);
+    ASSERT_EQ(hm.normalizedEncodedSubkeys.count(), subN);
+    ASSERT_EQ(hm.remainingArgsOwners.count(), edgeN);
+    ASSERT_EQ(hm.remainingArgsNormalizedEncodedMap.count(), fwdN);
+    {
+        int32_t n = 0;
+        for (int32_t id = 1; id <= hm.encodedMap.count(); ++id) {
+            for (int32_t j = 0; j < hm.encodedMap.runLen(id); ++j) {
+                const gl::LocalMemoryValue rec = hm.encodedMap.recordAt(id, j);
+                ASSERT_EQ(rec.originalImplicationId, id2);
+                ++n;
+            }
+        }
+        ASSERT_TRUE(n > 0 && n < lmvN);
     }
 
-    // (b) Operator, marker NOT at an output index (in2's output is slot 1;
-    //     marker sits at input slot 0): zero consume.
-    {
-        gl::Memory m;
-        const int64_t pk = seedEntry(m, "(in2[marker,7,3])");
-        ea.cleanAdmissionMap(std::string("(in2[marker,7,3])"),
-                             std::string("main"), m);
-        ASSERT_TRUE(m.overallHashMemory.admissionMap.lookup(pk) != 0);
-        ASSERT_FALSE(m.overallHashMemory.consumedAdmissionKeys.contains(pk));
+    // The reverse index agrees with the forward map after the finish (the
+    // forward compaction renumbers key ids; the index is rebuilt).
+    const auto reverseMatchesForward = [&]() {
+        for (const gl::NormKey& k : forwardKeys) {
+            const std::vector<char> b = gl::Codec<gl::NormKey>::serialize(k);
+            std::vector<int32_t> rev;
+            hm.remainingArgsReverseIndex.reverseIndexRunOf(
+                gl::StrSpan(b.data(), static_cast<int32_t>(b.size())),
+                [&](int32_t id) { rev.push_back(id); });
+            std::sort(rev.begin(), rev.end());
+            std::vector<int32_t> fwd;
+            for (int32_t id = 1; id <= hm.remainingArgsNormalizedEncodedMap.count(); ++id) {
+                const std::vector<gl::NormKey> run = hm.remainingArgsNormalizedEncodedMap.recordsAt(id);
+                if (std::find(run.begin(), run.end(), k) != run.end()) fwd.push_back(id);
+            }
+            ASSERT_TRUE(rev == fwd);
+        }
+    };
+    reverseMatchesForward();
+
+    // Remove rule 2: everything empties, the reverse index answers nothing.
+    dropSet.resetToFresh();
+    ea.removeRuleFromHashMemory(ea.body, hm, gl::StrSpan(impl2), gl::StrSpan("main", 4),
+                                visited, dropSet);
+    gl::ExpressionAnalyzer::finishRuleRemovals(hm, dropSet, gArena);
+    reverseMatchesForward();
+    ASSERT_EQ(hm.encodedMap.count(), 0);
+    ASSERT_EQ(hm.normalizedEncodedKeys.count(), 0);
+    ASSERT_EQ(hm.normalizedEncodedSubkeys.count(), 0);
+    ASSERT_EQ(hm.originals.count(), 0);
+    ASSERT_EQ(hm.remainingArgsOwners.count(), 0);
+    ASSERT_EQ(hm.remainingArgsNormalizedEncodedMap.count(), 0);
+    for (const gl::NormKey& k : forwardKeys) {
+        const std::vector<char> b = gl::Codec<gl::NormKey>::serialize(k);
+        int hits = 0;
+        hm.remainingArgsReverseIndex.reverseIndexRunOf(
+            gl::StrSpan(b.data(), static_cast<int32_t>(b.size())),
+            [&](int32_t) { ++hits; });
+        ASSERT_EQ(hits, 0);
+    }
+}
+
+// ---------- the carrier index (compactExpansions) ----------
+
+// An or fact through the door: each of its two K-rule compacts is a carrier
+// with exactly one recorded expansion (kind Local) whose (text, scope) pair
+// is in expandedImplications and whose rule sits in overall + local hash
+// memory. removeCompactExpansion on the first carrier removes exactly that
+// rule from every instance, drops its expandedImplications pair, and
+// finishCompactRemovals erases the carrier's entry; the second carrier and its
+// rule stay. Removing the second empties the index and both instances' chains
+// of the cohort's rules.
+TEST(memory, carrier_index_records_and_removes_a_compacts_rules) {
+    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    const std::vector<std::string> leaves = { "(in[u_1,u_2])", "(in2[u_1,u_3,u_2])" };
+    const std::string name = ea.findOrMintOrOperator(leaves, 3);
+    ea.preMintReducedOrs();
+    const gl::LogicalEntity* le = ea.compiledEntity(gl::StrSpan(name));
+    ASSERT_TRUE(le != nullptr);
+    ASSERT_EQ(static_cast<int>(le->implications.size()), 2);
+
+    gl::Memory& mb = ea.body;
+    const int32_t overallBefore = mb.overallHashMemory.originals.count();
+    const int32_t localBefore = mb.localHashMemory.originals.count();
+    const int32_t expandedBefore = mb.expandedImplications.count();
+    const int32_t carriersBefore = mb.compactExpansions.count();
+
+    const std::string inst = "(" + name + "[9,10,9])";
+    const int lv[1] = { 0 };
+    const gl::TransientOrigin origin{ true, gl::OriginTag::taskFormulation, nullptr, 0 };
+    ea.addExprToMemoryBlock(gl::StrSpan(inst), mb, 0, 0, lv, 1, origin,
+        -1, -1, gl::StrSpan("main", 4), false);
+    ASSERT_EQ(mb.overallHashMemory.originals.count(), overallBefore + 2);
+    ASSERT_EQ(mb.localHashMemory.originals.count(), localBefore + 2);
+    ASSERT_EQ(mb.expandedImplications.count(), expandedBefore + 2);
+    ASSERT_EQ(mb.compactExpansions.count(), carriersBefore + 2);
+
+    const std::map<std::string, std::string> subst = {
+        { "u_1", "9" }, { "u_2", "10" }, { "u_3", "9" } };
+    const gl::NameId mainId = mb.nameMap.lookup(gl::StrSpan("main", 4));
+    ASSERT_TRUE(mainId != 0);
+    std::vector<int64_t> keys;
+    std::vector<int32_t> ruleIds;
+    for (const std::string& tmpl : le->implications) {
+        const std::string compact = ce::replaceKeysInString(tmpl, subst);
+        const gl::NameId oid = mb.nameMap.lookup(gl::StrSpan(compact));
+        ASSERT_TRUE(oid != 0);
+        const int64_t key = gl::packStatementKey(oid, mainId);
+        const int32_t id = mb.compactExpansions.lookup(key);
+        ASSERT_TRUE(id != 0);
+        ASSERT_EQ(mb.compactExpansions.runLen(id), 1);
+        const gl::CompactExpansionRec rec = mb.compactExpansions.recordAt(id, 0);
+        ASSERT_TRUE(rec.kind == gl::RuleInstallKind::Local);
+        ASSERT_TRUE(mb.expandedImplications.contains(
+            gl::LbStatePairKey{ rec.implTextId, rec.scopeId }));
+        const gl::StrSpan text = mb.lbStateInterner.decodeView(rec.implTextId);
+        const int32_t ruleId = mb.ruleInterner.lookup(text);
+        ASSERT_TRUE(ruleId != 0);
+        keys.push_back(key);
+        ruleIds.push_back(ruleId);
     }
 
-    // (c) Operator + marker at the output slot: consumed + erased —
-    //     string-fed (mA) and mid-buffer span-fed (mB) end states equal.
-    {
-        gl::Memory mA;
-        const int64_t pkA = seedEntry(mA, "(in2[5,marker,3])");
-        ea.cleanAdmissionMap(std::string("(in2[5,marker,3])"),
-                             std::string("main"), mA);
-        ASSERT_TRUE(mA.overallHashMemory.consumedAdmissionKeys.contains(pkA));
-        ASSERT_TRUE(mA.overallHashMemory.admissionMap.lookup(pkA) == 0);
-        ASSERT_TRUE(mA.overallHashMemory.admissionStatusMap.find(pkA)
-                    == nullptr);
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 4 << 20, 1 << 18 });
+    gl::LbArena sets(&g);
+    gl::DirtyState d = gl::DirtyState::Clean;
+    gl::ColdHashSet<gl::BytesKeyStore> visited(&sets, &d);
+    gl::ColdHashSet<gl::PodKeyStore<int64_t>> dropSet(&sets, &d);
+    gl::ColdHashSet<gl::PodKeyStore<int64_t>> removedCarriers(&sets, &d);
+    dropSet.resetToFresh();
+    removedCarriers.resetToFresh();
+    gl::ScratchArena& gArena = gl::genScratchArenas().forSlot(
+        gl::genScratchArenas().slotCount() - 1);
+    const auto lmvCountOf = [&](const gl::HashMemory& hm, int32_t ruleId) {
+        int32_t n = 0;
+        for (int32_t id = 1; id <= hm.encodedMap.count(); ++id)
+            for (int32_t j = 0; j < hm.encodedMap.runLen(id); ++j)
+                if (hm.encodedMap.recordAt(id, j).originalImplicationId == ruleId) ++n;
+        return n;
+    };
+    ASSERT_TRUE(lmvCountOf(mb.overallHashMemory, ruleIds[0]) > 0);
+    ASSERT_TRUE(lmvCountOf(mb.localHashMemory, ruleIds[0]) > 0);
 
-        gl::Memory mB;
-        const int64_t pkB = seedEntry(mB, "(in2[5,marker,3])");
-        const char buf[] = "xx(in2[5,marker,3])yy";
-        const char vbuf[] = "zzmainww";
-        ea.cleanAdmissionMap(gl::StrSpan(buf + 2, 17),
-                             gl::StrSpan(vbuf + 2, 4), mB);
-        ASSERT_TRUE(mB.overallHashMemory.consumedAdmissionKeys.contains(pkB));
-        ASSERT_TRUE(mB.overallHashMemory.admissionMap.lookup(pkB) == 0);
-        ASSERT_TRUE(mB.overallHashMemory.admissionStatusMap.find(pkB)
-                    == nullptr);
+    // Remove the first carrier's expansion.
+    ea.removeCompactExpansion(mb, keys[0], visited, dropSet, removedCarriers);
+    ASSERT_EQ(dropSet.count(), 1);
+    ASSERT_EQ(removedCarriers.count(), 1);
+    ASSERT_EQ(mb.expandedImplications.count(), expandedBefore + 1);
+    gl::ExpressionAnalyzer::finishCompactRemovals(mb, dropSet, removedCarriers, gArena);
+    ASSERT_EQ(mb.compactExpansions.count(), carriersBefore + 1);
+    ASSERT_TRUE(mb.compactExpansions.lookup(keys[0]) == 0);
+    ASSERT_TRUE(mb.compactExpansions.lookup(keys[1]) != 0);
+    ASSERT_EQ(mb.overallHashMemory.originals.count(), overallBefore + 1);
+    ASSERT_EQ(mb.localHashMemory.originals.count(), localBefore + 1);
+    ASSERT_EQ(lmvCountOf(mb.overallHashMemory, ruleIds[0]), 0);
+    ASSERT_EQ(lmvCountOf(mb.localHashMemory, ruleIds[0]), 0);
+    ASSERT_EQ(lmvCountOf(mb.localHashMemoryDelta, ruleIds[0]), 0);
+    ASSERT_TRUE(lmvCountOf(mb.overallHashMemory, ruleIds[1]) > 0);
+    ASSERT_TRUE(lmvCountOf(mb.localHashMemory, ruleIds[1]) > 0);
+
+    // Remove the second: the cohort's rules are gone from every instance.
+    dropSet.resetToFresh();
+    removedCarriers.resetToFresh();
+    ea.removeCompactExpansion(mb, keys[1], visited, dropSet, removedCarriers);
+    gl::ExpressionAnalyzer::finishCompactRemovals(mb, dropSet, removedCarriers, gArena);
+    ASSERT_EQ(mb.compactExpansions.count(), carriersBefore);
+    ASSERT_EQ(mb.expandedImplications.count(), expandedBefore);
+    ASSERT_EQ(mb.overallHashMemory.originals.count(), overallBefore);
+    ASSERT_EQ(mb.localHashMemory.originals.count(), localBefore);
+    ASSERT_EQ(lmvCountOf(mb.overallHashMemory, ruleIds[1]), 0);
+    ASSERT_EQ(lmvCountOf(mb.localHashMemory, ruleIds[1]), 0);
+}
+
+// The subtree wipe drops a carrier registered at a closed scope from the
+// carrier index and keeps the others.
+TEST(memory, carrier_index_swept_by_wipe_subtree) {
+    gl::Memory m;
+    gl::NameMap& nm = m.nameMap;
+    const gl::NameId mainId = nm.encode(gl::StrSpan("main", 4));
+    const gl::NameId closedVid = nm.encodePush(gl::NameMap::MAIN_ID, "(closed[1])");
+    const gl::NameId openVid = nm.encodePush(gl::NameMap::MAIN_ID, "(open[1])");
+    const std::string c1 = "(implication1[a,b])", c2 = "(implication2[a,b])", c3 = "(implication3[a])";
+    const std::string t1 = "(>[1](in[1,a])(in[1,b]))";
+    const std::string closedName = nm.decode(closedVid);   // owned: the appends mint the NameMap (I-3)
+    const std::string openName = nm.decode(openVid);
+    gl::ExpressionAnalyzer::appendCompactExpansion(m, gl::StrSpan(c1), gl::StrSpan("main", 4),
+        gl::StrSpan(t1), gl::StrSpan("main", 4), gl::RuleInstallKind::Local);
+    gl::ExpressionAnalyzer::appendCompactExpansion(m, gl::StrSpan(c2), closedName,
+        gl::StrSpan(t1), closedName, gl::RuleInstallKind::Local);
+    gl::ExpressionAnalyzer::appendCompactExpansion(m, gl::StrSpan(c3), openName,
+        gl::StrSpan(t1), openName, gl::RuleInstallKind::External);
+    ASSERT_EQ(m.compactExpansions.count(), 3);
+    m.wipeSubtree(closedVid);
+    ASSERT_EQ(m.compactExpansions.count(), 2);
+    ASSERT_TRUE(m.compactExpansions.lookup(gl::packStatementKey(
+        nm.lookup(gl::StrSpan(c2)), closedVid)) == 0);
+    ASSERT_TRUE(m.compactExpansions.lookup(gl::packStatementKey(
+        nm.lookup(gl::StrSpan(c1)), mainId)) != 0);
+    ASSERT_TRUE(m.compactExpansions.lookup(gl::packStatementKey(
+        nm.lookup(gl::StrSpan(c3)), openVid)) != 0);
+}
+
+// ---------- the canonical gate (only the canonical form of a compact enters hash memory) ----------
+
+// canonicalizeCompact: with the class {9, 11} at main (lex-min "11" is the
+// canonical), (implication5[9,10,9]) becomes (implication5[11,10,11]) with one
+// fired pair (9 -> 11) and the pair's admission levels joined to the run; a
+// text naming no member (or the canonical form itself) is unchanged; a
+// numeral that is not a NameMap name is never a member.
+TEST(memory, canonicalize_compact_rewrites_to_the_deepest_class_canonical) {
+    gl::ExpressionAnalyzer ea("Peano");
+    gl::Memory m;
+    gl::NameMap& nm = m.nameMap;
+    const gl::NameId mainId = nm.encode(gl::StrSpan("main", 4));
+    gl::EquivalenceClass cls;
+    cls.setMembersFromNames({ "9", "11" }, nm);
+    cls.intEqualityLevelsMap[gl::packEqPairKey(nm.lookup(gl::StrSpan("9")),
+                                              nm.lookup(gl::StrSpan("11")))] = { 3, 7 };
+    m.assignClassesById(mainId, { cls });
+
+    gl::ScratchArena& strArena = gl::scratchArenas().forSlot(gl::scratchArenas().slotCount() - 1);
+    gl::ScratchScope strScope(strArena);
+    gl::ScratchArena& gArena = gl::genScratchArenas().forSlot(gl::genScratchArenas().slotCount() - 1);
+    const std::string k = "(implication5[9,10,9])";
+    gl::ScratchString kstar;
+    gl::ExpressionAnalyzer::CompactCanonPair pairs[gl::ExecutionParameters::MAX_ARITY];
+    int32_t pairN = 0;
+    int levels[16] = { 5 };
+    int32_t levelN = 1;
+    ASSERT_TRUE(ea.canonicalizeCompact(m, gl::StrSpan(k), gl::StrSpan("main", 4),
+        strArena, gArena, kstar, pairs, pairN, levels, levelN, 16));
+    ASSERT_TRUE(gl::equalSpans(gl::StrSpan(kstar), gl::StrSpan("(implication5[11,10,11])")));
+    ASSERT_EQ(pairN, 1);
+    ASSERT_EQ(pairs[0].fromId, nm.lookup(gl::StrSpan("9")));
+    ASSERT_EQ(pairs[0].toId, nm.lookup(gl::StrSpan("11")));
+    ASSERT_EQ(pairs[0].classVid, mainId);
+    ASSERT_EQ(levelN, 3);
+    ASSERT_TRUE(levels[0] == 3 && levels[1] == 5 && levels[2] == 7);
+
+    // The canonical form is a fixed point; a member-free text is unchanged.
+    gl::ScratchString again;
+    int32_t pairN2 = 0;
+    int32_t levelN2 = 0;
+    ASSERT_FALSE(ea.canonicalizeCompact(m, gl::StrSpan(kstar), gl::StrSpan("main", 4),
+        strArena, gArena, again, pairs, pairN2, levels, levelN2, 16));
+    const std::string other = "(implication5[10,12,10])";
+    ASSERT_FALSE(ea.canonicalizeCompact(m, gl::StrSpan(other), gl::StrSpan("main", 4),
+        strArena, gArena, again, pairs, pairN2, levels, levelN2, 16));
+    ASSERT_EQ(pairN2, 0);
+}
+
+// The canonical door ahead of the install gate: with the class {9, 11} formed
+// BEFORE an or fact over 9 arrives, the door rewrites the or fact itself to
+// its canonical form (orN[11,10,11]) (registered with an equality1 row citing
+// the raw or fact and (=[9,11]); the raw fact is not registered but keeps its
+// producer line), so the cohort's compacts arrive canonical: K* =
+// (implN[11,10,11]) are expanded (their rules are the 11-forms, no 9-form
+// anywhere), K* is a registered statement, the 9-form K never exists, and the
+// carrier index holds K*.
+TEST(memory, canonical_gate_expands_only_the_canonical_compact) {
+    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    const std::vector<std::string> leaves = { "(in[u_1,u_2])", "(in2[u_1,u_3,u_2])" };
+    const std::string name = ea.findOrMintOrOperator(leaves, 3);
+    ea.preMintReducedOrs();
+    const gl::LogicalEntity* le = ea.compiledEntity(gl::StrSpan(name));
+    ASSERT_TRUE(le != nullptr && le->implications.size() == 2);
+
+    gl::Memory& mb = ea.body;
+    gl::NameMap& nm = mb.nameMap;
+    const gl::NameId mainId = nm.encode(gl::StrSpan("main", 4));
+    // The class {9, 11} at main, with the equality's own origin row (the
+    // citation the equality1 deps must resolve).
+    {
+        gl::EquivalenceClass cls;
+        cls.setMembersFromNames({ "9", "11" }, nm);
+        mb.assignClassesById(mainId, { cls });
+        const gl::OriginDep none[1] = {};
+        gl::addOriginEncoded(mb.exprOriginMap, mb.originInterner,
+            gl::StrSpan("(=[9,11])"), gl::StrSpan("main", 4),
+            gl::OriginTag::taskFormulation, none, 0, 8);
     }
+    const int32_t overallBefore = mb.overallHashMemory.originals.count();
+    const std::string inst = "(" + name + "[9,10,9])";
+    const int lv[1] = { 0 };
+    const gl::TransientOrigin origin{ true, gl::OriginTag::taskFormulation, nullptr, 0 };
+    ea.addExprToMemoryBlock(gl::StrSpan(inst), mb, 0, 0, lv, 1, origin,
+        -1, -1, gl::StrSpan("main", 4), false);
+
+    // Exactly the two canonical rules were installed: the 11-forms, no 9-form.
+    ASSERT_EQ(mb.overallHashMemory.originals.count(), overallBefore + 2);
+    const auto stripU = [](std::string s) {
+        for (std::size_t i = s.find("u_"); i != std::string::npos; i = s.find("u_", i))
+            s.erase(i, 2);
+        return s;
+    };
+    bool k1 = false, k2 = false, any9 = false;
+    for (int32_t oi = 1; oi <= mb.overallHashMemory.originals.count(); ++oi) {
+        auto c = gl::decodeValueVector(
+            mb.overallHashMemory.originals.decodeKey(oi).ids, mb.ruleInterner);
+        for (std::string& e : c) e = stripU(e);
+        std::string joined;
+        for (const std::string& e : c) joined += e + "|";
+        if (joined.find("[9,") != std::string::npos || joined.find(",9]") != std::string::npos
+            || joined.find(",9,") != std::string::npos) any9 = true;
+        if (c.size() != 2) continue;
+        if (c[0] == "!(in2[11,11,10])" && c[1] == "(in[11,10])") k1 = true;
+        if (c[0] == "!(in[11,10])" && c[1] == "(in2[11,11,10])") k2 = true;
+    }
+    ASSERT_TRUE(k1 && k2);
+    ASSERT_FALSE(any9);
+
+    const std::map<std::string, std::string> subst9 = { { "u_1", "9" }, { "u_2", "10" }, { "u_3", "9" } };
+    const std::map<std::string, std::string> subst11 = { { "u_1", "11" }, { "u_2", "10" }, { "u_3", "11" } };
+    for (const std::string& tmpl : le->implications) {
+        const std::string k = ce::replaceKeysInString(tmpl, subst9);
+        const std::string ks = ce::replaceKeysInString(tmpl, subst11);
+        // Only K* exists at main (registered + expanded); the 9-form never
+        // reached the install loop.
+        ASSERT_TRUE(gl::lookupStatementFlags(mb.intKnownStatements, nm, gl::StrSpan(k), gl::StrSpan("main", 4)) == nullptr);
+        ASSERT_TRUE(gl::lookupStatementFlags(mb.intKnownStatements, nm, gl::StrSpan(ks), gl::StrSpan("main", 4)) != nullptr);
+        ASSERT_FALSE(gl::ExpressionAnalyzer::compactExpandedHere(mb, gl::StrSpan(k), gl::StrSpan("main", 4)));
+        ASSERT_TRUE(gl::ExpressionAnalyzer::compactExpandedHere(mb, gl::StrSpan(ks), gl::StrSpan("main", 4)));
+    }
+
+    // The or fact: only its canonical form is registered, with the door's
+    // equality1 bridge <- raw or fact, (=[9,11]); the raw fact keeps its
+    // producer line without a registry row.
+    const std::string instStar = "(" + name + "[11,10,11])";
+    ASSERT_TRUE(gl::lookupStatementFlags(mb.intKnownStatements, nm, gl::StrSpan(inst), gl::StrSpan("main", 4)) == nullptr);
+    ASSERT_TRUE(gl::lookupStatementFlags(mb.intKnownStatements, nm, gl::StrSpan(instStar), gl::StrSpan("main", 4)) != nullptr);
+    ASSERT_TRUE(ea.originRowExists(mb, gl::StrSpan(inst), gl::StrSpan("main", 4)));
+    {
+        int64_t pk = 0;
+        ASSERT_TRUE(gl::lookupOriginKey(mb.originInterner, gl::StrSpan(instStar), gl::StrSpan("main", 4), pk));
+        const int32_t oid = mb.exprOriginMap.lookup(pk);
+        ASSERT_TRUE(oid != 0 && mb.exprOriginMap.runLen(oid) > 0);
+        bool sawEquality1 = false;
+        for (int32_t j = 0; j < mb.exprOriginMap.runLen(oid); ++j) {
+            const gl::IdOrigin row = mb.exprOriginMap.recordAt(oid, j);
+            if (row.first != gl::OriginTag::equality1) continue;
+            sawEquality1 = true;
+            ASSERT_EQ(static_cast<int>(row.second.size()), 2);
+            gl::StrSpan e0, v0, e1, v1;
+            gl::decodeOriginKeyView(row.second[0], mb.originInterner, e0, v0);
+            gl::decodeOriginKeyView(row.second[1], mb.originInterner, e1, v1);
+            ASSERT_TRUE(gl::equalSpans(e0, gl::StrSpan(inst)));
+            ASSERT_TRUE(gl::equalSpans(v0, gl::StrSpan("main", 4)));
+            ASSERT_TRUE(gl::equalSpans(e1, gl::StrSpan("(=[9,11])")));
+            ASSERT_TRUE(gl::equalSpans(v1, gl::StrSpan("main", 4)));
+        }
+        ASSERT_TRUE(sawEquality1);
+    }
+}
+
+// ---------- the class-side reconcile (applyEquivalenceClassToCompactImplications) ----------
+
+// An or fact arrives BEFORE any class: its two compacts K expand (the 9-form
+// rules). Then the class {9, 11} forms and applyEquiClasses runs: the hook
+// removes K's rules from every instance and the carrier index, expands the
+// canonical forms K* = (implN[11,10,11]) (the 11-form rules, K* registered with
+// its equality1 row), and the apply's finish leaves no owner-less entry and no
+// LMV of the removed rules.
+TEST(memory, compact_hook_removes_stale_rules_and_expands_the_canonical_form) {
+    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    const std::vector<std::string> leaves = { "(in[u_1,u_2])", "(in2[u_1,u_3,u_2])" };
+    const std::string name = ea.findOrMintOrOperator(leaves, 3);
+    ea.preMintReducedOrs();
+    const gl::LogicalEntity* le = ea.compiledEntity(gl::StrSpan(name));
+    ASSERT_TRUE(le != nullptr && le->implications.size() == 2);
+
+    gl::Memory& mb = ea.body;
+    gl::NameMap& nm = mb.nameMap;
+    const gl::NameId mainId = nm.encode(gl::StrSpan("main", 4));
+    const int32_t overallBefore = mb.overallHashMemory.originals.count();
+    const int32_t localBefore = mb.localHashMemory.originals.count();
+
+    const std::string inst = "(" + name + "[9,10,9])";
+    const int lv[1] = { 0 };
+    const gl::TransientOrigin origin{ true, gl::OriginTag::taskFormulation, nullptr, 0 };
+    ea.addExprToMemoryBlock(gl::StrSpan(inst), mb, 0, 0, lv, 1, origin,
+        -1, -1, gl::StrSpan("main", 4), false);
+    ASSERT_EQ(mb.overallHashMemory.originals.count(), overallBefore + 2);
+
+    const std::map<std::string, std::string> subst9 = { { "u_1", "9" }, { "u_2", "10" }, { "u_3", "9" } };
+    const std::map<std::string, std::string> subst11 = { { "u_1", "11" }, { "u_2", "10" }, { "u_3", "11" } };
+    std::vector<int32_t> staleRuleIds;
+    for (const std::string& tmpl : le->implications) {
+        const std::string k = ce::replaceKeysInString(tmpl, subst9);
+        ASSERT_TRUE(gl::ExpressionAnalyzer::compactExpandedHere(mb, gl::StrSpan(k), gl::StrSpan("main", 4)));
+        const int32_t id = mb.compactExpansions.lookup(gl::packStatementKey(nm.lookup(gl::StrSpan(k)), mainId));
+        const gl::CompactExpansionRec rec = mb.compactExpansions.recordAt(id, 0);
+        staleRuleIds.push_back(mb.ruleInterner.lookup(mb.lbStateInterner.decodeView(rec.implTextId)));
+        ASSERT_TRUE(staleRuleIds.back() != 0);
+    }
+
+    // The class {9, 11} forms (a delta), with the equality's own origin row.
+    {
+        gl::EquivalenceClass cls;
+        cls.setMembersFromNames({ "9", "11" }, nm);
+        mb.assignClassesById(mainId, { cls });
+        const gl::OriginDep none[1] = {};
+        gl::addOriginEncoded(mb.exprOriginMap, mb.originInterner,
+            gl::StrSpan("(=[9,11])"), gl::StrSpan("main", 4),
+            gl::OriginTag::taskFormulation, none, 0, 8);
+        mb.changedClassesThisStep.push(mainId, cls);
+    }
+    ea.applyEquiClasses(mb);
+
+    const auto lmvCountOf = [&](const gl::HashMemory& hm, int32_t ruleId) {
+        int32_t n = 0;
+        for (int32_t id = 1; id <= hm.encodedMap.count(); ++id)
+            for (int32_t j = 0; j < hm.encodedMap.runLen(id); ++j)
+                if (hm.encodedMap.recordAt(id, j).originalImplicationId == ruleId) ++n;
+        return n;
+    };
+    for (const std::string& tmpl : le->implications) {
+        const std::string k = ce::replaceKeysInString(tmpl, subst9);
+        const std::string ks = ce::replaceKeysInString(tmpl, subst11);
+        ASSERT_FALSE(gl::ExpressionAnalyzer::compactExpandedHere(mb, gl::StrSpan(k), gl::StrSpan("main", 4)));
+        ASSERT_TRUE(gl::ExpressionAnalyzer::compactExpandedHere(mb, gl::StrSpan(ks), gl::StrSpan("main", 4)));
+        ASSERT_TRUE(gl::lookupStatementFlags(mb.intKnownStatements, nm, gl::StrSpan(k), gl::StrSpan("main", 4)) != nullptr);
+        ASSERT_TRUE(gl::lookupStatementFlags(mb.intKnownStatements, nm, gl::StrSpan(ks), gl::StrSpan("main", 4)) != nullptr);
+    }
+    for (const int32_t stale : staleRuleIds) {
+        ASSERT_EQ(lmvCountOf(mb.overallHashMemory, stale), 0);
+        ASSERT_EQ(lmvCountOf(mb.localHashMemory, stale), 0);
+        ASSERT_EQ(lmvCountOf(mb.localHashMemoryDelta, stale), 0);
+    }
+    ASSERT_FALSE(mb.overallHashMemory.ownerlessPending);
+    ASSERT_FALSE(mb.localHashMemory.ownerlessPending);
+    // Exactly the canonical rules remain from the cohort: the 11-forms.
+    ASSERT_EQ(mb.overallHashMemory.originals.count(), overallBefore + 2);
+    ASSERT_EQ(mb.localHashMemory.originals.count(), localBefore + 2);
+    const auto stripU = [](std::string s) {
+        for (std::size_t i = s.find("u_"); i != std::string::npos; i = s.find("u_", i))
+            s.erase(i, 2);
+        return s;
+    };
+    bool k1 = false, k2 = false, any9 = false;
+    for (int32_t oi = 1; oi <= mb.overallHashMemory.originals.count(); ++oi) {
+        auto c = gl::decodeValueVector(
+            mb.overallHashMemory.originals.decodeKey(oi).ids, mb.ruleInterner);
+        for (std::string& e : c) e = stripU(e);
+        for (const std::string& e : c)
+            if (e.find("[9,") != std::string::npos || e.find(",9]") != std::string::npos
+                || e.find(",9,") != std::string::npos) any9 = true;
+        if (c.size() != 2) continue;
+        if (c[0] == "!(in2[11,11,10])" && c[1] == "(in[11,10])") k1 = true;
+        if (c[0] == "!(in[11,10])" && c[1] == "(in2[11,11,10])") k2 = true;
+    }
+    ASSERT_TRUE(k1 && k2);
+    ASSERT_FALSE(any9);
+    // Every whole key / subkey still present has an owner (the erasure ran).
+    for (int32_t id = 1; id <= mb.overallHashMemory.normalizedEncodedKeys.count(); ++id)
+        ASSERT_TRUE(mb.overallHashMemory.normalizedEncodedKeys.runLen(id) > 0);
+    for (int32_t id = 1; id <= mb.overallHashMemory.normalizedEncodedSubkeys.count(); ++id) {
+        const gl::OwnerSet os = mb.overallHashMemory.normalizedEncodedSubkeys.recordAt(id, 0);
+        ASSERT_TRUE(!os.owners.empty());
+    }
+}
+
+// Two carriers expanding into ONE rule text: the rule leaves hash memory only
+// with its last carrier (expansionCarrierCount); removing the first carrier
+// keeps the rule and its owner, removing the second removes them.
+TEST(memory, shared_rule_leaves_only_with_its_last_carrier) {
+    gl::ExpressionAnalyzer ea("Peano");
+    gl::Memory& mb = ea.body;
+    gl::HashMemory& hm = mb.overallHashMemory;
+    const int lv[1] = { 0 };
+    const std::string impl = "(>[1,3](in[1,u_2])(>[](in[u_2,3])(in[1,3])))";
+    const std::string c1 = "(implication1[1,3])";
+    const std::string c2 = "(implication2[3,1])";
+    {
+        gl::ScratchArena& kvArena = gl::scratchArenas().forSlot(gl::scratchArenas().slotCount() - 1);
+        gl::ScratchScope kvScope(kvArena);
+        gl::StrSpan chainRun[gl::ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS];
+        int32_t chainRunN = 0;
+        gl::StrSpan headSpan;
+        gl::StrSpan remKeyRun[gl::ExecutionParameters::MAX_ADMISSION_REM_ARGS];
+        int32_t remKeyRunN = 0;
+        ea.decomposeImplicationForInstall(gl::StrSpan(impl), kvArena,
+            chainRun, chainRunN, headSpan, remKeyRun, remKeyRunN);
+        ea.addToHashMemory(chainRun, chainRunN, headSpan, remKeyRun, remKeyRunN,
+            mb, hm, lv, 1, gl::StrSpan(impl),
+            ea.parameters.maxIterationNumberVariable,
+            ea.parameters.standardMaxSecondaryNumber, false,
+            ea.parameters.minNumOperatorsKey, gl::StrSpan("implication", 11),
+            false, gl::StrSpan(impl));
+    }
+    // Both carriers record the same expansion (installed once — the install
+    // is idempotent per rule; the index counts the carriers).
+    gl::ExpressionAnalyzer::appendCompactExpansion(mb, gl::StrSpan(c1), gl::StrSpan("main", 4),
+        gl::StrSpan(impl), gl::StrSpan("main", 4), gl::RuleInstallKind::External);
+    gl::ExpressionAnalyzer::appendCompactExpansion(mb, gl::StrSpan(c2), gl::StrSpan("main", 4),
+        gl::StrSpan(impl), gl::StrSpan("main", 4), gl::RuleInstallKind::External);
+    const int64_t ruleKey = gl::packInt32Pair(mb.lbStateInterner.lookup(gl::StrSpan(impl)),
+                                              mb.lbStateInterner.lookup(gl::StrSpan("main", 4)));
+    ASSERT_EQ(*mb.expansionCarrierCount.find(ruleKey), 2);
+    const gl::NameId mainId = mb.nameMap.lookup(gl::StrSpan("main", 4));
+    const int64_t k1 = gl::packStatementKey(mb.nameMap.lookup(gl::StrSpan(c1)), mainId);
+    const int64_t k2 = gl::packStatementKey(mb.nameMap.lookup(gl::StrSpan(c2)), mainId);
+
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 4 << 20, 1 << 18 });
+    gl::LbArena sets(&g);
+    gl::DirtyState d = gl::DirtyState::Clean;
+    gl::ColdHashSet<gl::BytesKeyStore> visited(&sets, &d);
+    gl::ColdHashSet<gl::PodKeyStore<int64_t>> dropSet(&sets, &d);
+    gl::ColdHashSet<gl::PodKeyStore<int64_t>> removedCarriers(&sets, &d);
+    dropSet.resetToFresh();
+    removedCarriers.resetToFresh();
+    gl::ScratchArena& gArena = gl::genScratchArenas().forSlot(gl::genScratchArenas().slotCount() - 1);
+    const int32_t chainsBefore = hm.originals.count();
+
+    // The first carrier leaves: the rule stays (count 1), nothing staged for the drop.
+    ea.removeCompactExpansion(mb, k1, visited, dropSet, removedCarriers);
+    ASSERT_EQ(*mb.expansionCarrierCount.find(ruleKey), 1);
+    ASSERT_EQ(dropSet.count(), 0);
+    ASSERT_EQ(removedCarriers.count(), 1);
+    gl::ExpressionAnalyzer::finishCompactRemovals(mb, dropSet, removedCarriers, gArena);
+    ASSERT_EQ(hm.originals.count(), chainsBefore);
+    ASSERT_TRUE(mb.compactExpansions.lookup(k1) == 0);
+    ASSERT_TRUE(mb.compactExpansions.lookup(k2) != 0);
+    int32_t lmvs = 0;
+    for (int32_t id = 1; id <= hm.encodedMap.count(); ++id) lmvs += hm.encodedMap.runLen(id);
+    ASSERT_TRUE(lmvs > 0);
+
+    // The last carrier leaves: the rule goes.
+    removedCarriers.resetToFresh();
+    ea.removeCompactExpansion(mb, k2, visited, dropSet, removedCarriers);
+    ASSERT_EQ(*mb.expansionCarrierCount.find(ruleKey), 0);
+    ASSERT_EQ(dropSet.count(), 1);
+    gl::ExpressionAnalyzer::finishCompactRemovals(mb, dropSet, removedCarriers, gArena);
+    ASSERT_EQ(hm.originals.count(), chainsBefore - 1);
+    ASSERT_EQ(hm.encodedMap.count(), 0);
+    ASSERT_EQ(mb.compactExpansions.count(), 0);
+}
+
+// A rule that multiplies (allow_multiplication) installs one text per
+// surviving partition, each under its own ruleInterner id: the removal's
+// enumeration stages every copy's LMVs and the instance ends empty.
+TEST(memory, remove_rule_with_multiplied_copies_drops_every_copy) {
+    gl::ExpressionAnalyzer ea("Peano");
+    ea.parameters.allow_multiplication = true;
+    gl::Memory& mb = ea.body;
+    gl::HashMemory& hm = mb.overallHashMemory;
+    const int lv[1] = { 0 };
+    const std::string impl = "(>[1,3](=[1,u_2])(>[](=[u_2,3])(in[1,3])))";
+    {
+        gl::ScratchArena& kvArena = gl::scratchArenas().forSlot(gl::scratchArenas().slotCount() - 1);
+        gl::ScratchScope kvScope(kvArena);
+        gl::StrSpan chainRun[gl::ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS];
+        int32_t chainRunN = 0;
+        gl::StrSpan headSpan;
+        gl::StrSpan remKeyRun[gl::ExecutionParameters::MAX_ADMISSION_REM_ARGS];
+        int32_t remKeyRunN = 0;
+        ea.decomposeImplicationForInstall(gl::StrSpan(impl), kvArena,
+            chainRun, chainRunN, headSpan, remKeyRun, remKeyRunN);
+        ea.addToHashMemory(chainRun, chainRunN, headSpan, remKeyRun, remKeyRunN,
+            mb, hm, lv, 1, gl::StrSpan(impl),
+            ea.parameters.maxIterationNumberVariable,
+            ea.parameters.standardMaxSecondaryNumber, false,
+            ea.parameters.minNumOperatorsKey, gl::StrSpan("implication", 11),
+            false, gl::StrSpan(impl));
+    }
+    // Several copies, several owners.
+    int32_t copies = 0;
+    {
+        gl::ScratchArena& strArena = gl::scratchArenas().forSlot(gl::scratchArenas().slotCount() - 1);
+        gl::ScratchScope strScope(strArena);
+        gl::ScratchArena& gA = gl::genScratchArenas().forSlot(gl::genScratchArenas().slotCount() - 1);
+        const gl::ArenaOffset m = gA.cursor();
+        {
+            gl::DirtyState d0 = gl::DirtyState::Clean;
+            gl::PagedVector<gl::CopyRef> out(&gA, &d0);
+            ea.multiplyImplication(gl::StrSpan(impl), strArena, out);
+            copies = out.size();
+        }
+        gA.popTo(m);
+    }
+    ASSERT_TRUE(copies >= 2);
+    ASSERT_TRUE(hm.originals.count() >= 2);
+    int32_t lmvN = 0;
+    for (int32_t id = 1; id <= hm.encodedMap.count(); ++id) lmvN += hm.encodedMap.runLen(id);
+    ASSERT_TRUE(lmvN >= copies);
+
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 4 << 20, 1 << 18 });
+    gl::LbArena sets(&g);
+    gl::DirtyState d = gl::DirtyState::Clean;
+    gl::ColdHashSet<gl::BytesKeyStore> visited(&sets, &d);
+    gl::ColdHashSet<gl::PodKeyStore<int64_t>> dropSet(&sets, &d);
+    dropSet.resetToFresh();
+    gl::ScratchArena& gArena = gl::genScratchArenas().forSlot(gl::genScratchArenas().slotCount() - 1);
+    ASSERT_TRUE(ea.removeRuleFromHashMemory(mb, hm, gl::StrSpan(impl), gl::StrSpan("main", 4),
+                                            visited, dropSet));
+    ASSERT_EQ(dropSet.count(), copies);
+    gl::ExpressionAnalyzer::finishRuleRemovals(hm, dropSet, gArena);
+    ASSERT_EQ(hm.encodedMap.count(), 0);
+    ASSERT_EQ(hm.originals.count(), 0);
+    ASSERT_EQ(hm.normalizedEncodedKeys.count(), 0);
+    ASSERT_EQ(hm.normalizedEncodedSubkeys.count(), 0);
+    ASSERT_EQ(hm.remainingArgsOwners.count(), 0);
+    ASSERT_EQ(hm.remainingArgsNormalizedEncodedMap.count(), 0);
+}
+
+// A rule whose multiplication emits no copy (its own head is a trivial
+// equality; every other partition would equate two u_ variables) installs
+// nothing — its carrier's removal removes nothing and stages nothing, on the
+// persistent instance (asserted) and on the transient one (probed) alike.
+TEST(memory, zero_copy_rule_removal_is_a_no_op) {
+    gl::ExpressionAnalyzer ea("Peano");
+    ea.parameters.allow_multiplication = true;
+    gl::Memory& mb = ea.body;
+    gl::HashMemory& hm = mb.overallHashMemory;
+    const int lv[1] = { 0 };
+    const std::string impl = "(>[]!(=[u_10,u_6])!(=[u_2,u_2]))";
+    const std::string carrier = "(implication1[u_10,u_6,u_2])";
+    {
+        gl::ScratchArena& kvArena = gl::scratchArenas().forSlot(gl::scratchArenas().slotCount() - 1);
+        gl::ScratchScope kvScope(kvArena);
+        gl::StrSpan chainRun[gl::ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS];
+        int32_t chainRunN = 0;
+        gl::StrSpan headSpan;
+        gl::StrSpan remKeyRun[gl::ExecutionParameters::MAX_ADMISSION_REM_ARGS];
+        int32_t remKeyRunN = 0;
+        ea.decomposeImplicationForInstall(gl::StrSpan(impl), kvArena,
+            chainRun, chainRunN, headSpan, remKeyRun, remKeyRunN);
+        ASSERT_EQ(chainRunN, 1);
+        ea.addToHashMemory(chainRun, chainRunN, headSpan, remKeyRun, remKeyRunN,
+            mb, hm, lv, 1, gl::StrSpan(impl),
+            ea.parameters.maxIterationNumberVariable,
+            ea.parameters.standardMaxSecondaryNumber, false,
+            ea.parameters.minNumOperatorsKey, gl::StrSpan("implication", 11),
+            false, gl::StrSpan(impl));
+    }
+    ASSERT_EQ(hm.originals.count(), 0);
+    ASSERT_EQ(hm.encodedMap.count(), 0);
+    ASSERT_EQ(mb.ruleInterner.lookup(gl::StrSpan(impl)), 0);
+    // The door's two index writes happen regardless of the copy count.
+    mb.expandedImplications.mint(gl::LbStatePairKey{
+        mb.lbStateInterner.encode(gl::StrSpan(impl)),
+        mb.lbStateInterner.encode(gl::StrSpan("main", 4)) });
+    gl::ExpressionAnalyzer::appendCompactExpansion(mb, gl::StrSpan(carrier), gl::StrSpan("main", 4),
+        gl::StrSpan(impl), gl::StrSpan("main", 4), gl::RuleInstallKind::Local);
+    const gl::NameId mainId = mb.nameMap.lookup(gl::StrSpan("main", 4));
+    const int64_t k = gl::packStatementKey(mb.nameMap.lookup(gl::StrSpan(carrier)), mainId);
+    ASSERT_TRUE(mb.compactExpansions.lookup(k) != 0);
+
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 4 << 20, 1 << 18 });
+    gl::LbArena sets(&g);
+    gl::DirtyState d = gl::DirtyState::Clean;
+    gl::ColdHashSet<gl::BytesKeyStore> visited(&sets, &d);
+    gl::ColdHashSet<gl::PodKeyStore<int64_t>> dropSet(&sets, &d);
+    gl::ColdHashSet<gl::PodKeyStore<int64_t>> removedCarriers(&sets, &d);
+    dropSet.resetToFresh();
+    removedCarriers.resetToFresh();
+    gl::ScratchArena& gArena = gl::genScratchArenas().forSlot(gl::genScratchArenas().slotCount() - 1);
+    ea.removeCompactExpansion(mb, k, visited, dropSet, removedCarriers);
+    ASSERT_EQ(dropSet.count(), 0);
+    ASSERT_EQ(removedCarriers.count(), 1);
+    gl::ExpressionAnalyzer::finishCompactRemovals(mb, dropSet, removedCarriers, gArena);
+    ASSERT_EQ(mb.compactExpansions.count(), 0);
+    ASSERT_EQ(mb.expandedImplications.count(), 0);
+    ASSERT_EQ(hm.originals.count(), 0);
+    ASSERT_EQ(hm.encodedMap.count(), 0);
+}
+
+// Two rules that multiply into ONE shared copy text (their heads differ only
+// in the order of the two variables the partition equates): the copy's index
+// entries and LMVs leave with the LAST rule, not the first.
+TEST(memory, shared_multiplication_copy_leaves_with_its_last_rule) {
+    gl::ExpressionAnalyzer ea("Peano");
+    ea.parameters.allow_multiplication = true;
+    gl::Memory& mb = ea.body;
+    gl::HashMemory& hm = mb.overallHashMemory;
+    const int lv[1] = { 0 };
+    const std::string r1 = "(>[1,3](=[1,u_2])(>[](=[u_2,3])(in[1,3])))";
+    const std::string r2 = "(>[1,3](=[1,u_2])(>[](=[u_2,3])(in[3,1])))";
+    const std::string shared = "(>[1](=[1,u_2])(>[](=[u_2,1])(in[1,1])))";
+    const auto install = [&](const std::string& impl) {
+        gl::ScratchArena& kvArena = gl::scratchArenas().forSlot(gl::scratchArenas().slotCount() - 1);
+        gl::ScratchScope kvScope(kvArena);
+        gl::StrSpan chainRun[gl::ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS];
+        int32_t chainRunN = 0;
+        gl::StrSpan headSpan;
+        gl::StrSpan remKeyRun[gl::ExecutionParameters::MAX_ADMISSION_REM_ARGS];
+        int32_t remKeyRunN = 0;
+        ea.decomposeImplicationForInstall(gl::StrSpan(impl), kvArena,
+            chainRun, chainRunN, headSpan, remKeyRun, remKeyRunN);
+        ea.addToHashMemory(chainRun, chainRunN, headSpan, remKeyRun, remKeyRunN,
+            mb, hm, lv, 1, gl::StrSpan(impl),
+            ea.parameters.maxIterationNumberVariable,
+            ea.parameters.standardMaxSecondaryNumber, false,
+            ea.parameters.minNumOperatorsKey, gl::StrSpan("implication", 11),
+            false, gl::StrSpan(impl));
+    };
+    // The copy texts of a rule (test-side heap is fine).
+    const auto copiesOf = [&](const std::string& impl) {
+        std::vector<std::string> out;
+        gl::ScratchArena& strArena = gl::scratchArenas().forSlot(gl::scratchArenas().slotCount() - 1);
+        gl::ScratchScope strScope(strArena);
+        gl::ScratchArena& gA = gl::genScratchArenas().forSlot(gl::genScratchArenas().slotCount() - 1);
+        const gl::ArenaOffset m = gA.cursor();
+        {
+            gl::DirtyState d0 = gl::DirtyState::Clean;
+            gl::PagedVector<gl::CopyRef> refs(&gA, &d0);
+            ea.multiplyImplication(gl::StrSpan(impl), strArena, refs);
+            for (int32_t i = 0; i < refs.size(); ++i)
+                out.emplace_back(reinterpret_cast<const char*>(strArena.resolve(refs[i].off)),
+                                 static_cast<std::size_t>(refs[i].len));
+        }
+        gA.popTo(m);
+        return out;
+    };
+    const std::vector<std::string> c1 = copiesOf(r1);
+    const std::vector<std::string> c2 = copiesOf(r2);
+    std::vector<std::string> common;
+    for (const std::string& c : c1)
+        if (std::find(c2.begin(), c2.end(), c) != c2.end()) common.push_back(c);
+    ASSERT_TRUE(std::find(common.begin(), common.end(), shared) != common.end());
+    ASSERT_TRUE(common.size() < c1.size() && common.size() < c2.size());   // each rule has own copies too
+
+    install(r1);
+    install(r2);
+    const gl::NameId mainId = mb.nameMap.lookup(gl::StrSpan("main", 4));
+    ASSERT_TRUE(mainId != 0);
+    const auto copyKeyOf = [&](const std::string& copy, char* keyOut) {
+        const int32_t id = mb.ruleInterner.lookup(gl::StrSpan(copy));
+        ASSERT_TRUE(id != 0);
+        const gl::RuleOwner o = gl::packRuleOwner(id, mainId);
+        std::memcpy(keyOut, &o, sizeof(gl::RuleOwner));
+        return o;
+    };
+    const auto ruleCountOf = [&](const std::string& copy) {
+        char key[sizeof(gl::RuleOwner)];
+        copyKeyOf(copy, key);
+        const int32_t cid = hm.copyOwners.inner().lookup(gl::StrSpan(key, 8));
+        return cid == 0 ? 0 : hm.copyOwners.runLen(cid);
+    };
+    for (const std::string& c : common) ASSERT_EQ(ruleCountOf(c), 2);
+    for (const std::string& c : c1)
+        if (std::find(common.begin(), common.end(), c) == common.end()) ASSERT_EQ(ruleCountOf(c), 1);
+    const auto lmvsOf = [&](const std::string& copy) {
+        const int32_t id = mb.ruleInterner.lookup(gl::StrSpan(copy));
+        int32_t n = 0;
+        for (int32_t k = 1; k <= hm.encodedMap.count(); ++k)
+            for (int32_t j = 0; j < hm.encodedMap.runLen(k); ++j)
+                if (hm.encodedMap.recordAt(k, j).originalImplicationId == id) ++n;
+        return n;
+    };
+    const int32_t sharedLmvsBefore = lmvsOf(shared);
+    ASSERT_TRUE(sharedLmvsBefore > 0);
+
+    gl::GlobalMemoryManager g;
+    g.init(gl::StaticMemoryConfig{ 4 << 20, 1 << 18 });
+    gl::LbArena sets(&g);
+    gl::DirtyState d = gl::DirtyState::Clean;
+    gl::ColdHashSet<gl::BytesKeyStore> visited(&sets, &d);
+    gl::ColdHashSet<gl::PodKeyStore<int64_t>> dropSet(&sets, &d);
+    dropSet.resetToFresh();
+    gl::ScratchArena& gArena = gl::genScratchArenas().forSlot(gl::genScratchArenas().slotCount() - 1);
+
+    // Rule 1 leaves: its own copies go, every shared copy stays with rule 2.
+    ASSERT_TRUE(ea.removeRuleFromHashMemory(mb, hm, gl::StrSpan(r1), gl::StrSpan("main", 4),
+                                            visited, dropSet));
+    ASSERT_EQ(dropSet.count(), static_cast<int32_t>(c1.size() - common.size()));
+    for (const std::string& c : common) {
+        char key[sizeof(gl::RuleOwner)];
+        ASSERT_EQ(dropSet.lookup(copyKeyOf(c, key)), 0);
+    }
+    gl::ExpressionAnalyzer::finishRuleRemovals(hm, dropSet, gArena);
+    for (const std::string& c : common) ASSERT_EQ(ruleCountOf(c), 1);
+    for (const std::string& c : c1)
+        if (std::find(common.begin(), common.end(), c) == common.end()) ASSERT_EQ(ruleCountOf(c), 0);
+    ASSERT_EQ(lmvsOf(shared), sharedLmvsBefore);
+    ASSERT_TRUE(hm.originals.count() >= 1);
+
+    // Rule 2 leaves: everything goes, the shared copies included.
+    dropSet.resetToFresh();
+    ASSERT_TRUE(ea.removeRuleFromHashMemory(mb, hm, gl::StrSpan(r2), gl::StrSpan("main", 4),
+                                            visited, dropSet));
+    ASSERT_EQ(dropSet.count(), static_cast<int32_t>(c2.size()));
+    gl::ExpressionAnalyzer::finishRuleRemovals(hm, dropSet, gArena);
+    ASSERT_EQ(hm.copyOwners.count(), 0);
+    ASSERT_EQ(hm.encodedMap.count(), 0);
+    ASSERT_EQ(hm.originals.count(), 0);
+    ASSERT_EQ(hm.normalizedEncodedKeys.count(), 0);
+    ASSERT_EQ(hm.normalizedEncodedSubkeys.count(), 0);
+    ASSERT_EQ(hm.remainingArgsOwners.count(), 0);
+    ASSERT_EQ(hm.remainingArgsNormalizedEncodedMap.count(), 0);
 }

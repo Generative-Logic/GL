@@ -289,7 +289,7 @@ namespace gl {
         ///
         /// @param i Slot index in `[0, capacity())`.
         /// @return Writable byte pointer to the 4-byte slot.
-        char* slotPtr(int32_t i) {
+        GL_FORCEINLINE char* slotPtr(int32_t i) {
             const int32_t pageIdx = i >> shift_;
             int32_t vid;
             if (numPages_ == 1) {

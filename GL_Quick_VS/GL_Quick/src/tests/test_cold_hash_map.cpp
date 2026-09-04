@@ -96,6 +96,7 @@ namespace {
         gl::LbArena* arena;
         gl::PodKeyStore<int32_t> ks;
         gl::PagedHashIndex idx;
+        uint32_t insertEpoch;
     };
 }
 
@@ -1056,6 +1057,11 @@ TEST(cold_hash_map, bytes_key_map_erase_canonical) {
         keys.push_back("(k" + std::to_string(i) + ","
                        + std::string(static_cast<size_t>((i % 6) + 1), 'a') + ")");
     for (int32_t i = 0; i < 40; ++i) m.insert(gl::StrSpan(keys[i]), 1000 + i);
+    int64_t originalKeyBytes = 0;
+    for (const std::string& key : keys)
+        originalKeyBytes += static_cast<int64_t>(key.size());
+    ASSERT_EQ(m.keyStore().logicalByteCount(), originalKeyBytes);
+    ASSERT_EQ(m.keyStore().contentBytesFrom(0), originalKeyBytes);
 
     // Single-key erase (interior) + a content-predicate bulk eraseIf.
     ASSERT_TRUE(m.erase(gl::StrSpan(keys[7])));
@@ -1073,6 +1079,12 @@ TEST(cold_hash_map, bytes_key_map_erase_canonical) {
         if (survives(i)) ASSERT_TRUE(v != nullptr && *v == 1000 + i);
         else ASSERT_TRUE(v == nullptr);
     }
+    int64_t survivorKeyBytes = 0;
+    for (int32_t i = 0; i < 40; ++i)
+        if (survives(i))
+            survivorKeyBytes += static_cast<int64_t>(keys[i].size());
+    ASSERT_EQ(m.keyStore().logicalByteCount(), survivorKeyBytes);
+    ASSERT_EQ(m.keyStore().contentBytesFrom(0), survivorKeyBytes);
 
     // Deload stream is byte-identical to a fresh dense insert of the survivors.
     gl::LbArena lb2(&g);
@@ -1101,6 +1113,7 @@ TEST(cold_hash_map, bytes_key_map_erase_canonical) {
     ByteMap::BytesView(&r).bulkAppendBytes(mb.data(), ByteMap::BytesView(&m).size());
     ByteMap::ValuesView(&r).bulkAppendBytes(mv.data(), ByteMap::ValuesView(&m).size());
     ASSERT_EQ(r.count(), m.count());
+    ASSERT_EQ(r.keyStore().logicalByteCount(), survivorKeyBytes);
     for (int32_t i = 0; i < 40; ++i)
         if (survives(i)) {
             const int32_t* v = r.find(gl::StrSpan(keys[i]));
@@ -1916,4 +1929,26 @@ TEST(cold_hash_map, blob_map_two_level_blobpool_spill) {
         ASSERT_EQ(got[1023], 'z');
         ASSERT_EQ(m.lookup(100 + i), i + 1);
     }
+}
+
+// HashMap::insertEpoch: a fresh mint bumps it, a lookup or a re-mint of an
+// existing key does not, resetToFresh does.
+TEST(cold_hash_map, insert_epoch_tracks_key_set_growth_only) {
+    gl::ScratchArena& a = gl::genScratchArenas().forSlot(
+        gl::genScratchArenas().slotCount() - 1);
+    gl::DirtyState d = gl::DirtyState::Clean;
+    gl::ColdHashSet<gl::PodKeyStore<int32_t>> s(&a, &d);
+    s.resetToFresh();
+    const uint32_t e0 = s.insertEpoch();
+    ASSERT_EQ(s.mint(7), 1);
+    ASSERT_EQ(s.insertEpoch(), e0 + 1);
+    ASSERT_EQ(s.lookup(7), 1);
+    ASSERT_EQ(s.insertEpoch(), e0 + 1);       // lookup: no bump
+    ASSERT_EQ(s.mint(7), 1);
+    ASSERT_EQ(s.insertEpoch(), e0 + 1);       // existing key: no bump
+    ASSERT_EQ(s.mint(9), 2);
+    ASSERT_EQ(s.insertEpoch(), e0 + 2);
+    s.resetToFresh();
+    ASSERT_EQ(s.insertEpoch(), e0 + 3);       // key set replaced: bump
+    ASSERT_EQ(s.count(), 0);
 }

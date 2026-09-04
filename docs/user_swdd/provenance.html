@@ -38,6 +38,7 @@ User-oriented SwDD — Chapter 7: Provenance (reference-level).
       <ul>
         <li><a href="prover.html#life">Life of a run</a></li>
         <li><a href="prover.html#cycles">Cycles</a></li>
+        <li><a href="prover.html#cuda-filter-classes">CUDA filter classes</a></li>
         <li><a href="prover.html#enter">How a theorem enters</a></li>
         <li><a href="prover.html#status">Status modes</a></li>
         <li><a href="prover.html#deactivate">Deactivation cascade</a></li>
@@ -62,7 +63,7 @@ User-oriented SwDD — Chapter 7: Provenance (reference-level).
         <li><a href="mechanisms.html#integ">Integration</a></li>
         <li><a href="mechanisms.html#branch">Branching &amp; contradiction</a></li>
         <li><a href="mechanisms.html#induct">Induction</a></li>
-        <li><a href="mechanisms.html#fan5">5-batch fan-out</a></li>
+        <li><a href="mechanisms.html#fan5">Request-generation fan-out</a></li>
         <li><a href="mechanisms.html#cascade">Pending-rejection cascade</a></li>
       </ul>
     </li>
@@ -85,6 +86,7 @@ User-oriented SwDD — Chapter 7: Provenance (reference-level).
         <li><a href="memory.html#aggregate">LbMemory — the aggregate</a></li>
         <li><a href="memory.html#deload">Deload / reload</a></li>
         <li><a href="memory.html#scope">Scope</a></li>
+        <li><a href="memory.html#strings">String statification</a></li>
       </ul>
     </li>
     <li><a href="provenance.html" class="current">Provenance</a>
@@ -166,6 +168,7 @@ to the proof.</p>
     <li><a href="#cycle">7.6 &nbsp;Mechanism 3 — path-cycle filter</a></li>
     <li><a href="#contraswitch">7.7 &nbsp;Mechanism 4 — the <code>__contradiction__</code> fallback</a></li>
     <li><a href="#notinput">7.8 &nbsp;Provenance is never a proof input</a></li>
+    <li><a href="#leanexport">7.9 &nbsp;Independent Lean certificate</a></li>
   </ol>
 </div>
 
@@ -233,7 +236,13 @@ the proof runs.</figcaption>
 Every origin record is <b>local to the block that produced it</b>. Mail transports
 provenance <i>downward only</i> — parent → children, via
 <code>mailOut</code> → <code>mergeBatchInto</code> → child <code>mailIn</code> → child
-<code>exprOriginMap</code> next cycle. There is no upward propagation: a child's
+<code>exprOriginMap</code> next cycle. Provenance travels even for statements that
+themselves never mail: a statement pruned by the equivalence-class
+canonicalization sweep in the same cycle it registered still ships its origin
+records before the prune, so a child citing it in a rewrite's history line can
+always close the chain; likewise a deposit the canonical door rewrote ships the raw
+spelling's producer record at once, so the canonical form's <code>equality1</code>
+bridge resolves at every receiver. There is no upward propagation: a child's
 records never reach the parent's map. The earlier
 <code>pendingAncestorOrigins</code> queue (which once wrote a contradiction block's
 record into every ancestor) was fully removed — no field, no drain remains. The
@@ -272,6 +281,13 @@ acyclic direct origin, the walker switches into the matching
 <i>only</i> block switch <code>buildStack</code> ever makes; that block is a dedicated
 <i>child</i> of the LB that proved the contradiction — what is independent is its
 <i>provenance</i> (no upward propagation), not its tree position.</li>
+<li><b>5 · Cross-chapter admissibility.</b> The export loop keeps a running
+usage graph of the chapters already written ("chapter of A cites B"). A
+candidate origin that would cite a proven theorem U while building the
+chapter of T is accepted only if U's chapter does not — transitively —
+cite T back; otherwise the candidate is skipped like a path-cyclic one.
+This is what keeps theorem citations acyclic <i>across</i> chapters, where
+the path filter (mechanism 3) cannot see.</li>
 </ul>
 <p>
 A hard <b>TRIPWIRE</b> at entry asserts if the
@@ -283,11 +299,12 @@ is a throwaway structural probe and must never appear in a chapter.
   <defs><marker id="bs-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
   <rect x="34" y="92" width="148" height="48" rx="9" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/><text x="108" y="113" fill="#EF9F27" font-size="11.5" font-weight="bold" text-anchor="middle">chapter goal</text><text x="108" y="130" fill="#8B8FA5" font-size="9" text-anchor="middle">proved theorem</text>
   <path d="M182 116 L216 116" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#bs-ar)"/>
-  <rect x="216" y="70" width="312" height="92" rx="10" fill="#1C1F2B" stroke="#5DCAA5"/>
+  <rect x="216" y="70" width="312" height="108" rx="10" fill="#1C1F2B" stroke="#5DCAA5"/>
   <text x="372" y="92" fill="#5DCAA5" font-size="11.5" font-weight="bold" text-anchor="middle">buildStack — walk origins backward</text>
   <text x="372" y="113" fill="#8B8FA5" font-size="9" text-anchor="middle">① lift to shallowest-with-origin   ② OR-branch barrier</text>
   <text x="372" y="129" fill="#8B8FA5" font-size="9" text-anchor="middle">③ path-cycle filter (+ goal in path)</text>
   <text x="372" y="148" fill="#8B8FA5" font-size="9" text-anchor="middle">④ no origin? → __contradiction__ block (only LB switch)</text>
+  <text x="372" y="164" fill="#8B8FA5" font-size="9" text-anchor="middle">⑤ theorem citation must not cycle with already-written chapters</text>
   <path d="M528 116 L562 116" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#bs-ar)"/>
   <rect x="562" y="92" width="170" height="48" rx="9" fill="#262938" stroke="#5DCAA5"/><text x="647" y="113" fill="#F0E8DC" font-size="10.5" text-anchor="middle">chapter rows</text><text x="647" y="130" fill="#8B8FA5" font-size="9" text-anchor="middle">truthful scope, no cycles</text>
   <text x="372" y="42" fill="#8B8FA5" font-size="10.5" text-anchor="middle">Backtracking: a failed candidate rolls back; TRIPWIRE asserts on the hypothetical-disintegration sentinel.</text>
@@ -445,6 +462,25 @@ loops fails the filter and the walker tries an alternative origin for the
 same key.</figcaption>
 </figure>
 
+<p>
+The path set is <i>chapter-local</i>. A previously proven theorem used as a
+rule enters the chapter as a foundation leaf (a <code>theorem</code> row with
+no dependencies) — the walk does not continue into that theorem's own
+chapter. Two chapters can therefore each ground themselves in the other's
+theorem while every per-chapter check passes: within each chapter the cited
+theorem is bedrock, yet globally the pair justifies only itself. Two layers
+close this gap. The exporter prevents it: mechanism 5 (§7.3) consults the
+usage graph of already-written chapters and rejects any theorem citation
+that would close a cross-chapter cycle, falling back to an alternative
+origin exactly as this filter does. The verifier independently proves it:
+the global <code>theorem usage termination</code> check builds the directed
+graph "the chapter of theorem A cites theorem B" over all proven theorems
+and fails every theorem that lies on a cycle. Per-chapter acyclicity (this
+filter) plus acyclicity of that theorem-usage graph give whole-graph
+acyclicity, because chapters connect to each other only through theorem
+citations.
+</p>
+
 <!-- ===================== 7.7 ===================== -->
 <h2 id="contraswitch">7.7 &nbsp;Mechanism 4 — the <code>__contradiction__</code> fallback</h2>
 <p>
@@ -547,6 +583,167 @@ visibility cases.
 </svg>
 <figcaption><b>One-way.</b> The arrow only goes out. The day a proof decision
 depends on the origin map, the map has stopped being documentation.</figcaption>
+</figure>
+
+<h2 id="leanexport">7.9 &nbsp;Independent Lean certificate</h2>
+<p>
+The processed Peano, Gauss, and FTA shortcut proof graphs can be translated into typed neutral
+certificates and checked by Lean 4. This path is downstream of GL: it reads an existing graph
+and does not run the prover. The certificate retains theorem, chapter, row,
+dependency, action, source-hash, and exclusion records; the Lean renderer emits
+one named fact and one manifest disposition for every selected row.
+</p>
+<div class="key">
+<b>The exported GL theory uses ordinary types.</b> There is one abstract carrier
+<code>α</code>. A set is a predicate <code>α → Prop</code>; binary and ternary
+operations are relations over <code>α</code>. No GL value becomes a type and no
+GL term indexes a type family. Lean's kernel has its own dependent foundation,
+but the object theory presented to it stays in this ordinary predicate fragment.
+</div>
+<div class="key">
+<b>Every row is checked by an explicit proof term built from its own citation,
+not by search over everything above it.</b> A rule firing is replayed literally:
+the row applies the rule GL cited to the premises GL cited, in the rule's own
+premise order. The 136 Gauss and FTA integration-goal definition expansions
+introduce their outer parameters explicitly and close the definitionally equal
+unfolded sides with <code>Iff.rfl</code>; no generated line ends in an
+unrestricted <code>simp</code> tactic. Equality substitution eliminates the named equalities in order,
+witness projection follows the named conjunction path, and scoped facts are
+specialized at their recorded prefixes. The disequality-symmetry action applies equality symmetry to
+the proposed reverse equality and passes that result directly to the one cited
+disequality. A scoped task-formulation row returns its own introduced scope
+premise directly. An <code>equality2</code> row chains its two cited equalities
+with equality transitivity in certificate order. A contradiction row applies
+the cited negation to its cited positive complement; when that negation belongs
+to a recorded contradiction scope, the row first introduces exactly that scope
+premise. During a premise-element action, the cited implication is the recorded
+scope template and the row returns the unique matching introduced premise. An
+implication action applies its cited rule and supplies the cited premises in
+that rule's order; scoped citations are first specialized to the recorded scope,
+including the matching component of any shared witness bundle. The
+difference between an empty-bound integration reformulation and its cited
+definitional equivalence is also replayed directly: the selected output and its
+two premises refute the universal counterexample. A vacuous-truth row likewise
+eliminates the unique complementary pair in its own citation directly. Bounded
+integration reformulations use the same explicit counterexample refutation after
+entering any recorded scope. An OR-disintegration row enters its licensed branch
+and returns that branch assumption directly, making the exported identity
+implication visible. A constructed-OR theorem now shows its case split and
+left-associated disjunction constructors directly, ending with the cited parent
+that proves the final alternative from the preceding negations. OR convergence
+similarly splits the cited compact OR and applies the matching branch result;
+compact-existence branches visibly unpack their witness before that application.
+Theorem-reformulation rows likewise show the constructed set or relation and
+apply their single cited source theorem directly to it and the recorded premise.
+The FTA theorem-level OR elimination derives the OR parent's domain premise from
+the multiplicative preorder witness, then visibly splits the compact OR and
+applies the two branch interfaces.
+Equality-substitution rows similarly name and eliminate every cited equality in
+order, then return the rewritten cited source; no unrelated equality is searched.
+Disintegration rows show their exact conjunction path, shared decoded existence
+witness, or classical implication from a cited negated pair, including inside
+recorded scopes. The renderer and all three generated proof modules contain no
+<code>grind</code>. The difference matters: before explicit replay, a passing build showed only that
+each row followed from <em>something</em> already derived. It now shows that
+GL's recorded justification is the one that works, and a wrong or incomplete
+citation breaks the build instead of passing quietly.
+</div>
+<p>
+Restricting the context immediately found one such row. Its two cited premises
+were existence facts that GL states about a single witness inside one proof
+scope, while the translation had been quantifying each row's witness separately
+— so the row had been closing through a route GL never recorded. A scope's
+witness is now introduced once and shared by every row that speaks about it,
+which is what makes that row provable from its own citation.
+</p>
+<p>
+The current full Peano selection contains all 64 theorems in the live graph,
+138 chapters, and 3,107 source rows with an empty exclusion list — possible since the
+inter-chapter theorem-usage cycle was eliminated from the proof graph
+(mechanism 5 in §7.3 prevents it at export; the <code>theorem usage
+termination</code> check proves it). The historical 65-theorem selection,
+which excluded the former two-theorem cycle, remains tracked as a record.
+The dependent Gauss certificate pins the full Peano certificate by hash and
+adds all 29 Gauss main theorems, 33 chapters, and 1,511 rows. Together those
+two base modules check 93 public theorems and 4,618 row facts.
+Induction is equally visible: each public theorem accepts the relational
+induction principle as an explicit proposition premise instead of importing it
+through an axiom. The generated typing and zero helpers apply their named rules,
+the successor case returns its named assumption, induction-hypothesis steps
+apply that hypothesis to their introduced premises, and the public theorem
+applies the resulting induction property explicitly. Generated source containing
+an admission shortcut or <code>grind</code> is rejected before the Lean build.
+</p>
+<p>
+The FTA shortlist adds a separate generated scope of 79 theorems, 109 chapters,
+and 2,835 rows, needing no internal support theorems. Its certificate pins 19
+Peano and two Gauss theorems as external facts. Four
+Peano citations differ only by universal-premise order or by renamed compiled
+definitions; the certificate checks the permutation, variable bijection, and
+exact definition bodies before accepting each adaptation. Each FTA theorem then
+receives its required complete, universally quantified target theorems as
+explicit Lean proposition parameters. Each row specializes them at its current
+FTA anchor. It never calls the live generated Peano or Gauss theorem proofs.
+</p>
+<p>
+FTA-local definitions live under <code>GLExport.FTA</code>. The exporter creates
+only a definition delta, the FTA theorem module, and its manifest, so the reviewed
+Peano and Gauss files remain byte-identical. FTA passes its certificate/renderer
+tests and separate kernel compile through the 19 pinned Peano and two pinned
+Gauss theorem propositions; the Gauss module import supplies shared definitions
+only, while internal FTA theorem calls forward the explicit propositions
+required by their dependency closure. FTA does not consume Peano or Gauss proof
+rows. Across all three exports the renderer emits and kernel-checks 172 public
+theorems, 280 chapters, and 7,453 row facts. The default pinned Lean target
+contains the live 93-theorem Peano/Gauss base and its 4,618 row facts; FTA stays
+in a separately compiled interface module.
+</p>
+<p>
+A direct compile of the separate FTA module passes. Its induction premise is an
+explicit schema over an arbitrary FTA anchor, and its external parameters are
+complete theorem propositions. A zero-arity definition compaction can therefore
+introduce the proposition's arbitrary context and replay the cited earlier FTA
+theorem there. No Peano or Gauss proof content is imported.
+</p>
+<p>
+Gauss integration scopes are represented by ordinary universal quantifiers.
+For the eight reformulated existence theorems, the renderer constructs the
+defined set or relation as a predicate lambda, proves its defining condition,
+and applies the cited GL theorem to that concrete witness. This is the GL
+well-defined-output contract made constructive; it adds neither an existence
+axiom nor a dependent GL type family.
+</p>
+<p>
+The official release regenerates all three exports in dependency order, runs
+the certificate/renderer suite for their declared interfaces and the pinned
+Peano/Gauss Lean build, and then copies the
+generated certificates, modules, project files, and manifests byte-for-byte.
+The private recovery snapshot copies the same current results but never invokes
+the exporter. The host-local <code>.lake/</code> build cache belongs to neither
+package.
+</p>
+<figure>
+<svg viewBox="0 0 760 310" role="img" aria-label="Processed GL proof graph translated through typed Peano, Gauss, and FTA certificates into ordinary-type Lean modules; Peano and Gauss use the default build and FTA uses a separate kernel compile through pinned external theorem interfaces">
+  <defs>
+    <marker id="le-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker>
+  </defs>
+  <rect x="30" y="72" width="170" height="72" rx="10" fill="#262938" stroke="#B084EB"/><text x="115" y="98" fill="#B084EB" font-size="12" font-weight="bold" text-anchor="middle">processed proof graph</text><text x="115" y="118" fill="#8B8FA5" font-size="9.5" text-anchor="middle">theorems · chapters · rows</text>
+  <path d="M200 108 L286 108" stroke="#5DCAA5" stroke-width="1.6" marker-end="url(#le-ar)"/>
+  <rect x="290" y="60" width="180" height="96" rx="10" fill="#3A2E16" stroke="#EF9F27" stroke-width="2"/><text x="380" y="84" fill="#EF9F27" font-size="12" font-weight="bold" text-anchor="middle">typed certificates</text><text x="380" y="104" fill="#D6D8E1" font-size="9.5" text-anchor="middle">Peano 2 + Gauss/FTA 3</text><text x="380" y="122" fill="#D6D8E1" font-size="9.5" text-anchor="middle">hashed acyclic dependency order</text><text x="380" y="140" fill="#D6D8E1" font-size="9.5" text-anchor="middle">one action per source row</text>
+  <path d="M470 108 L556 108" stroke="#5DCAA5" stroke-width="1.6" marker-end="url(#le-ar)"/>
+  <rect x="560" y="72" width="170" height="72" rx="10" fill="#17352F" stroke="#5DCAA5" stroke-width="2"/><text x="645" y="98" fill="#5DCAA5" font-size="12" font-weight="bold" text-anchor="middle">Lean kernel</text><text x="645" y="118" fill="#8B8FA5" font-size="9.5" text-anchor="middle">ordinary predicate theory</text>
+  <text x="380" y="184" fill="#D6D8E1" font-size="11" text-anchor="middle">exported: 172 theorems · 280 chapters · 7,453 row facts</text>
+  <text x="380" y="203" fill="#5DCAA5" font-size="10.5" text-anchor="middle">Peano + Gauss build · separate FTA kernel compile</text>
+  <text x="380" y="224" fill="#8B8FA5" font-size="10" text-anchor="middle">explicit rows + induction · ordinary scopes · constructive witnesses</text>
+  <path d="M645 144 L645 262 L540 262" stroke="#5DCAA5" stroke-width="1.6" marker-end="url(#le-ar)"/>
+  <rect x="220" y="238" width="320" height="48" rx="9" fill="#262938" stroke="#B084EB"/><text x="380" y="258" fill="#B084EB" font-size="11.5" font-weight="bold" text-anchor="middle">official release + private snapshot</text><text x="380" y="276" fill="#8B8FA5" font-size="9.5" text-anchor="middle">copy certificates · modules · project · manifests</text>
+</svg>
+<figcaption><b>Second checker, preserved boundary.</b> The neutral certificate
+preserves every source-row audit trail; the live Peano/Gauss modules pass the
+pinned Lean build, while FTA passes its separate compile through pinned complete
+external-theorem propositions.
+Release generation happens only in the official-release
+protocol; the snapshot preserves the already generated bytes.</figcaption>
 </figure>
 
 <div class="note">

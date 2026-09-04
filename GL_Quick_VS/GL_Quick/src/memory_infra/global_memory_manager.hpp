@@ -24,6 +24,17 @@
 
 #pragma once
 
+// Portable force-inline for the paged-memory hot primitives. MSVC's
+// per-function inline budget saturates inside the large equi-class apply
+// templates, leaving these tiny accessors as real calls on the hottest
+// path; the override keeps them folded there. Applies only to leaf
+// accessors whose bodies are a few instructions.
+#if defined(_MSC_VER)
+#define GL_FORCEINLINE __forceinline
+#else
+#define GL_FORCEINLINE inline __attribute__((always_inline))
+#endif
+
 #include <atomic>
 #include "extent_file.hpp"
 
@@ -293,7 +304,8 @@ namespace gl {
         /// @return The high-water data-page count; 0 if none promoted. Lock-free.
         int32_t peakPagesHeld() const;
 
-        /// @brief Print the two-level page-directory telemetry to stderr — the
+        /// @brief Print the two-level page-directory telemetry to the common
+        ///        diagnostics log — the
         ///        end-of-batch spill summary.
         ///
         /// @details

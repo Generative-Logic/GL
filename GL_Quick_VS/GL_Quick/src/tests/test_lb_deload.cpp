@@ -164,6 +164,26 @@ TEST(lb_deload, memory_deload_reload_preserves_all_four_hashmemories) {
     ASSERT_EQ(m.localHashMemory.encodedMap.count(), 1);
     ASSERT_EQ(m.localHashMemoryDelta.encodedMap.count(), 1);
     ASSERT_EQ(m.workingMemory.encodedMap.count(), 1);
+    // rejectedMapOrdis rides the appended band tags (base+58..61): one parked
+    // record must survive the same round-trip.
+    m.overallHashMemory.rejectedMapOrdis.assignRun(
+        int64_t{ 77 }, std::vector<gl::RejectedMapOrdisValue>{
+            gl::RejectedMapOrdisValue(5, std::set<int>{ 1, 3 }) });
+    ASSERT_EQ(m.overallHashMemory.rejectedMapOrdis.count(), 1);
+    // admissionMapOrdis2 rides the appended band tags (base+63..66): one
+    // demand record must survive the same round-trip.
+    m.overallHashMemory.admissionMapOrdis2.assignRun(
+        int64_t{ 88 }, std::vector<gl::AdmissionMapOrdis2Value>{
+            gl::AdmissionMapOrdis2Value(6, std::set<int>{ 0, 2 }) });
+    ASSERT_EQ(m.overallHashMemory.admissionMapOrdis2.count(), 1);
+    // rejectedMapOrdis2 + its revisit guard ride base+67..71: one filed
+    // record and one guard key must survive the same round-trip.
+    m.overallHashMemory.rejectedMapOrdis2.assignRun(
+        int64_t{ 99 }, std::vector<gl::RejectedMapOrdisValue>{
+            gl::RejectedMapOrdisValue(7, std::set<int>{ 2, 5 }) });
+    ASSERT_EQ(m.overallHashMemory.rejectedMapOrdis2.count(), 1);
+    m.overallHashMemory.ordis2RevisitInProgress.mint(int64_t{ 123 });
+    ASSERT_TRUE(m.overallHashMemory.ordis2RevisitInProgress.contains(123));
 
     m.deloadStaticContainers(dir.string());
     ASSERT_FALSE(m.lbMemory.manager.resident());
@@ -175,6 +195,34 @@ TEST(lb_deload, memory_deload_reload_preserves_all_four_hashmemories) {
     ASSERT_EQ(m.localHashMemory.encodedMap.count(), 1);
     ASSERT_EQ(m.localHashMemoryDelta.encodedMap.count(), 1);
     ASSERT_EQ(m.workingMemory.encodedMap.count(), 1);
+    ASSERT_EQ(m.overallHashMemory.rejectedMapOrdis.count(), 1);
+    {
+        const int32_t rid = m.overallHashMemory.rejectedMapOrdis.lookup(77);
+        ASSERT_TRUE(rid != 0);
+        const gl::RejectedMapOrdisValue back =
+            m.overallHashMemory.rejectedMapOrdis.recordAt(rid, 0);
+        ASSERT_EQ(back.orStatement, 5);
+        ASSERT_TRUE((back.levels == std::set<int>{ 1, 3 }));
+    }
+    ASSERT_EQ(m.overallHashMemory.admissionMapOrdis2.count(), 1);
+    {
+        const int32_t did = m.overallHashMemory.admissionMapOrdis2.lookup(88);
+        ASSERT_TRUE(did != 0);
+        const gl::AdmissionMapOrdis2Value back =
+            m.overallHashMemory.admissionMapOrdis2.recordAt(did, 0);
+        ASSERT_EQ(back.sourceImplId, 6);
+        ASSERT_TRUE((back.levels == std::set<int>{ 0, 2 }));
+    }
+    ASSERT_EQ(m.overallHashMemory.rejectedMapOrdis2.count(), 1);
+    {
+        const int32_t rid2 = m.overallHashMemory.rejectedMapOrdis2.lookup(99);
+        ASSERT_TRUE(rid2 != 0);
+        const gl::RejectedMapOrdisValue back =
+            m.overallHashMemory.rejectedMapOrdis2.recordAt(rid2, 0);
+        ASSERT_EQ(back.orStatement, 7);
+        ASSERT_TRUE((back.levels == std::set<int>{ 2, 5 }));
+    }
+    ASSERT_TRUE(m.overallHashMemory.ordis2RevisitInProgress.contains(123));
 }
 
 TEST(lb_deload, roundtrip_single_file_all_four_containers) {
@@ -515,6 +563,45 @@ TEST(lb_deload, ensure_loaded_for_read_revives_discharged_lb) {
     ASSERT_EQ(m.originInterner.internedCount(), 2);
 }
 
+TEST(lb_deload, read_only_reload_skips_the_reverse_index_rebuild) {
+    // The read-only door has no request generation after it, so it skips the
+    // four ReverseArgsIndex rebuilds the canonical stream deliberately omits.
+    // On the chapter export's contradiction-twin probe that rebuild dominated
+    // the whole stage. The skip must be marked, not silent: an index left
+    // empty is indistinguishable from one that never recorded a NormKey, so
+    // the probe would answer "no candidates" instead of failing.
+    gl::Memory m;
+    m.setExprKey("__contradiction__(=[20,21])");
+    m.originInterner.encode("!(=[20,21])");
+    m.intEncodedStatements.push_back(makeExpr(3));
+
+    const std::filesystem::path dir = freshDir("test_deload_read_revindex");
+    m.dischargedForever = true;
+    m.deloadStaticContainers(dir.string());
+    ASSERT_FALSE(m.lbMemory.manager.resident());
+
+    m.ensureLoadedForRead(dir.string());
+    ASSERT_TRUE(m.lbMemory.manager.resident());
+    // Origin history — the only thing this door's callers read — is intact.
+    ASSERT_EQ(m.originInterner.decode(m.originInterner.lookup("!(=[20,21])")),
+              std::string("!(=[20,21])"));
+
+    // A work-path reload DOES rebuild. It needs its own LB: `ensureLoaded` is
+    // forbidden on a discharged one (I-112), which is exactly why the export
+    // has a separate door.
+    gl::Memory w;
+    w.setExprKey("(in3[i0,i1,v1,+])");
+    w.originInterner.encode("(P)");
+    w.intEncodedStatements.push_back(makeExpr(4));
+    const std::filesystem::path wdir = freshDir("test_deload_work_revindex");
+    w.deloadStaticContainers(wdir.string());
+    ASSERT_FALSE(w.lbMemory.manager.resident());
+    w.ensureLoaded(wdir.string());
+    ASSERT_TRUE(w.lbMemory.manager.resident());
+    ASSERT_EQ(w.originInterner.decode(w.originInterner.lookup("(P)")),
+              std::string("(P)"));
+}
+
 TEST(lb_deload, memory_deload_reload_cycle_repeats) {
     gl::Memory m;
     m.setExprKey("(in3[i0,i1,v1,+])");
@@ -769,8 +856,8 @@ TEST(lb_deload, deload_ordinal_assigned_once_across_redump) {
 // across deload: all three sameIter columns (statements + origins +
 // disintegrationSignals — the column RoutingColdMail dropped) and the two nextIter
 // columns, reconstructed in canonical order. Covers the "non-empty sameIter at
-// the deload seam" reality (sanitizeHashMemory writes sameIter after the
-// post-burst clear, so it must survive deload).
+// the deload seam" reality (the equi-class hooks' mail routes write sameIter
+// after the post-burst clear, so it must survive deload).
 TEST(lb_deload, internal_mail_coldmail_roundtrip) {
     gl::GlobalMemoryManager g;
     g.init(kDeloadTestCfg);

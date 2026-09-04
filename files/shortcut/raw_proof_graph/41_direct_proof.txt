@@ -1,0 +1,5 @@
+(strictOrder[1,4,9,10])	main	implication	(>[](preorder[u_1,u_4,u_9,u_10])(>[]!(=[u_9,u_10])(strictOrder[u_1,u_4,u_9,u_10])))	main	!(=[9,10])	main	(preorder[1,4,9,10])	main
+(>[](preorder[u_1,u_4,u_9,u_10])(>[]!(=[u_9,u_10])(strictOrder[u_1,u_4,u_9,u_10])))	main	reformulation for integration and	(&(preorder[1,4,9,10])!(=[9,10]))_integration_goal	main
+(&(preorder[1,4,9,10])!(=[9,10]))_integration_goal	main	expansion for integration	(strictOrder[1,4,9,10])_integration_goal	main
+!(=[9,10])	main	task formulation
+(preorder[1,4,9,10])	main	task formulation

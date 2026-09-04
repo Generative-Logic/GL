@@ -28,7 +28,21 @@
 
 namespace run_modes {
 
-    void fullRun(const std::string& anchor_id);
+    // Full batch entry point (conjecture load -> CE filter -> prover ->
+    // compression -> raw proof graph). `Config<anchor_id>.json` drives the
+    // folder layout via `theorems_folder` / `raw_proof_graph_folder`.
+    //
+    // The two optional overrides serve the shortcut mode
+    // (`gl_quick.exe <Tag> --conjectures-file <path> --externals-file <path>`):
+    // when non-empty they replace, respectively, the conjecture-list file
+    // (default `<theorems_folder>/conjectures.txt`) and the file external
+    // theorems are loaded from (default
+    // `<theorems_folder>/compressed_external_theorems.txt`). Relative paths
+    // resolve against the project root. Empty string = no override.
+    void fullRun(const std::string& anchor_id,
+                 const std::string& conjecturesFileOverride = std::string(),
+                 const std::string& externalsFileOverride = std::string(),
+                 const std::string& phase2Backend = std::string());
 
     // CE-filter-only entry point. Performs the same config + theorem-loading
     // setup as `fullRun` but runs only the counterexample filter and exits

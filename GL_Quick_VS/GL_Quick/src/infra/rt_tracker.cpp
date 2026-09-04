@@ -35,9 +35,11 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace gl {
@@ -81,6 +83,65 @@ std::string scrubFilesystemUnsafe(const std::string& in) {
         out.push_back(replace ? '_' : c);
     }
     return out;
+}
+
+// ---------------------------------------------------------------------------
+// Process-wide RT aggregate — the cross-burst sink (see resetRtAggregate /
+// dumpRtAggregate in the header). Keyed by (label string, parent label
+// string) because identical literals in different translation units may
+// carry different pointers; the strcmp cost sits on the cold per-burst
+// destructor path only. All state under one mutex — no atomics needed.
+// ---------------------------------------------------------------------------
+
+struct AggRow {
+    /// Full open-scope path root → leaf, labels joined with " > "
+    /// (e.g. "REQGEN_BATCH3_LOCAL_X_MAIL > GENERATE_ENCODED_REQUESTS_STATIC
+    /// > STATIC_REQGEN_PAIRING_MERGE"). Path-keying — not direct-parent
+    /// keying — so a shared interior label stays attributed to the batch
+    /// that owns the whole chain.
+    std::string path;
+    int64_t     self_ns;
+    int64_t     hits;
+    int64_t     iterations;
+};
+
+struct AggState {
+    std::mutex          mtx;
+    std::vector<AggRow> rows;
+    /// path -> index into `rows` (the fold is per burst per section; a
+    /// linear path scan over thousands of rows would dominate the fold).
+    std::unordered_map<std::string, int> index;
+    int64_t             tracker_calls   = 0;
+    int64_t             tracker_life_ns = 0;
+    /// Deepest scope nesting any tracker reached (virtual frames included).
+    int                 peak_open_depth = 0;
+    /// Single-timeline wall-clock accumulated per phase sweep (proveKernel
+    /// registers each iteration's barrier-to-barrier seconds).
+    double              phase1_wall_s   = 0.0;
+    double              phase3_wall_s   = 0.0;
+    double              phase2_wall_s   = 0.0;
+};
+
+/// Which phase tree a full aggregate path belongs to, by its ROOT label:
+/// 1 = the phase-1 sweep's trackers, 3 = phase 3's, 2 = everything else
+/// (the performElem2 hashburst tracker's REQGEN rows on the CPU route).
+int phaseOfAggPath(const std::string& path) {
+    if (path.rfind("PRE_FIXPOINT_MAIL_ABSORB", 0) == 0
+        || path.rfind("PH1_", 0) == 0)
+        return 1;
+    if (path.rfind("POST_FIXPOINT_MAIL_FLUSH", 0) == 0
+        || path.rfind("REACT_TO_HYPO", 0) == 0
+        || path.rfind("END_OF_BURST_SANITIZE", 0) == 0
+        || path.rfind("PH3_", 0) == 0)
+        return 3;
+    return 2;
+}
+
+/// Meyers singleton so unit tests and production share one instance
+/// without a static-init-order hazard.
+AggState& aggState() {
+    static AggState s;
+    return s;
 }
 
 } // anonymous namespace
@@ -127,8 +188,12 @@ RTTracker::RTTracker(const Memory& body)
 }
 
 RTTracker::RTTracker(const Memory& body, int triggerSeconds, int minPercentage)
-    : section_count_(0),
+    : sections_(new Section[RTMeasurementParameters::RT_MAX_SECTIONS]),
+      section_count_(0),
+      row_cache_(new int[kRowCacheSize]),
       open_depth_(0),
+      virtual_depth_(0),
+      peak_open_depth_(0),
       t_start_(Clock::now()),
       t_last_event_(t_start_),
       t_last_refresh_(t_start_),
@@ -138,6 +203,7 @@ RTTracker::RTTracker(const Memory& body, int triggerSeconds, int minPercentage)
       min_percentage_(minPercentage),
       hashburst_index_(g_currentHashburstIndex),
       ever_dumped_(false) {
+    for (int i = 0; i < kRowCacheSize; ++i) row_cache_[i] = -1;
     // Publish ourselves as this thread's active tracker so RT_SCOPE_HERE
     // and RT_REFRESH_HERE in inner functions can reach us.
     g_currentThreadTracker = this;
@@ -157,6 +223,12 @@ RTTracker::~RTTracker() {
     if (ever_dumped_) {
         writeSnapshot_(/*finished=*/true);
     }
+    // Fold this call's sections into the process-wide aggregate —
+    // for EVERY tracker, trigger-independent, so the aggregate covers
+    // all bursts. Charge the tail first so the last open window (a
+    // tracker that never dumped has never charged) is attributed.
+    chargeElapsedToTop_();
+    accumulateAggregate_();
     // Drop the thread-local pointer so subsequent RT_SCOPE_HERE /
     // RT_REFRESH_HERE calls on this thread are no-ops until the next
     // RTTracker is constructed.
@@ -172,14 +244,64 @@ int RTTracker::openSection_(const char* label) {
     // open/close transitions.
     chargeElapsedToTop_();
 
-    // Find or allocate a row for this label. Label pointers are
-    // expected to be string literals from the RT_SCOPE macro, so
-    // pointer equality is the right comparison (no strcmp).
+    // Depth saturation: a re-entrant production chain (the deposit door
+    // through class-update products) can nest deeper than the stack cap.
+    // Instrumentation must never crash a run the production build
+    // completes, so beyond the cap a scope is VIRTUAL — not pushed, its
+    // time folds into the innermost tracked section — and the true peak
+    // depth is recorded as the evidence of how deep the chain went.
+    if (open_depth_ >= RTMeasurementParameters::RT_MAX_OPEN_DEPTH) {
+        ++virtual_depth_;
+        if (open_depth_ + virtual_depth_ > peak_open_depth_)
+            peak_open_depth_ = open_depth_ + virtual_depth_;
+        return -1;
+    }
+
+    // Find or allocate a row for this (label, parent) pair. Label
+    // pointers are expected to be string literals from the RT_SCOPE
+    // macro, so pointer equality is the right comparison (no strcmp).
+    // Keying by parent as well keeps one label opened under two
+    // different enclosing scopes (e.g. an interior request-generation
+    // scope under two REQGEN batches) as two separately-attributed rows.
+    // Recursion collapsing: a label already open on the stack re-uses its
+    // live section instead of minting a new (label, parent) row. Without
+    // this, a re-entrant call chain (the deposit door re-entering itself
+    // through class-update products) mints a fresh row set per recursion
+    // level and exhausts RT_MAX_SECTIONS; with it, self-time folds into
+    // the first occurrence's row — standard flat-recursion profiler
+    // semantics. The close-order validation still holds because the same
+    // index is pushed again.
+    for (int d = open_depth_ - 1; d >= 0; --d) {
+        if (sections_[open_stack_[d]].label == label) {
+            ++sections_[open_stack_[d]].hits;
+            open_stack_[open_depth_++] = open_stack_[d];
+            if (open_depth_ > peak_open_depth_) peak_open_depth_ = open_depth_;
+            return open_stack_[open_depth_ - 1];
+        }
+    }
+
+    const int parentIdx = (open_depth_ > 0) ? open_stack_[open_depth_ - 1] : -1;
+    // (label pointer, parent) -> row: direct-mapped cache first, the
+    // linear scan only on a miss (the scan is O(rows) and a tracker with
+    // thousands of rows would otherwise pay it on every scope open).
+    const std::uintptr_t lp = reinterpret_cast<std::uintptr_t>(label);
+    const int slot = static_cast<int>(
+        ((lp >> 4) ^ (lp >> 20) ^ (static_cast<std::uintptr_t>(parentIdx + 1) * 0x9E3779B1u))
+        & static_cast<std::uintptr_t>(kRowCacheSize - 1));
     int index = -1;
-    for (int i = 0; i < section_count_; ++i) {
-        if (sections_[i].label == label) {
-            index = i;
-            break;
+    {
+        const int cached = row_cache_[slot];
+        if (cached >= 0 && sections_[cached].label == label
+            && sections_[cached].parentIdx == parentIdx) {
+            index = cached;
+        }
+    }
+    if (index < 0) {
+        for (int i = 0; i < section_count_; ++i) {
+            if (sections_[i].label == label && sections_[i].parentIdx == parentIdx) {
+                index = i;
+                break;
+            }
         }
     }
     if (index < 0) {
@@ -187,16 +309,25 @@ int RTTracker::openSection_(const char* label) {
                && "rt_tracker: RT_MAX_SECTIONS exhausted; raise the cap or "
                   "reduce the number of distinct RT_SCOPE labels in this function");
         index = section_count_++;
-        sections_[index] = {label, 0, 0, 0};
+        sections_[index] = {label, 0, 0, 0, parentIdx};
     }
+    row_cache_[slot] = index;
     ++sections_[index].hits;
 
-    assert(open_depth_ < RTMeasurementParameters::RT_MAX_SECTIONS);
     open_stack_[open_depth_++] = index;
+    if (open_depth_ > peak_open_depth_) peak_open_depth_ = open_depth_;
     return index;
 }
 
 void RTTracker::closeSection_(int sectionIndex) {
+    // Virtual (depth-saturated) scope: nothing was pushed; unwind the
+    // virtual counter and leave the tracked stack untouched.
+    if (sectionIndex < 0) {
+        assert(virtual_depth_ > 0
+               && "rt_tracker: virtual-scope close without a virtual open");
+        --virtual_depth_;
+        return;
+    }
     assert(open_depth_ > 0 && "rt_tracker: closeSection_ called with empty stack");
     assert(open_stack_[open_depth_ - 1] == sectionIndex
            && "rt_tracker: scope close order mismatch (RTScope objects "
@@ -219,7 +350,7 @@ void RTTracker::chargeElapsedToTop_() {
     t_last_event_ = now;
 }
 
-void RTTracker::noteIterations(int n) {
+void RTTracker::noteIterations(int64_t n) {
     assert(open_depth_ > 0
            && "rt_tracker: noteIterations called with no open scope");
     sections_[open_stack_[open_depth_ - 1]].iterations += n;
@@ -365,15 +496,26 @@ void RTTracker::writeSnapshot_(bool finished) {
             continue;
         }
         const char* active_marker = is_active[idx] ? " *    " : "      ";
-        char row[256];
+        // Parent-keyed rows render as "PARENT > LABEL" so one label
+        // opened under two different enclosing scopes stays two
+        // distinguishable rows in the table.
+        char name[160];
+        if (s.parentIdx >= 0) {
+            std::snprintf(name, sizeof(name), "%s > %s",
+                          sections_[s.parentIdx].label, s.label);
+        } else {
+            std::snprintf(name, sizeof(name), "%s", s.label);
+        }
+        char row[320];
         if (s.iterations > 0) {
             std::snprintf(row, sizeof(row),
-                          "%-50s |%s | %7.2f | %6.2f | %4d | %6d\n",
-                          s.label, active_marker, sec, pct, s.hits, s.iterations);
+                          "%-50s |%s | %7.2f | %6.2f | %4d | %6lld\n",
+                          name, active_marker, sec, pct, s.hits,
+                          static_cast<long long>(s.iterations));
         } else {
             std::snprintf(row, sizeof(row),
                           "%-50s |%s | %7.2f | %6.2f | %4d | %6s\n",
-                          s.label, active_marker, sec, pct, s.hits, "-");
+                          name, active_marker, sec, pct, s.hits, "-");
         }
         ss << row;
     }
@@ -432,6 +574,213 @@ void RTTracker::writeSnapshot_(bool finished) {
 
     // The next attribution window starts now.
     t_last_event_ = Clock::now();
+}
+
+void RTTracker::accumulateAggregate_() {
+    AggState& st = aggState();
+    std::lock_guard<std::mutex> lock(st.mtx);
+    st.tracker_calls += 1;
+    st.tracker_life_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(
+        Clock::now() - t_start_).count();
+    if (peak_open_depth_ > st.peak_open_depth)
+        st.peak_open_depth = peak_open_depth_;
+    for (int i = 0; i < section_count_; ++i) {
+        const Section& s = sections_[i];
+        // Build the full root -> leaf path by walking parentIdx. Depth is
+        // bounded by RT_MAX_SECTIONS; the chain walk is cold (per burst).
+        std::string path(s.label);
+        for (int p = s.parentIdx; p >= 0; p = sections_[p].parentIdx) {
+            path.insert(0, " > ");
+            path.insert(0, sections_[p].label);
+        }
+        AggRow* row = nullptr;
+        {
+            const auto it = st.index.find(path);
+            if (it != st.index.end()) row = &st.rows[static_cast<std::size_t>(it->second)];
+        }
+        if (row == nullptr) {
+            st.index.emplace(path, static_cast<int>(st.rows.size()));
+            st.rows.push_back(AggRow{ path, 0, 0, 0 });
+            row = &st.rows.back();
+        }
+        row->self_ns += s.self_ns;
+        row->hits += s.hits;
+        row->iterations += s.iterations;
+    }
+}
+
+void resetRtAggregate() {
+    AggState& st = aggState();
+    std::lock_guard<std::mutex> lock(st.mtx);
+    st.rows.clear();
+    st.index.clear();
+    st.tracker_calls = 0;
+    st.tracker_life_ns = 0;
+    st.peak_open_depth = 0;
+    st.phase1_wall_s = 0.0;
+    st.phase2_wall_s = 0.0;
+    st.phase3_wall_s = 0.0;
+}
+
+void addRtPhaseWallSeconds(int phase, double seconds) {
+    AggState& st = aggState();
+    std::lock_guard<std::mutex> lock(st.mtx);
+    if (phase == 1) st.phase1_wall_s += seconds;
+    else if (phase == 2) st.phase2_wall_s += seconds;
+    else if (phase == 3) st.phase3_wall_s += seconds;
+    else assert(false && "addRtPhaseWallSeconds: phase must be 1, 2 or 3");
+}
+
+void dumpRtAggregate(const std::string& path) {
+    AggState& st = aggState();
+    std::lock_guard<std::mutex> lock(st.mtx);
+
+    std::vector<int> order;
+    order.reserve(st.rows.size());
+    for (int i = 0; i < static_cast<int>(st.rows.size()); ++i)
+        order.push_back(i);
+    std::sort(order.begin(), order.end(), [&](int a, int b) {
+        return st.rows[static_cast<std::size_t>(a)].self_ns
+             > st.rows[static_cast<std::size_t>(b)].self_ns;
+    });
+
+    int64_t total_ns = 0;
+    int64_t phase_ns[4] = { 0, 0, 0, 0 };
+    for (const AggRow& r : st.rows) {
+        total_ns += r.self_ns;
+        phase_ns[phaseOfAggPath(r.path)] += r.self_ns;
+    }
+
+    std::ostringstream ss;
+    ss << "RT aggregate (cross-burst, all trackers, trigger-independent)\n";
+    ss << "\n";
+    ss << "UNITS. 'seconds' = EXCLUSIVE self-time of that section, summed across\n";
+    ss << "ALL worker threads and ALL bursts (worker-seconds). Several workers run\n";
+    ss << "concurrently, so these sums EXCEED single-timeline wall-clock; within\n";
+    ss << "one thread nothing overlaps and nothing is double-counted (a nested\n";
+    ss << "row's time is excluded from its parent's row).\n";
+    ss << "100% ('%attr' denominator) = 'Total attributed' below, in worker-seconds.\n";
+    ss << "'%ph' = the row's share of ITS OWN phase tree (same-unit denominator:\n";
+    ss << "the phase-1 / phase-3 / other attributed subtotal on its line below).\n";
+    ss << "'wall~s' = the row's ESTIMATED single-timeline wall contribution:\n";
+    ss << "its phase share times the phase's measured wall (assumes uniform\n";
+    ss << "parallelism within the phase; '-' where no wall is registered).\n";
+    ss << "'Wall' lines are single-timeline seconds registered by proveKernel's\n";
+    ss << "phase barriers; attributed / wall = the sweep's effective parallelism.\n";
+    ss << "The phase-2 wall is registered on both routes; a CUDA batch attributes\n";
+    ss << "0 s to its phase-2 tree (the device runs outside every scope), so its\n";
+    ss << "line then reads as the device wall alone.\n";
+    ss << "\n";
+    {
+        char hdr[1024];
+        const double p1w = st.phase1_wall_s;
+        const double p3w = st.phase3_wall_s;
+        const double p2w = st.phase2_wall_s;
+        const double p1a = static_cast<double>(phase_ns[1]) / 1e9;
+        const double p3a = static_cast<double>(phase_ns[3]) / 1e9;
+        const double p2a = static_cast<double>(phase_ns[2]) / 1e9;
+        char p1par[48] = "";
+        char p3par[48] = "";
+        char p2par[48] = "";
+        if (p1w > 0.0)
+            std::snprintf(p1par, sizeof(p1par), " = %.2fx parallel", p1a / p1w);
+        if (p3w > 0.0)
+            std::snprintf(p3par, sizeof(p3par), " = %.2fx parallel", p3a / p3w);
+        if (p2w > 0.0)
+            std::snprintf(p2par, sizeof(p2par), " = %.2fx parallel", p2a / p2w);
+        std::snprintf(hdr, sizeof(hdr),
+                      "Tracker calls (bursts)     : %lld\n"
+                      "Summed burst lifetimes     : %.2f burst-seconds\n"
+                      "Total attributed           : %.2f s   <- the 100%% of '%%attr'\n"
+                      "Peak scope depth           : %d%s\n"
+                      "Phase-1 tree               : %.2f s attributed / %.2f s wall%s\n"
+                      "Phase-3 tree               : %.2f s attributed / %.2f s wall%s\n"
+                      "Phase-2 tree (CPU route)   : %.2f s attributed / %.2f s wall%s\n\n",
+                      static_cast<long long>(st.tracker_calls),
+                      static_cast<double>(st.tracker_life_ns) / 1e9,
+                      static_cast<double>(total_ns) / 1e9,
+                      st.peak_open_depth,
+                      st.peak_open_depth
+                              > RTMeasurementParameters::RT_MAX_OPEN_DEPTH
+                          ? "  (saturated past RT_MAX_OPEN_DEPTH)"
+                          : "",
+                      p1a, p1w, p1par,
+                      p3a, p3w, p3par,
+                      p2a, p2w, p2par);
+        ss << hdr;
+    }
+    ss << "Parent > Section                                                     | seconds  | %attr  | %ph    | wall~s   | hits     | iter\n";
+    ss << "---------------------------------------------------------------------+----------+--------+--------+----------+----------+----------\n";
+    for (int idx : order) {
+        const AggRow& r = st.rows[static_cast<std::size_t>(idx)];
+        char name[2048];
+        std::snprintf(name, sizeof(name), "%s", r.path.c_str());
+        const double sec = static_cast<double>(r.self_ns) / 1e9;
+        const double pct = (total_ns > 0)
+            ? 100.0 * static_cast<double>(r.self_ns)
+                    / static_cast<double>(total_ns)
+            : 0.0;
+        const int phase = phaseOfAggPath(r.path);
+        const int64_t phaseTotal = phase_ns[phase];
+        const double pctPhase = (phaseTotal > 0)
+            ? 100.0 * static_cast<double>(r.self_ns)
+                    / static_cast<double>(phaseTotal)
+            : 0.0;
+        const double phaseWall = (phase == 1) ? st.phase1_wall_s
+                               : (phase == 3) ? st.phase3_wall_s
+                               : (phase == 2) ? st.phase2_wall_s
+                                              : 0.0;
+        char wallCol[16];
+        if (phaseWall > 0.0 && phaseTotal > 0) {
+            std::snprintf(wallCol, sizeof(wallCol), "%8.2f",
+                          phaseWall * static_cast<double>(r.self_ns)
+                              / static_cast<double>(phaseTotal));
+        } else {
+            std::snprintf(wallCol, sizeof(wallCol), "%8s", "-");
+        }
+        char row[2400];
+        if (r.iterations > 0) {
+            std::snprintf(row, sizeof(row),
+                          "%-68s | %8.2f | %6.2f | %6.2f | %s | %8lld | %lld\n",
+                          name, sec, pct, pctPhase, wallCol,
+                          static_cast<long long>(r.hits),
+                          static_cast<long long>(r.iterations));
+        } else {
+            std::snprintf(row, sizeof(row),
+                          "%-68s | %8.2f | %6.2f | %6.2f | %s | %8lld | %s\n",
+                          name, sec, pct, pctPhase, wallCol,
+                          static_cast<long long>(r.hits), "-");
+        }
+        ss << row;
+    }
+
+    // Atomic write-to-tmp + rename, same retry discipline as the per-call
+    // snapshot: instrumentation never crashes the prover.
+    std::error_code ec;
+    const std::filesystem::path live(path);
+    if (live.has_parent_path())
+        std::filesystem::create_directories(live.parent_path(), ec);
+    const std::string tmp_path = path + ".tmp";
+    const std::string body_str = ss.str();
+    constexpr int kMaxAttempts = 10;
+    constexpr int kRetryDelayMs = 50;
+    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+        {
+            std::ofstream out(tmp_path, std::ios::out | std::ios::trunc);
+            if (!out.good()) {
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(kRetryDelayMs));
+                continue;
+            }
+            out << body_str;
+            out.flush();
+        }
+        std::error_code rename_ec;
+        std::filesystem::rename(tmp_path, live, rename_ec);
+        if (!rename_ec) return;
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(kRetryDelayMs));
+    }
 }
 
 std::string RTTracker::buildChainHuman_(const Memory& body) {

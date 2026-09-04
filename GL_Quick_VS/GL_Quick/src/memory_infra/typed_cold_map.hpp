@@ -1072,7 +1072,7 @@ namespace gl {
     };
 
     /// @brief The owning form of a normalized hash-engine key — the variable-length
-    ///        `int16_t` premise key that `encodedMap` and the four owner-set maps
+    ///        `int16_t` premise key that `encodedMap` and the two owner-set maps
     ///        key on — backed by a `BytesKeyStore`.
     ///
     /// @details

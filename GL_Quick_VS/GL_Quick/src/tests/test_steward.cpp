@@ -37,13 +37,19 @@
 
 #include "test_harness.hpp"
 
+#include "../infra/diagnostics_log.hpp"
 #include "../memory.hpp"
 #include "../memory_infra/deload_stats.hpp"
+#include "../memory_infra/rule_index_staging.hpp"
+#include "../memory_infra/scratch_arena.hpp"
 #include "../memory_infra/steward.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <deque>
+#include <thread>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -86,6 +92,47 @@ TEST(steward, start_stop_lifecycle_and_idle_quiesce) {
     s.quiesce();
     s.stop();
     s.stop();                          // defined no-op when not running
+}
+
+TEST(steward, diagnostics_log_appends_to_the_common_run_file) {
+    const std::string marker = "[TEST-DIAG] steward unit marker "
+        + std::to_string(std::chrono::steady_clock::now()
+                             .time_since_epoch().count());
+    gl::diagnosticsLog() << marker << std::endl;
+    std::ifstream in(".debug/run_diagnostics.log");
+    ASSERT_TRUE(in.is_open());
+    bool found = false;
+    std::string line;
+    while (std::getline(in, line))
+        if (line == marker) { found = true; break; }
+    ASSERT_TRUE(found);
+}
+
+TEST(steward, resident_only_mode_claims_without_deload_or_io_threads) {
+    gl::Memory resident;
+    resident.setExprKey("(test_steward_resident_only)");
+    resident.intEncodedStatements.push_back(stewardExpr(9));
+    std::vector<gl::Memory*> order{ &resident };
+    std::atomic<std::size_t> cursor{ 0 };
+
+    gl::MemorySteward s(/*allowSsdDeload=*/false);
+    s.start(/*workers=*/4);
+    s.beginPhaseWindow(/*phase=*/2, &cursor, &order, /*workers=*/4,
+                       ".debug/deload_resident_only_forbidden");
+    s.maintainWorkingSet(&cursor, &order, /*workers=*/4);
+    s.claimAndLoadForWork(resident, /*phase=*/2,
+                          ".debug/deload_resident_only_forbidden");
+    ASSERT_EQ(resident.stewardClaim.load(),
+              static_cast<uint8_t>(
+                  gl::Memory::StewardClaim::WorkerOwned));
+    resident.stewardClaim.store(
+        static_cast<uint8_t>(gl::Memory::StewardClaim::Idle));
+    s.endPhaseWindow();
+    s.quiesce();
+    s.stop();
+
+    ASSERT_TRUE(resident.lbMemory.manager.resident());
+    ASSERT_TRUE(resident.deloadFiles.empty());
 }
 
 TEST(steward, install_wake_drains_in_order_and_reports) {
@@ -393,10 +440,42 @@ TEST(steward, claim_and_load_for_work_handshake) {
               static_cast<uint8_t>(gl::Memory::StewardClaim::WorkerOwned));
     ASSERT_EQ(warm.intEncodedStatements.size(), 1);
 
-    // Already WorkerOwned (a sibling part owns it) -> idempotent no-op.
+    // Already WorkerOwned by THIS thread (the handshake above published the
+    // holder) -> the re-entry is a no-op in a writing phase too.
+    ASSERT_TRUE(warm.claimHolder.load() == std::this_thread::get_id());
     s.claimAndLoadForWork(warm, /*phase=*/1, dir);
     ASSERT_EQ(warm.stewardClaim.load(),
               static_cast<uint8_t>(gl::Memory::StewardClaim::WorkerOwned));
+    s.claimAndLoadForWork(warm, /*phase=*/4, dir);
+    ASSERT_EQ(warm.stewardClaim.load(),
+              static_cast<uint8_t>(gl::Memory::StewardClaim::WorkerOwned));
+
+    // WorkerOwned by ANOTHER thread: a phase-2 split sibling returns untouched
+    // (the LB is read-only there); the same call in phase 1 / 3 / 4 is the
+    // two-writers contract violation and asserts (I-122) — not exercised here.
+    gl::Memory sibling;
+    sibling.setExprKey("(claim_sibling)");
+    sibling.intEncodedStatements.push_back(stewardExpr(23));
+    std::thread([&sibling, &s, &dir] {
+        s.claimAndLoadForWork(sibling, /*phase=*/2, dir);
+    }).join();
+    ASSERT_TRUE(sibling.claimHolder.load() != std::this_thread::get_id());
+    s.claimAndLoadForWork(sibling, /*phase=*/2, dir);
+    ASSERT_EQ(sibling.stewardClaim.load(),
+              static_cast<uint8_t>(gl::Memory::StewardClaim::WorkerOwned));
+}
+
+TEST(steward, gen_scratch_registry_has_reserved_slot) {
+    // Both per-slot scratch registries carry the worker slots PLUS one reserved
+    // single-threaded slot, so a g_currentCoreId == -1 caller's fallback
+    // (slotCount() - 1) is never a worker's arena: the gen registry used to be
+    // one slot short, and its "reserved" slot was worker logicalCores-1's own
+    // arena and rule-index staging pool.
+    ASSERT_TRUE(gl::genScratchArenas().initialized());
+    ASSERT_TRUE(gl::scratchArenas().initialized());
+    ASSERT_EQ(gl::genScratchArenas().slotCount(), gl::scratchArenas().slotCount());
+    ASSERT_TRUE(gl::genScratchArenas().slotCount() >= 2);
+    ASSERT_EQ(gl::ruleStagings().slotCount(), gl::genScratchArenas().slotCount());
 }
 
 TEST(steward, unified_window_prefetched_lb_survives_same_pass) {

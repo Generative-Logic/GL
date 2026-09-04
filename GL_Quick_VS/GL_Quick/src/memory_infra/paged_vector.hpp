@@ -199,7 +199,7 @@ namespace gl {
         /// @param i Logical index in `[0, size())`.
         /// @return Const reference, valid while the LB stays resident and no
         ///         preceding element is erased.
-        const T& operator[](int32_t i) const {
+        GL_FORCEINLINE const T& operator[](int32_t i) const {
             assert(i >= 0 && i < size_);
             const int32_t dataVid = dataVidOf(i >> shift_);
             return *reinterpret_cast<const T*>(
@@ -305,7 +305,7 @@ namespace gl {
         /// @param runLen [out] Elements contiguous from `i` — to the end of its
         ///               page or the logical end, whichever is nearer.
         /// @return Pointer to element `i`, readable for `runLen` elements.
-        const T* contiguousRun(int32_t i, int32_t& runLen) const {
+        GL_FORCEINLINE const T* contiguousRun(int32_t i, int32_t& runLen) const {
             assert(i >= 0 && i < size_);
             const int32_t within = i & mask_;
             const int32_t toPageEnd = (mask_ + 1) - within;
@@ -496,6 +496,81 @@ namespace gl {
             size_ = newSize;
             while (numPages_ > 0 && size_ <= ((numPages_ - 1) << shift_))
                 freeLastDataPage();
+        }
+
+        /// @brief Grow to `newSize` elements without initializing the new
+        ///        slots — the reservation half of an in-place tail rewrite.
+        ///
+        /// @details
+        /// Acquires the pages the new tail needs and advances the size; the
+        /// caller fills every new slot before reading it (the in-place blob-run
+        /// rebuild writes its whole tail backwards from the new end). Forces
+        /// `Restructured`: a content-wise no-op here is still followed by the
+        /// caller's rewrite of the moved tail. Single-threaded write side only
+        /// (I-83).
+        ///
+        /// @param newSize The target element count; `>= size()`.
+        /// @return Nothing.
+        /// @invariant `size() == newSize` after return; every slot below the old
+        ///            size keeps its content.
+        /// @see truncate, blockMove, writeBytesAt.
+        void growTo(int32_t newSize) {
+            assert(newSize >= size_ && "PagedVector::growTo cannot shrink");
+            if (newSize == size_) return;
+            *dirty_ = DirtyState::Restructured;
+            ensureGeometry();
+            while (size_ < newSize) {
+                if (size_ == (numPages_ << shift_))
+                    appendDataVid(arena_->allocPage());
+                const int32_t room = std::min(newSize - size_,
+                                              (numPages_ << shift_) - size_);
+                size_ += room;
+            }
+        }
+
+        /// @brief Overwrite the existing slots `[at, at + n)` with `n`
+        ///        elements from a foreign contiguous buffer — the typed public
+        ///        face of the page-aware bulk fill.
+        ///
+        /// @details
+        /// One `memcpy` per page span; the slots must already exist (a
+        /// `growTo` precedes a tail fill) and @p src must not alias this
+        /// vector's pages. Forces `Restructured` (an in-place rewrite).
+        /// Single-threaded write side only (I-83).
+        ///
+        /// @param at  First destination slot; `at + n <= size()`.
+        /// @param src The elements; read only when `n > 0`.
+        /// @param n   Element count; `>= 0`.
+        /// @return Nothing.
+        /// @see growTo, blockMove, replaceRange.
+        void writeRunAt(int32_t at, const T* src, int32_t n) {
+            assert(n >= 0 && at >= 0 && at + n <= size_
+                && "PagedVector::writeRunAt outside the existing slots");
+            if (n == 0) return;
+            *dirty_ = DirtyState::Restructured;
+            writeBytesAt(at, reinterpret_cast<const char*>(src), n);
+        }
+
+        /// @brief Move the existing slots `[src, src + count)` to
+        ///        `[dest, dest + count)` — the public face of the
+        ///        overlap-safe page-aware `blockMove`.
+        ///
+        /// @details
+        /// Both ranges must lie inside the existing slots (a `growTo` precedes
+        /// an upward tail move); overlap in either direction is handled.
+        /// Forces `Restructured`. Single-threaded write side only (I-83).
+        ///
+        /// @param src   First source slot.
+        /// @param dest  First destination slot.
+        /// @param count Elements; `<= 0` or `src == dest` is a no-op.
+        /// @return Nothing.
+        /// @see growTo, writeRunAt.
+        void moveRange(int32_t src, int32_t dest, int32_t count) {
+            if (count <= 0 || src == dest) return;
+            assert(src >= 0 && dest >= 0 && src + count <= size_ && dest + count <= size_
+                && "PagedVector::moveRange outside the existing slots");
+            *dirty_ = DirtyState::Restructured;
+            blockMove(src, dest, count);
         }
 
         /// @brief Drop all elements and free every page (data, level-1
@@ -734,7 +809,7 @@ namespace gl {
         ///
         /// @param pageIdx Data-page index.
         /// @return The data page's vid.
-        int32_t dataVidOf(int32_t pageIdx) const {
+        GL_FORCEINLINE int32_t dataVidOf(int32_t pageIdx) const {
             if (numPages_ == 1) return rootVid_;
             const int32_t* root = reinterpret_cast<const int32_t*>(
                 arena_->pageAt(rootVid_));
@@ -749,7 +824,7 @@ namespace gl {
         ///
         /// @param i     Slot in `[0, size_]` (one past the end on append).
         /// @param value Element to store.
-        void writeSlot(int32_t i, const T& value) {
+        GL_FORCEINLINE void writeSlot(int32_t i, const T& value) {
             const int32_t dataVid = dataVidOf(i >> shift_);
             *reinterpret_cast<T*>(arena_->pageAt(dataVid)
                 + static_cast<std::size_t>(i & mask_) * sizeof(T)) = value;
@@ -792,7 +867,7 @@ namespace gl {
         ///
         /// @param i Slot whose page is allocated.
         /// @return Writable pointer to element `i` (valid for one element).
-        char* slotPtr(int32_t i) {
+        GL_FORCEINLINE char* slotPtr(int32_t i) {
             return arena_->pageAt(dataVidOf(i >> shift_))
                 + static_cast<std::size_t>(i & mask_) * sizeof(T);
         }

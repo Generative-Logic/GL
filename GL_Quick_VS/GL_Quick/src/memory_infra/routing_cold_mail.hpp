@@ -61,12 +61,14 @@ namespace gl {
     /// the pool — called after the phase-1 absorb, so nothing is retained;
     /// the next write re-acquires lazily.
     ///
-    /// Two live columns: `statements_` keyed on the whole pair (id-form
-    /// `IntMailStatementKey`); `origins_` as a per-EWV blob run of `OriginLine`.
-    /// The heap-`Mail` fields `disintegrationSignals` and `expandedImplications`
-    /// are DROPPED (the former is internal-channel-only; the latter was never
-    /// serialized / delivered cross-LB — `Codec<Mail>` only carries statements +
-    /// exprOriginMap — so it has been removed). The column types and codecs are
+    /// Three live columns: `statements_` keyed on the whole pair (id-form
+    /// `IntMailStatementKey`); `origins_` as a per-EWV blob run of `OriginLine`;
+    /// `statementFlags_` as the packed-key per-statement flag side column
+    /// (flag 5 = "external, may be disintegrated" + generation stamp — a side
+    /// column, never part of the statement set key, so set identity and the
+    /// dump stay untouched). The heap-`Mail` fields `disintegrationSignals` and
+    /// `expandedImplications` are DROPPED (the former is internal-channel-only;
+    /// the latter was never serialized / delivered cross-LB). The column types and codecs are
     /// reused from `mail_types.hpp`. Never deload-registered — no `ContainerTag`,
     /// absent from `LbMemory::visitContainers`.
     ///
@@ -94,6 +96,12 @@ namespace gl {
         ///        the sender `originInterner`; mailIn on the global `mailInterner`
         ///        (the commit seam translates sender -> global).
         TypedColdBlobMap<int64_t, IntMailOrigin> origins_;
+        /// @brief Per-statement flag side column — packed GLOBAL
+        ///        `(expression id, validity id)` key to the
+        ///        `packMailStatementFlag` value (flag code + generation stamp);
+        ///        folded from committed blobs, merged across ancestors via
+        ///        `mergeMailStatementFlag`.
+        TypedColdMap<int64_t, int32_t> statementFlags_;
 
         /// @brief Bind the three columns to the (unbound) dedicated arena.
         ///
@@ -103,7 +111,8 @@ namespace gl {
         /// blocks to the mail pool.
         RoutingColdMail()
             : arena_(), statements_(&arena_, &dirty_),
-              origins_(&arena_, &dirty_) {}
+              origins_(&arena_, &dirty_),
+              statementFlags_(&arena_, &dirty_) {}
         RoutingColdMail(const RoutingColdMail&) = delete;
         RoutingColdMail& operator=(const RoutingColdMail&) = delete;
 
@@ -182,6 +191,58 @@ namespace gl {
             statements_.mint(k);
         }
 
+        /// @brief Fold one statement's packed flag value into the side column —
+        ///        the blob-decode write door (GLOBAL ids).
+        ///
+        /// @details On a hit the stored value merges through
+        /// `mergeMailStatementFlag` (flag 5 wins, iterations min-merge), so
+        /// folding multiple ancestors' blobs is order-free and deterministic;
+        /// on a miss the packed value inserts directly. Called by
+        /// `deserializeMailBlobInto` with the wire's packed value verbatim.
+        ///
+        /// @param key    The packed GLOBAL `(expression id, validity id)` pair.
+        /// @param packed The wire's packed flag value.
+        void mergeStatementFlag(int64_t key, int32_t packed) {
+            ensureArena();
+            const int32_t id = statementFlags_.lookup(key);
+            if (id != 0) {
+                statementFlags_.upsert(key,
+                    mergeMailStatementFlag(statementFlags_.valueAt(id), packed));
+                return;
+            }
+            statementFlags_.upsert(key, packed);
+        }
+
+        /// @brief Read one statement's flag code + generation stamp — the
+        ///        absorb-side probe (GLOBAL ids).
+        ///
+        /// @details A non-minting probe; an absent key yields
+        /// `kMailStatementFlagNone` / iteration -1 — the plain status-3 absorb
+        /// default. Safe to call once per drained statement.
+        ///
+        /// @param key       The packed GLOBAL `(expression id, validity id)` pair.
+        /// @param flagCode  Out: the flag code (`kMailStatementFlagNone` when
+        ///                  absent).
+        /// @param iteration Out: the carried witness-generation stamp (-1 when
+        ///                  absent or none carried).
+        void getStatementFlag(int64_t key, int32_t& flagCode,
+            int32_t& iteration) const {
+            if (!arenaInited_) {
+                flagCode = kMailStatementFlagNone;
+                iteration = -1;
+                return;
+            }
+            const int32_t id = statementFlags_.lookup(key);
+            if (id == 0) {
+                flagCode = kMailStatementFlagNone;
+                iteration = -1;
+                return;
+            }
+            const int32_t packed = statementFlags_.valueAt(id);
+            flagCode = unpackMailStatementFlagCode(packed);
+            iteration = unpackMailStatementFlagIteration(packed);
+        }
+
         /// @brief Whether the statements column is empty.
         /// @return `true` if no statement has been inserted.
         bool statementsEmpty() const {
@@ -237,6 +298,7 @@ namespace gl {
             if (!arenaInited_) return;
             statements_.release();
             origins_.release();
+            statementFlags_.release();
             arena_.releaseAll();
         }
 

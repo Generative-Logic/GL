@@ -1,0 +1,5 @@
+!(strictOrder[1,4,9,10])	main	contradiction	!(=[9,10])	main_boundary_contradiction_!(strictOrder[1,4,9,10])	(=[9,10])	main
+!(=[9,10])	main_boundary_contradiction_!(strictOrder[1,4,9,10])	disintegration	(&(preorder[1,4,9,10])!(=[9,10]))	main_boundary_contradiction_!(strictOrder[1,4,9,10])
+(&(preorder[1,4,9,10])!(=[9,10]))	main_boundary_contradiction_!(strictOrder[1,4,9,10])	expansion	(strictOrder[1,4,9,10])	main_boundary_contradiction_!(strictOrder[1,4,9,10])
+(strictOrder[1,4,9,10])	main_boundary_contradiction_!(strictOrder[1,4,9,10])	task formulation
+(=[9,10])	main	task formulation

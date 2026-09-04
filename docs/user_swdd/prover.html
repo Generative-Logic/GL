@@ -38,6 +38,7 @@ User-oriented SwDD — Chapter 2: The prover at a glance (reference-level).
       <ul>
         <li><a href="prover.html#life">Life of a run</a></li>
         <li><a href="prover.html#cycles">Cycles</a></li>
+        <li><a href="prover.html#cuda-filter-classes">CUDA filter classes</a></li>
         <li><a href="prover.html#enter">How a theorem enters</a></li>
         <li><a href="prover.html#status">Status modes</a></li>
         <li><a href="prover.html#deactivate">Deactivation cascade</a></li>
@@ -62,7 +63,7 @@ User-oriented SwDD — Chapter 2: The prover at a glance (reference-level).
         <li><a href="mechanisms.html#integ">Integration</a></li>
         <li><a href="mechanisms.html#branch">Branching &amp; contradiction</a></li>
         <li><a href="mechanisms.html#induct">Induction</a></li>
-        <li><a href="mechanisms.html#fan5">5-batch fan-out</a></li>
+        <li><a href="mechanisms.html#fan5">Request-generation fan-out</a></li>
         <li><a href="mechanisms.html#cascade">Pending-rejection cascade</a></li>
       </ul>
     </li>
@@ -85,6 +86,7 @@ User-oriented SwDD — Chapter 2: The prover at a glance (reference-level).
         <li><a href="memory.html#aggregate">LbMemory — the aggregate</a></li>
         <li><a href="memory.html#deload">Deload / reload</a></li>
         <li><a href="memory.html#scope">Scope</a></li>
+        <li><a href="memory.html#strings">String statification</a></li>
       </ul>
     </li>
     <li><a href="provenance.html">Provenance</a>
@@ -160,6 +162,7 @@ ingestion site threads.</p>
   <ol>
     <li><a href="#life">2.1 &nbsp;Life of a run</a></li>
     <li><a href="#cycles">2.2 &nbsp;Cycles</a></li>
+    <li><a href="#cuda-filter-classes">2.2.1 &nbsp;CUDA filter classes</a></li>
     <li><a href="#enter">2.3 &nbsp;How a theorem enters — and the <code>status</code> modes</a></li>
     <li><a href="#status">2.4 &nbsp;Status modes — five readings, one register</a></li>
     <li><a href="#deactivate">2.5 &nbsp;Deactivation — recursive vs unnecessary</a></li>
@@ -263,14 +266,67 @@ own per-conjecture pool in <code>filter.cpp</code> over
 <code>prove()</code>/<code>proveKernel</code>. Each cycle steps every active block once — the elementary
 step, run as three barriered phase sweeps
 (<a href="parallel.html#pool">§5.1</a>) — generate hash requests
-(<code>generateEncodedRequestsStatic</code>, one function whose obligatory-stump
-length is 1 for singletons, 2 for pairs and 0 in filter mode), match against
+(<code>generateEncodedRequestsStatic</code>, one function that each caller tells
+which already-known fact a request has to carry), match against
 <code>overallHashMemory.encodedMap</code>, fire via <code>addStatement</code>,
 push main-scope results to <code>mailOut</code> — then drains mail. The loop ends
 when a whole cycle adds nothing or the per-batch iteration cap is hit; warm-up
 cycles run first to bring rule cascades to steady state before the budgeted main
 iterations.
 </p>
+
+<h3 id="cuda-filter-classes">2.2.1 &nbsp;CUDA filter classes</h3>
+<p>
+In the explicit CUDA route, several processor-order request-generator calls can
+ask the same frozen filtering question. Equality is exact: the logical block,
+registry kind, iteration ceiling, whole-key mode, and statement count must all
+match. The host gives such calls one immutable class. The GPU filters and stably
+orders the statement rows once for that class, then each original call reads the
+same count and offset. The calls themselves are not merged: their original
+ordinals continue through growth, duplicate removal, provenance ordering, and
+the final canonical stream.
+</p>
+
+<figure>
+<svg viewBox="0 0 760 190" role="img" aria-label="Exact duplicate CUDA filter calls share one compact statement span while retaining their original call identities">
+  <defs>
+    <marker id="gpu-fc-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/>
+    </marker>
+  </defs>
+  <rect x="18" y="38" width="145" height="96" rx="8" fill="#262938" stroke="#EF9F27"/>
+  <text x="90" y="60" fill="#EF9F27" font-size="11" font-weight="bold" text-anchor="middle">original calls</text>
+  <text x="90" y="82" fill="#8B8FA5" font-size="9" text-anchor="middle">call 12</text>
+  <text x="90" y="99" fill="#8B8FA5" font-size="9" text-anchor="middle">call 13</text>
+  <text x="90" y="116" fill="#8B8FA5" font-size="9" text-anchor="middle">call 14</text>
+
+  <path d="M163 86 L224 86" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#gpu-fc-ar)"/>
+  <rect x="226" y="38" width="150" height="96" rx="8" fill="#20232F" stroke="#5DCAA5"/>
+  <text x="301" y="60" fill="#5DCAA5" font-size="11" font-weight="bold" text-anchor="middle">exact class table</text>
+  <text x="301" y="84" fill="#8B8FA5" font-size="9" text-anchor="middle">five fields compared</text>
+  <text x="301" y="102" fill="#8B8FA5" font-size="9" text-anchor="middle">12, 13 → class A</text>
+  <text x="301" y="119" fill="#8B8FA5" font-size="9" text-anchor="middle">14 → class B</text>
+
+  <path d="M376 86 L437 86" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#gpu-fc-ar)"/>
+  <rect x="439" y="38" width="145" height="96" rx="8" fill="#262938" stroke="#B084EB"/>
+  <text x="511" y="60" fill="#B084EB" font-size="11" font-weight="bold" text-anchor="middle">GPU once per class</text>
+  <text x="511" y="84" fill="#8B8FA5" font-size="9" text-anchor="middle">predicate → scan</text>
+  <text x="511" y="102" fill="#8B8FA5" font-size="9" text-anchor="middle">stable compact span</text>
+  <text x="511" y="119" fill="#8B8FA5" font-size="9" text-anchor="middle">first 8,192 rows</text>
+
+  <path d="M584 86 L645 86" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#gpu-fc-ar)"/>
+  <rect x="647" y="38" width="95" height="96" rx="8" fill="#20232F" stroke="#EF9F27"/>
+  <text x="694" y="60" fill="#EF9F27" font-size="10" font-weight="bold" text-anchor="middle">growth</text>
+  <text x="694" y="84" fill="#8B8FA5" font-size="8.5" text-anchor="middle">shared span</text>
+  <text x="694" y="102" fill="#8B8FA5" font-size="8.5" text-anchor="middle">original call</text>
+  <text x="694" y="119" fill="#8B8FA5" font-size="8.5" text-anchor="middle">tokens</text>
+
+  <text x="380" y="166" fill="#8B8FA5" font-size="9.5" text-anchor="middle">share immutable filtering work · preserve every semantic call position</text>
+</svg>
+<figcaption><b>Reuse without coalescing.</b> Exact duplicate calls share the
+expensive filter result, while the original call sequence remains the ordering
+identity seen by every later stage.</figcaption>
+</figure>
 <p>
 <b>Two single-threaded drains run at the cycle boundary.</b> The first is the
 mail router (<code>mailOut</code> → recipients' <code>mailIn</code>, shown
@@ -339,7 +395,9 @@ means “goal, not given”: premises become rules, the head becomes a
 <code>intToBeProved</code> goal.</li>
 <li><b>Broadcast / mail.</b> A peer block's main-scope result arrives on
 <code>mailIn.statements</code> and is absorbed by <code>addStatement</code>
-(re-precompiling if needed).</li>
+(re-precompiling if needed). In an incubator batch the proved-theorem rules reach
+the anchor block only; the externally provided lemmas still reach every block
+below it.</li>
 </ul>
 
 <figure>
@@ -373,13 +431,14 @@ means “goal, not given”: premises become rules, the head becomes a
   <rect x="534" y="104" width="192" height="26" rx="5" fill="#20232F" stroke="#3A3D4A"/>
   <text x="630" y="121" fill="#F0E8DC" font-size="9.5" text-anchor="middle">head-implication LMV (fires)</text>
   <rect x="534" y="134" width="192" height="26" rx="5" fill="#20232F" stroke="#3A3D4A"/>
-  <text x="630" y="151" fill="#F0E8DC" font-size="9.5" text-anchor="middle">marker LMV (admission probe)</text>
+  <text x="630" y="151" fill="#F0E8DC" font-size="9.5" text-anchor="middle">derivative LMV (anchor retained)</text>
 
   <text x="380" y="242" fill="#8B8FA5" font-size="11" text-anchor="middle">A bare fact short-cuts via addStatement; every implication lands in encodedMap under both insert sites.</text>
 </svg>
 <figcaption><b>Three doors, one store, two insert sites.</b> <code>addToHashMemory</code>
-writes the firing rule <i>and</i> a marker template used later by the admission
-probe (<a href="substrate.html#hash">§3.2</a>).</figcaption>
+  writes the firing rule <i>and</i> a derivative template used later by the admission
+  probe; anchored rules retain their anchor context in that derivative
+  (<a href="substrate.html#hash">§3.2</a>).</figcaption>
 </figure>
 
 <p>
@@ -410,27 +469,48 @@ it is worth knowing as a reference:
 <tr><td><b>0</b></td><td>local derivation, force-deep</td><td>yes (deep)</td><td>yes</td><td>Pass&nbsp;B deferred emissions, OR-branch seeds, CE admission</td></tr>
 <tr><td><b>1</b></td><td>local derivation, normal</td><td>yes</td><td>yes</td><td>canonical produce-and-absorb: <code>addStatement</code> main branch, fixpoint deposits, head writes, <b>integration-revival absorb</b></td></tr>
 <tr><td><b>2</b></td><td>goal / <code>intToBeProved</code> insert</td><td>no — <code>prepareIntegration</code> runs instead</td><td>yes (goal)</td><td>new head registered to prove; OR-branch head</td></tr>
-<tr><td><b>3</b></td><td>external mail absorb</td><td><b>rule carriers only</b></td><td>yes (from <code>mailIn</code>)</td><td><code>mailIn</code> drain absorb — a compact <code>(implication&lt;N&gt;[…])</code> re-disintegrates to recover the rule, and a negated compact existence <code>!(existence&lt;N&gt;[…])</code> re-disintegrates to install its universal rule; a plain fact is absorbed as-is</td></tr>
+<tr><td><b>3</b></td><td>external mail absorb</td><td><b>rule carriers only</b></td><td>yes (from <code>mailIn</code>)</td><td><code>mailIn</code> drain absorb — a compact <code>(implication&lt;N&gt;[…])</code> re-disintegrates to recover the rule, and a negated compact existence <code>!(existence&lt;N&gt;[…])</code> re-disintegrates to install its universal rule; a plain fact is first canonicalized under the recipient's equivalence classes (at most one <code>int_</code>/<code>it_</code> member per class reaches the hashburst — the same judgement the registry filter uses), then absorbed</td></tr>
 <tr><td><b>4</b></td><td>fast-path fact load</td><td>no</td><td>no (levels only)</td><td>simple-facts bootstrap at grid setup</td></tr>
+<tr><td><b>5</b></td><td>flag-5 relay arrival</td><td><b>yes — witness minting on</b></td><td>yes (from <code>mailIn</code>)</td><td><code>mailIn</code> drain absorb when the statement's mail flag column reads 5: a positive existence compact whose products the SENDER could not admit is re-disintegrated HERE, where the demand may live; the carrier registers non-local, admitted products local</td></tr>
 </table>
+
+<p>
+<b>The canonical door.</b> Before any of these paths runs (and after the
+ancestor-known refusal of the raw text), every deposit except a goal, a positive
+or negated equality, or an anchor predicate is rewritten to its class-canonical
+form under the equivalence classes at the deposit's <i>own</i> scope — normal
+names included, the representative being the same one the admission keys collapse
+onto. Only canonical forms are admitted: if the canonical form is already known at
+this scope or an ancestor the deposit ends there; otherwise the canonical form
+proceeds as this block's <i>own</i> derivation when one of the equalities that fired
+is the block's own (the rewrite is then its class product — local, visible to the
+goal discharge and to the mail; under purely inherited equalities it keeps the
+sender's status), the raw spelling keeps its producer history line (shipped down
+with the mail when the result is local), the canonical form gets one <code>equality1</code> bridge
+citing the raw form and the equalities that fired, and the level run gains the
+equalities' levels. The class multiplication still fans the canonical form out into
+its variants, so a literal goal still closes. Mail rows are offered raw — the door
+is the one canonicalizer.
+</p>
 
 <div class="key">
 <b>The status question, always:</b> has whoever produced this expression already
-disintegrated it? Routing mail from a peer → <code>3</code>. This block's own body
+disintegrated it? Routing mail from a peer → <code>3</code> (or <code>5</code> when
+the sender flagged it for receiver-side disintegration). This block's own body
 (equi-class rewrite, OR seed, revival absorb) → <code>1</code> (or <code>0</code> to
 force deep). A theorem to prove → <code>2</code>. Picking an obviously-wrong status
 no longer fails silently: a non-compact statement deposited under <code>3</code>
 trips an <code>assert</code> at the disintegration gate
-(<code>assert(isCompactImplication || status == 0 || status == 1)</code>).
+(<code>assert(isCompactImplication || status == 0 || status == 1 || status == 5)</code>).
 </div>
 
 <!-- ===================== 2.4 ===================== -->
-<h2 id="status">2.4 &nbsp;Status modes — five readings, one register</h2>
+<h2 id="status">2.4 &nbsp;Status modes — six readings, one register</h2>
 <p>
-The five-row table in §2.3 lists the modes; this section explains each row
+The six-row table in §2.3 lists the modes; this section explains each row
 with the concrete scenario it serves. The <code>status</code> argument is the
 4th parameter of <code>addExprToMemoryBlock</code>, threaded through from the
-integration absorber and the mail-absorb path. Source check: the integer values 0, 1, 2, 3, 4 are
+integration absorber and the mail-absorb path. Source check: the integer values 0, 1, 2, 3, 4, 5 are
 real branches in the code path.
 </p>
 
@@ -480,6 +560,21 @@ from the mail's <code>exprOriginMap</code>.</dd>
 bootstrap). Nothing to disintegrate, no origin to record — just register
 the fact and the levels it lives at. Used during the CE filter's model
 load (§<a href="auxiliary.html#ce">11.2</a>).</dd>
+
+<dt>status = 5 — flag-5 relay arrival</dt>
+<dd>The receiver half of the witness relay. When a block's own disintegration
+of an existence compact cannot admit the products (the admission demand lives
+only at a descendant block — demand is strictly block-local), it mails the
+compact down flagged “external, may be disintegrated” on a per-statement side
+column, together with the witness-generation stamp its own minting would have
+used. A receiver seeing the flag runs the compact through the FULL
+disintegration — fresh witnesses minted here, at the carried generation — so a
+block that holds the demand admits and registers the products
+<i>locally</i> (they feed its own rule firings and mail onward normally),
+while an undemanded receiver just parks them under the ordinary Pass&nbsp;B
+discipline. The carrier itself registers non-local, so it is never
+re-forwarded — mail already reaches every descendant directly — and a mailed
+carrier never re-stages a relay, so there is no cascade.</dd>
 </dl>
 
 <figure>

@@ -23,6 +23,7 @@
  Contributor License Agreement(CLA).See the project's CONTRIBUTING.md file.*/
 
 #include "global_memory_manager.hpp"
+#include "../infra/diagnostics_log.hpp"
 
 #include "../parameters.hpp"
 
@@ -583,10 +584,10 @@ namespace gl {
         return peakPagesHeld_.load(std::memory_order_relaxed);
     }
 
-    /// @brief Print the two-level page-directory telemetry to stderr — the
-    ///        end-of-batch spill summary.
+    /// @brief Print the two-level page-directory telemetry to the common
+    ///        diagnostics log — the end-of-batch spill summary.
     void GlobalMemoryManager::reportPageStats() const {
-        std::cerr << "[mem] two-level page-directory promotions: "
+        diagnosticsLog() << "[mem] two-level page-directory promotions: "
                   << twoLevelPromotions()
                   << ", peak data pages at a promotion: "
                   << peakPagesHeld() << "\n";

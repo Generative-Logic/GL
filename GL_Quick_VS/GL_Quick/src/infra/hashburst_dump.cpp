@@ -399,28 +399,6 @@ namespace hashburst_dump {
             }
         }
 
-        void writeWholeExpressions(std::ofstream& f, const Memory& body) {
-            // Section contract: the `registered`-membership rows, decoded
-            // and lex-sorted by (original, validityName) — the former
-            // std::map<EncodedExpression, ...> iteration order,
-            // byte-identical (Rule 14).
-            std::vector<std::pair<std::string, std::string>> rows;
-            rows.reserve(body.intKnownStatements.count());
-            for (int32_t i = 1; i <= body.intKnownStatements.count(); ++i) {
-                if (!body.intKnownStatements.valueAt(i).registered) continue;
-                const int64_t key = body.intKnownStatements.keyAt(i);
-                const NameId origId = Codec<StatementKey>::decode(key).orig;
-                const NameId valId = Codec<StatementKey>::decode(key).validity;
-                rows.emplace_back(body.nameMap.decode(origId),
-                                  body.nameMap.decode(valId));
-            }
-            std::sort(rows.begin(), rows.end());
-            f << "-- wholeExpressions (" << rows.size() << "):\n";
-            for (const auto& row : rows) {
-                f << "  " << row.first << " | v=" << row.second << "\n";
-            }
-        }
-
         void writeLocalEncodedStatements(std::ofstream& f, const Memory& body) {
             // Rows decoded from the int registries; titles + per-row format
             // are the Rule-14 output contract, byte-identical.
@@ -439,14 +417,14 @@ namespace hashburst_dump {
         }
 
         void writeIntKnownStatements(std::ofstream& f, const Memory& body) {
-            // Section contract: the `known`-membership rows (the Site F
-            // dedup record). The packed map also carries registered-only
-            // rows, which belong to the wholeExpressions section.
+            // Section contract: every registry row — row presence IS the
+            // known membership (the former registered-only rows no longer
+            // exist, and the wholeExpressions section that showed them is
+            // retired with the maintainer's consent).
             std::vector<int64_t> keys;
             keys.reserve(body.intKnownStatements.count());
             for (int32_t i = 1; i <= body.intKnownStatements.count(); ++i)
-                if (body.intKnownStatements.valueAt(i).known)
-                    keys.push_back(body.intKnownStatements.keyAt(i));
+                keys.push_back(body.intKnownStatements.keyAt(i));
             std::sort(keys.begin(), keys.end());
             f << "-- intKnownStatements (" << keys.size()
               << " packed (origId,validityId) keys):\n";
@@ -493,6 +471,41 @@ namespace hashburst_dump {
                         first = false;
                     }
                     f << "}\n";
+                    // Per-class intEqualityLevelsMap (user-directed Rule-14
+                    // extension, 2026-08-13): the stored per-pair admission
+                    // levels — the set the substitution sink merges into
+                    // every rewritten statement's level run. Derived view:
+                    // each pair's two member names decoded and printed
+                    // lex-sorted within the pair, rows lex-sorted — byte-
+                    // stable across runs (ids never printed).
+                    f << "      intEqualityLevelsMap ("
+                      << ec.intEqualityLevelsMap.size() << "):\n";
+                    {
+                        std::vector<std::string> pairRows;
+                        pairRows.reserve(ec.intEqualityLevelsMap.size());
+                        for (const auto& kv : ec.intEqualityLevelsMap) {
+                            const NameId pa = static_cast<NameId>(
+                                static_cast<uint64_t>(kv.first) >> 32);
+                            const NameId pb = static_cast<NameId>(
+                                static_cast<uint64_t>(kv.first)
+                                & 0xffffffffu);
+                            std::string na(body.nameMap.decode(pa));
+                            std::string nb(body.nameMap.decode(pb));
+                            if (nb < na) std::swap(na, nb);
+                            std::string row = "      (" + na + "," + nb
+                                + ") | levels={";
+                            bool fl = true;
+                            for (const int lv : kv.second) {
+                                if (!fl) row += ",";
+                                row += std::to_string(lv);
+                                fl = false;
+                            }
+                            row += "}";
+                            pairRows.push_back(std::move(row));
+                        }
+                        std::sort(pairRows.begin(), pairRows.end());
+                        for (const auto& row : pairRows) f << row << "\n";
+                    }
                     // Per-class equalityOriginMap (user-directed Rule-14
                     // extension): decoded + key-sorted derived view, same
                     // row format as exprOriginMap — the class-side origin
@@ -673,6 +686,69 @@ namespace hashburst_dump {
                 for (const auto& row : dcRows) {
                     f << "  parent=" << row.parent << " | orSig=" << row.orSig
                       << " | count=" << row.count << "\n";
+                }
+            }
+            // Sequenced or-disintegration pending queue (maintainer-approved
+            // section): the unreleased disjuncts per cohort plus the
+            // cohort's stored seed level run. Derived view — decoded,
+            // (parent, orSig) lex-sorted; the pending run is decoded-lex
+            // storage order read as-is.
+            f << "-- orPendingBranches (" << body.orPendingBranches.count()
+              << "):\n";
+            {
+                struct OrPendingDumpRow {
+                    std::string parent;
+                    std::string orSig;
+                    std::vector<int32_t> pending;
+                    std::vector<int32_t> levels;
+                };
+                std::vector<OrPendingDumpRow> pRows;
+                const int32_t pN = body.orPendingBranches.count();
+                pRows.reserve(static_cast<std::size_t>(pN));
+                for (int32_t i = 1; i <= pN; ++i) {
+                    const int32_t cid = Codec<int32_t>::decode(
+                        body.orPendingBranches.keyAt(i));
+                    const LbStatePairKey cohort =
+                        decodeOrCohortIds(body.lbStateInterner, cid);
+                    std::vector<int32_t> djs;
+                    const int32_t rl = body.orPendingBranches.runLen(i);
+                    for (int32_t j = 0; j < rl; ++j)
+                        djs.push_back(body.orPendingBranches.valueAt(i, j));
+                    std::vector<int32_t> lvls;
+                    const int32_t lRow = body.orPendingLevels.lookup(cid);
+                    if (lRow != 0) {
+                        const int32_t ln = body.orPendingLevels.runLen(lRow);
+                        for (int32_t j = 0; j < ln; ++j)
+                            lvls.push_back(
+                                body.orPendingLevels.valueAt(lRow, j));
+                    }
+                    pRows.push_back({
+                        std::string(body.lbStateInterner.decode(cohort.high)),
+                        std::string(body.lbStateInterner.decode(cohort.low)),
+                        std::move(djs), std::move(lvls) });
+                }
+                std::sort(pRows.begin(), pRows.end(),
+                    [](const auto& a, const auto& b) {
+                        if (a.parent != b.parent) return a.parent < b.parent;
+                        return a.orSig < b.orSig;
+                    });
+                for (const auto& row : pRows) {
+                    f << "  parent=" << row.parent << " | orSig=" << row.orSig
+                      << " | pending={";
+                    bool first = true;
+                    for (const int32_t d : row.pending) {
+                        if (!first) f << ",";
+                        f << body.lbStateInterner.decode(d);
+                        first = false;
+                    }
+                    f << "} | levels={";
+                    first = true;
+                    for (const int32_t lv : row.levels) {
+                        if (!first) f << ",";
+                        f << lv;
+                        first = false;
+                    }
+                    f << "}\n";
                 }
             }
         }
@@ -863,60 +939,56 @@ namespace hashburst_dump {
                 }
                 f << "]}";
             };
-            auto dumpOwnerSetMap = [&](const char* label,
-                const TypedColdBlobMap<NormKey, OwnerSet>& m) {
-                const int32_t n = m.count();
-                f << "-- " << tag << "." << label << " (" << n
-                  << " keys, owner-set):\n";
-                // Derived view (Rule 14): the cold blob map stores keys in id
-                // (insertion) order; decode every (key, OwnerSet) and lex-sort by
-                // key so the section is deterministic and storage-independent
-                // (matches the writeEncodedMapMarkers decode+sort pattern). The
-                // per-key format below is byte-identical to the former
-                // unordered_map iteration.
-                std::vector<std::pair<NormKey, OwnerSet>> rows;
+            // Derived view (Rule 14; decoder retyped with the containers,
+            // D-303): both normalized-key indexes are dumped as lex-sorted
+            // key rows — the whole-key set has no record, the subkey record
+            // shows its loose byte and signature count.
+            auto sortedNormKeys = [&](auto&& decodeKeyAt, int32_t n) {
+                std::vector<std::pair<NormKey, int32_t>> rows;
                 rows.reserve(static_cast<std::size_t>(n));
                 for (int32_t id = 1; id <= n; ++id)
-                    rows.emplace_back(m.decodeKey(id), m.recordAt(id, 0));
+                    rows.emplace_back(decodeKeyAt(id), id);
                 std::sort(rows.begin(), rows.end(),
-                    [](const std::pair<NormKey, OwnerSet>& a,
-                       const std::pair<NormKey, OwnerSet>& b) {
+                    [](const std::pair<NormKey, int32_t>& a,
+                       const std::pair<NormKey, int32_t>& b) {
                         if (a.first.numberExpressions != b.first.numberExpressions)
                             return a.first.numberExpressions
                                  < b.first.numberExpressions;
                         return a.first.data < b.first.data;
                     });
-                for (const auto& [k, ownerSet] : rows) {
-                    f << "  key=";
-                    const IntNormalizedKey ik(k.numberExpressions, k.data.data(),
-                        static_cast<NameId>(k.data.size()));
-                    writeIntKey(ik);
-                    f << " | owners=" << ownerSet.partitionIds.size() << " | {";
-                    // Derived view (Rule 14): both halves of each packed
-                    // owner id are NameMap ids — decode and lex-sort the
-                    // (implication, scope) pairs, identical bytes to the
-                    // former owners-map iteration order.
-                    std::vector<std::pair<std::string, std::string>> ownerRows;
-                    ownerRows.reserve(ownerSet.partitionIds.size());
-                    for (const int64_t ownerId : ownerSet.partitionIds) {
-                        ownerRows.emplace_back(
-                            std::string(nm.decode(Codec<StatementKey>::decode(ownerId).orig)),
-                            std::string(nm.decode(Codec<StatementKey>::decode(ownerId).validity)));
-                    }
-                    std::sort(ownerRows.begin(), ownerRows.end());
-                    bool first = true;
-                    for (const auto& orow : ownerRows) {
-                        if (!first) f << ", ";
-                        f << orow.first << "(v=" << orow.second << ")";
-                        first = false;
-                    }
-                    f << "}\n";
-                }
+                return rows;
             };
-            dumpOwnerSetMap("normalizedEncodedKeys",            hm.normalizedEncodedKeys);
-            dumpOwnerSetMap("normalizedEncodedSubkeys",         hm.normalizedEncodedSubkeys);
-            dumpOwnerSetMap("normalizedEncodedSubkeysMinusOne", hm.normalizedEncodedSubkeysMinusOne);
-            dumpOwnerSetMap("normalizedEncodedSubkeysMinusTwo", hm.normalizedEncodedSubkeysMinusTwo);
+            auto writeNormKeyRow = [&](const NormKey& k) {
+                f << "  key=";
+                const IntNormalizedKey ik(k.numberExpressions, k.data.data(),
+                    static_cast<NameId>(k.data.size()));
+                writeIntKey(ik);
+            };
+            {
+                const TypedColdBlobMap<NormKey, RuleOwnerRec>& s = hm.normalizedEncodedKeys;
+                const int32_t n = s.count();
+                f << "-- " << tag << ".normalizedEncodedKeys (" << n
+                  << " keys, set):\n";
+                for (const auto& [k, id] : sortedNormKeys(
+                         [&](int32_t i) { return s.decodeKey(i); }, n)) {
+                    (void)id;
+                    writeNormKeyRow(k);
+                    f << "\n";
+                }
+            }
+            {
+                const TypedColdBlobMap<NormKey, OwnerSet>& m = hm.normalizedEncodedSubkeys;
+                const int32_t n = m.count();
+                f << "-- " << tag << ".normalizedEncodedSubkeys (" << n
+                  << " keys, u_-signature record):\n";
+                for (const auto& [k, id] : sortedNormKeys(
+                         [&](int32_t i) { return m.decodeKey(i); }, n)) {
+                    const OwnerSet rec = m.recordAt(id, 0);
+                    writeNormKeyRow(k);
+                    f << " | loose=" << (rec.hasLooseOwner ? 1 : 0)
+                      << " | sigs=" << rec.uSignatures.size() << "\n";
+                }
+            }
 
             f << "-- " << tag << ".remainingArgsNormalizedEncodedMap ("
               << hm.remainingArgsNormalizedEncodedMap.count() << " key-sets):\n";
@@ -1130,6 +1202,111 @@ namespace hashburst_dump {
                     }
                 }
             }
+            // Parked or-cohorts — the maintainer-designed admission-based
+            // ordis section (approved with the plan; new section appended in
+            // the EXTENDED block, the sacred sections untouched). Derived
+            // view (Rule 14): decoded lex-sorted, mirroring rejectedMap.
+            f << "-- " << tag << ".rejectedMapOrdis ("
+              << hm.rejectedMapOrdis.count() << "):\n";
+            std::vector<std::pair<std::pair<std::string, std::string>,
+                                  RejectedOrdisValueSet>> rmoRows;
+            rmoRows.reserve(hm.rejectedMapOrdis.count());
+            for (int32_t id = 1; id <= hm.rejectedMapOrdis.count(); ++id) {
+                const int64_t pk = hm.rejectedMapOrdis.keyAt(id);
+                rmoRows.emplace_back(decodeTemplateKey(pk, ti, nm),
+                                     rejectedOrdisRecordsAt(
+                                         hm.rejectedMapOrdis, pk, valIn));
+            }
+            std::sort(rmoRows.begin(), rmoRows.end(),
+                      [](const std::pair<std::pair<std::string, std::string>,
+                                         RejectedOrdisValueSet>& a,
+                         const std::pair<std::pair<std::string, std::string>,
+                                         RejectedOrdisValueSet>& b) {
+                          return a.first < b.first;
+                      });
+            for (const auto& [tv, values] : rmoRows) {
+                f << "  key=" << tv.first << " | v=" << tv.second
+                  << " | entries=" << values.size() << "\n";
+                int vi = 0;
+                for (const auto& v : values) {
+                    f << "    [" << vi++ << "] or=" << valIn.decode(v.orStatement)
+                      << " | levels={";
+                    bool first = true;
+                    for (int lv : v.levels) { if (!first) f << ","; f << lv; first = false; }
+                    f << "}\n";
+                }
+            }
+            // Ordis2 park index — the rejected half of the
+            // D-267 (maintainer-approved appended
+            // section in the EXTENDED block, the sacred sections untouched).
+            // Derived view (Rule 14): decoded lex-sorted; the value family
+            // is RejectedMapOrdisValue verbatim.
+            f << "-- " << tag << ".rejectedMapOrdis2 ("
+              << hm.rejectedMapOrdis2.count() << "):\n";
+            std::vector<std::pair<std::pair<std::string, std::string>,
+                                  RejectedOrdisValueSet>> rmo2Rows;
+            rmo2Rows.reserve(hm.rejectedMapOrdis2.count());
+            for (int32_t id = 1; id <= hm.rejectedMapOrdis2.count(); ++id) {
+                const int64_t pk = hm.rejectedMapOrdis2.keyAt(id);
+                rmo2Rows.emplace_back(decodeTemplateKey(pk, ti, nm),
+                                      rejectedOrdisRecordsAt(
+                                          hm.rejectedMapOrdis2, pk, valIn));
+            }
+            std::sort(rmo2Rows.begin(), rmo2Rows.end(),
+                      [](const std::pair<std::pair<std::string, std::string>,
+                                         RejectedOrdisValueSet>& a,
+                         const std::pair<std::pair<std::string, std::string>,
+                                         RejectedOrdisValueSet>& b) {
+                          return a.first < b.first;
+                      });
+            for (const auto& [tv, values] : rmo2Rows) {
+                f << "  key=" << tv.first << " | v=" << tv.second
+                  << " | entries=" << values.size() << "\n";
+                int vi = 0;
+                for (const auto& v : values) {
+                    f << "    [" << vi++ << "] or=" << valIn.decode(v.orStatement)
+                      << " | levels={";
+                    bool first = true;
+                    for (int lv : v.levels) { if (!first) f << ","; f << lv; first = false; }
+                    f << "}\n";
+                }
+            }
+            // Ordis2 demand map — the admission half of the
+            // D-267 (maintainer-approved appended
+            // section in the EXTENDED block, the sacred sections untouched).
+            // Derived view (Rule 14): decoded lex-sorted, mirroring
+            // rejectedMapOrdis; sourceImplId decodes via the RULE interner.
+            f << "-- " << tag << ".admissionMapOrdis2 ("
+              << hm.admissionMapOrdis2.count() << "):\n";
+            std::vector<std::pair<std::pair<std::string, std::string>,
+                                  AdmissionOrdis2ValueSet>> ao2Rows;
+            ao2Rows.reserve(hm.admissionMapOrdis2.count());
+            for (int32_t id = 1; id <= hm.admissionMapOrdis2.count(); ++id) {
+                const int64_t pk = hm.admissionMapOrdis2.keyAt(id);
+                ao2Rows.emplace_back(decodeTemplateKey(pk, ti, nm),
+                                     admissionOrdis2RecordsAt(
+                                         hm.admissionMapOrdis2, pk, ruleIn));
+            }
+            std::sort(ao2Rows.begin(), ao2Rows.end(),
+                      [](const std::pair<std::pair<std::string, std::string>,
+                                         AdmissionOrdis2ValueSet>& a,
+                         const std::pair<std::pair<std::string, std::string>,
+                                         AdmissionOrdis2ValueSet>& b) {
+                          return a.first < b.first;
+                      });
+            for (const auto& [tv, values] : ao2Rows) {
+                f << "  key=" << tv.first << " | v=" << tv.second
+                  << " | entries=" << values.size() << "\n";
+                int vi = 0;
+                for (const auto& v : values) {
+                    f << "    [" << vi++ << "] sourceImpl="
+                      << ruleIn.decode(v.sourceImplId)
+                      << " | levels={";
+                    bool first = true;
+                    for (int lv : v.levels) { if (!first) f << ","; f << lv; first = false; }
+                    f << "}\n";
+                }
+            }
 
             // Derived views: decoded names lex-sorted. DELIBERATE order
             // change vs the historical raw hash-iteration print of the
@@ -1214,7 +1391,6 @@ namespace hashburst_dump {
                     f << "  " << orig << " | v=" << val << "\n";
                 }
             };
-            writeColdPackedTemplateSet("consumedAdmissionKeys", hm.consumedAdmissionKeys);
             writeColdPackedTemplateSet("revisitInProgress", hm.revisitInProgress);
             f << "-- " << tag << ".maxKeyLength=" << hm.maxKeyLength << "\n";
         }
@@ -1251,7 +1427,6 @@ namespace hashburst_dump {
             writeMemoryCounters(f, body);
             writeNameMap(f, body);
             writeStatementLevelsMap(f, body);
-            writeWholeExpressions(f, body);
             writeLocalEncodedStatements(f, body);
             writeIntKnownStatements(f, body);
             writeEquivalenceClassesMap(f, body);
@@ -1269,21 +1444,32 @@ namespace hashburst_dump {
     } // anonymous namespace
 
     bool isTargetLB(const Memory& body) {
-        // User-directed target (Rule 14): the ES3 premise LB
-        // (EnumerationSet3[2,6,7,10]) of the IncubatorGauss3 batch —
-        // the rung-2.1 LB whose _ordis_ false-assumption branch cohorts
-        // (e.g. assumption 0=1 with 0≠1 known) are the dead-branch
-        // removal's acceptance case (OPEN-1, 07_or_branching.md).
-        // Argument ids: 1=N, 4=+, 2=0, 6=1, 7=2, 10=M. Full parent
-        // chain to the root sentinel per Rule 12: root →
-        // (AnchorIncubator3) → (EnumerationSet3[2,6,7,10]); the chain
-        // exists only in the IncubatorGauss3 batch (the sole emitter
-        // of the ES2/ES3 conjecture families).
-        if (body.exprKey() != "(EnumerationSet3[2,6,7,10])") return false;
-        const Memory* p1 = body.parentMemory;
-        if (!p1 || p1->exprKey() != "(AnchorIncubator3[1,2,3,4,5,6,7,8,9])") return false;
-        const Memory* p2 = p1->parentMemory;
-        return p2 && p2->exprKey().empty() && p2->parentMemory == nullptr;
+        // The FTA shortcut theorem whose registration verdict differs between
+        // the pairwise and the batch equi-class application:
+        // (>[1,2,3,4,5,6,7,8](AnchorFTA[1,2,3,4,5,6,7,8])(>[9,10,11](in3[9,10,11,5])
+        //   (>[](preorder[1,4,7,11])(>[](in[9,1])(>[]!(preorder[1,4,7,10])(preorder[1,4,7,9]))))))
+        // Full parent chain to the root sentinel per Rule 12:
+        // root -> (AnchorFTA[1,2,3,4,5,6,7,8])
+        //      -> (in3[9,10,11,5])
+        //      -> (preorder[1,4,7,11])
+        //      -> (in[9,1])                  [level-3 LB, the premise the verdict misses]
+        //      -> !(preorder[1,4,7,10])      [proof LB]
+        const auto isLevel3LB = [](const Memory* m) -> bool {
+            if (!m || m->exprKey() != "(in[9,1])") return false;
+            const Memory* p1 = m->parentMemory;
+            if (!p1 || p1->exprKey() != "(preorder[1,4,7,11])") return false;
+            const Memory* p2 = p1->parentMemory;
+            if (!p2 || p2->exprKey() != "(in3[9,10,11,5])") return false;
+            const Memory* p3 = p2->parentMemory;
+            if (!p3 || p3->exprKey() != "(AnchorFTA[1,2,3,4,5,6,7,8])") return false;
+            const Memory* p4 = p3->parentMemory;
+            return p4 && p4->exprKey().empty() && p4->parentMemory == nullptr;
+        };
+        if (isLevel3LB(&body)) return true;
+        if (body.exprKey() == "!(preorder[1,4,7,10])") {
+            return isLevel3LB(body.parentMemory);
+        }
+        return false;
     }
 
     void dumpEntry(const Memory& body,

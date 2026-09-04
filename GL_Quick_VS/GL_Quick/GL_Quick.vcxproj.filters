@@ -21,6 +21,18 @@
       <UniqueIdentifier>{2E8A4D7C-91B5-4C3F-A6E8-5D0B7F3C9A21}</UniqueIdentifier>
       <Extensions>cpp;hpp</Extensions>
     </Filter>
+    <Filter Include="GPU">
+      <UniqueIdentifier>{6F05BF70-6BB8-46B9-A6AE-C81D37AB07BC}</UniqueIdentifier>
+      <Extensions>cu;hpp</Extensions>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <CudaCompile Include="src\gpu\phase2_cuda.cu">
+      <Filter>GPU</Filter>
+    </CudaCompile>
+    <CudaCompile Include="src\tests\test_phase2_cuda.cu">
+      <Filter>Tests</Filter>
+    </CudaCompile>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\main.cpp">
@@ -80,7 +92,22 @@
     <ClCompile Include="src\infra\rt_tracker.cpp">
       <Filter>Infra</Filter>
     </ClCompile>
+    <ClCompile Include="src\infra\mem_tracker.cpp">
+      <Filter>Infra</Filter>
+    </ClCompile>
+    <ClCompile Include="src\gpu\phase2_projection.cpp">
+      <Filter>GPU</Filter>
+    </ClCompile>
+    <ClCompile Include="src\gpu\phase2_sealing.cpp">
+      <Filter>GPU</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_phase2_projection.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
     <ClCompile Include="src\tests\test_harness.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_mem_tracker.cpp">
       <Filter>Tests</Filter>
     </ClCompile>
     <ClCompile Include="src\tests\test_memory.cpp">
@@ -104,7 +131,16 @@
     <ClCompile Include="src\tests\test_or_intro_rules.cpp">
       <Filter>Tests</Filter>
     </ClCompile>
+    <ClCompile Include="src\tests\test_or_elimination.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
     <ClCompile Include="src\tests\test_antisym_variable_copy.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_output_collision_copy.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_incubator_mail_routing.cpp">
       <Filter>Tests</Filter>
     </ClCompile>
     <ClCompile Include="src\tests\test_vacuous_premise_suppression.cpp">
@@ -120,6 +156,9 @@
       <Filter>Tests</Filter>
     </ClCompile>
     <ClCompile Include="src\tests\test_equi_reshuffle.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_theorem_usage_graph.cpp">
       <Filter>Tests</Filter>
     </ClCompile>
     <ClCompile Include="src\tests\test_lb_split.cpp">
@@ -168,6 +207,24 @@
       <Filter>Tests</Filter>
     </ClCompile>
     <ClCompile Include="src\tests\test_arena_stack.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_request_key_build.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_key_encode_memo.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_rule_index_staging.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_two_target_install.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_rebuild_in_place.cpp">
+      <Filter>Tests</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tests\test_request_gates.cpp">
       <Filter>Tests</Filter>
     </ClCompile>
     <ClCompile Include="src\tests\test_arena_vector.cpp">
@@ -268,6 +325,9 @@
     <ClInclude Include="src\infra\rt_tracker.hpp">
       <Filter>Infra</Filter>
     </ClInclude>
+    <ClInclude Include="src\infra\mem_tracker.hpp">
+      <Filter>Infra</Filter>
+    </ClInclude>
     <ClInclude Include="src\parameters.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -282,6 +342,15 @@
     </ClInclude>
     <ClInclude Include="src\tests\test_harness.hpp">
       <Filter>Tests</Filter>
+    </ClInclude>
+    <ClInclude Include="src\gpu\phase2_cuda.hpp">
+      <Filter>GPU</Filter>
+    </ClInclude>
+    <ClInclude Include="src\gpu\phase2_projection.hpp">
+      <Filter>GPU</Filter>
+    </ClInclude>
+    <ClInclude Include="src\gpu\phase2_sealing.hpp">
+      <Filter>GPU</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

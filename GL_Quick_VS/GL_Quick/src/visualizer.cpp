@@ -28,6 +28,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <iomanip>
+#include <fstream>
 
 namespace gl {
 
@@ -56,7 +57,186 @@ namespace gl {
 // =====================================================================
 static thread_local std::set<ExpressionWithValidity> g_buildStackPath;
 
-void clearBuildStackPath() { g_buildStackPath.clear(); }
+// Insertion journal for the walk's `covered` set — the exact-rollback
+// replacement for the per-candidate set copy.
+//
+// A candidate that fails must leave `covered` exactly as it found it, because
+// its emitted rows are dropped by `stack.resize` and a node left marked
+// covered with no row would lose its row from the chapter. `covered` is
+// insert-only inside the walk (no site erases from it), so the set at a
+// candidate's entry is recovered by erasing exactly the keys inserted since
+// that candidate's mark — a suffix truncation, which is always well defined
+// because marks nest with the recursion.
+//
+// The copy this replaces was 38% of the whole chapter export: 4.5 M
+// per-candidate deep copies of a set holding up to 311 string pairs, of which
+// 97% were discarded unused because the candidate succeeded.
+static thread_local std::vector<ExpressionWithValidity> g_coveredJournal;
+
+// No-good memo for the walker's backtracking search.
+//
+// A frame fails for exactly three reasons: every candidate was cyclic (a
+// dependency sits on `g_buildStackPath`), inadmissible (the cross-chapter
+// usage graph), or had a failing subtree. Only the cyclic reason is a pure
+// function of the path, so only a failure reached without touching the other
+// two is reproducible from the path alone. Two things therefore make a frame
+// CONTEXT-DEPENDENT and bar it from the memo: a candidate skipped as
+// inadmissible (the usage graph gains edges after every chapter, and
+// `exportCurrentChapterTheorem` moves with the chapter). Dependence on
+// `covered` is not a bar but a recorded condition - see NoGoodEntry. Every
+// other failing frame caches its conflict set: the on-path nodes that actually
+// blocked it, unioned with the conflict sets of the children that failed under
+// it. Re-entry with all of those still on the path, and with no consulted
+// dependency newly covered, returns false immediately instead of re-walking
+// the subtree.
+//
+// Without this the walker re-derives every failing subtree under each of the
+// parent candidates that reach it, which is exponential in the number of
+// dead ends.
+struct WalkNode {
+    const Memory* lb;
+    ExpressionWithValidity ev;
+    bool operator<(const WalkNode& o) const {
+        if (lb != o.lb) return lb < o.lb;
+        return ev < o.ev;
+    }
+};
+/// @brief One cached failure: why it happened and what it depended on.
+///
+/// @details
+/// `conflict` holds the on-path nodes that blocked the frame. `consulted`
+/// holds every dependency the failed exploration tested against `covered`,
+/// including those its children tested; `coveredAtFailure` is the subset of
+/// `consulted` that was already covered when the frame gave up. Both
+/// conditions below are one-directional, which is what makes the entry
+/// reusable rather than exact:
+///
+///   * extra path members only remove candidates (a non-cyclic candidate can
+///     become cyclic, never the reverse), so failure survives a longer path
+///     as long as every recorded blocker is still on it;
+///   * extra covered members only remove recursions (a failing child becomes
+///     a skip), which could turn failure into success - so no consulted node
+///     may be covered now that was not covered then.
+///
+/// With both satisfied the exploration replays identically, because every
+/// `covered.insert` verdict and every cyclicity verdict it read is unchanged.
+struct NoGoodEntry {
+    std::set<ExpressionWithValidity> conflict;
+    std::set<ExpressionWithValidity> consulted;
+    std::set<ExpressionWithValidity> coveredAtFailure;
+};
+static thread_local std::map<WalkNode, NoGoodEntry> g_noGood;
+
+// Conflict set, consulted set and context-dependence of the frame that most
+// recently returned false - read by the parent immediately after the child
+// returns.
+static thread_local std::set<ExpressionWithValidity> g_failConflict;
+static thread_local std::set<ExpressionWithValidity> g_failConsulted;
+static thread_local bool g_failContextDependent = false;
+
+// A frame whose consulted set outgrows this is not cached: the probe walks
+// the set on every re-entry, so an unbounded footprint would cost more than
+// the re-walk it saves.
+static constexpr std::size_t kNoGoodConsultedCap = 2048;
+
+void clearBuildStackPath() {
+    g_buildStackPath.clear();
+    g_coveredJournal.clear();
+    g_noGood.clear();
+    g_failConflict.clear();
+    g_failConsulted.clear();
+    g_failContextDependent = false;
+}
+
+/// @brief Drop every edge — fresh graph for a new export run.
+///
+/// @details
+/// Called once at `generateRawProofGraph` entry (next to
+/// `clearBuildStackPath`) so consecutive exports (main batch after
+/// incubator batch in one process) never see stale cross-run edges.
+void TheoremUsageGraph::clear() { edges.clear(); }
+
+/// @brief Commit one written chapter's citation edges into the graph.
+///
+/// @details
+/// Scans the emitted rows of the chapter of `theorem` and records
+/// `theorem -> cited` for every citation channel: a `theorem` row cites its
+/// own row expression; `reformulated from` and `incubator back
+/// reformulation` rows cite their source at `row[3]`; an `or theorem` row
+/// cites its two source implications at `row[3]` and `row[5]`; an
+/// `or elimination` row cites its two guard variants at `row[3]`/`row[5]`
+/// and its licensing or theorem at `row[7]`. Row arity is
+/// asserted per channel — a malformed row is a producer bug to stop on,
+/// never to skip. Induction triads call this once per chapter file; the
+/// three files' edges union under the one theorem node.
+///
+/// @param theorem    The theorem whose chapter was just written
+///                   (global-theorem-list string form).
+/// @param stackRows  The chapter's emitted rows (cells per row: expression,
+///                   namespace, tag, then (dependency, namespace) pairs).
+void TheoremUsageGraph::addEdgesFromStack(
+    const std::string& theorem,
+    const std::vector<std::vector<std::string>>& stackRows)
+{
+    std::set<std::string>& out = edges[theorem];
+    for (const std::vector<std::string>& row : stackRows) {
+        assert(row.size() >= 3
+            && "TheoremUsageGraph: chapter row must carry expression, namespace, tag");
+        const std::string& tag = row[2];
+        if (tag == "theorem") {
+            out.insert(row[0]);
+        } else if (tag == "reformulated from"
+                || tag == "incubator back reformulation") {
+            assert(row.size() >= 5
+                && "TheoremUsageGraph: source citation at row[3] required");
+            out.insert(row[3]);
+        } else if (tag == "or theorem") {
+            assert(row.size() >= 7
+                && "TheoremUsageGraph: or-theorem sources at row[3]/row[5] required");
+            out.insert(row[3]);
+            out.insert(row[5]);
+        } else if (tag == "or elimination") {
+            assert(row.size() >= 9
+                && "TheoremUsageGraph: or-elimination sources at row[3]/row[5]/row[7] required");
+            out.insert(row[3]);
+            out.insert(row[5]);
+            out.insert(row[7]);
+        }
+    }
+}
+
+/// @brief Reachability probe: does `from` reach `to` over committed edges?
+///
+/// @details
+/// Iterative depth-first search over `edges`; `from == to` returns true
+/// without a walk (a self-citation is a length-1 cycle). Theorems without
+/// committed out-edges are leaves. Used by `buildStack` as the
+/// cross-chapter admissibility probe: a `theorem` origin citing U is
+/// rejected while building the chapter of T iff `reaches(U, T)`.
+///
+/// @param from  Candidate cited theorem (start node).
+/// @param to    Theorem whose chapter is currently being built.
+/// @return True iff `to` is reachable from `from` (including `from == to`).
+bool TheoremUsageGraph::reaches(const std::string& from,
+                                const std::string& to) const
+{
+    if (from == to) return true;
+    std::set<std::string> visited;
+    std::vector<const std::string*> frontier;
+    visited.insert(from);
+    frontier.push_back(&from);
+    while (!frontier.empty()) {
+        const std::string* cur = frontier.back();
+        frontier.pop_back();
+        const auto it = edges.find(*cur);
+        if (it == edges.end()) continue;
+        for (const std::string& next : it->second) {
+            if (next == to) return true;
+            if (visited.insert(next).second) frontier.push_back(&next);
+        }
+    }
+    return false;
+}
 
 // Order origins by (D-49-style preference, insertion index): non-equality
 // tags first preserving insertion order, then equality1/equality2 tags
@@ -149,24 +329,68 @@ static ExpressionWithValidity liftToShallowestOriginAncestor(
     return v;
 }
 
+/// @brief Probe whether a `__contradiction__` twin LB can actually resolve
+///        `proved` — i.e. holds at least one origin record for it — before
+///        buildStack's D-51 fallback switches in.
+///
+/// @details
+/// Mirrors buildStack's entry-side origin check exactly: read-only reload
+/// (D-158), lift within the twin, non-minting key probe, non-empty run.
+/// A twin that primed but never converged (no discharge record) fails the
+/// probe; the fallback then does not apply and the walk unwinds as an
+/// ordinary candidate failure so backtracking can reach acyclic records one
+/// level up — instead of dying on the twin's entry no-origin assert.
+///
+/// @param contraLB The `__contradiction__` twin candidate.
+/// @param proved   The expression/validity the walk must justify.
+/// @return true if the twin holds at least one origin record for the lifted
+///         form of `proved`; false otherwise.
+/// @invariant Non-minting (I-91).
+/// @see buildStack — both D-51 fallback sites are the only callers.
+bool ExpressionAnalyzer::contradictionLbHoldsRecord(Memory& contraLB,
+    const ExpressionWithValidity& proved) {
+    contraLB.ensureLoadedForRead(lbdeload::kDeloadDirectory);
+    const ExpressionWithValidity lifted =
+        liftToShallowestOriginAncestor(contraLB, proved);
+    int64_t pk = 0;
+    if (!lookupOriginKey(contraLB.originInterner, lifted.original,
+                         lifted.validityName, pk)) {
+        return false;
+    }
+    const int32_t oid = contraLB.exprOriginMap.lookup(pk);
+    return oid != 0 && contraLB.exprOriginMap.runLen(oid) > 0;
+}
+
+/// @brief Emit one chapter's derivation rows for `provedIn` — see the
+///        declaration in `prover.hpp` for the full contract.
+///
+/// @details
+/// Definition of the D-51 chapter walker. The `rowsSurviveOnFailure` parameter
+/// is the only non-obvious one: it says whether rows this call pushes onto
+/// `stack` can still reach the chapter file if the call returns false. A
+/// recursion from a parent's candidate loop is the one case where they cannot —
+/// that parent truncates the stack to its own mark the instant it receives
+/// false — so the last-resort fallback block is skipped there rather than
+/// emitting a row and walking a whole dependency subtree that the truncation is
+/// guaranteed to discard.
+///
+/// @param memoryBlock          The LB whose origin records justify `provedIn`.
+/// @param provedIn             The expression / validity to justify.
+/// @param stack                Accumulating chapter rows.
+/// @param covered              Nodes already given a row this chapter.
+/// @param rowsSurviveOnFailure See the details above.
+/// @return True when an acyclic derivation tree was emitted.
+/// @see ExpressionAnalyzer::buildStack (declaration)
 bool ExpressionAnalyzer::buildStack(Memory& memoryBlock,
     const ExpressionWithValidity& provedIn,
     std::vector<std::vector<std::string>>& stack,
-    std::set<ExpressionWithValidity>& covered) {
-    // Abortion trap — buildStack call counter. The chapter-export
-    // hang on this branch is exponential candidate exploration (not
-    // a real recursion cycle — verified 2026-05-25 with a depth +
-    // revisit tripwire that never fired). Cap calls at 5M so the
-    // process exits with a clear signal instead of hanging
-    // indefinitely.
+    std::set<ExpressionWithValidity>& covered,
+    bool rowsSurviveOnFailure) {
+    // Hang tripwire: exponential candidate exploration can make a chapter
+    // walk unboundedly long; cap calls at 5M so the process exits with a
+    // clear signal instead of hanging indefinitely.
     static std::atomic<std::size_t> s_buildStackCalls{0};
     const std::size_t myCall = ++s_buildStackCalls;
-    if ((myCall % 100000) == 0) {
-        std::cerr << "[buildStack] call #" << myCall
-                  << " LB=" << memoryBlock.exprKey()
-                  << " proved=" << provedIn.original << std::endl;
-    }
-
     if (myCall > 5000000) {
         std::cerr << "[buildStack] call cap 5M reached — aborting" << std::endl;
         std::abort();
@@ -233,17 +457,51 @@ bool ExpressionAnalyzer::buildStack(Memory& memoryBlock,
                     break;
                 }
             }
-            // Self-guard (mirrors the post-candidate fallback below): when
-            // the contradiction LB ITSELF lacks the record, re-entering it
-            // is an infinite recursion, not a resolution — fall through to
-            // the loud no-origin assert instead.
-            if (contraLB != nullptr && contraLB != &memoryBlock) {
-                return buildStack(*contraLB, proved, stack, covered);
+            // Resolution guard: the switch is only a resolution when the
+            // twin actually holds a record for `proved` (a primed twin that
+            // never converged holds none — switching in would end at the
+            // twin's own no-origin assert, not at a derivation). Covers the
+            // self case (the twin never records its own assumed head at the
+            // probed scope) and the never-converged case alike; without a
+            // record, fall through to the loud no-origin assert here.
+            if (contraLB != nullptr && contraLB != &memoryBlock
+                && contradictionLbHoldsRecord(*contraLB, proved)) {
+                // The twin's rows share this frame's fate: its verdict becomes
+                // this frame's verdict, so whoever would discard ours discards
+                // its too.
+                return buildStack(*contraLB, proved, stack, covered,
+                                  rowsSurviveOnFailure);
             }
         }
         std::cerr << "[buildStack] no origin for: " << proved.original
                   << " | validity=" << proved.validityName
                   << " | exprKey=" << memoryBlock.exprKey() << "\n";
+        std::cerr << "[buildStack] theorem: "
+                  << exportCurrentChapterTheorem << "\n";
+        std::cerr << "[buildStack] LB chain:";
+        for (const Memory* p = &memoryBlock; p != nullptr;
+             p = p->parentMemory) {
+            std::cerr << " <- " << p->exprKey();
+        }
+        std::cerr << "\n";
+        for (auto rowIt = stack.rbegin(); rowIt != stack.rend(); ++rowIt) {
+            const std::vector<std::string>& row = *rowIt;
+            bool ownsMissingDependency = false;
+            for (std::size_t i = 3; i + 1 < row.size(); i += 2) {
+                if (row[i] == proved.original
+                    && row[i + 1] == proved.validityName) {
+                    ownsMissingDependency = true;
+                    break;
+                }
+            }
+            if (!ownsMissingDependency) continue;
+            std::cerr << "[buildStack] referring row:";
+            for (const std::string& cell : row) {
+                std::cerr << " | " << cell;
+            }
+            std::cerr << "\n";
+            break;
+        }
         assert(false && "buildStack: no origin found");
     }
 
@@ -255,6 +513,42 @@ bool ExpressionAnalyzer::buildStack(Memory& memoryBlock,
     // outer's subsequent candidates. Track whether THIS invocation
     // is the inserter and only erase if so.
     const bool insertedHere = g_buildStackPath.insert(proved).second;
+
+    // No-good probe. `proved` is already on the path, so a conflict set that
+    // names it stays satisfied on re-entry - exactly the intended semantics.
+    const WalkNode myNode{ &memoryBlock, proved };
+    std::set<ExpressionWithValidity> myConflict;
+    std::set<ExpressionWithValidity> myConsulted;
+    bool myContextDependent = false;
+    if (!rowsSurviveOnFailure) {
+        const auto noGoodIt = g_noGood.find(myNode);
+        if (noGoodIt != g_noGood.end()) {
+            const NoGoodEntry& entry = noGoodIt->second;
+            bool stillBlocked = true;
+            for (const ExpressionWithValidity& blocker : entry.conflict) {
+                if (g_buildStackPath.count(blocker) == 0) {
+                    stillBlocked = false;
+                    break;
+                }
+            }
+            if (stillBlocked) {
+                for (const ExpressionWithValidity& node : entry.consulted) {
+                    if (covered.count(node) != 0
+                        && entry.coveredAtFailure.count(node) == 0) {
+                        stillBlocked = false;
+                        break;
+                    }
+                }
+            }
+            if (stillBlocked) {
+                g_failConflict = entry.conflict;
+                g_failConsulted = entry.consulted;
+                g_failContextDependent = false;
+                if (insertedHere) g_buildStackPath.erase(proved);
+                return false;
+            }
+        }
+    }
 
     // Decoded owned copy — every downstream consumer (D-49 candidate
     // sort, cycle filter, emitRow, the last-resort fallback) keeps its
@@ -273,6 +567,12 @@ bool ExpressionAnalyzer::buildStack(Memory& memoryBlock,
 
     auto emitRow = [&](const std::pair<std::string, std::vector<ExpressionWithValidity>>& origin,
                        const std::vector<ExpressionWithValidity>& liftedDeps) {
+        // `hypothesis` provenance is internal-only: hypothesis-scope
+        // constituents steer proof direction but are not part of any proof,
+        // so their terminal origin line must never reach chapter emission
+        // (and hence the verifier never sees the tag).
+        assert(origin.first != "hypothesis"
+            && "buildStack: internal-only hypothesis origin reached chapter emission");
         std::vector<std::string> row;
         row.reserve(3 + liftedDeps.size() * 2);
         row.push_back(proved.original);
@@ -299,9 +599,35 @@ bool ExpressionAnalyzer::buildStack(Memory& memoryBlock,
 
         bool cyclic = false;
         for (const auto& d : liftedDeps) {
-            if (g_buildStackPath.count(d)) { cyclic = true; break; }
+            if (g_buildStackPath.count(d)) {
+                cyclic = true;
+                myConflict.insert(d);
+                break;
+            }
         }
         if (cyclic) continue;
+
+        // Cross-chapter admissibility (D-276):
+        // a `theorem` leaf cites `proved.original` itself as a proven
+        // theorem U — a foundation inside THIS chapter, so the path filter
+        // above cannot see a cycle routed through U's own chapter. The
+        // candidate is admissible only if U does not already reach the
+        // current chapter's theorem T in the committed usage graph
+        // (U == T included). Inadmissible -> skip, exactly like a
+        // path-cyclic candidate: next origin, then the contradiction-LB
+        // fallback, then the degraded front() emit the verifier flags.
+        // Empty exportCurrentChapterTheorem disables the check (findEnds /
+        // direct unit-test callers keep the legacy chapter-local behavior).
+        if (origin.first == "theorem"
+            && !exportCurrentChapterTheorem.empty()
+            && exportTheoremUsage.reaches(proved.original,
+                                          exportCurrentChapterTheorem)) {
+            // The usage graph and the current chapter both move between
+            // chapters, so a verdict that depended on this skip is not
+            // reproducible from the path alone.
+            myContextDependent = true;
+            continue;
+        }
 
         // Early-return tags: theorem proved in previous batch / external — no row, success.
         if (origin.first == "broadcast" || origin.first == "externally provided theorem") {
@@ -310,14 +636,27 @@ bool ExpressionAnalyzer::buildStack(Memory& memoryBlock,
         }
 
         const size_t stackSnap = stack.size();
-        const std::set<ExpressionWithValidity> coveredSnap = covered;
+        const std::size_t coveredMark = g_coveredJournal.size();
 
         emitRow(origin, liftedDeps);
 
         bool subtreeOk = true;
         for (const auto& ingredient : liftedDeps) {
+            // Journal only a genuine insertion: a key that was already present
+            // predates this candidate's mark and must survive its rollback.
+            // Every dependency tested against `covered` joins the
+            // footprint, whichever way the test went.
+            myConsulted.insert(ingredient);
             if (covered.insert(ingredient).second) {
-                if (!buildStack(memoryBlock, ingredient, stack, covered)) {
+                g_coveredJournal.push_back(ingredient);
+                // `false` for the child: the rollback below truncates `stack`
+                // to `stackSnap`, taken before this candidate emitted, so every
+                // row the child pushed goes with it.
+                if (!buildStack(memoryBlock, ingredient, stack, covered,
+                                /*rowsSurviveOnFailure=*/false)) {
+                    myConflict.insert(g_failConflict.begin(), g_failConflict.end());
+                    myConsulted.insert(g_failConsulted.begin(), g_failConsulted.end());
+                    if (g_failContextDependent) myContextDependent = true;
                     subtreeOk = false; break;
                 }
             }
@@ -329,7 +668,10 @@ bool ExpressionAnalyzer::buildStack(Memory& memoryBlock,
         }
 
         stack.resize(stackSnap);
-        covered = coveredSnap;
+        for (std::size_t k = g_coveredJournal.size(); k > coveredMark; --k) {
+            covered.erase(g_coveredJournal[k - 1]);
+        }
+        g_coveredJournal.resize(coveredMark);
     }
 
     // D-51: no acyclic direct origin worked. Try the contradiction-LB
@@ -350,18 +692,75 @@ bool ExpressionAnalyzer::buildStack(Memory& memoryBlock,
                 break;
             }
         }
-        if (contraLB != nullptr && contraLB != &memoryBlock) {
+        // Resolution guard (mirror of the entry-side site): switch only
+        // when the twin actually holds a record for `proved`. A primed but
+        // never-converged twin resolves nothing — without the guard the
+        // switch ends at the twin's entry no-origin assert even while THIS
+        // frame's caller still has acyclic candidates to backtrack to.
+        if (contraLB != nullptr && contraLB != &memoryBlock
+            && contradictionLbHoldsRecord(*contraLB, proved)) {
             if (insertedHere) g_buildStackPath.erase(proved);
-            return buildStack(*contraLB, proved, stack, covered);
+            // Inherits this frame's fate, exactly as the entry-side site.
+            const bool twinVerdict = buildStack(*contraLB, proved, stack, covered,
+                                                rowsSurviveOnFailure);
+            if (!twinVerdict) {
+                // The twin conflict plus this frame own blockers; not cached,
+                // because the verdict was produced on another LB.
+                g_failConflict.insert(myConflict.begin(), myConflict.end());
+                if (myContextDependent) g_failContextDependent = true;
+            }
+            return twinVerdict;
         }
     }
 
-    // Last-resort fallback: emit front() and recurse on its deps fully
-    // (matches pre-D-51 chapter shape — chapter has rows even if cyclic,
-    // verifier flags). Deps are lifted like the per-candidate loop.
+    // Last-resort fallback. A frame that returns false into a parent's
+    // candidate loop has every row it emitted removed by that parent's
+    // `stack.resize`, and every `covered` insertion undone by its journal
+    // rollback — so emitting the front origin here and walking its whole
+    // dependency subtree would produce nothing but work for the truncation to
+    // throw away. Skip it: the verdict is false either way, and `covered` /
+    // `g_buildStackPath` are left exactly as an executed-then-rolled-back
+    // fallback would have left them.
+    //
+    // Rows DO survive for the top-level call (whose caller ignores the return),
+    // for anything below it reached only by the fallback's own dependency walk,
+    // and for a contradiction twin that inherited a surviving frame's fate —
+    // which is precisely the degraded chapter shape this fallback exists to
+    // produce.
+    if (!rowsSurviveOnFailure) {
+        if (!myContextDependent && myConsulted.size() <= kNoGoodConsultedCap) {
+            // Keep the smallest conflict seen for this node - the smaller the
+            // set, the more re-entries it blocks. `covered` is back to this
+            // frame's entry state here (every candidate rolled back), which is
+            // exactly the snapshot the replay argument needs.
+            const auto noGoodIt = g_noGood.find(myNode);
+            if (noGoodIt == g_noGood.end()
+                || myConflict.size() < noGoodIt->second.conflict.size()) {
+                NoGoodEntry entry;
+                entry.conflict = myConflict;
+                entry.consulted = myConsulted;
+                for (const ExpressionWithValidity& node : myConsulted) {
+                    if (covered.count(node) != 0) entry.coveredAtFailure.insert(node);
+                }
+                g_noGood[myNode] = entry;
+            }
+        }
+        g_failConflict = myConflict;
+        g_failConsulted = myConsulted;
+        g_failContextDependent = myContextDependent;
+        if (insertedHere) g_buildStackPath.erase(proved);
+        return false;
+    }
+
+    // The surviving case: emit front() and recurse on its deps fully (matches
+    // pre-D-51 chapter shape — chapter has rows even if cyclic, verifier
+    // flags). Deps are lifted like the per-candidate loop.
     if (!origins.empty()) {
         const auto& fb = origins.front();
         if (fb.first == "broadcast" || fb.first == "externally provided theorem") {
+            g_failConflict = myConflict;
+            g_failConsulted = myConsulted;
+            g_failContextDependent = true;
             if (insertedHere) g_buildStackPath.erase(proved);
             return false;
         }
@@ -373,10 +772,17 @@ bool ExpressionAnalyzer::buildStack(Memory& memoryBlock,
         emitRow(fb, liftedDeps);
         for (const auto& d : liftedDeps) {
             if (covered.insert(d).second) {
-                (void) buildStack(memoryBlock, d, stack, covered);
+                g_coveredJournal.push_back(d);
+                // Inherits: this frame ignores the verdict and never rolls
+                // back, so the child's rows live exactly as long as ours.
+                (void) buildStack(memoryBlock, d, stack, covered,
+                                  rowsSurviveOnFailure);
             }
         }
     }
+    g_failConflict = myConflict;
+    g_failConsulted = myConsulted;
+    g_failContextDependent = true;
     if (insertedHere) g_buildStackPath.erase(proved);
     return false;
 }
@@ -636,10 +1042,42 @@ void ExpressionAnalyzer::loadGlBinary(const std::filesystem::path& jsonPath) {
             }
         }
 
+        // "implications" — an or's compact or-implication list
+        // (D-309). The writer omits the key when the
+        // list is empty, so absence is the defined state for every
+        // non-or entry and for an or written before the field existed.
+        std::vector<std::string> implications;
+        if (entry.contains("implications")) {
+            assert(entry["implications"].is_array()
+                && "loadGlBinary: \"implications\" must be a JSON array");
+            for (const auto& e : entry["implications"]) {
+                assert(e.is_string()
+                    && "loadGlBinary: \"implications\" entries must be strings");
+                implications.push_back(e.get<std::string>());
+            }
+        }
+
         // Always populate compiledExpressions so any read-side path
         // (e.g. encoded-expression resolution) sees the entry.
-        compiledExpressions[name] = LogicalEntity(category, elements, signature, arity, definedSet);
+        {
+            LogicalEntity le(category, elements, signature, arity, definedSet);
+            le.implications = implications;
+            compiledExpressions[name] = le;
+        }
         ++loadedTotal;
+
+        // An or / existence lacking its list cannot be compiled here — the
+        // constructor loads the binary BEFORE coreExpressionMap exists — so
+        // it is recorded and compiled at the first preMintReducedOrs seam,
+        // which precedes every burst.
+        if (category == "or" && implications.empty()) {
+            orsAwaitingImplications.insert(name);
+        }
+        if (category == "existence" && implications.empty()
+            && ExpressionAnalyzer::expectedExistenceImplicationCount(
+                   static_cast<int32_t>(elements.size())) > 0) {
+            existencesAwaitingImplications.insert(name);
+        }
 
         // Spontaneous categories also need a repetitionExclusionMap entry
         // and contribute to counter seeding. Anchor / atomic entries are
@@ -735,6 +1173,17 @@ void ExpressionAnalyzer::exportCompiledExpressionsJSON(const std::filesystem::pa
         }
         entry["elements"] = elems;
 
+        // "implications" only for an or carrying its or-implication
+        // compacts (D-309); omitted when empty so
+        // every other entry keeps the pre-field layout byte-for-byte.
+        if (!compExpr.implications.empty()) {
+            nlohmann::json impls = nlohmann::json::array();
+            for (const auto& s : compExpr.implications) {
+                impls.push_back(s);
+            }
+            entry["implications"] = impls;
+        }
+
         root[coreName] = entry;
     }
 
@@ -815,6 +1264,12 @@ void ExpressionAnalyzer::generateRawProofGraph(
     // belt-and-suspenders against any leak across runs.
     clearBuildStackPath();
 
+    // Fresh cross-chapter usage graph per export run; the current-chapter
+    // theorem is set per loop iteration below and empty outside the loop
+    // (empty = buildStack's cross-chapter admissibility check disabled).
+    exportTheoremUsage.clear();
+    exportCurrentChapterTheorem.clear();
+
     // Per-chapter reload release (G-53): the export
     // reloads LBs from their SSD images on demand; without releasing them the
     // resident block set grows monotonically across the walk to static-pool
@@ -832,7 +1287,8 @@ void ExpressionAnalyzer::generateRawProofGraph(
     fs::path outDir = outDirParam.empty() ? (fs::path("files") / "raw_proof_graph") : outDirParam;
     std::error_code ec;
 
-    // MODIFIED: Removed fs::remove_all to preserve previous runs
+    // No remove_all: earlier batches' chapters must survive — the export
+    // appends, with the start index scanned from existing files below.
     fs::create_directories(outDir, ec);
 
     // Single canonical GL-binary folder regardless of per-batch outDir
@@ -848,7 +1304,7 @@ void ExpressionAnalyzer::generateRawProofGraph(
     this->exportCompiledExpressionsJSON(glBinDir);
     const double binaryExportSeconds = frameSecondsSince(binaryExportStarted);
 
-    // MODIFIED: Scan for start index based on existing files
+    // Scan for the start index from the highest existing numeric prefix.
     const auto indexStarted = FrameClock::now();
     int idx = 0;
     if (fs::exists(outDir)) {
@@ -878,6 +1334,12 @@ void ExpressionAnalyzer::generateRawProofGraph(
                                      std::vector<std::vector<std::string>>& stack,
                                      std::set<ExpressionWithValidity>& covered) {
         const auto started = FrameClock::now();
+        // Each top-level walk starts with an empty `covered`, so its journal
+        // starts empty too. Without this the outermost frame's surviving
+        // insertions — which nothing ever rolls back — would accumulate across
+        // the export.
+        g_coveredJournal.clear();
+        g_noGood.clear();
         const bool result = this->buildStack(memoryBlock, proved, stack, covered);
         buildStackSeconds += frameSecondsSince(started);
         ++buildStackCalls;
@@ -915,7 +1377,15 @@ void ExpressionAnalyzer::generateRawProofGraph(
         return false;
         };
 
+    // The single choke point every chapter kind passes through (direct,
+    // induction triad, debug, reformulated, incubator back-reformulation,
+    // or-theorem): writes the chapter file, then commits the chapter's
+    // theorem-citation edges into the export usage graph so later chapters'
+    // buildStack admissibility probes see them
+    // (D-276). Committing on emitted rows —
+    // not on how they were built — also covers cache-served stacks.
     auto writeStackIndexed = [&](int idx, const std::string& part,
+        const std::string& theoremName,
         const std::vector<std::vector<std::string>>& stackRows) {
 
             const auto started = FrameClock::now();
@@ -933,17 +1403,11 @@ void ExpressionAnalyzer::generateRawProofGraph(
             }
             f.flush();
             assert(f.good());
+            exportTheoremUsage.addEdgesFromStack(theoremName, stackRows);
             serializationSeconds += frameSecondsSince(started);
             ++serializedChapters;
         };
 
-    // ... (directStack, checkZeroStack, checkInductionConditionStack, debugStack definitions omitted for brevity - they are unchanged) ...
-    // Note: You must include the unchanged lambdas here for the code to compile. 
-    // I am omitting them here only to focus on the logic changes requested.
-    // Copy them from your original file.
-
-    // REDEFINING LAMBDAS FOR COMPLETENESS OF THE SNIPPET:
-    // Updated: Returns vector<vector<string>>
     auto directStack = [&](const std::string& theorem) -> std::vector<std::vector<std::string> > {
         std::vector< std::tuple<
             std::string,                    // leftExpr
@@ -1226,10 +1690,9 @@ void ExpressionAnalyzer::generateRawProofGraph(
 
 
     // ---------- emit stacks + mapping file ----------
-    // MODIFIED: Open in Append Mode
+    // Append mode: later batches extend the mapping file; 'idx' already
+    // holds the scanned start offset.
     std::ofstream mapping((outDir / "global_theorem_list.txt").c_str(), std::ios::out | std::ios::app);
-
-    // Note: 'idx' is already initialized to the correct start offset above
 
     int lastDirectIdx = -1;
     for (std::size_t i = 0; i < theoremList.size(); ++i) {
@@ -1239,6 +1702,11 @@ void ExpressionAnalyzer::generateRawProofGraph(
         const std::string& recCtr = std::get<3>(theoremList[i]);
 
         const std::string method = toLower(methodOrig);
+
+        // Arm buildStack's cross-chapter admissibility check for every
+        // chapter of this theorem (induction triads included); inert for
+        // the synthetic branches, which never call buildStack.
+        exportCurrentChapterTheorem = name;
 
         if (method == "induction") {
             auto cacheIt = cachedProofStacks.find(name);
@@ -1251,32 +1719,42 @@ void ExpressionAnalyzer::generateRawProofGraph(
             // with index `idx` and its two siblings at `idx+1`, `idx+2`.
             std::vector<std::vector<std::string> > stT =
                 (cacheIt != cachedProofStacks.end()) ? cacheIt->second.stack2 : inductionTypingStack(name, var, recCtr);
-            writeStackIndexed(idx, "induction_typing", stT);
+            writeStackIndexed(idx, "induction_typing", name, stT);
             mapping << name << '\t' << methodOrig << '\t' << var << '\n';
             ++idx;
 
             std::vector<std::vector<std::string> > st0 =
                 (cacheIt != cachedProofStacks.end()) ? cacheIt->second.stack0 : checkZeroStack(name, var, recCtr);
-            writeStackIndexed(idx, "check_zero", st0);
+            writeStackIndexed(idx, "check_zero", name, st0);
             ++idx;
 
             std::vector<std::vector<std::string> > st1 =
                 (cacheIt != cachedProofStacks.end()) ? cacheIt->second.stack1 : checkInductionConditionStack(name, var, recCtr);
-            writeStackIndexed(idx, "check_induction_condition", st1);
+            writeStackIndexed(idx, "check_induction_condition", name, st1);
             ++idx;
         }
         else if (method == "direct") {
             auto cacheIt = cachedProofStacks.find(name);
             std::vector<std::vector<std::string> > st =
                 (cacheIt != cachedProofStacks.end()) ? cacheIt->second.stack0 : directStack(name);
-            writeStackIndexed(idx, "direct_proof", st);
+            writeStackIndexed(idx, "direct_proof", name, st);
             mapping << name << '\t' << methodOrig << '\t' << var << '\n';
             lastDirectIdx = idx;
             ++idx;
         }
+        else if (method == "proved not broadcast") {
+            // Level-refused closure recorded by the proved-not-broadcast
+            // tier: a real derivation exists in the producing LB, so the
+            // chapter is the ordinary direct-proof walk under its own
+            // chapter kind.
+            std::vector<std::vector<std::string> > st = directStack(name);
+            writeStackIndexed(idx, "proved_not_broadcast", name, st);
+            mapping << name << '\t' << methodOrig << '\t' << var << '\n';
+            ++idx;
+        }
         else if (method == "debug") {
             std::vector<std::vector<std::string> > st = debugStack(name);
-            writeStackIndexed(idx, "debug", st);
+            writeStackIndexed(idx, "debug", name, st);
             mapping << name << '\t' << methodOrig << '\t' << var << '\n';
             ++idx;
         }
@@ -1288,7 +1766,7 @@ void ExpressionAnalyzer::generateRawProofGraph(
             st.back().push_back("reformulated from");
             st.back().push_back(var);
             st.back().push_back("main");
-            writeStackIndexed(idx, "reformulated_statement", st);
+            writeStackIndexed(idx, "reformulated_statement", name, st);
             mapping << name << '\t' << methodOrig << '\t' << var << '\n';
             ++idx;
         }
@@ -1300,7 +1778,7 @@ void ExpressionAnalyzer::generateRawProofGraph(
             st.back().push_back("incubator back reformulation");
             st.back().push_back(var);
             st.back().push_back("main");
-            writeStackIndexed(idx, "back_reformulated_statement", st);
+            writeStackIndexed(idx, "back_reformulated_statement", name, st);
             mapping << name << '\t' << methodOrig << '\t' << var << '\n';
             ++idx;
         }
@@ -1314,16 +1792,41 @@ void ExpressionAnalyzer::generateRawProofGraph(
             st.back().push_back("main");
             st.back().push_back(recCtr);    // companion theorem
             st.back().push_back("main");
-            writeStackIndexed(idx, "or_theorem", st);
+            writeStackIndexed(idx, "or_theorem", name, st);
+            mapping << name << '\t' << methodOrig << '\t' << var << '\n';
+            ++idx;
+        }
+        else if (method == "or elimination") {
+            // Pre-split merge chapter: one fabricated row citing the two
+            // guard variants (the row's aux slots) plus the licensing or
+            // theorem (the seam's citation ledger — a registered merge
+            // without its license is a seam bug, never a skippable state).
+            const auto cit = orElimCitedOrByMerged.find(name);
+            assert(cit != orElimCitedOrByMerged.end()
+                && "generateRawProofGraph: or-elimination row without a recorded or-theorem license");
+            std::vector<std::vector<std::string>> st;
+            st.push_back(std::vector<std::string>());
+            st.back().push_back(name);
+            st.back().push_back("main");
+            st.back().push_back("or elimination");
+            st.back().push_back(var);          // guard variant A
+            st.back().push_back("main");
+            st.back().push_back(recCtr);       // guard variant B
+            st.back().push_back("main");
+            st.back().push_back(cit->second);  // licensing or theorem
+            st.back().push_back("main");
+            writeStackIndexed(idx, "or_elimination", name, st);
             mapping << name << '\t' << methodOrig << '\t' << var << '\n';
             ++idx;
         }
         else {
             std::vector<std::vector<std::string> > empty;
-            writeStackIndexed(idx, "unknown", empty);
+            writeStackIndexed(idx, "unknown", name, empty);
             mapping << name << '\t' << methodOrig << '\t' << var << '\n';
             ++idx;
         }
+
+        exportCurrentChapterTheorem.clear();
 
         // Release the LBs this theorem's chapters reloaded from SSD images.
         // The read-only export brought them back on demand; their on-disk
@@ -1360,5 +1863,6 @@ void ExpressionAnalyzer::generateRawProofGraph(
         releasedTheorems == 0 ? 1 : releasedTheorems);
     recordFrameTiming("native.raw.other", totalSeconds - knownSeconds);
 }
+
 
 } // namespace gl

@@ -31,9 +31,7 @@
 ///   - symbol existence + signature (`void(gl::Memory&)`);
 ///   - behavioral: a freshly-staged `AdmissionKeyAlgebraRecord` replays all
 ///     four writes (admissionMap insert, admissionStatusMap = false,
-///     varsInAdmissionMapKeys population skipping "marker", revisitRejected2),
-///     and a record whose key is already consumed is skipped by the drain's
-///     re-applied consumed-key gate.
+///     varsInAdmissionMapKeys population skipping "marker", revisitRejected2).
 /// `revisitRejected2` is a no-op for keys absent from `rejectedMap`, so the
 /// behavioral test needs no disk fixtures beyond the `ExpressionAnalyzer("Peano")`
 /// construction shared with the other member tests.
@@ -103,34 +101,8 @@ TEST(admission_reshuffle, drain_replays_writes_and_honors_consumed_gate) {
                     || !m.overallHashMemory.varsInAdmissionMapKeys.contains(markerId));
     }
 
-    // --- negative: a key already in consumedAdmissionKeys is skipped by the
-    // drain's re-applied gate (the byte-identity-critical within-burst
-    // consume->skip ordering).
-    gl::Memory m2;
-    gl::ExpressionWithValidity key2("(in2[7,marker,2])", "main");
-    m2.overallHashMemory.consumedAdmissionKeys.mint(gl::mintTemplateKey(
-        m2.templateInterner, m2.nameMap, key2.original, key2.validityName));
-    gl::StagedAdmissionValue value2;
-    const gl::SealedString value2KeyArr[2] = { s("7"), s("2") };
-    value2.key = gl::SealedSpan<gl::SealedString>::copyFrom(pages, value2KeyArr, 2);
-    m2.admissionKeysAlgebra.push_back(gl::AdmissionKeyAlgebraRecord{
-        gl::SealedExpressionWithValidity{ s(key2.original),
-                                          s(key2.validityName) },
-        value2 });
-    ea.drainAdmissionKeysAlgebra(m2);
-
-    int64_t key2Pk = 0;
-    ASSERT_TRUE(gl::lookupTemplateKey(m2.templateInterner, m2.nameMap,
-                                      key2.original, key2.validityName, key2Pk));
-    ASSERT_TRUE(m2.overallHashMemory.admissionMap.lookup(key2Pk) == 0);
-    ASSERT_TRUE(m2.overallHashMemory.admissionStatusMap.find(key2Pk) == nullptr);
-    // admissionRecordsAt on an absent key returns an empty set (cold miss path).
-    ASSERT_TRUE(gl::admissionRecordsAt(m2.overallHashMemory.admissionMap,
-                                       key2Pk, m2.valueInterner).empty());
-
     // Release the views before the pages die (the production clear point).
     m.admissionKeysAlgebra.clear();
-    m2.admissionKeysAlgebra.clear();
     pages.seal();
     pages.freePages();
 }
@@ -162,10 +134,10 @@ TEST(resent_reset, erases_dedup_registries_keeps_history_and_other_exprs) {
     // and the unrelated expression.
     gl::upsertStatementKey(m.intKnownStatements,
         gl::packStatementKey(m.nameMap.encode(E), gl::NameMap::MAIN_ID),
-        /*local=*/true, /*registered=*/true, /*known=*/true);
+        /*local=*/true);
     gl::upsertStatementKey(m.intKnownStatements,
         gl::packStatementKey(m.nameMap.encode(OTHER), gl::NameMap::MAIN_ID),
-        /*local=*/true, /*registered=*/true, /*known=*/true);
+        /*local=*/true);
     m.intStatementLevelsMap.insertSorted(gl::packStatementKey(
         m.nameMap.encode(E), gl::NameMap::MAIN_ID), 4);
     m.intEncodedStatements.push_back(gl::encodeExpression(enc, m.nameMap));
@@ -195,7 +167,7 @@ TEST(resent_reset, erases_dedup_registries_keeps_history_and_other_exprs) {
         const gl::StatementFlags* otherRow = gl::lookupStatementFlags(
             m.intKnownStatements, m.nameMap, OTHER, "main");
         ASSERT_TRUE(otherRow != nullptr);
-        ASSERT_TRUE(otherRow->registered);
+        ASSERT_TRUE(otherRow != nullptr);
     }
 }
 

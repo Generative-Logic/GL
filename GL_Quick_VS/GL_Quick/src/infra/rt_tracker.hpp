@@ -28,6 +28,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <string>
 
 namespace gl {
@@ -214,7 +215,7 @@ namespace gl {
             /// open.
             ///
             /// @param n Number of inner-loop iterations to accumulate.
-            void noteIterations(int n);
+            void noteIterations(int64_t n);
 
             /// @brief Refresh the on-disk table if the trigger has fired.
             ///
@@ -267,6 +268,12 @@ namespace gl {
             ///        trigger.
             void writeSnapshot_(bool finished = false);
 
+            /// Fold this call's sections into the process-wide aggregate
+            /// (see `resetRtAggregate` / `dumpRtAggregate`). Called once
+            /// from the destructor, after the final self-time charge,
+            /// for EVERY tracker — trigger-independent.
+            void accumulateAggregate_();
+
             /// Build the root → leaf chain string of `body.exprKey`s.
             static std::string buildChainHuman_(const Memory& body);
 
@@ -279,13 +286,37 @@ namespace gl {
                 const char* label;
                 int64_t     self_ns;
                 int         hits;
-                int         iterations;
+                int64_t     iterations;   // byte / entry tallies overflow int32 per burst
+                /// Index of the section that was innermost-open when this
+                /// one first opened, or -1 at tracker top level. Sections
+                /// are keyed by (label, parentIdx), so one label opened
+                /// under two different parents yields two rows — the
+                /// per-parent attribution the REQGEN batch split needs.
+                int         parentIdx;
             };
 
-            Section          sections_[RTMeasurementParameters::RT_MAX_SECTIONS];
+            /// Row storage — `RT_MAX_SECTIONS` rows on the heap, allocated
+            /// once per tracker (a cold per-burst allocation, never on the
+            /// per-scope path): at a few thousand rows the array no longer
+            /// fits a worker's stack frame beside the door recursion.
+            std::unique_ptr<Section[]> sections_;
             int              section_count_;
-            int              open_stack_[RTMeasurementParameters::RT_MAX_SECTIONS];
+            /// Direct-mapped (label pointer, parent index) -> row index cache
+            /// in front of the linear row scan, so a scope open stays O(1)
+            /// when a tracker carries thousands of rows. A miss falls back to
+            /// the scan and refills the slot; -1 = empty.
+            static constexpr int kRowCacheSize = 4096;   // power of two
+            std::unique_ptr<int[]> row_cache_;
+            int              open_stack_[RTMeasurementParameters::RT_MAX_OPEN_DEPTH];
             int              open_depth_;
+            /// Count of currently-open VIRTUAL scopes — opens that arrived
+            /// with the stack at RT_MAX_OPEN_DEPTH and were saturated (not
+            /// pushed; their time folds into the innermost tracked section).
+            int              virtual_depth_;
+            /// Deepest nesting this call ever reached, virtual frames
+            /// included — the evidence row for how deep a re-entrant
+            /// production chain went.
+            int              peak_open_depth_;
             Clock::time_point t_start_;
             Clock::time_point t_last_event_;
             Clock::time_point t_last_refresh_;
@@ -337,6 +368,59 @@ namespace gl {
             int        section_index_;
         };
 
+        /// @brief Reset the process-wide RT aggregate to empty.
+        ///
+        /// @details
+        /// The aggregate is the cross-burst sink: every `RTTracker`
+        /// destructor folds its per-call sections into a process-wide
+        /// table keyed by the full open-scope path (root → leaf labels
+        /// joined with " > "), regardless of whether
+        /// the call ever crossed the dump trigger — so the aggregate
+        /// covers EVERY burst, while the per-LB `.rt/<chain>.log` files
+        /// remain trigger-gated per-call snapshots. This is the one
+        /// documented exception to I-59's per-call scope: the aggregate
+        /// is additive-only, mutex-guarded on the cold destructor path,
+        /// read by nothing in the prover — a dump-only telemetry sink,
+        /// never a proof input (Rule 16 discipline).
+        ///
+        /// Test-and-startup entry; production code calls it never (the
+        /// aggregate lives for the process, one batch per process).
+        void resetRtAggregate();
+
+        /// @brief Write the process-wide RT aggregate table to @p path.
+        ///
+        /// @details
+        /// Renders every full-path row with cumulative seconds,
+        /// hits, and iteration counts, sorted by descending seconds,
+        /// plus a header carrying the number of contributing tracker
+        /// calls (bursts) and their summed lifetimes ("burst-seconds" —
+        /// bursts run in parallel, so the sum exceeds wall-clock).
+        /// Percentages are of total attributed nanoseconds. Atomic
+        /// write-to-tmp + rename like the per-call snapshot; failures
+        /// retry then return silently (instrumentation never crashes
+        /// the prover).
+        ///
+        /// @param path Destination file path (caller chooses folder).
+        void dumpRtAggregate(const std::string& path);
+
+        /// @brief Accumulate one iteration's phase wall-clock into the
+        ///        aggregate (single-timeline seconds, NOT worker-seconds).
+        ///
+        /// @details
+        /// Called from `proveKernel` once per iteration for phase 1 and
+        /// phase 3 with that iteration's barrier-to-barrier wall time.
+        /// `dumpRtAggregate` divides each phase tree's attributed
+        /// worker-seconds by this wall sum to print the effective
+        /// parallelism, so the table defines exactly what its seconds
+        /// mean against the run's single timeline.
+        ///
+        /// @param phase   1, 2 or 3 — the three barriered phases; phase 2
+        ///                registers on both routes (the CUDA route attributes
+        ///                nothing to its tree, so the line reads as device wall).
+        /// @param seconds Wall-clock seconds of that phase's sweep this
+        ///                iteration.
+        void addRtPhaseWallSeconds(int phase, double seconds);
+
         /// @brief Refresh the on-disk snapshot via the thread tracker.
         ///
         /// Reads `g_currentThreadTracker`; no-op when null. Used inside
@@ -359,7 +443,7 @@ namespace gl {
         /// `RT_TRACKER_DECL`) instead.
         ///
         /// @param n Number of inner-loop iterations to accumulate.
-        inline void rtNoteIterationsHere(int n) {
+        inline void rtNoteIterationsHere(int64_t n) {
             if (g_currentThreadTracker) {
                 g_currentThreadTracker->noteIterations(n);
             }

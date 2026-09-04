@@ -1,0 +1,1 @@
+(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[v1](in[v1,N])(or3[N,+,i1,v1,i0])))	main	or theorem	(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[w1](in[w1,N])(>[]!(preorder[N,+,i1,w1])(=[i0,w1]))))	main	(>[N,i0,s,+,*,i1,i2,id](AnchorFTA[N,i0,s,+,*,i1,i2,id])(>[w1](in[w1,N])(>[]!(=[i0,w1])(preorder[N,+,i1,w1]))))	main

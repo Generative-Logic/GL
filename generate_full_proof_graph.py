@@ -99,6 +99,7 @@ LICENSE_FOOTER = """  <div style="margin-top:2em; padding-top:1em; border-top:1p
   </div>"""
 
 import visu_helpers
+import lean_pages
 from visu_helpers import expand_expr
 from pathlib import Path
 
@@ -369,6 +370,17 @@ TAG_DESCRIPTIONS = {
         "Emitted as a <code>&lt;N&gt;_or_theorem.txt</code> proof file with method "
         "label <code>or theorem</code>."
     ),
+    "or elimination": (
+        "Pre-split merge (or elimination)",
+        "The theorem is <em>derived</em> from two previously proved guard "
+        "variants — rows identical except one innermost guard premise — "
+        "under a previously proved OR theorem whose two disjuncts are "
+        "exactly those guards: classical or-elimination, with the OR "
+        "theorem as the coverage certificate. The three dependencies cite "
+        "the two variants and the licensing OR theorem. Emitted as a "
+        "<code>&lt;N&gt;_or_elimination.txt</code> proof file with method "
+        "label <code>or elimination</code>."
+    ),
     "or branch proven": (
         "OR-introduction subproof seed",
         "Records that the parent-scope OR <code>(or&lt;N&gt;[...])</code> was "
@@ -548,14 +560,59 @@ def wrap_clickable(text):
     return result
 
 
+# Order-relation symbols for the readable captions, keyed by (operator,
+# operation slot). `preorder[N,op,a,b]` is the witness form `∃k: a op k = b`:
+# with `+` it is the natural order a ≤ b, with `*` it is divisibility a ∣ b.
+# `strictOrder[N,op,a,b]` adds `a ≠ b`: with `+` the strict order a < b, with
+# `*` the proper-divisor relation. Each entry is (positive, negated) — the
+# negated form is the crossed symbol so `!(preorder[...])` reads a ≰ b, never
+# `!a ≤ b`. Unicode throughout; `_htmlify_readable` escapes afterwards, so `<`
+# arrives in the page as `&lt;`.
+_ORDER_SYMBOLS = {
+    ("preorder", "+"): ("≤", "≰"),      # ≤  ≰
+    ("preorder", "*"): ("∣", "∤"),      # ∣  ∤
+    ("strictOrder", "+"): ("<", "≮"),        # <  ≮
+}
+_ORDER_ATOM_RE = re.compile(
+    r'(!?)\((preorder|strictOrder)\[([^,\]]+),([^,\]]+),([^,\]]+),([^\]]+)\]\)')
+
+
+def _apply_order_symbols(text: str) -> str:
+    """
+    @brief Rewrite every order-relation atom of a readable caption to its
+    mathematical symbol.
+    @details
+    Matches `(preorder[S,op,a,b])` and `(strictOrder[S,op,a,b])`, with an
+    optional leading `!`, anywhere in the plain-text caption and replaces the
+    atom by `a SYMBOL b` from `_ORDER_SYMBOLS`. The proper-divisor relation
+    (`strictOrder` with `*`) has no single glyph and renders as
+    `a ∣ b, a ≠ b` (negated: `¬(a ∣ b, a ≠ b)`). The set slot is dropped —
+    the caption's reader knows the carrier. An operation slot other than `+`
+    or `*` is a contract violation of the caller (every anchor renames its
+    slots to those two names before the caption is built) and asserts.
+    @param text Plain-text readable caption (before HTML escaping).
+    @return The caption with every order atom replaced.
+    """
+
+    def repl(match):
+        negated, operator, _carrier, operation, left, right = match.groups()
+        assert operation in ("+", "*"), (
+            f"order atom with unknown operation slot {operation!r}: "
+            f"{match.group(0)}")
+        if (operator, operation) == ("strictOrder", "*"):
+            body = f"{left} ∣ {right}, {left} ≠ {right}"
+            return f"¬({body})" if negated else body
+        positive, crossed = _ORDER_SYMBOLS[(operator, operation)]
+        return f"{left} {crossed if negated else positive} {right}"
+
+    return _ORDER_ATOM_RE.sub(repl, text)
+
+
 def _htmlify_readable(text):
     """Convert plain-text readable title to HTML with mathematical notation."""
-    h = html.escape(text)
-    # (preorder[N,+,a,b]) -> a ≤ b   (∃k∈N. a+k=b)
-    h = re.sub(
-        r'\(preorder\[([^,]+),([^,]+),([^,]+),([^\]]+)\]\)',
-        lambda m: f'{m.group(3)} &le; {m.group(4)}',
-        h)
+    # Order relations first, on the plain text: `<` (strict order) must go
+    # through html.escape like every other character.
+    h = html.escape(_apply_order_symbols(text))
     # (interval[N,+,start,end,set]) -> set = [start,end]
     # !(interval[N,+,start,end,set]) -> set ≠ [start,end]
     h = re.sub(
@@ -2191,6 +2248,12 @@ def or_theorem(theorem, file_path, prefix=''):
     return render_stack_with_subproofs(stack, prefix, main_goal=theorem)
 
 
+def or_elimination(theorem, file_path, prefix=''):
+    stack = read_stack(file_path, "or elimination")
+    rename_stack(stack, theorem)
+    return render_stack_with_subproofs(stack, prefix, main_goal=theorem)
+
+
 def _compute_chapter_stats(*file_paths):
     """Compute stats across one or more proof stack files."""
     steps = 0
@@ -2291,6 +2354,12 @@ def makes_file_path_map(theorem_list, base_dir=None):
             idx += 1
         elif m == "or theorem":
             files.append(base_dir / f"{idx}_or_theorem.txt")
+            idx += 1
+        elif m == "or elimination":
+            files.append(base_dir / f"{idx}_or_elimination.txt")
+            idx += 1
+        elif m == "proved not broadcast":
+            files.append(base_dir / f"{idx}_proved_not_broadcast.txt")
             idx += 1
         else:
             safe = re.sub(r"[^A-Za-z0-9._\-+]+", "_", m)[:64] or "unknown"
@@ -2442,17 +2511,21 @@ def build_gl_binary_map(gl_binaries_dir):
                 premises_conj = _gl_make_conjunction(premises)
                 mpl = '(>[' + bound_str + ']' + premises_conj + conclusion + ')'
             elif category == 'or':
-                # Mirror prover.cpp expandSignature CASE 4 (OR).
-                # Two-element OR: !(&!E1!E2). N>=3 nested as
-                # !(&current!Ek) for each k>=2.
+                # Mirror prover.cpp expandSignature CASE 4 (OR). Elements
+                # carry each disjunct's true polarity; the conjunct form is
+                # the element's negation WITH double-negation cancellation
+                # (a negated disjunct contributes its bare positive core).
+                def _neg(e):
+                    return e[1:] if e.startswith('!') else '!' + e
                 if not renamed_elems:
                     mpl = renamed_sig
                 elif len(renamed_elems) == 1:
                     mpl = renamed_elems[0]
                 else:
-                    mpl = '!(&!' + renamed_elems[0] + '!' + renamed_elems[1] + ')'
+                    mpl = ('!(&' + _neg(renamed_elems[0])
+                           + _neg(renamed_elems[1]) + ')')
                     for i in range(2, len(renamed_elems)):
-                        mpl = '!(&' + mpl + '!' + renamed_elems[i] + ')'
+                        mpl = '!(&' + mpl + _neg(renamed_elems[i]) + ')'
             else:
                 mpl = _gl_make_conjunction(renamed_elems)
 
@@ -2567,6 +2640,10 @@ def generate_proof_graph_pages(config: configuration_reader,
     # Windows when ANY child is open, so we don't try.
     if os.path.isdir(out_dir):
         for child in os.listdir(out_dir):
+            if child == lean_pages.EXPORT_FOLDER:
+                # The run's Lean export lives here (proof_export.live writes it
+                # before the HTML stage); the pages link into it.
+                continue
             child_path = os.path.join(out_dir, child)
             try:
                 if os.path.isfile(child_path) or os.path.islink(child_path):
@@ -3178,6 +3255,8 @@ def generate_proof_graph_pages(config: configuration_reader,
     """
 
     # --- Index page ---
+    lean_export_view = lean_pages.load_lean_export(Path(out_dir), Path(proc_dir))
+    lean_summary_html = lean_pages.render_index_summary(lean_export_view)
     index_head = f"""<!DOCTYPE html>
 {LICENSE_SOURCE_COMMENT}
 <html lang="en">
@@ -3200,6 +3279,7 @@ def generate_proof_graph_pages(config: configuration_reader,
 <body>
   <nav><a href="tags.html">Reasoning rules</a></nav>
   <h1>Proof Graph</h1>
+{lean_summary_html}
   <h2>Table of Contents</h2>
   <input type="text" id="theorem-search" placeholder="Filter theorems..."
          style="width:100%; max-width:600px; padding:0.5em; margin-bottom:1em; background:#262938; color:#F0E8DC;
@@ -3327,7 +3407,7 @@ def generate_proof_graph_pages(config: configuration_reader,
         theorem_parts = html.escape(_extract_expr_parts(theorem_display), quote=True)
         parts_attr = f' data-parts="{theorem_parts}"' if theorem_parts else ''
         theorem_span = f'<span class="clickable" data-text="{theorem_esc}"{parts_attr}>{display_stripped}</span>'
-        toc.append(f"    <li>{chapter_num}. <a href='{filename}' style='text-decoration:none'>{theorem_span}</a>")
+        toc.append(f"    <li>{chapter_num}. <a href='{filename}' style='text-decoration:none'>{theorem_span}</a>{lean_pages.toc_link(lean_export_view, i, chapter_num)}")
         # force a new line and style it
         if not debug:
             toc.append(
@@ -3362,7 +3442,8 @@ def generate_proof_graph_pages(config: configuration_reader,
         next_chapter_num = leading_nums[i + 1] if i + 1 < len(chapter_theorem_list) else None
         prev_link = f"<a href='chapter{prev_chapter_num}.html'>Previous</a>" if prev_chapter_num is not None else ""
         next_link = f"<a href='chapter{next_chapter_num}.html'>Next</a>" if next_chapter_num is not None else ""
-        nav_links = ' '.join(link for link in (prev_link, next_link) if link)
+        lean_link = lean_pages.nav_link(lean_export_view, i, chapter_num)
+        nav_links = ' '.join(link for link in (prev_link, next_link, lean_link) if link)
 
         head = f"""<!DOCTYPE html>
 {LICENSE_SOURCE_COMMENT}
@@ -3371,7 +3452,7 @@ def generate_proof_graph_pages(config: configuration_reader,
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{html.escape(_strip_i_prefix(rename_theorem(name)))}</title>
-  {f'<title>{html.escape(_strip_i_prefix(visu_helpers.make_readable_title(rename_theorem(name))))}</title>' if not debug else ''}
+  {f'<title>{html.escape(_apply_order_symbols(_strip_i_prefix(visu_helpers.make_readable_title(rename_theorem(name)))))}</title>' if not debug else ''}
   <link rel="icon" type="image/png" href="favicon.png">
 {LICENSE_HEAD_META}
   {common_style}
@@ -3463,6 +3544,20 @@ def generate_proof_graph_pages(config: configuration_reader,
                 or_theorem(name, file_path_map[name][0]),
                 "  </div>",
             ])
+        elif method.lower() == "or elimination":
+            body.extend([
+                "  <h2>OR Elimination (pre-split merge)</h2>",
+                "  <div class='step-output'>",
+                or_elimination(name, file_path_map[name][0]),
+                "  </div>",
+            ])
+        elif method.lower() == "proved not broadcast":
+            body.extend([
+                "  <h2>Proved, not broadcast (level-refused registration)</h2>",
+                "  <div class='step-output'>",
+                direct(name, file_path_map[name][0]),
+                "  </div>",
+            ])
         # Chapter statistics footer
         stats_text = _compute_chapter_stats(*file_path_map[name])
         body.append(f"  <div class='chapter-stats'>{stats_text}</div>")
@@ -3473,3 +3568,14 @@ def generate_proof_graph_pages(config: configuration_reader,
 
         with open(os.path.join(out_dir, filename), "w", encoding="utf-8") as f:
             f.write("\n".join(body))
+
+        # The chapter's Lean twin (only when the run exported this theorem).
+        if lean_export_view is not None and i in lean_export_view.theorems:
+            lean_pages.write_lean_page(
+                Path(out_dir),
+                lean_pages.render_lean_page(
+                    lean_export_view.theorems[i], lean_export_view, chapter_num, filename,
+                    html.escape(_strip_i_prefix(rename_theorem(name))),
+                    _htmlify_readable(_strip_i_prefix(visu_helpers.make_readable_title(rename_theorem(name)))),
+                    common_style, LICENSE_SOURCE_COMMENT, LICENSE_HEAD_META, LICENSE_FOOTER),
+                chapter_num)

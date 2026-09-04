@@ -26,6 +26,7 @@
 
 namespace gl {
 
+
     // `ScratchArena` is `LbArena` on the cold grant path (see
     // scratch_arena.hpp); the bump core lives in lb_arena.cpp. Only the
     // per-slot registry and its process-wide binding are defined here.

@@ -36,7 +36,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests.test_harness import (  # noqa: E402
     register, make_state_minimal, make_state_with_binaries,
-    make_proof_line, set_chapter_context, assert_failure, run_all_tests,
+    make_proof_line, set_chapter_context, assert_failure, assert_pass,
+    run_all_tests,
 )
 from verifier import (  # noqa: E402
     check_disintegration, check_expansion, check_recursion,
@@ -185,9 +186,9 @@ def test_disintegration_or_premise_set_mismatch():
     state = make_state_with_binaries(("Peano",))
     state.gl_binaries = dict(state.gl_binaries)
     state.gl_binaries["Peano"] = dict(state.gl_binaries["Peano"])
-    state.gl_binaries["Peano"]["ortest1"] = {
+    state.gl_binaries["Peano"]["or71"] = {
         "category": "or",
-        "signature": "(ortest1[u_1,u_2,u_3])",
+        "signature": "(or71[u_1,u_2,u_3])",
         "elements": ["(eq[u_1])", "(eq[u_2])", "(eq[u_3])"],
     }
     state.current_gl_binary = state.gl_binaries["Peano"]
@@ -200,7 +201,192 @@ def test_disintegration_or_premise_set_mismatch():
     )
     expansion_line = make_proof_line(
         "(some_compound[a,b,c])", "main", "expansion",
-        "(ortest1[a,b,c])", "main",
+        "(or71[a,b,c])", "main",
+    )
+    assert_failure(check_disintegration, disint_line,
+                   [disint_line, expansion_line], state)
+
+
+@register
+def test_disintegration_single_exclusion_accepted():
+    """Category 'or', k=3: the single-exclusion form — ONE premise !D_i,
+    head a reduced 2-ary or-compact whose flattened disjuncts equal the
+    parent's minus D_i, order preserved — is accepted."""
+    state = make_state_with_binaries(("Peano",))
+    state.gl_binaries = dict(state.gl_binaries)
+    state.gl_binaries["Peano"] = dict(state.gl_binaries["Peano"])
+    state.gl_binaries["Peano"]["or71"] = {
+        "category": "or",
+        "signature": "(or71[u_1,u_2,u_3])",
+        "elements": ["(eq[u_1])", "(eq[u_2])", "(eq[u_3])"],
+    }
+    state.gl_binaries["Peano"]["or72"] = {
+        "category": "or",
+        "signature": "(or72[u_1,u_2])",
+        "arity": 2,
+        "elements": ["(eq[u_1])", "(eq[u_2])"],
+    }
+    state.current_gl_binary = state.gl_binaries["Peano"]
+    disint_line = make_proof_line(
+        "(>[]!(eq[a])(or72[b,c]))", "main", "disintegration",
+        "(some_compound[a,b,c])", "main",
+    )
+    expansion_line = make_proof_line(
+        "(some_compound[a,b,c])", "main", "expansion",
+        "(or71[a,b,c])", "main",
+    )
+    assert_pass(check_disintegration, disint_line,
+                [disint_line, expansion_line], state)
+
+
+@register
+def test_disintegration_single_exclusion_negated_disjunct_positive_premise():
+    """A NEGATED parent disjunct's exclusion premise is its POSITIVE core
+    (double-negation cancellation, I-175) — accepted."""
+    state = make_state_with_binaries(("Peano",))
+    state.gl_binaries = dict(state.gl_binaries)
+    state.gl_binaries["Peano"] = dict(state.gl_binaries["Peano"])
+    state.gl_binaries["Peano"]["or73"] = {
+        "category": "or",
+        "signature": "(or73[u_1,u_2,u_3])",
+        "elements": ["(eq[u_1])", "!(eq[u_2])", "(eq[u_3])"],
+    }
+    state.gl_binaries["Peano"]["or74"] = {
+        "category": "or",
+        "signature": "(or74[u_1,u_2])",
+        "arity": 2,
+        "elements": ["(eq[u_1])", "(eq[u_2])"],
+    }
+    state.current_gl_binary = state.gl_binaries["Peano"]
+    disint_line = make_proof_line(
+        "(>[](eq[b])(or74[a,c]))", "main", "disintegration",
+        "(some_compound[a,b,c])", "main",
+    )
+    expansion_line = make_proof_line(
+        "(some_compound[a,b,c])", "main", "expansion",
+        "(or73[a,b,c])", "main",
+    )
+    assert_pass(check_disintegration, disint_line,
+                [disint_line, expansion_line], state)
+
+
+@register
+def test_disintegration_single_exclusion_wrong_reduced_order():
+    """The reduced head's disjunct list must equal the parent's minus the
+    excluded one ORDER PRESERVED — a swapped order rejects."""
+    state = make_state_with_binaries(("Peano",))
+    state.gl_binaries = dict(state.gl_binaries)
+    state.gl_binaries["Peano"] = dict(state.gl_binaries["Peano"])
+    state.gl_binaries["Peano"]["or71"] = {
+        "category": "or",
+        "signature": "(or71[u_1,u_2,u_3])",
+        "elements": ["(eq[u_1])", "(eq[u_2])", "(eq[u_3])"],
+    }
+    state.gl_binaries["Peano"]["or72"] = {
+        "category": "or",
+        "signature": "(or72[u_1,u_2])",
+        "arity": 2,
+        "elements": ["(eq[u_1])", "(eq[u_2])"],
+    }
+    state.current_gl_binary = state.gl_binaries["Peano"]
+    disint_line = make_proof_line(
+        "(>[]!(eq[a])(or72[c,b]))", "main", "disintegration",
+        "(some_compound[a,b,c])", "main",
+    )
+    expansion_line = make_proof_line(
+        "(some_compound[a,b,c])", "main", "expansion",
+        "(or71[a,b,c])", "main",
+    )
+    assert_failure(check_disintegration, disint_line,
+                   [disint_line, expansion_line], state)
+
+
+@register
+def test_disintegration_single_exclusion_k2_rejected():
+    """A 2-disjunct parent licenses no single-exclusion rows (k >= 3
+    only): a one-premise or-headed row under it rejects."""
+    state = make_state_with_binaries(("Peano",))
+    state.gl_binaries = dict(state.gl_binaries)
+    state.gl_binaries["Peano"] = dict(state.gl_binaries["Peano"])
+    state.gl_binaries["Peano"]["or75"] = {
+        "category": "or",
+        "signature": "(or75[u_1,u_2])",
+        "elements": ["(eq[u_1])", "(eq[u_2])"],
+    }
+    state.current_gl_binary = state.gl_binaries["Peano"]
+    disint_line = make_proof_line(
+        "(>[]!(eq[a])(or75[b,c]))", "main", "disintegration",
+        "(some_compound[a,b])", "main",
+    )
+    expansion_line = make_proof_line(
+        "(some_compound[a,b])", "main", "expansion",
+        "(or75[a,b])", "main",
+    )
+    assert_failure(check_disintegration, disint_line,
+                   [disint_line, expansion_line], state)
+
+
+def _subset_exclusion_state():
+    """4-ary parent or76 (third disjunct negated) + reduced 2-ary or77
+    over the survivors of excluding disjuncts 0 and 2."""
+    state = make_state_with_binaries(("Peano",))
+    state.gl_binaries = dict(state.gl_binaries)
+    state.gl_binaries["Peano"] = dict(state.gl_binaries["Peano"])
+    state.gl_binaries["Peano"]["or76"] = {
+        "category": "or",
+        "signature": "(or76[u_1,u_2,u_3,u_4])",
+        "elements": ["(eq[u_1])", "(eq[u_2])", "!(eq[u_3])", "(eq[u_4])"],
+    }
+    state.gl_binaries["Peano"]["or77"] = {
+        "category": "or",
+        "signature": "(or77[u_1,u_2])",
+        "arity": 2,
+        "elements": ["(eq[u_1])", "(eq[u_2])"],
+    }
+    state.current_gl_binary = state.gl_binaries["Peano"]
+    expansion_line = make_proof_line(
+        "(some_compound[a,b,c,d])", "main", "expansion",
+        "(or76[a,b,c,d])", "main",
+    )
+    return state, expansion_line
+
+
+@register
+def test_disintegration_subset_exclusion_two_premises_accepted():
+    """k=4, j=2: two premises (the excluded positive disjunct's negation
+    and the excluded NEGATED disjunct's positive core, parent order) with
+    a reduced 2-ary head over the survivors — accepted."""
+    state, expansion_line = _subset_exclusion_state()
+    disint_line = make_proof_line(
+        "(>[]!(eq[a])(>[](eq[c])(or77[b,d])))", "main", "disintegration",
+        "(some_compound[a,b,c,d])", "main",
+    )
+    assert_pass(check_disintegration, disint_line,
+                [disint_line, expansion_line], state)
+
+
+@register
+def test_disintegration_subset_exclusion_permuted_premises_accepted():
+    """k=4, j=2: the SAME rule with its premises permuted is accepted —
+    premises match as a multiset (the prover-side detector is order-free
+    because the mail-compact round-trip permutes premise order)."""
+    state, expansion_line = _subset_exclusion_state()
+    disint_line = make_proof_line(
+        "(>[](eq[c])(>[]!(eq[a])(or77[b,d])))", "main", "disintegration",
+        "(some_compound[a,b,c,d])", "main",
+    )
+    assert_pass(check_disintegration, disint_line,
+                [disint_line, expansion_line], state)
+
+
+@register
+def test_disintegration_subset_exclusion_wrong_complement_rejected():
+    """k=4, j=2: premises that are not exactly the complement's negations
+    (here !(eq[d]) instead of the excluded (eq[c])'s core) reject."""
+    state, expansion_line = _subset_exclusion_state()
+    disint_line = make_proof_line(
+        "(>[]!(eq[a])(>[]!(eq[d])(or77[b,d])))", "main", "disintegration",
+        "(some_compound[a,b,c,d])", "main",
     )
     assert_failure(check_disintegration, disint_line,
                    [disint_line, expansion_line], state)
@@ -379,6 +565,48 @@ def test_expansion_negated_existence_target_doesnt_match():
     support = make_proof_line("!(existence_two[a])",
                               "main", "task formulation")
     assert_failure(check_expansion, line, [line, support], state)
+
+
+@register
+def test_expansion_negated_existence_compact_row_accepted():
+    """The prover emits a negated existence's two rules as compact
+    ``(implication<N>[args])`` product statements (the existence
+    implications); such a row's expression is expanded through its
+    implication binary entry before the two-implication shape check.
+    A compact whose rule is neither of the two is still rejected."""
+    state = make_state_with_binaries(("Peano",))
+    state.gl_binaries = dict(state.gl_binaries)
+    state.gl_binaries["Peano"] = dict(state.gl_binaries["Peano"])
+    state.gl_binaries["Peano"]["existence_two"] = {
+        "category": "existence",
+        "signature": "(existence_two[u_1,u_2])",
+        "elements": ["(left[1,u_1])", "(right[u_2,1])"],
+    }
+    # left -> !right over the existence's tokens, bound variable 1.
+    state.gl_binaries["Peano"]["implication_ex"] = {
+        "category": "implication",
+        "signature": "(implication_ex[u_1,u_2])",
+        "elements": ["(left[1,u_1])", "!(right[u_2,1])"],
+    }
+    # A positive head: neither of the negated existence's rules.
+    state.gl_binaries["Peano"]["implication_other"] = {
+        "category": "implication",
+        "signature": "(implication_other[u_1,u_2])",
+        "elements": ["(left[1,u_1])", "(right[u_2,1])"],
+    }
+    state.current_gl_binary = state.gl_binaries["Peano"]
+    support = make_proof_line("!(existence_two[a,b])",
+                              "main", "task formulation")
+    line = make_proof_line(
+        "(implication_ex[a,b])", "main", "expansion",
+        "!(existence_two[a,b])", "main",
+    )
+    assert_pass(check_expansion, line, [line, support], state)
+    bad = make_proof_line(
+        "(implication_other[a,b])", "main", "expansion",
+        "!(existence_two[a,b])", "main",
+    )
+    assert_failure(check_expansion, bad, [bad, support], state)
 
 
 @register

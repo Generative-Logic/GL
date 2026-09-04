@@ -123,8 +123,19 @@ namespace gl {
     /// Defined here (beside `IntEncodedExpr`) rather than in `memory.hpp` so
     /// `LbMemory` can hold a `ColdHashMap<PodKeyStore<int32_t>, StatementFlags>`
     /// — the cold registry needs the complete value type at its member
-    /// declaration. Four `bool`s, no padding: a valid `SingleValueStore` value
+    /// declaration. Two `bool`s, no padding: a valid `SingleValueStore` value
     /// (trivially copyable) with a deterministic deload image.
+    ///
+    /// ROW PRESENCE is the membership: a row exists in `intKnownStatements`
+    /// iff the statement is KNOWN here — it passed the one admission door
+    /// (`addStatement` and the doors it dispatches to: `addEquality` /
+    /// `addNegatedEquality`, the equivalence-class commit, the status-4 fact
+    /// load, anchor handling, the compressor load) and therefore carries a
+    /// NON-EMPTY `intStatementLevelsMap` row (the statement-levels contract).
+    /// Site F's dedup ancestor scans, the contradiction negation scans, the
+    /// burst dependency skip, and the ordisMerge probes all test bare
+    /// presence. A statement the door refused (iteration cap,
+    /// secondary-variable cap, equivalence filter) leaves NO row.
     ///
     /// `local` — true when the statement was added to the LB's local-encoded
     /// containers on a status 0/1 derivation; false for mail-origin / non-local
@@ -135,29 +146,15 @@ namespace gl {
     /// witness), or every existence inside it got at least one admitted witness.
     /// `checkForEquivalence` suppresses re-disintegration of an equivalence-class
     /// variant only when the matched variant is flagged `fullyDisintegrated`.
-    ///
-    /// `registered` / `known` — the two membership bits that let one packed-key
-    /// map carry both statement records. `registered` means the statement
-    /// passed an add-path registration door (`addStatement` shape dispatch,
-    /// `addEquality` / `addNegatedEquality`, the status-4 fact load, anchor
-    /// handling, recursion mail, the compressor rule load). `known` means the
-    /// statement entered the level registry — the record the Site F dedup
-    /// ancestor scans, the contradiction negation scans, and the burst
-    /// dependency skip consult. The two sets are deliberately NOT equal:
-    /// `addStatement` registers unconditionally but admits to the level
-    /// registry only behind its iteration-cap / secondary-variable /
-    /// equivalence-filter gates; the equivalence-class commit grants `known`
-    /// only; the compressor rule load grants `registered` only. Every gate
-    /// must test the bit its contract names, never bare map presence.
+    /// The marker that sets it never creates rows — it flags the row admission
+    /// created, or does nothing.
     ///
     /// @see ExpressionAnalyzer::checkForEquivalence
     /// @see ExpressionAnalyzer::disintegrateExpr2
-    /// @see upsertStatementKey — the OR-only write door for the bits.
+    /// @see upsertStatementKey — the insert-or-merge write door.
     struct StatementFlags {
         bool local = false;
         bool fullyDisintegrated = false;
-        bool registered = false;
-        bool known = false;
     };
 
 }

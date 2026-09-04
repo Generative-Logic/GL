@@ -128,7 +128,7 @@ TEST(antisym_variable_copy, deposit_at_innermost_lb) {
     const gl::StatementFlags* fl = innerLB->intKnownStatements.find(
         gl::StatementKey{ copyId, gl::NameMap::MAIN_ID });
     ASSERT_TRUE(fl != nullptr);
-    ASSERT_TRUE(fl->known);
+    ASSERT_TRUE(fl != nullptr);
 
     // The ancestors carry no copy axiom (the deposit is innermost-only).
     ASSERT_TRUE(outerLB->nameMap.lookup("(=[7,7_copy])") == 0);

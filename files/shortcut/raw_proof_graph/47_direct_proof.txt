@@ -1,0 +1,19 @@
+(preorder[1,5,12,13])	main	implication	(>[pi_lev_3_1](in[pi_lev_3_1,u_1])(>[](in3[u_12,pi_lev_3_1,u_13,u_5])(preorder[u_1,u_5,u_12,u_13])))	main	(in3[12,int_lev_1_1,13,5])	main	(in[int_lev_1_1,1])	main
+(>[pi_lev_3_1](in[pi_lev_3_1,u_1])(>[](in3[u_12,pi_lev_3_1,u_13,u_5])(preorder[u_1,u_5,u_12,u_13])))	main	reformulation for integration >[bound]	!(>[pi_lev_3_1](in[pi_lev_3_1,1])!(in3[12,pi_lev_3_1,13,5]))_integration_goal	main
+!(>[pi_lev_3_1](in[pi_lev_3_1,1])!(in3[12,pi_lev_3_1,13,5]))_integration_goal	main	expansion for integration	(preorder[1,5,12,13])_integration_goal	main
+(in3[12,int_lev_1_1,13,5])	main	implication	(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(>[10,11](in3[10,8,11,5])(>[12](in3[9,10,12,5])(in3[11,7,12,5])))))	main	(AnchorPeano[1,2,3,4,5,6])	main	(in3[10,11,13,5])	main	(in3[11,9,12,5])	main	(in3[int_lev_1_1,9,10,5])	main
+(AnchorPeano[1,2,3,4,5,6])	main	implication	(>[](NaturalNumbers[u_1,u_2,u_3,u_4,u_5])(>[](in2[u_2,u_6,u_3])(AnchorPeano[u_1,u_2,u_3,u_4,u_5,u_6])))	main	(NaturalNumbers[1,2,3,4,5])	main	(in2[2,6,3])	main
+(>[](NaturalNumbers[u_1,u_2,u_3,u_4,u_5])(>[](in2[u_2,u_6,u_3])(AnchorPeano[u_1,u_2,u_3,u_4,u_5,u_6])))	main	reformulation for integration and	(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))_integration_goal	main
+(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))_integration_goal	main	expansion for integration	(AnchorPeano[1,2,3,4,5,6])_integration_goal	main
+(NaturalNumbers[1,2,3,4,5])	main	disintegration	(&(&(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))(in2[6,7,3]))(identity[1,8]))	main
+(&(&(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))(in2[6,7,3]))(identity[1,8]))	main	expansion	(AnchorFTA[1,2,3,4,5,6,7,8])	main
+(AnchorFTA[1,2,3,4,5,6,7,8])	main	task formulation
+(in2[2,6,3])	main	disintegration	(&(&(&(NaturalNumbers[1,2,3,4,5])(in2[2,6,3]))(in2[6,7,3]))(identity[1,8]))	main
+(in3[10,11,13,5])	main	implication	(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(in3[8,7,9,5])))	main	(AnchorPeano[1,2,3,4,5,6])	main	(in3[11,10,13,5])	main
+(in3[11,10,13,5])	main	task formulation
+(in3[11,9,12,5])	main	task formulation
+(in3[int_lev_1_1,9,10,5])	main	implication	(>[1,2,3,4,5,6](AnchorPeano[1,2,3,4,5,6])(>[7,8,9](in3[7,8,9,5])(in3[8,7,9,5])))	main	(AnchorPeano[1,2,3,4,5,6])	main	(in3[9,int_lev_1_1,10,5])	main
+(in3[9,int_lev_1_1,10,5])	main	disintegration	!(>[int_lev_1_1](in[int_lev_1_1,1])!(in3[9,int_lev_1_1,10,5]))	main
+!(>[int_lev_1_1](in[int_lev_1_1,1])!(in3[9,int_lev_1_1,10,5]))	main	expansion	(preorder[1,5,9,10])	main
+(preorder[1,5,9,10])	main	task formulation
+(in[int_lev_1_1,1])	main	disintegration	!(>[int_lev_1_1](in[int_lev_1_1,1])!(in3[9,int_lev_1_1,10,5]))	main

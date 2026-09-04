@@ -25,7 +25,9 @@
 /// @file
 /// @brief Tests for `ExpressionAnalyzer::appendGlobalTheorem` — the
 ///        `globalTheoremList` sink dedup (insert-if-absent on the theorem
-///        string, first emission wins).
+///        string, first emission wins between first-class methods; a
+///        first-class arrival upgrades an existing proved-not-broadcast
+///        row in place).
 
 #include "test_harness.hpp"
 
@@ -49,6 +51,58 @@ TEST(theorem_sink_dedup, distinct_theorems_both_land) {
     ASSERT_TRUE(ea.appendGlobalTheorem("(a)", "direct", "-1", "-1"));
     ASSERT_TRUE(ea.appendGlobalTheorem("(b)", "direct", "-1", "-1"));
     ASSERT_EQ(static_cast<int>(ea.globalTheoremList.size()), 2);
+}
+
+// Method-aware upgrade: a first-class registration replaces an existing
+// proved-not-broadcast row in place — method, aux columns, recorded
+// producer, and the tier's fullTheoremList mirror row — because the tier
+// records a closure that never circulated, so a circulating derivation of
+// the same theorem supersedes it. A tier arrival never demotes any row.
+TEST(theorem_sink_dedup, tier_row_upgrades_to_first_class) {
+    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::Memory poor;
+    gl::Memory full;
+
+    ASSERT_TRUE(ea.appendGlobalTheorem("(t)", "proved not broadcast", "-1",
+                                       "-1", &poor));
+    ea.fullTheoremList.emplace_back("(t)", "proved not broadcast", "-1", "-1");
+    // The in-run or scan marks a skipped tier row settled; the upgrade must
+    // clear the mark so the first-class row is scannable as new.
+    ea.orInRunScannedRows.insert("(t)");
+
+    // The first-class arrival upgrades the row in place: no second row, the
+    // method and producer flip, the tier mirror leaves, the or-scan mark
+    // clears.
+    ASSERT_TRUE(ea.appendGlobalTheorem("(t)", "direct", "-1", "-1", &full));
+    ASSERT_EQ(static_cast<int>(ea.globalTheoremList.size()), 1);
+    ASSERT_TRUE(std::get<1>(ea.globalTheoremList[0]) == std::string("direct"));
+    ASSERT_TRUE(ea.globalTheoremProducers[0] == &full);
+    ASSERT_TRUE(ea.fullTheoremList.empty());
+    ASSERT_TRUE(ea.orInRunScannedRows.count("(t)") == 0);
+
+    // Later duplicates of the upgraded row: dropped, first-class rules apply.
+    ASSERT_FALSE(ea.appendGlobalTheorem("(t)", "induction", "v1", "0"));
+    ASSERT_TRUE(std::get<1>(ea.globalTheoremList[0]) == std::string("direct"));
+}
+
+// The tier is subordinate on both dedup sides: tier-after-tier and
+// tier-after-first-class are both dropped, keeping the standing row.
+TEST(theorem_sink_dedup, tier_arrival_never_lands_on_existing_row) {
+    gl::ExpressionAnalyzer ea(std::string("Peano"));
+    gl::Memory p1;
+    gl::Memory p2;
+
+    ASSERT_TRUE(ea.appendGlobalTheorem("(t)", "proved not broadcast", "-1",
+                                       "-1", &p1));
+    ASSERT_FALSE(ea.appendGlobalTheorem("(t)", "proved not broadcast", "-1",
+                                        "-1", &p2));
+    ASSERT_EQ(static_cast<int>(ea.globalTheoremList.size()), 1);
+    ASSERT_TRUE(ea.globalTheoremProducers[0] == &p1);
+
+    ASSERT_TRUE(ea.appendGlobalTheorem("(u)", "direct", "-1", "-1", &p1));
+    ASSERT_FALSE(ea.appendGlobalTheorem("(u)", "proved not broadcast", "-1",
+                                        "-1", &p2));
+    ASSERT_TRUE(std::get<1>(ea.globalTheoremList[1]) == std::string("direct"));
 }
 
 // Vacuous reversion: rows whose recorded producer (or a producer ancestor)

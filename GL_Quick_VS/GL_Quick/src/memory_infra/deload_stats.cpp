@@ -24,6 +24,8 @@
 
 #include "deload_stats.hpp"
 
+#include "../infra/diagnostics_log.hpp"
+
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
@@ -129,7 +131,7 @@ namespace gl {
         const bool moved = d.outBytes != 0 || d.inBytes != 0
             || d.workerWaitNs != 0 || d.selfLoads != 0 || d.inlineEvicts != 0;
         if (moved) {
-            std::cout << "[DELOAD] phase" << phase
+            diagnosticsLog() << "[DELOAD] phase" << phase
                       << ": out " << (static_cast<double>(d.outBytes) / kGiB)
                       << " GiB @ " << gibPerSecond(d.outBytes, d.outNs)
                       << " GiB/s | in "
@@ -148,12 +150,12 @@ namespace gl {
         const int64_t dumpNs = v3DumpNs.load(std::memory_order_relaxed);
         const int64_t loadBytes = v3LoadBytes.load(std::memory_order_relaxed);
         const int64_t loadNs = v3LoadNs.load(std::memory_order_relaxed);
-        std::cout << "[DELOAD] batch summary:" << std::endl;
-        std::cout << "  v3 dump: "
+        diagnosticsLog() << "[DELOAD] batch summary:" << std::endl;
+        diagnosticsLog() << "  v3 dump: "
                   << v3DumpCount.load(std::memory_order_relaxed) << " ops, "
                   << (static_cast<double>(dumpBytes) / kGiB) << " GiB @ "
                   << gibPerSecond(dumpBytes, dumpNs) << " GiB/s" << std::endl;
-        std::cout << "  v3 load: "
+        diagnosticsLog() << "  v3 load: "
                   << v3LoadCount.load(std::memory_order_relaxed) << " ops, "
                   << (static_cast<double>(loadBytes) / kGiB) << " GiB @ "
                   << gibPerSecond(loadBytes, loadNs) << " GiB/s" << std::endl;
@@ -161,24 +163,24 @@ namespace gl {
         const int64_t rDumpNs = rawDumpNs.load(std::memory_order_relaxed);
         const int64_t rLoadBytes = rawLoadBytes.load(std::memory_order_relaxed);
         const int64_t rLoadNs = rawLoadNs.load(std::memory_order_relaxed);
-        std::cout << "  raw dump: "
+        diagnosticsLog() << "  raw dump: "
                   << rawDumpCount.load(std::memory_order_relaxed) << " ops, "
                   << (static_cast<double>(rDumpBytes) / kGiB) << " GiB @ "
                   << gibPerSecond(rDumpBytes, rDumpNs) << " GiB/s" << std::endl;
-        std::cout << "  raw load: "
+        diagnosticsLog() << "  raw load: "
                   << rawLoadCount.load(std::memory_order_relaxed) << " ops, "
                   << (static_cast<double>(rLoadBytes) / kGiB) << " GiB @ "
                   << gibPerSecond(rLoadBytes, rLoadNs) << " GiB/s, peak "
                   << (static_cast<double>(
                           rawLoadPeakNs.load(std::memory_order_relaxed)) / 1e6)
                   << " ms" << std::endl;
-        std::cout << "  index rebuild: "
+        diagnosticsLog() << "  index rebuild: "
                   << indexRebuildKeys.load(std::memory_order_relaxed)
                   << " keys, "
                   << (static_cast<double>(
                           indexRebuildNs.load(std::memory_order_relaxed)) / 1e6)
                   << " ms" << std::endl;
-        std::cout << "  evictions: "
+        diagnosticsLog() << "  evictions: "
                   << evictCount.load(std::memory_order_relaxed) << " ("
                   << evictBlocks.load(std::memory_order_relaxed)
                   << " blocks, "
@@ -190,7 +192,7 @@ namespace gl {
                   << tailDumpCount.load(std::memory_order_relaxed)
                   << " | full-dumps "
                   << fullDumpCount.load(std::memory_order_relaxed) << std::endl;
-        std::cout << "  prefetch: issued "
+        diagnosticsLog() << "  prefetch: issued "
                   << prefetchIssued.load(std::memory_order_relaxed)
                   << " | hit " << prefetchHit.load(std::memory_order_relaxed)
                   << " | miss " << prefetchMiss.load(std::memory_order_relaxed)
@@ -199,7 +201,7 @@ namespace gl {
                   << " low "
                   << evictDroppedFullRing.load(std::memory_order_relaxed)
                   << std::endl;
-        std::cout << "  worker self-loads: "
+        diagnosticsLog() << "  worker self-loads: "
                   << workerSelfLoadCount.load(std::memory_order_relaxed) << " ("
                   << (static_cast<double>(
                           workerSelfLoadNs.load(std::memory_order_relaxed))
@@ -213,7 +215,7 @@ namespace gl {
                   << " ms) | emergency-evicts: "
                   << emergencyEvictCount.load(std::memory_order_relaxed)
                   << std::endl;
-        std::cout << "  worker claim-wait: phase1 "
+        diagnosticsLog() << "  worker claim-wait: phase1 "
                   << (static_cast<double>(
                           workerClaimWaitNs[1].load(std::memory_order_relaxed))
                       / 1e6)
@@ -255,7 +257,7 @@ namespace gl {
             for (const int64_t held : blocksHeld)
                 if (held < kSmallLbBlocks) ++belowSmall;
         }
-        std::cout << "[DELOAD] LB blocksHeld: active " << activeCount
+        diagnosticsLog() << "[DELOAD] LB blocksHeld: active " << activeCount
                   << " | resident " << blocksHeld.size()
                   << " | max " << maxHeld
                   << " | p95 " << p95

@@ -30,16 +30,17 @@
 #include "memory_infra/lb_store.hpp"
 #include "memory_infra/hash_memory.hpp"
 #include "memory_infra/str_ops.hpp"
+#include "infra/rt_tracker.hpp"
 #include <map>
 #include <unordered_map>
 #include <unordered_set>
 #include <atomic>
+#include <thread>
 #include <limits>
 #include <cstdlib>
 #include <new>
 
 namespace gl {
-
 
 
     /// @brief One element of a request *Instruction*: a typed (category, signature, arity)
@@ -71,6 +72,32 @@ namespace gl {
         std::string signature = "";
         int arity = 0;
         std::string definedSet = ""; // <--- NEW FIELD
+
+        /// @brief The entity's derived implications as compact instances over
+        ///        its OWN `u_` tokens. For an or (D-309): the K-rules
+        ///        `!d_0 ∧ … ∧ !d_{i-1} ∧ !d_{i+1} ∧ … → d_i` in leaf order,
+        ///        then the subset-exclusion rules (I-184) in the
+        ///        disintegrator's `sel` enumeration order. For an existence
+        ///        (D-310): the two rules its
+        ///        negation disintegrates into, `left → !right` then
+        ///        `right → !left`.
+        ///
+        /// @details
+        /// Populated for or- and existence-category entities — the K-rules
+        /// by `ExpressionAnalyzer::compileOrKRules` at the or's mint, the
+        /// subset-exclusion rules by `compileOrSubsetExclusions` at the
+        /// reduced-or closure seam (`preMintReducedOrs`), the existence pair
+        /// by `compileExistenceImplications` at the existence's mint; empty
+        /// for every other category. Each entry is an ordinary implication
+        /// entity of the same registry, e.g. `(implication153[u_1,u_3,u_2])`:
+        /// its argument order is the projection from the implication's
+        /// signature positions onto the owner's tokens, so an instance
+        /// substitutes `u_p` → its argument `p` positionally (repeated
+        /// arguments are legal). Derived from `elements`, hence not part of
+        /// `operator<` / `operator==`. The GL-binary writer omits the key
+        /// when the list is empty; an or or existence loaded without it is
+        /// completed at the next `preMintReducedOrs` seam.
+        std::vector<std::string> implications = {};
 
         // 1. Default Constructor
         LogicalEntity() = default;
@@ -303,6 +330,31 @@ namespace gl {
         // FiringRecord::doNotDisintegrate. Default true (marker LMVs
         // never fire heads, so the value is never read on their path).
         bool disintegrationAllowed;
+        // Marker LMVs installed by the ordis-only qualification route of
+        // makeNormalizedKeysForAdmission. The firing site copies the bit
+        // into StagedAdmissionValue::ordisOnly so the drained admission
+        // value carries the tag. Default false (regular installs).
+        bool ordisOnly;
+        // Single-exclusion rule family (I-184):
+        // one negated-disjunct premise, reduced (k-1)-ary or-compact head.
+        // Detected by shape at install (isSubsetExclusionInstall — the D-241
+        // re-detection discipline, so status-3 mail-recovered rules re-mark).
+        // Consumed by checkLocalEncodedMemoryStatic: a head fired by a tagged
+        // rule never carries the route-(b) open signal — it PARKS in
+        // rejectedMapOrdis; opening comes only from the compound-demand map.
+        // Default false.
+        bool subsetExclusion;
+        // Ordis2-demand marker variants (D-267):
+        // installed by the qualifying-slot route of
+        // makeNormalizedKeysForAdmission — key = the rule's other premises,
+        // including its anchor context, value = the qualifying compound
+        // premise VERBATIM (polarity kept, no marker token). When the key
+        // matches, the firing site emits a
+        // demand record (the ground missing premise) instead of a marker
+        // admission; the drain inserts it into admissionMapOrdis2 and wakes
+        // the or heads parked in rejectedMapOrdis2 under the same key.
+        // Default false.
+        bool ordis2Demand;
 
         LocalMemoryValue()
             : valueId(0),
@@ -314,10 +366,12 @@ namespace gl {
             validityId(1),
             isMarker(false),
             productOfDisintegration(false),
-            disintegrationAllowed(true) {
+            disintegrationAllowed(true),
+            ordisOnly(false),
+            subsetExclusion(false),
+            ordis2Demand(false) {
         }
     };
-
 
 
     /// @brief One entry in the *admission map* — pre-computed parameters that bound how
@@ -358,6 +412,14 @@ namespace gl {
         int standardMaxAdmissionDepth;
         int standardMaxSecondaryNumber;
         bool flag;
+        // True when this value was produced by the ordis-only qualification
+        // route of makeNormalizedKeysForAdmission: the key exists solely as
+        // or-cohort opening demand evidence. General Pass-B admission
+        // (isAdmitted) skips tagged values; the ordis cohort probe reads
+        // tagged and untagged alike. A key whose run holds any untagged
+        // value is a regular key ("untagged wins" is emergent — both
+        // records coexist in the canonical run).
+        bool ordisOnly;
 
         // Default constructor
         AdmissionMapValue()
@@ -365,7 +427,8 @@ namespace gl {
             remainingArgs(),
             standardMaxAdmissionDepth(0),
             standardMaxSecondaryNumber(0),
-            flag(false) {
+            flag(false),
+            ordisOnly(false) {
         }
 
         // Full constructor (id-form inputs)
@@ -373,12 +436,14 @@ namespace gl {
             std::vector<int32_t> remainingArgs_,
             int standardMaxAdmissionDepth_,
             int standardMaxSecondaryNumber_,
-            bool flag_)
+            bool flag_,
+            bool ordisOnly_ = false)
             : key(std::move(key_)),
             remainingArgs(std::move(remainingArgs_)),
             standardMaxAdmissionDepth(standardMaxAdmissionDepth_),
             standardMaxSecondaryNumber(standardMaxSecondaryNumber_),
-            flag(flag_) {
+            flag(flag_),
+            ordisOnly(ordisOnly_) {
         }
     };
 
@@ -405,17 +470,19 @@ namespace gl {
         int standardMaxAdmissionDepth;
         int standardMaxSecondaryNumber;
         bool flag;
+        // Mirror of AdmissionMapValue::ordisOnly, carried verbatim from the
+        // fired rule's LMV bit through the staging record to the drain.
+        bool ordisOnly;
 
         StagedAdmissionValue()
             : key(),
             remainingArgsSorted(),
             standardMaxAdmissionDepth(0),
             standardMaxSecondaryNumber(0),
-            flag(false) {
+            flag(false),
+            ordisOnly(false) {
         }
     };
-
-
 
 
     /// @brief Legacy string-form of a hash-engine normalized key.
@@ -578,6 +645,121 @@ namespace gl {
         }
     };
 
+    /// @brief One PARKED or-cohort record — the `rejectedMapOrdis` value.
+    ///
+    /// @details
+    /// An or head whose cohort-opening probe found no admission demand parks
+    /// here, one entry per operator-based disjunct product template (the
+    /// key's template half), at the cohort parent's validity (the key's
+    /// validity half). The record is the complete reopening context minus
+    /// the validity the key already carries:
+    ///
+    /// - `orStatement` — the clean or statement (`Memory::valueInterner`
+    ///   id), exactly what revival re-deposits on
+    ///   `sameIterationInternalMail` so the absorb re-runs the full or
+    ///   consumption (fresh probe, standing tie rule, K rules deduped).
+    /// - `levels` — the or deposit's level run, snapshot at park time (the
+    ///   classic rejection buffer captures levels at buffer time for the
+    ///   same reason); the revival's mail-deposit levels.
+    ///
+    /// Mirror contract: this map is subject to everything `rejectedMap` is
+    /// subject to — container form, key space, canonical-run RMW, scope
+    /// wipe, deload band, dump — differing only in producer site (the
+    /// or-consumption probe miss, not Pass B), value record, and what
+    /// revival re-runs (the whole consumption — the parked thing is a
+    /// DECISION, not a fact).
+    ///
+    /// @see [`HashMemory::rejectedMapOrdis`](#hashmemory);
+    ///      `RejectedMapValue` — the discipline template;
+    ///      `DecodedRejectedOrdisValueLess`, `Codec<RejectedMapOrdisValue>`.
+    struct RejectedMapOrdisValue {
+        int32_t orStatement;
+        std::set<int> levels;
+
+        RejectedMapOrdisValue()
+            : orStatement(0),
+            levels() {
+        }
+
+        RejectedMapOrdisValue(int32_t orStatement_, const std::set<int>& levels_)
+            : orStatement(orStatement_),
+            levels(levels_) {
+        }
+
+        /// @brief Construct from an ASCENDING-UNIQUE level RUN — the run twin
+        ///        of the `std::set<int>` constructor (I-136: the set member is
+        ///        the storage boundary, the run the construction boundary).
+        ///
+        /// @param orStatement_ The parked or statement's value-interner id.
+        /// @param levels_      Pointer to `levelCount_` ascending-unique
+        ///                     levels; may be null only when `levelCount_` is 0.
+        /// @param levelCount_  The level count (`>= 0`).
+        RejectedMapOrdisValue(int32_t orStatement_,
+            const int* levels_, int32_t levelCount_)
+            : orStatement(orStatement_),
+            levels() {
+            assert(levelCount_ >= 0 && (levelCount_ == 0 || levels_ != nullptr));
+            for (int32_t i = 0; i < levelCount_; ++i)
+                levels.insert(levels.end(), levels_[i]);
+        }
+    };
+
+    /// @brief One ORDIS2-DEMAND record — the `admissionMapOrdis2` value
+    ///        (D-267).
+    ///
+    /// @details
+    /// A rule with a qualifying compound slot that matched everything EXCEPT
+    /// that slot mints a demand entry: the key's template half is the
+    /// now-GROUND missing premise text (polarity verbatim, I-175), the
+    /// validity half the firing scope. The record carries process context —
+    /// the demand's identity is the KEY; consumption erases the key:
+    ///
+    /// - `sourceImplId` — the demanding rule's original implication
+    ///   (`Memory::ruleInterner` id), the audit trail back to the starved
+    ///   rule (B5-shaped consumers).
+    /// - `levels` — the matched premises' level run at demand time.
+    ///
+    /// Mirror contract: the map obeys the full `rejectedMapOrdis` cold
+    /// discipline — key space (`templateInterner` packed pairs), canonical
+    /// RMW run, scope wipe, deload band — with a different producer (the
+    /// firing site's demand branch) and consumer (the drain's wake of
+    /// `rejectedMapOrdis2` + `consumeOrLeavesCohort`'s route (c)
+    /// probe-and-consume).
+    ///
+    /// @see [`HashMemory::admissionMapOrdis2`](#hashmemory);
+    ///      `RejectedMapOrdisValue` — the discipline template;
+    ///      `DecodedAdmissionOrdis2ValueLess`, `Codec<AdmissionMapOrdis2Value>`.
+    struct AdmissionMapOrdis2Value {
+        int32_t sourceImplId;
+        std::set<int> levels;
+
+        AdmissionMapOrdis2Value()
+            : sourceImplId(0),
+            levels() {
+        }
+
+        AdmissionMapOrdis2Value(int32_t sourceImplId_, const std::set<int>& levels_)
+            : sourceImplId(sourceImplId_),
+            levels(levels_) {
+        }
+
+        /// @brief Construct from an ASCENDING-UNIQUE level RUN — the run twin
+        ///        of the `std::set<int>` constructor (I-136).
+        ///
+        /// @param sourceImplId_ The demanding rule's rule-interner id.
+        /// @param levels_       Pointer to `levelCount_` ascending-unique
+        ///                      levels; may be null only when `levelCount_` is 0.
+        /// @param levelCount_   The level count (`>= 0`).
+        AdmissionMapOrdis2Value(int32_t sourceImplId_,
+            const int* levels_, int32_t levelCount_)
+            : sourceImplId(sourceImplId_),
+            levels() {
+            assert(levelCount_ >= 0 && (levelCount_ == 0 || levels_ != nullptr));
+            for (int32_t i = 0; i < levelCount_; ++i)
+                levels.insert(levels.end(), levels_[i]);
+        }
+    };
+
     /// @brief One rejection record for the integration-side admission map.
     ///
     /// @details
@@ -620,75 +802,241 @@ namespace gl {
     };
 
 
-    /// @brief Owner-set value for the `normalizedEncoded*` fast-rejection
-    /// maps — each implication-with-scope that birthed a key, as one packed
-    /// composite id per owner.
+    /// @brief Owner identity of one installed rule inside one `HashMemory`
+    ///        instance — the packed `(originalImplicationId, validityId)` pair.
     ///
-    /// @details `partitionIds` IS the owner record
-    /// (`D-133` unification): one composite `int32`
-    /// per owner, `makePartitionId(NameMap::encode(expandedOriginal),
-    /// scopeVid)` — both halves NameMap-minted at install. It serves every
-    /// former `owners`-map role at once:
-    /// - **D-72 ownership** — a key is erased once the set empties; the
-    ///   radical subtree wipe erases an owner by decoding the LOW half
-    ///   (its scope validity id) for the closed-scope prefix test.
-    /// - **D-105 comparability prune** — `ownerSetHasComparable` reads the
-    ///   low half of each id; pure `NameId` comparisons in the hot loop.
-    /// - **D-119 LB-split partition cover** — a split executor `n` of `N`
-    ///   accepts this (sub)key iff some id satisfies `id % N == n`; at
-    ///   `N == 1` the test is a no-op (inert on the unsplit path).
-    /// The former separate string-keyed `owners` map (full implication text
-    /// per owner, per key, across the four maps) is gone; the I-80 lockstep
-    /// is structural now — one container, nothing to drift. Membership
-    /// probes still key on the outer map (`find`/`count`), never on this
-    /// value.
+    /// @details
+    /// Every entry of the three request-generation indexes
+    /// (`normalizedEncodedKeys`, `normalizedEncodedSubkeys`,
+    /// `remainingArgsOwners`) and of the `originals` chain map carries the
+    /// full list of the rules that installed it: a key, a subkey, a
+    /// remaining-args edge or a chain is shared by every rule whose premise
+    /// permutation normalises to it, so removing one rule deletes exactly
+    /// that rule's owner, and an entry whose owner list runs empty is
+    /// deleted. The high half is the `ruleInterner` id of the expanded
+    /// implication text (the LMV's `originalImplicationId`), the low half the
+    /// NameMap id of the install scope (the LMV's `validityId`) — the same
+    /// pair the `encodedMap` drop predicate matches.
+    using RuleOwner = int64_t;
+
+    /// @brief Pack a rule owner from its two halves.
     ///
-    /// `hasLooseOwner` and `uSignatures` drive the request-generation u_ literal
-    /// prune (D-120). The four `normalizedEncoded*` maps are
-    /// built with `ignoreU=false`, which erases the literal values of a rule's
-    /// unchangeable (`u_`) arguments — only the repetition pattern survives — so
-    /// a structurally matched request may still be doomed by a u_ literal it can
-    /// never satisfy. To catch that at request-generation time without the full
-    /// firing lookup, every owner insert records its u_ signature here:
-    /// - `uSignatures` — one signature per owner that *has* u_ args. A signature
-    ///   is the list of `(linear-arg-slot, required id)` pairs for that owner's
-    ///   unchangeable args, where the required id is the owner's `argFullId`
+    /// @details The packing is `packInt32Pair` — the implication id in the
+    ///          high half, the scope id in the low half — so owner runs sort
+    ///          by implication first, then by scope.
+    ///
+    /// @param originalImplicationId The `ruleInterner` id of the expanded
+    ///                              implication text.
+    /// @param validityId            The NameMap id of the install scope.
+    /// @return The packed owner.
+    /// @see `RuleOwner`, `packInt32Pair`.
+    constexpr RuleOwner packRuleOwner(int32_t originalImplicationId,
+                                      NameId validityId) noexcept {
+        return packInt32Pair(originalImplicationId,
+                             static_cast<int32_t>(validityId));
+    }
+
+    /// @brief One owner record of an owner run — the blob form of `RuleOwner`.
+    ///
+    /// @details An owner run (the value run of `normalizedEncodedKeys`,
+    ///          `originals` and `remainingArgsOwners`) is kept sorted
+    ///          ascending by the packed value and duplicate-free
+    ///          (`addOwnerToRun`), so the run bytes are a pure function of
+    ///          the owner set (I-98). Eight bytes per record.
+    struct RuleOwnerRec {
+        RuleOwner owner = 0;
+
+        bool operator==(const RuleOwnerRec& o) const { return owner == o.owner; }
+    };
+
+    /// @brief The policy a rule's key enumeration runs under — install the
+    ///        rule's entries, or remove the rule's ownership of them.
+    ///
+    /// @details
+    /// `addToHashMemory` / `makeNormalizedKeysForAdmission` /
+    /// `installAdmissionMarkerVariants` enumerate a rule's whole keys,
+    /// subkeys, remaining-args edges and chain exactly once per code path;
+    /// the policy decides what each visited entry receives: under `Install`
+    /// the owner is added (and the LMV records, admission keys and triggers
+    /// are written); under `Remove` the owner is deleted from every visited
+    /// entry and nothing else is touched (the LMVs go through the batched
+    /// `encodedMap` compaction, admission state stays). Re-enumerating under
+    /// `Remove` is exact because the enumeration is a pure function of the
+    /// rule text, the operator config and the compiled registry; the
+    /// owner-presence asserts in the removal doors are the tripwire.
+    ///
+    /// A rule with symmetric premises reaches one entry through several
+    /// permutations, and several multiplication copies of one rule (each its
+    /// own owner) can reach one entry too; the install treats a repeat of
+    /// the SAME owner as a no-op and adds a different owner, so the removal
+    /// deletes an owner only on its first visit of an entry — `visited`
+    /// records every (container tag, owner, key bytes) the removal touched.
+    struct Memory;
+
+    struct RuleIndexOp {
+        enum class Kind : uint8_t { Install, Remove };
+        Kind kind = Kind::Install;
+        /// Remove only: the per-removal visited-entry set (scratch-arena
+        /// backed, owned by the caller). Keys are one container-tag byte,
+        /// the owner's eight bytes, then the entry's key bytes.
+        ColdHashSet<BytesKeyStore>* visited = nullptr;
+        /// Remove only: the apply's staged LMV drop set (scratch-arena
+        /// backed, owned by the caller). The enumeration mints every copy's
+        /// owner pair here — the copies are the install's own multiplication
+        /// (`multiplyImplication`), so a rule that multiplied into several
+        /// texts stages every text's LMVs and a rule whose multiplication
+        /// emitted no copy (the trivial-head skip) stages nothing, exactly as
+        /// it installed nothing.
+        ColdHashSet<PodKeyStore<int64_t>>* dropSet = nullptr;
+
+        bool isRemove() const { return kind == Kind::Remove; }
+
+        /// @brief The container tags of the visited set.
+        enum Tag : char { WholeKey = 'w', Subkey = 's', Edge = 'e', Chain = 'c' };
+
+        /// @brief Whether this is the removal's first visit of an entry by
+        ///        this owner — records the visit.
+        ///
+        /// @param tag      The entry's container.
+        /// @param keyBytes The entry's key bytes.
+        /// @param owner    The leaving owner (one multiplication copy).
+        /// @param gArena   Scratch for the tagged key (framed inside).
+        /// @return `true` on the first visit, `false` on a repeat.
+        bool firstVisit(Tag tag, StrSpan keyBytes, RuleOwner owner,
+                        ScratchArena& gArena) const {
+            assert(isRemove() && visited != nullptr
+                && "RuleIndexOp::firstVisit outside a removal");
+            const ArenaOffset mark = gArena.cursor();
+            const int32_t taggedLen = 1 + static_cast<int32_t>(sizeof(RuleOwner)) + keyBytes.len;
+            char* buf = reinterpret_cast<char*>(gArena.resolve(
+                gArena.alloc(taggedLen, 1)));
+            buf[0] = static_cast<char>(tag);
+            std::memcpy(buf + 1, &owner, sizeof(RuleOwner));
+            std::memcpy(buf + 1 + sizeof(RuleOwner), keyBytes.ptr,
+                        static_cast<std::size_t>(keyBytes.len));
+            const StrSpan tagged(buf, taggedLen);
+            const bool first = visited->lookup(tagged) == 0;
+            if (first) visited->mint(tagged);
+            gArena.popTo(mark);
+            return first;
+        }
+    };
+
+    /// @brief Which `HashMemory` instances a rule install reached: a LOCAL
+    ///        derivation (status 0/1) goes to `overallHashMemory` +
+    ///        `localHashMemory` + `localHashMemoryDelta`, an EXTERNAL
+    ///        (mail-recovered, status 3) rule to `overallHashMemory` +
+    ///        `workingMemory`.
+    ///
+    /// @details The two transient instances (`localHashMemoryDelta`,
+    ///          `workingMemory`) are emptied per burst, so a later removal
+    ///          probes them for the rule instead of trusting the kind; the
+    ///          kind decides the persistent pair.
+    enum class RuleInstallKind : uint8_t { Local = 0, External = 1 };
+
+    /// @brief One record of the carrier index `Memory::compactExpansions`:
+    ///        an expanded implication the carrier statement (a compact
+    ///        `(implication<N>[…])`, or any statement whose disintegration
+    ///        produced rules) was expanded into, and where it was installed.
+    ///
+    /// @details Keyed by the carrier's packed `(originalId, validityId)`
+    ///          statement key; one carrier holds one record per expanded
+    ///          implication (an or-headed compact expands into the rule plus
+    ///          one or-intro rule per leaf). `implTextId` / `scopeId` are the
+    ///          `lbStateInterner` ids of the expanded text and its scope —
+    ///          the same pair `expandedImplications` holds. Nine bytes.
+    struct CompactExpansionRec {
+        int32_t implTextId = 0;
+        int32_t scopeId = 0;
+        RuleInstallKind kind = RuleInstallKind::Local;
+
+        bool operator==(const CompactExpansionRec& o) const {
+            return implTextId == o.implTextId && scopeId == o.scopeId && kind == o.kind;
+        }
+    };
+
+    /// @brief Blob codec of `CompactExpansionRec` — the two ids then the kind
+    ///        byte; the production writer emits the same nine bytes through
+    ///        the raw run door (`appendCompactExpansion`).
+    template <>
+    struct Codec<CompactExpansionRec> {
+        static constexpr int32_t kBytes = 9;
+
+        /// @brief Serialize one record.
+        /// @param r The record.
+        /// @return Its nine bytes.
+        static std::vector<char> serialize(const CompactExpansionRec& r) {
+            std::vector<char> out(kBytes);
+            std::memcpy(out.data(), &r.implTextId, 4);
+            std::memcpy(out.data() + 4, &r.scopeId, 4);
+            out[8] = static_cast<char>(r.kind);
+            return out;
+        }
+
+        /// @brief Deserialize one record.
+        /// @param data Blob bytes.
+        /// @param n    Blob length (asserted nine).
+        /// @return The record.
+        static CompactExpansionRec deserialize(const char* data, int32_t n) {
+            assert(n == kBytes && "Codec<CompactExpansionRec>: malformed blob length");
+            CompactExpansionRec r;
+            std::memcpy(&r.implTextId, data, 4);
+            std::memcpy(&r.scopeId, data + 4, 4);
+            r.kind = static_cast<RuleInstallKind>(static_cast<uint8_t>(data[8]));
+            return r;
+        }
+    };
+
+    /// @brief Record value of the subkey map `normalizedEncodedSubkeys` — the
+    /// u_-signature record the request generator's growth probe reads
+    /// (`subkeyUSatisfied`, D-120) plus the subkey's owner list.
+    ///
+    /// @details The whole-key index `normalizedEncodedKeys` carries an owner
+    /// run per key (`RuleOwnerRec`); this struct exists for the subkey map
+    /// only. A subkey below `kSubkeyUCheckMinElements` premises holds the
+    /// signature-free record (`addShortSubkeyOwner`: loose byte set, no
+    /// signature, the owners); from three premises on it holds the owners'
+    /// distinct u_ signatures (`mergeSubkeySignatures`) and the owners, each
+    /// with the index of its signature. Neither map is scope-wiped.
+    ///
+    /// The u_ signature: the two maps are built with `ignoreU=false`, which
+    /// erases the literal values of a rule's unchangeable (`u_`) arguments —
+    /// only the repetition pattern survives — so a structurally matched
+    /// candidate may still be doomed by a u_ literal it can never satisfy.
+    /// Every subkey owner insert records its signature here:
+    /// - `uSignatures` — one signature per owner that *has* u_ args: the list of
+    ///   `(linear-arg-slot, required id)` pairs for that owner's unchangeable
+    ///   args, where the required id is the owner's `argFullId`
     ///   (== `NameMap::encode(arg[1])`), exactly what the firing gate compares
     ///   against the request's `argFullId`. Deduped across owners (a set).
     /// - `hasLooseOwner` — set when some owner has *zero* u_ args (a
     ///   fully-changeable prefix). Such an owner can always potentially fire, so
-    ///   the check is skipped (`ownerSetUSatisfied` short-circuits to keep). This
-    ///   is the "0 u_, nothing to check" fast path.
-    /// Unlike `partitionIds`, these two are NOT maintained in lockstep
-    /// on the radical subtree wipe: stale signatures only ever make the prune
-    /// weaker (keep more), never unsound (I-79), so leaving
-    /// them is a sound, zero-cost simplification (chosen for runtime).
+    ///   the check is skipped (`ownerSetUSatisfied` short-circuits to keep).
+    /// Membership probes key on the outer map (`lookup`), never on this value.
     struct OwnerSet {
-        std::set<int64_t> partitionIds;
         bool hasLooseOwner = false;
         std::set<std::vector<std::pair<int32_t, NameId>>> uSignatures;
+        /// The subkey's (owner, signature index) pairs, sorted ascending by
+        /// owner then index, duplicate-free; the index points into
+        /// `uSignatures` (set iteration order), -1 for a loose contribution
+        /// (a prefix without u_ arguments). One rule may hold several pairs:
+        /// it reaches the same subkey through several premise prefixes of
+        /// its permutations, and those prefixes can carry different u_
+        /// literals. Removing an owner drops all its pairs, drops a
+        /// signature no surviving pair references, and clears the loose byte
+        /// when no loose pair survives.
+        std::vector<std::pair<RuleOwner, int32_t>> owners;
     };
 
     /// @brief Zero-copy read view over an `OwnerSet`'s canonical blob bytes — the
-    ///        request-generation prune reads its fields straight off the cold
-    ///        arena, never materializing the two `std::set`s.
+    ///        no-decode peek the subkey growth probe uses instead of
+    ///        materializing the `OwnerSet`.
     ///
     /// @details
-    /// Mirrors the `Codec<OwnerSet>` byte layout one-for-one (keep the two in
-    /// sync — a layout change there changes the offsets here):
-    /// `hasLooseOwner` (uint8) - `partitionIds` (int32 count, then int64 each,
-    /// ascending) - `uSignatures` (int32 count, then per signature an int32
-    /// pair-count + each `(int32, int32)` pair). The four `normalizedEncoded*`
-    /// maps store ONE blob per key (run-length-1, whole-value replace), so the
-    /// view wraps that single blob's `(p, len)` obtained from
-    /// `TypedCold::peekRecordBytes`.
-    ///
-    /// The hot prune touches only what its short-circuits need: `hasLooseOwner`
-    /// reads byte 0; the partition walk reads the count + ids only when the LB is
-    /// split (`partitionAccepts`) or the request is off-`main`
-    /// (`ownerSetHasComparable`); the u_ walk runs only for a non-loose owner
-    /// (`ownerSetUSatisfied`). No allocation, no decode. Read-only, burst-safe
-    /// ([I-83](docs/agentic_swdd/30_invariants.md#i-83)).
+    /// Field readers straight off the `Codec<OwnerSet>` layout: byte 0
+    /// `hasLooseOwner`, then the u_ signatures (int32 count, per signature an
+    /// int32 pair count and `(int32 slot, int32 id)` pairs), then the owner
+    /// records. The probe reads these fields in place; nothing decodes.
     ///
     /// @invariant Layout-coupled to `Codec<OwnerSet>` — the two are edited
     ///            together.
@@ -703,30 +1051,14 @@ namespace gl {
         static int32_t rdI32(const char* q) {
             int32_t v; std::memcpy(&v, q, sizeof(int32_t)); return v;
         }
-        /// @brief Read a little-endian `int64_t` at byte pointer `q`.
-        /// @param q Source pointer (>= 8 readable bytes).
-        /// @return The decoded value.
-        static int64_t rdI64(const char* q) {
-            int64_t v; std::memcpy(&v, q, sizeof(int64_t)); return v;
-        }
-
         /// @brief Whether some owner is u_-loose (the prune keep fast path).
         /// @return `hasLooseOwner` (byte 0).
         bool hasLooseOwner() const { return p[0] != 0; }
 
-        /// @brief Number of partition (owner) ids.
-        /// @return The `partitionIds` count.
-        int32_t partitionCount() const { return rdI32(p + 1); }
-
-        /// @brief Composite owner id at index `i`.
-        /// @param i Index in `[0, partitionCount())`.
-        /// @return The packed `(expandedOriginalId, scopeVid)` composite id.
-        int64_t partitionId(int32_t i) const { return rdI64(p + 5 + 8 * i); }
-
         /// @brief Byte offset of the `uSignatures` section (just past the
-        ///        partitionIds run).
-        /// @return The offset into the blob.
-        int32_t uSigOffset() const { return 5 + 8 * partitionCount(); }
+        ///        loose byte).
+        /// @return The offset into the blob (`1`).
+        int32_t uSigOffset() const { return 1; }
 
         /// @brief Number of u_ signatures.
         /// @return The `uSignatures` count (int32 at `uSigOffset()`).
@@ -762,139 +1094,45 @@ namespace gl {
         NameId sigPairSecondAt(int32_t off, int32_t i) const {
             return rdI32(p + off + 4 + 8 * i + 4);
         }
+
+        /// @brief Bytes of one owner record in the owner section: the packed
+        ///        `RuleOwner` (8) followed by its signature index (4).
+        static constexpr int32_t kOwnerRecBytes = 12;
+
+        /// @brief Byte offset of the owner section — just past the last
+        ///        signature (a walk over the signature records).
+        /// @return The offset of the owner-count `int32`.
+        int32_t ownersOffset() const {
+            int32_t off = firstSigOffset();
+            const int32_t sc = uSigCount();
+            for (int32_t s = 0; s < sc; ++s) off += sigBytes(off);
+            return off;
+        }
+
+        /// @brief Number of owners in the section starting at @p ownersOff.
+        /// @param ownersOff `ownersOffset()` (passed in so a caller walks the
+        ///                  signatures once).
+        /// @return The owner count.
+        int32_t ownerCount(int32_t ownersOff) const { return rdI32(p + ownersOff); }
+
+        /// @brief The packed owner of record @p i.
+        /// @param ownersOff `ownersOffset()`.
+        /// @param i         Owner index in `[0, ownerCount(ownersOff))`.
+        /// @return The packed `RuleOwner`.
+        RuleOwner ownerAt(int32_t ownersOff, int32_t i) const {
+            RuleOwner o;
+            std::memcpy(&o, p + ownersOff + 4 + kOwnerRecBytes * i, sizeof(RuleOwner));
+            return o;
+        }
+
+        /// @brief The signature index of owner record @p i (-1 = loose).
+        /// @param ownersOff `ownersOffset()`.
+        /// @param i         Owner index in `[0, ownerCount(ownersOff))`.
+        /// @return The index into the signature list, or -1.
+        int32_t ownerSigIndexAt(int32_t ownersOff, int32_t i) const {
+            return rdI32(p + ownersOff + 4 + kOwnerRecBytes * i + 8);
+        }
     };
-
-    /// @brief Pack an owner's (expanded-original id, scope validity id) into the
-    ///        single composite `int64` used as its LB-split partition key.
-    ///
-    /// @details The LB-split hashburst (D-119) divides
-    /// a logic block's rules across `N` parallel executors. Each rule is
-    /// identified by its owner pair `(expandedOriginal, validity)`; both halves
-    /// are already interned to `NameId` ids by the per-LB `NameMap`
-    /// (`origId = NameMap::encode(expandedOriginal)`,
-    /// `scopeVid = NameMap::encode(validity)`). This function packs them —
-    /// `origId` in the high 32 bits, `scopeVid` in the low 32 — into one
-    /// `int64` via `packInt32Pair`. The packing is injective over the
-    /// non-negative `NameId` ids `NameMap` mints (bit 63 stays clear, so the
-    /// composite is non-negative and `id % N` lands in `[0, N)`), so distinct
-    /// owner pairs get distinct composite ids; a
-    /// split executor `n` of `N` then accepts a (sub)key iff some composite id
-    /// in its owner set satisfies `id % N == n`. The id is a pure function of
-    /// the owner — no counter — computed identically at install and at the
-    /// radical subtree wipe so `OwnerSet::partitionIds` stays consistent with
-    /// `OwnerSet::owners`.
-    ///
-    /// @param origId   `NameMap::encode(expandedOriginal)` — the rule's id.
-    /// @param scopeVid `NameMap::encode(validity)` — the scope's id.
-    /// @return The composite `packInt32Pair(origId, scopeVid)` — `origId` in the
-    ///         high 32 bits, `scopeVid` in the low 32.
-    /// @see `OwnerSet::partitionIds` — where the result is stored;
-    ///      `packInt32Pair`.
-    inline int64_t makePartitionId(NameId origId, NameId scopeVid) {
-        return packInt32Pair(origId, scopeVid);
-    }
-
-    /// @brief Executor index (`n`) and executor count (`N`) of the currently
-    ///        running LB-split hashburst, as thread-local context.
-    ///
-    /// @details The LB split runs one logic block's hashburst on `N` executor
-    /// threads in parallel; each sets these at the top of its per-executor call
-    /// (on its own thread, so the two values are per-executor with no
-    /// shared-state race) and the request-generation acceptance sites read them
-    /// via `partitionAccepts`. They default to the unsplit identity `(0, 1)`, so
-    /// any path that never sets them — every path until the split lands, plus
-    /// the across-LB phase-1 / phase-3 workers that do no request generation —
-    /// sees `splitCount == 1` and the filter is a no-op. Thread-local, mirroring
-    /// the existing per-thread context (`g_buildStackPath`, the RT-tracker
-    /// hashburst index).
-    extern thread_local int g_splitProcessID;
-    extern thread_local int g_splitCount;
-
-    /// @brief Whether the current LB runs as more than one concurrent part this
-    ///        burst — the per-burst "multi-part" signal the burst early-exit gate
-    ///        (I-76) reads instead of `g_splitCount`.
-    ///
-    /// @details `g_splitCount` is the RULE dimension alone; the expression/bucket
-    /// split runs a whole LB as several parts at `g_splitCount == 1` (so
-    /// `partitionAccepts` still accepts every rule). The early-exit must be off
-    /// whenever an LB runs as > 1 part in EITHER dimension — a sibling bailing on
-    /// another part's `stop` is a scheduling race (D-121) — so the gate keys on
-    /// this flag, set in `performElem2` from its `partCount` argument
-    /// (`= partCount > 1`). Default `false` (unsplit identity); thread-local,
-    /// mirroring `g_splitProcessID` / `g_splitCount`.
-    extern thread_local bool g_isMultiPart;
-
-    /// @brief Whether the current LB-split executor handles a (sub)key carrying
-    ///        the given owner partition ids.
-    ///
-    /// @details A request generated against a (sub)key is the work of executor
-    /// `n = g_splitProcessID` of `N = g_splitCount` iff some composite owner id
-    /// in `partitionIds` satisfies `id % N == n` — i.e. the key is owned by a
-    /// rule assigned to this executor (see `makePartitionId`,
-    /// D-119). With `N <= 1` (the unsplit path) the
-    /// test short-circuits to `true` before touching the set, so it is provably
-    /// inert: every request the single-executor burst would emit is still
-    /// emitted, byte for byte. Composite ids are non-negative (a packing of two
-    /// non-negative `int16` halves), so `id % N` lands in `[0, N)` and matches
-    /// the executor-index range. The union over `n` of "some id `% N == n`" is
-    /// "the set is non-empty" — and a matched key always has at least one owner
-    /// ([I-49](../30_invariants.md#i-49)) hence one id — so the executors'
-    /// accepted (sub)keys exhaustively cover every key the unsplit burst would
-    /// touch (completeness); a key whose ids span residues is accepted by more
-    /// than one executor (a harmless duplicate, collapsed by the
-    /// order-independent deposit merge, [I-77]).
-    ///
-    /// @param partitionIds The owner partition ids of the matched (sub)key
-    ///                     (`OwnerSet::partitionIds`).
-    /// @return `true` if this executor handles the key, `false` to skip it.
-    /// @see `makePartitionId`, `OwnerSet::partitionIds`.
-    inline bool partitionAccepts(const std::set<int64_t>& partitionIds) {
-        const int splitCount = g_splitCount;
-        if (splitCount <= 1) return true;
-        const int processID = g_splitProcessID;
-        for (int64_t id : partitionIds) {
-            // A real composite is a pack of two non-negative NameId halves, so
-            // bit 63 is clear and `id % splitCount` lands in [0, splitCount) —
-            // the executor-index range. A negative composite would break that
-            // (Rule 19: a broken pack, not a case to tolerate).
-            assert(id >= 0
-                && "partitionAccepts: composite partition id must be non-negative");
-            if (id % splitCount == processID) return true;
-        }
-        return false;
-    }
-
-    /// @brief Owner-partition acceptance read from an `OwnerSet`'s blob bytes —
-    ///        the no-decode twin of `partitionAccepts(const std::set&)`.
-    ///
-    /// @details
-    /// Identical verdict to the set overload: at `g_splitCount <= 1` (the unsplit
-    /// path) it returns `true` before touching the blob, so the cold owner-set
-    /// maps cost nothing on every all-`main`/unsplit workload; otherwise it walks
-    /// the partition ids straight off the bytes testing `id % N == n`. See the set
-    /// overload for the completeness/soundness argument
-    /// ([D-119](docs/agentic_swdd/40_decisions.md#d-119),
-    /// [I-49](docs/agentic_swdd/30_invariants.md#i-49)).
-    ///
-    /// @param entry The matched (sub)key's owner-set blob view.
-    /// @return `true` if this LB-split executor handles the key, `false` to skip.
-    /// @see `partitionAccepts(const std::set<int64_t>&)`, `OwnerSetBlob`.
-    inline bool partitionAccepts(const OwnerSetBlob& entry) {
-        const int splitCount = g_splitCount;
-        if (splitCount <= 1) return true;
-        const int processID = g_splitProcessID;
-        const int32_t pc = entry.partitionCount();
-        for (int32_t i = 0; i < pc; ++i) {
-            const int64_t id = entry.partitionId(i);
-            // A real composite is a pack of two non-negative NameId halves, so
-            // bit 63 is clear and `id % splitCount` lands in [0, splitCount)
-            // (Rule 19: a broken pack, not a case to tolerate).
-            assert(id >= 0
-                && "partitionAccepts: composite partition id must be non-negative");
-            if (id % splitCount == processID) return true;
-        }
-        return false;
-    }
 
     /// @brief One staged algebra-`admissionMap` write recorded during a
     ///        hashburst and replayed after the fixpoint loop by
@@ -912,9 +1150,7 @@ namespace gl {
     /// `value` is the `AdmissionMapValue` inserted under it.
     ///
     /// @invariant Records are appended in firing order and drained in that same
-    ///            order — the canonical-closure scan in `cleanAdmissionMap`
-    ///            (reached transitively via the drain's `revisitRejected2`) is
-    ///            order-sensitive.
+    ///            order — the per-record interner-touch sequence is frozen.
     /// @see `prover.hpp::drainAdmissionKeysAlgebra` — the sole consumer.
     /// @see `memory.cpp::checkLocalEncodedMemoryStatic` — the sole producer.
     /// @brief Sealed-page twin of `ExpressionWithValidity` — the
@@ -936,6 +1172,31 @@ namespace gl {
     struct AdmissionKeyAlgebraRecord {
         SealedExpressionWithValidity key;
         StagedAdmissionValue value;
+    };
+
+    /// @brief One staged ordis2 demand — a rule that matched everything
+    ///        except its qualifying slot, captured for the post-fixpoint
+    ///        drain (D-267).
+    ///
+    /// @details
+    /// Produced by `checkLocalEncodedMemoryStatic`'s demand branch (an
+    /// `ordis2Demand`-tagged LMV fired): `expression` is the fully-GROUND
+    /// missing premise (the back-substituted verbatim value, polarity kept,
+    /// I-175), `validityName` the firing scope, `sourceImplId` the demanding
+    /// rule's original implication (rule-interner id — the audit trail),
+    /// `levels` the firing's combined level run. `drainAdmissionKeysOrdis2`
+    /// mints the demand into `admissionMapOrdis2` and wakes the or heads
+    /// filed in `rejectedMapOrdis2` under the same key.
+    ///
+    /// @invariant Records are appended in canonical firing order
+    ///            (`applyFiringRecords`) and drained in that same order.
+    /// @see `prover.hpp::drainAdmissionKeysOrdis2` — the sole consumer.
+    /// @see `memory.cpp::checkLocalEncodedMemoryStatic` — the producer.
+    struct Ordis2DemandRecord {
+        SealedString expression;
+        SealedString validityName;
+        int32_t sourceImplId = 0;
+        SealedSpan<int> levels;
     };
 
     /// @brief One deferred integration-template registration — the inputs to a
@@ -1032,6 +1293,17 @@ namespace gl {
         SealedSpan<SealedString> markerArgsSorted;
         StagedAdmissionValue admv;
         bool markerNotAtomic = false;
+
+        // --- ordis2-demand firing (an OWN kind: isMarker stays false,
+        //     isOrdis2Demand == true; no marker anywhere in the ordis2
+        //     machinery — D-267) ---
+        // rplExpr2 is the GROUND missing premise (a DEMANDED text, never a
+        // deposit); levels the combined run; demandSourceImplId the
+        // demanding rule (rule-interner id). Every record-kind dispatch
+        // checks this bit FIRST; the head and marker per-kind fields stay
+        // empty on this kind.
+        bool isOrdis2Demand = false;
+        int32_t demandSourceImplId = 0;
     };
 
     /// @brief A typed sequence of `LogicalEntity` items plus a marked goal — one
@@ -1679,8 +1951,11 @@ namespace gl {
         /// Walks `id`'s parent chain (id, its parent, …, up to a root); a hit on
         /// `q` with `q != id` means `q` is a STRICT ancestor of `id`. This is the
         /// single site that walks the forest for a verdict. Linear in the
-        /// ancestor-chain length (validity nesting depth — small in practice);
-        /// the callers are cold paths, never the parallel burst.
+        /// ancestor-chain length (validity nesting depth — small in practice).
+        /// A pure read of `validityNodes`: the parallel phase-2 request
+        /// generation calls it (`comparable` in the grow search, the frozen
+        /// or-branch walk in `filterIntEncodedStatements`) — legal because no
+        /// NameMap mint runs during phase 2 (I-83).
         ///
         /// @param id A minted validity id; `0 <= id < stackSize()`.
         /// @param q  The id to search for.
@@ -2191,7 +2466,7 @@ namespace gl {
     ///        against the request — the per-site predicate of the
     ///        request-generation u_ literal prune (D-120).
     ///
-    /// @details The four `normalizedEncoded*` fast-rejection maps are built with
+    /// @details The two `normalizedEncoded*` fast-rejection maps are built with
     /// `ignoreU=false`, which normalizes every argument to a positional id and
     /// thereby erases the literal values of a rule's unchangeable args — only the
     /// repetition pattern survives. A growing request can therefore match a
@@ -2225,7 +2500,6 @@ namespace gl {
     /// @param count Length of `exprs`.
     /// @return `true` to keep the request, `false` to prune it.
     /// @see `recordUSignature` — the insert-side producer of the signatures.
-    /// @see `ownerSetHasComparable` — the sibling scope-comparability prune.
     inline bool ownerSetUSatisfied(const OwnerSet& entry,
                                    const IntEncodedExpr* const* exprs,
                                    NameId count) {
@@ -2305,87 +2579,52 @@ namespace gl {
 
     // encodeExpression is defined after EncodedExpression (forward reference).
 
-    /// @brief Per-type bump allocator. Allocates a fixed pool at construction and
-    /// hands out aligned slots; resets per LB without freeing the underlying
-    /// buffer.
+
+    /// @brief Largest number of statement views one mandatory term may name.
     ///
     /// @details
-    /// Used to back the static-request pipeline's per-thread storage of
-    /// `IntEncodedExpr`, `StaticRequest`, `Stump`, and `NameId` index
-    /// arrays. The contract is:
+    /// A term is an AND-group: the request must contain a statement from EVERY
+    /// view the term names. Two is the widest group the request generator uses
+    /// (the mail term — a local statement AND a mail arrival).
     ///
-    /// - Construction with `cap` slots allocates `cap * sizeof(T)` bytes via
-    ///   `::operator new`. `cap == 0` means no buffer (subsequent `alloc` is
-    ///   undefined behaviour and trips the assert below).
-    /// - `alloc(n)` advances the bump pointer by `n` slots and returns the head
-    ///   pointer. Asserts that capacity is not exceeded — a firing assert here
-    ///   means the per-thread arena was undersized for the LB.
-    /// - `reset()` rewinds `used` to 0; the buffer stays alive. Use between LBs.
-    /// - Destructor releases the buffer once.
-    ///
-    /// Move-only: copy construction and assignment are deleted because two
-    /// arenas pointing at the same buffer would double-free on destruction.
-    /// Move construction transfers ownership and zeroes the source.
-    ///
-    /// @tparam T element type. The arena makes no constructor calls, so `T` must
-    ///         be trivially default-constructible or fully overwritten by callers
-    ///         after `alloc`.
-    /// @see [`ThreadArenas`](#threadarenas) — assembles four `TypedArena<T>` for
-    ///      one thread of the static-request pipeline.
-    /// @see [I-19](../../docs/agentic_swdd/30_invariants.md#i-19) — assert is first-class; the
-    ///      capacity assert here is intentional and must not be weakened.
-    template<typename T>
-    struct TypedArena {
-        T* buf;
-        int32_t used;
-        int32_t capacity;
+    /// @see [`MandatoryTerm`](#mandatoryterm) — the term itself.
+    static constexpr NameId kMaxTermViews = 2;
 
-        explicit TypedArena(int32_t cap = 0) : used(0), capacity(cap), buf(nullptr) {
-            if (cap > 0) buf = static_cast<T*>(::operator new(static_cast<std::size_t>(cap) * sizeof(T)));
-        }
-        TypedArena(const TypedArena&) = delete;
-        TypedArena& operator=(const TypedArena&) = delete;
-        TypedArena(TypedArena&& o) noexcept : buf(o.buf), used(o.used), capacity(o.capacity) {
-            o.buf = nullptr; o.used = 0; o.capacity = 0;
-        }
-        TypedArena& operator=(TypedArena&& o) noexcept {
-            if (this != &o) {
-                if (buf) ::operator delete(buf);
-                buf = o.buf; used = o.used; capacity = o.capacity;
-                o.buf = nullptr; o.used = 0; o.capacity = 0;
-            }
-            return *this;
-        }
-        void reset() { used = 0; }
-        T* alloc(int32_t n = 1) {
-            assert(used + n <= capacity);
-            T* p = buf + used;
-            used += n;
-            return p;
-        }
-        ~TypedArena() { if (buf) ::operator delete(buf); }
-    };
-
-    /// @brief One obligatory stump — the already-known statements that every
-    ///        request generated from a base candidate must contain.
+    /// @brief Largest number of mandatory terms one request-generator call may
+    ///        carry.
     ///
     /// @details
-    /// The request generator grows base candidates to `maxKeyLength - stumpLength`
-    /// elements and then attaches a stump of `stumpLength` statements. A stump of
-    /// one element carries an index in `idx0` only; a stump of two carries an index
-    /// into each of the generator's two source views. A stump of zero elements has
-    /// no instances at all — that is the counter-example filter, where no statement
-    /// is obligatory and the base candidate is already the whole request.
+    /// Terms are OR-ed: a request is accepted when it satisfies at least one of
+    /// them. Two is the widest disjunction the request generator uses (the fresh
+    /// local-delta term OR the mail term).
     ///
-    /// Plain index arithmetic; no ordering or hashing, because consumers walk the
-    /// array sequentially.
+    /// @see [`MandatoryTerm`](#mandatoryterm) — the term itself.
+    static constexpr NameId kMaxMandatoryTerms = 2;
+
+    /// @brief One AND-group of statement views a generated request may satisfy
+    ///        to prove it carries something new this burst.
     ///
-    /// @see `memory.cpp::makeMandatoryEncodedStatementLists1Static` — emits one-element stumps.
-    /// @see `memory.cpp::makeMandatoryEncodedStatementLists2Static` — emits two-element stumps.
+    /// @details
+    /// The mandatory-containment control is a disjunction of conjunctions: the
+    /// generator receives a list of terms, and a grown candidate is emitted only
+    /// when it satisfies at least ONE term. A term is satisfied when the
+    /// candidate contains at least one statement from EVERY view the term names.
+    ///
+    /// An empty term list means no containment requirement at all — the
+    /// counter-example filter, where every whole key is a request.
+    ///
+    /// The views are the same statement containers the obligatory-stump modes
+    /// pass as stump sources (`intLocalEncodedStatementsDelta`,
+    /// `intLocalEncodedStatements`, `intExternalStatements`), so a term names
+    /// exactly the mandatory ingredient its retired stump used to attach.
+    ///
+    /// Plain value type; no ordering or hashing, because the generator walks the
+    /// term array sequentially and turns membership into one bit per view.
+    ///
     /// @see `memory.cpp::generateEncodedRequestsStatic` — the consumer.
-    struct Stump {
-        NameId idx0;
-        NameId idx1;
+    struct MandatoryTerm {
+        IntStmtView views[kMaxTermViews];
+        NameId viewCount;
     };
 
     /// @brief Fully-static request — no string data, no heap allocations.
@@ -2393,8 +2632,8 @@ namespace gl {
     /// @details
     /// One element of the per-LB request stream consumed by the static pipeline.
     /// Each request bundles up to `ExecutionParameters::MAX_EXPRESSIONS` pointers
-    /// into a `TypedArena<IntEncodedExpr>` (so the pointers stay stable through
-    /// the arena's lifetime), the count of those pointers, the maximum iteration
+    /// into the per-slot gen scratch arena (so the pointers stay stable for the
+    /// whole task), the count of those pointers, the maximum iteration
     /// counter across the bundle, and the precomputed `IntNormalizedKey` used to
     /// look the request up in the hash memory.
     ///
@@ -2943,7 +3182,7 @@ namespace gl {
     /// ever sort by it ([I-84](../../docs/agentic_swdd/30_invariants.md#i-84)
     /// discipline applies to tags exactly as to interned ids); the only
     /// semantic comparisons are equality and the equality1/equality2
-    /// convenience-tag test of the D-49 cap-full policy.
+    /// convenience-tag test of the chapter walker's candidate order.
     ///
     /// Opaque-declared in `memory_infra/int_encoded_expr.hpp` (so `LbMemory` can
     /// name the `TypedColdBlobMap<int64_t, IdOrigin>` member); this is its full
@@ -2961,6 +3200,9 @@ namespace gl {
         expansionForIntegration,             // "expansion for integration"
         externallyProvidedTheorem,           // "externally provided theorem"
         goal,                                // "goal"
+        hypothesis,                          // "hypothesis" — internal-only: terminal
+                                             // provenance of a hypothesis-scope
+                                             // constituent; never reaches chapters
         implication,                         // "implication"
         multipliedFrom,                      // "multiplied from"
         orBranchAssumption,                  // "or branch assumption"
@@ -3005,6 +3247,7 @@ namespace gl {
             "expansion for integration",
             "externally provided theorem",
             "goal",
+            "hypothesis",
             "implication",
             "multiplied from",
             "or branch assumption",
@@ -3465,15 +3708,12 @@ namespace gl {
     }
 
     /// @brief Id-form twin of `ExpressionAnalyzer::addOrigin` — append a
-    ///        history line with the D-49 cap-full preference policy.
+    ///        history line; at the cap the existing rows win.
     ///
     /// @details Replicates the string form exactly: below the cap, append
-    /// if absent (set semantics in the vector); at the cap, an already
-    /// present record keeps existing slots; a NEW non-equality record
-    /// replaces the first equality-convenience slot (`equality1` /
-    /// `equality2`) — foundation displaces convenience; otherwise the
-    /// existing slot wins (insertion order). Record equality on ids IS
-    /// string equality (the interner is bijective).
+    /// if absent (set semantics in the vector); at the cap nothing is
+    /// written — the existing rows win (I-216).
+    /// Record equality on ids IS string equality (the interner is bijective).
     ///
     /// @param map        The id-form origin map.
     /// @param key        Packed (expressionId, validityId) key.
@@ -3490,26 +3730,12 @@ namespace gl {
             }
             return;
         }
-        // Cap-full origin-preference replacement (D-49): foundation
-        // displaces convenience — see the string twin for the full policy
-        // rationale.
-        if (std::find(vec.begin(), vec.end(), origin) != vec.end()) return;
-        auto isEqualityConvenienceTag = [](OriginTag tag) {
-            return tag == OriginTag::equality1 || tag == OriginTag::equality2;
-        };
-        if (!isEqualityConvenienceTag(origin.first)) {
-            for (auto& slot : vec) {
-                if (isEqualityConvenienceTag(slot.first)) {
-                    slot = origin;
-                    return;
-                }
-            }
-        }
-        // Otherwise: existing slot wins (insertion-order tiebreak).
+        // At the cap the existing rows win: the newcomer is dropped, nothing is
+        // displaced (I-216).
     }
 
     /// @brief POD overload of the heap @ref addOriginId — append a `(tag, deps)`
-    ///        history line with the D-49 cap-full preference, no transient
+    ///        history line (existing rows win at the cap), no transient
     ///        `IdOrigin` materialized.
     ///
     /// @details
@@ -3518,10 +3744,8 @@ namespace gl {
     /// never a function-local `IdOrigin`: dedup by a manual whole-record compare
     /// (`o.first == OriginTag(tag)` && `o.second` matches `deps[0..depN)` —
     /// exactly `IdOrigin::operator==`); below the cap, `emplace_back()` a fresh
-    /// slot and fill its `first`/`second` in place; at the cap, the D-49
-    /// convenience-replace overwrites the first `equality1`/`equality2` slot's
-    /// fields in place (`slot.first = OriginTag(tag); slot.second.assign(deps,
-    /// deps + depN)`). Record equality on ids IS string equality (the interner is
+    /// slot and fill its `first`/`second` in place; at the cap nothing is
+    /// written — the existing rows win. Record equality on ids IS string equality (the interner is
     /// bijective). Single-threaded write sites only
     /// ([I-83](../../docs/agentic_swdd/30_invariants.md#i-83)).
     ///
@@ -3561,32 +3785,16 @@ namespace gl {
             for (int32_t i = 0; i < depN; ++i) back.second.push_back(deps[i]);
             return;
         }
-        // Cap-full origin-preference replacement (D-49): foundation displaces
-        // convenience.
-        for (const IdOrigin& o : vec) {
-            if (matches(o)) return;
-        }
-        auto isEqualityConvenienceTag = [](OriginTag t) {
-            return t == OriginTag::equality1 || t == OriginTag::equality2;
-        };
-        if (!isEqualityConvenienceTag(otag)) {
-            for (auto& slot : vec) {
-                if (isEqualityConvenienceTag(slot.first)) {
-                    slot.first = otag;
-                    slot.second.assign(deps, deps + depN);
-                    return;
-                }
-            }
-        }
-        // Otherwise: existing slot wins (insertion-order tiebreak).
+        // At the cap the existing rows win: the newcomer is dropped, nothing is
+        // displaced (I-216).
     }
 
     /// @brief Id-form twin of `ExpressionAnalyzer::overwriteOrigins` —
     ///        merge `right`'s history lines into `left` up to the cap.
     ///
     /// @details Per key: append `right`'s records in their vector order,
-    /// dedup by equality, stop appending at the cap (no D-49 replacement
-    /// here — the string twin has none either). Keys are independent (the
+    /// dedup by equality, stop appending at the cap (existing rows win
+    /// here as everywhere — the string twin does the same). Keys are independent (the
     /// cap is per key), so `right`'s map iteration order cannot affect the
     /// merged content — an unordered source is safe.
     ///
@@ -3692,8 +3900,8 @@ namespace gl {
     /// deterministic key-first sequence under the user's byte-identity waiver.
     /// The `files/` proof artifacts are id-value-independent (the chapter export
     /// decodes `originInterner` ids back to strings); only the gitignored
-    /// `.deload/` id VALUES may reassign. The D-49 cap-full preference fires
-    /// identically (it reads the tag + deps, which match byte-for-byte).
+    /// `.deload/` id VALUES may reassign. The at-cap existing-rows-win gate fires
+    /// identically (it reads the run length only).
     ///
     /// @param map        The id-form origin map.
     /// @param oi         The owning LB's origin interner (mint side).
@@ -4097,7 +4305,7 @@ namespace gl {
     ///
     /// @details Replicates the historical string `operator<` field order —
     /// `(key, remainingArgs, standardMaxAdmissionDepth,
-    /// standardMaxSecondaryNumber, flag)` — on decoded strings via
+    /// standardMaxSecondaryNumber, flag, ordisOnly)` — on decoded strings via
     /// valueIdVectorLess; never raw id order
     /// ([I-84](../../docs/agentic_swdd/30_invariants.md#i-84)). The
     /// comparator holds the owning LB's value interner; sets are
@@ -4116,7 +4324,8 @@ namespace gl {
             if (a.standardMaxSecondaryNumber != b.standardMaxSecondaryNumber) {
                 return a.standardMaxSecondaryNumber < b.standardMaxSecondaryNumber;
             }
-            return a.flag < b.flag;
+            if (a.flag != b.flag) return a.flag < b.flag;
+            return a.ordisOnly < b.ordisOnly;
         }
     };
 
@@ -4163,7 +4372,8 @@ namespace gl {
             remainingIds,
             sv.standardMaxAdmissionDepth,
             sv.standardMaxSecondaryNumber,
-            sv.flag);
+            sv.flag,
+            sv.ordisOnly);
     }
 
     /// @brief Stateful decoded-order comparator for
@@ -4194,6 +4404,53 @@ namespace gl {
 
     /// Decoded-lex ordered rejected-value set (see DecodedRejectedValueLess).
     using RejectedValueSet = std::set<RejectedMapValue, DecodedRejectedValueLess>;
+
+    /// @brief Stateful decoded-order comparator for
+    ///        [`RejectedMapOrdisValue`](#rejectedmapordisvalue) sets.
+    ///
+    /// @details Field order `(orStatement, levels)` on decoded strings;
+    /// never raw id order
+    /// ([I-84](../../docs/agentic_swdd/30_invariants.md#i-84)). Mirror of
+    /// `DecodedRejectedValueLess` for the parked-cohort map.
+    struct DecodedRejectedOrdisValueLess {
+        const ValueInterner* vi;
+        bool operator()(const RejectedMapOrdisValue& a,
+                        const RejectedMapOrdisValue& b) const {
+            if (a.orStatement != b.orStatement) {
+                return valueIdLess(a.orStatement, b.orStatement, *vi);
+            }
+            return a.levels < b.levels;
+        }
+    };
+
+    /// Decoded-lex ordered parked-cohort value set
+    /// (see DecodedRejectedOrdisValueLess).
+    using RejectedOrdisValueSet =
+        std::set<RejectedMapOrdisValue, DecodedRejectedOrdisValueLess>;
+
+    /// @brief Stateful decoded-order comparator for
+    ///        [`AdmissionMapOrdis2Value`](#admissionmapordis2value) sets.
+    ///
+    /// @details Field order `(sourceImplId, levels)` on decoded strings
+    /// (the RULE interner — `sourceImplId` is a `Memory::ruleInterner`
+    /// id); never raw id order
+    /// ([I-84](../../docs/agentic_swdd/30_invariants.md#i-84)). Mirror of
+    /// `DecodedRejectedOrdisValueLess` for the ordis2 demand map.
+    struct DecodedAdmissionOrdis2ValueLess {
+        const ValueInterner* vi;
+        bool operator()(const AdmissionMapOrdis2Value& a,
+                        const AdmissionMapOrdis2Value& b) const {
+            if (a.sourceImplId != b.sourceImplId) {
+                return valueIdLess(a.sourceImplId, b.sourceImplId, *vi);
+            }
+            return a.levels < b.levels;
+        }
+    };
+
+    /// Decoded-lex ordered ordis2-demand value set
+    /// (see DecodedAdmissionOrdis2ValueLess).
+    using AdmissionOrdis2ValueSet =
+        std::set<AdmissionMapOrdis2Value, DecodedAdmissionOrdis2ValueLess>;
 
     // rejectedValuesAt retired (D-172): rejectedMap
     // is a cold blob map; use rejectedRecordsAt (read snapshot) and
@@ -4292,6 +4549,39 @@ namespace gl {
             bytes[i] = static_cast<char>((packed >> shift) & 0xFFu);
         }
         return interner.encode(StrSpan(bytes, static_cast<int32_t>(sizeof(bytes))));
+    }
+
+    /// @brief Non-minting twin of `mintOrCohortId` — recover an existing
+    ///        OR-disintegration cohort id, or 0 when no such cohort was
+    ///        ever minted.
+    ///
+    /// @details
+    /// Builds the same canonical eight-byte big-endian payload as
+    /// `mintOrCohortId` and probes the interner with `lookup` instead of
+    /// `encode`. A zero return is a DEFINED miss — the (parent,
+    /// signature) pair never opened a cohort — never a failure. Callers
+    /// that hold only the component ids' possible absence pass 0 for
+    /// either component and get the same defined miss.
+    ///
+    /// @param interner The owning LB-state interner.
+    /// @param parentValidityId The parent validity's interned id, or 0.
+    /// @param orSignatureId The OR signature's interned id, or 0.
+    /// @return The existing cohort id, or 0 when either component is 0 or
+    ///         the packed pair was never interned.
+    /// @invariant Never mints; safe on every read-only path.
+    /// @see mintOrCohortId, decodeOrCohortIds.
+    inline int32_t lookupOrCohortId(const ValueInterner& interner,
+                                    int32_t parentValidityId,
+                                    int32_t orSignatureId) {
+        if (parentValidityId == 0 || orSignatureId == 0) return 0;
+        const uint64_t packed = static_cast<uint64_t>(
+            packInt32Pair(parentValidityId, orSignatureId));
+        char bytes[sizeof(uint64_t)];
+        for (int i = 0; i < static_cast<int>(sizeof(uint64_t)); ++i) {
+            const int shift = 8 * (static_cast<int>(sizeof(uint64_t)) - 1 - i);
+            bytes[i] = static_cast<char>((packed >> shift) & 0xFFu);
+        }
+        return interner.lookup(StrSpan(bytes, static_cast<int32_t>(sizeof(bytes))));
     }
 
     /// @brief Decode an OR-disintegration cohort id into its parent-validity
@@ -5009,7 +5299,6 @@ namespace gl {
     /// dangle when the caller's container reallocates.
     ///
     /// @see [`StaticRequest`](#staticrequest) — output element type.
-    /// @see [`TypedArena`](#typedarena) — arena that backs `intExprs` storage.
     template <typename Consumer>
     struct StaticRequestEmitter {
         struct RequestKey {
@@ -5083,23 +5372,6 @@ namespace gl {
     };
 
 
-    /// @brief One candidate produced by the *grow* phase of the static
-    /// `makeMandatory` merge pass.
-    ///
-    /// @details
-    /// The grow phase iterates through pre-encoded statements building partial
-    /// match-candidate sets. Each surviving partial candidate is recorded as a
-    /// `BaseCandidate` (its statement indices in `allIdx[count]` plus the scope
-    /// id). The merge phase then folds these candidates into final
-    /// `StaticRequest`s. Plain index storage; no ordering or hashing.
-    ///
-    /// @see `memory.cpp::makeMandatoryEncodedStatementLists2Static` — grow phase.
-    struct BaseCandidate {
-        NameId allIdx[ExecutionParameters::MAX_EXPRESSIONS];
-        NameId count;
-        NameId validityId;
-    };
-
     /// @brief One stump of the LB split's second (expression) dimension.
     ///
     /// @details
@@ -5153,9 +5425,7 @@ namespace gl {
     /// the deal they do one job: the generator's seed phase emits requests that are
     /// nothing but the obligatory stump, which contain no split stump at all and
     /// would otherwise be emitted once per sub-part. They are dealt out by
-    /// obligatory-stump index, so each is emitted exactly once. The stump dimension
-    /// is orthogonal to the rule dimension, which the thread-locals
-    /// `g_splitProcessID` / `g_splitCount` carry and `partitionAccepts` reads.
+    /// obligatory-stump index, so each is emitted exactly once.
     ///
     /// A default-constructed value means *no stump split*: the generator is then
     /// line-for-line the unsplit one.
@@ -5171,46 +5441,6 @@ namespace gl {
         NameId total = 0;
     };
 
-    /// @brief Per-thread bundle of typed arenas backing one thread's slice of
-    /// the static request pipeline.
-    ///
-    /// @details
-    /// Four sub-arenas, sized for the typical worst case observed on a Gauss
-    /// batch:
-    ///
-    /// - `requests`     (capacity 4096) — `StaticRequest` storage.
-    /// - `encodedExprs` (capacity 2048) — `IntEncodedExpr` copies.
-    /// - `pairs`        (capacity 8192) — `Stump`s.
-    /// - `indices`      (capacity 4096) — `NameId` index arrays.
-    ///
-    /// `reset()` rewinds all four arenas to zero use; called once per LB-
-    /// iteration boundary so storage is reused without going through the
-    /// allocator. The destructor releases the underlying buffers.
-    ///
-    /// @see [`TypedArena`](#typedarena) — the per-arena type.
-    /// @see [I-28](../../docs/agentic_swdd/30_invariants.md#i-28) — cross-LB writes during
-    ///      `proveKernel`'s parallel phase are forbidden; per-thread arenas are
-    ///      one of the mechanisms that keep that invariant true.
-    struct ThreadArenas {
-        TypedArena<StaticRequest>   requests;
-        TypedArena<IntEncodedExpr>  encodedExprs;
-        TypedArena<Stump>           pairs;
-        TypedArena<NameId>         indices;
-
-        ThreadArenas()
-            : requests(4096),
-              encodedExprs(2048),
-              pairs(8192),
-              indices(4096)
-        {}
-
-        void reset() {
-            requests.reset();
-            encodedExprs.reset();
-            pairs.reset();
-            indices.reset();
-        }
-    };
 
     /// @brief FNV-1a 64-bit hasher for `std::set<NameId>`, used as the key type
     /// in `HashMemory::remainingArgsNormalizedEncodedMap`.
@@ -5255,10 +5485,9 @@ namespace gl {
     /// - `remainingArgsNormalizedEncodedMap` — secondary index by the set of
     ///   carried arg ids; lets `checkLocalEncodedMemoryStatic` skip rules
     ///   whose remaining-args set has no overlap with the candidate.
-    /// - `normalizedEncodedKeys`, `normalizedEncodedSubkeys`,
-    ///   `normalizedEncodedSubkeysMinusOne`, `normalizedEncodedSubkeysMinusTwo`
-    ///   — bloom-filter-style fast-rejection sets keyed at full / 1-short /
-    ///   2-short / 3-short subkey lengths.
+    /// - `normalizedEncodedKeys`, `normalizedEncodedSubkeys` —
+    ///   bloom-filter-style fast-rejection sets, one keyed at whole-key length
+    ///   and one at every growable subkey length.
     /// - `maxKeyLength` — saturating upper bound used to short-circuit lookup
     ///   loops when the candidate exceeds anything stored.
     ///
@@ -5281,7 +5510,7 @@ namespace gl {
     /// - `productsOfRecursionIds` — NameId ids of expressions known to be
     ///   products of a recursion block; consulted for OR-disintegration
     ///   gating.
-    /// - `consumedAdmissionKeys`, `revisitInProgress` — re-entrant guards.
+    /// - `revisitInProgress` — re-entrant guard.
     ///
     /// `clear()` wipes every slot; called when a `HashMemory` is reset for
     /// reuse or torn down.
@@ -5472,28 +5701,29 @@ namespace gl {
     };
 
     // StatementFlags (the intKnownStatements value: the local /
-    // fullyDisintegrated / registered / known bits) moved to
+    // fullyDisintegrated payload; row presence is the membership) moved to
     // int_encoded_expr.hpp so LbMemory can hold a
     // ColdHashMap<PodKeyStore<int32_t>, StatementFlags>; the registry needs the
     // complete value type at its member declaration. Its full Doxygen lives
     // there, beside IntEncodedExpr.
 
-    /// @brief OR-style upsert into the packed-key statement registry.
+    /// @brief Insert-or-merge into the packed-key statement registry.
     ///
     /// @details
-    /// The single write door for `Memory::intKnownStatements` membership
-    /// bits. If `key` is absent, a fresh `StatementFlags` row is inserted
-    /// with exactly the given values. If `key` is present, the `registered`
-    /// / `known` / `fullyDisintegrated` bits are OR-ed into the stored row
-    /// and `local` keeps its first-writer value — the keep-first semantics
-    /// every `insert({key, flags})` site has, where a duplicate insert is a
-    /// flag-preserving no-op.
+    /// The single write door for `Memory::intKnownStatements` rows. Row
+    /// PRESENCE is the membership (known ⟺ admitted ⟺ a row exists, with a
+    /// non-empty `intStatementLevelsMap` row — the statement-levels
+    /// contract); this door carries only the two payload flags. If `key` is
+    /// absent, a fresh `StatementFlags` row is inserted with the given
+    /// values. If `key` is present, `fullyDisintegrated` is OR-ed into the
+    /// stored row and `local` keeps its first-writer value — the keep-first
+    /// semantics every `insert({key, flags})` site has.
     ///
-    /// Bits are OR-only by contract: no caller clears a bit through this
-    /// door. The only bit-clearing writers are whole-entry erases
-    /// (`Memory::wipeSubtree`, `eradicateImplicationFromLB`,
-    /// `resetResentExpressionRegistries`) and the CE teardown's
-    /// `registered`-membership reset in `releaseCEBatchMemory`.
+    /// `fullyDisintegrated` is OR-only by contract: no caller clears it
+    /// through this door. The only row-clearing writers are whole-entry
+    /// erases (`Memory::wipeSubtree`, `eradicateImplicationFromLB`,
+    /// `resetResentExpressionRegistries`, `resetParkedOrStatementRegistries`)
+    /// and the CE teardown's full reset in `releaseCEBatchMemory`.
     ///
     /// @param registry           The packed-key registry to write
     ///                           (`Memory::intKnownStatements`).
@@ -5501,31 +5731,24 @@ namespace gl {
     ///                           `packStatementKey`.
     /// @param local              Stored only when the row is fresh
     ///                           (keep-first; write-only provenance field).
-    /// @param registered         OR-ed membership bit — statement passed an
-    ///                           add-path registration door.
-    /// @param known              OR-ed membership bit — statement entered
-    ///                           the level registry (Site F dedup record).
-    /// @param fullyDisintegrated OR-ed disintegration verdict
-    ///                           (`checkForEquivalence` sets it; never
+    /// @param fullyDisintegrated OR-ed disintegration verdict (the
+    ///                           full-disintegration marker sets it; never
     ///                           cleared here).
     /// @see `packStatementKey`, `StatementFlags`.
     inline void upsertStatementKey(
         TypedColdMap<StatementKey, StatementFlags>& registry,
-        int64_t key, bool local, bool registered, bool known,
+        int64_t key, bool local,
         bool fullyDisintegrated = false) {
         // The packed (originalId, validityId) scalar IS the inner engine's key
-        // view; this low-level OR-merge write door reaches it through inner().
+        // view; this low-level insert-or-merge door reaches it through inner().
         const int32_t id = registry.inner().lookup(key);
         if (id == 0) {
-            registry.inner().insert(key, StatementFlags{ local, fullyDisintegrated,
-                                                         registered, known });
+            registry.inner().insert(key, StatementFlags{ local, fullyDisintegrated });
             return;
         }
-        // OR the membership bits into the existing row via the reviewed
-        // in-place update door (the cold insert is set-once).
+        // OR the disintegration verdict into the existing row via the
+        // reviewed in-place update door (the cold insert is set-once).
         StatementFlags f = registry.inner().valueAt(id);
-        f.registered         = f.registered || registered;
-        f.known              = f.known || known;
         f.fullyDisintegrated = f.fullyDisintegrated || fullyDisintegrated;
         registry.inner().setValueAt(id, f);
     }
@@ -5542,9 +5765,9 @@ namespace gl {
     /// discipline), so an un-interned name cannot have a row. Nothing is
     /// minted on any path, keeping the LB's id-assignment order untouched.
     ///
-    /// Callers test the membership bit their contract names — `registered`
-    /// for the statement-registration gates, `known` for the Site F family —
-    /// never bare row presence.
+    /// Row presence IS the membership (known ⟺ admitted): the gates test the
+    /// returned pointer; `fullyDisintegrated` is the one payload bit a
+    /// caller additionally consults (`checkForEquivalence`).
     ///
     /// @param registry     The packed-key registry (`Memory::intKnownStatements`).
     /// @param nm           The owning LB's interning registry; read-only.
@@ -5840,6 +6063,41 @@ namespace gl {
         return n;
     }
 
+    /// @brief Fill a caller run with a levels row's DERIVATION levels only —
+    ///        the `coldIntRunAt` sibling that skips the non-derived tier.
+    ///
+    /// @details
+    /// `-1` marks the non-derived level tier (a statement with no derivation
+    /// depth: a loaded fact, an anchor, a broadcast theorem, an assumed
+    /// premise). It is transparent to level accounting: a derivation union
+    /// or the `allLevelsInvolved` discharge arithmetic must see a `{-1}` row
+    /// exactly as it saw the former empty run. This door performs that read:
+    /// it copies only the values ≥ 0, so a pure `{-1}` row yields count 0.
+    /// Row-verbatim consumers (mail export, dump, re-assign) keep using
+    /// `coldIntRunAt`.
+    ///
+    /// @param index The statement levels registry.
+    /// @param id    Row id from a prior `lookup` (must be nonzero).
+    /// @param out   Caller-owned output run (stack memory).
+    /// @param cap   Capacity of `out`; overflow asserts (Rule 19).
+    /// @return The number of non-negative values copied.
+    /// @invariant A levels row is either exactly `{-1}` or all-values-≥0,
+    ///            never mixed — enforced at the `addStatement` door.
+    /// @see `insertLevelSorted` — skips negatives on the write side.
+    inline int32_t coldIntRunNonNegAt(
+        const TypedColdSetMap<StatementKey, int>& index, int32_t id,
+        int* out, int32_t cap) {
+        const int32_t n = index.runLen(id);
+        assert(n <= cap && "coldIntRunNonNegAt: level run exceeds caller capacity");
+        int32_t w = 0;
+        for (int32_t j = 0; j < n; ++j) {
+            const int v = index.valueAt(id, j);
+            if (v < 0) continue;
+            out[w++] = v;
+        }
+        return w;
+    }
+
     /// @brief Insert a value into an ascending-unique stack run, keeping it
     ///        ascending-unique — the run twin of `std::set<int>::insert`.
     ///
@@ -5851,17 +6109,30 @@ namespace gl {
     /// one slot right to make room (plain backward copy — the run lives in a
     /// single caller stack frame, so there is no aliasing to reason about).
     ///
+    /// A NEGATIVE value is skipped (a defined no-op, not a failure): `-1` is
+    /// the non-derived level tier — a statement with no derivation depth —
+    /// and it is transparent to level accounting, so it never enters a
+    /// derivation union. A union whose every input was non-derived stays
+    /// empty and re-enters the registry as `{-1}` at the `addStatement`
+    /// door. This keeps every level run either exactly `{-1}` or
+    /// all-values-≥0, never mixed.
+    ///
     /// @param run Caller-owned ascending-unique run (stack memory).
     /// @param n   Current element count.
-    /// @param v   Value to insert.
+    /// @param v   Value to insert; negative = the transparent non-derived
+    ///            tier, skipped.
     /// @param cap Capacity of `run`; growth past `cap` asserts
     ///            (Rule 19 — never truncate).
-    /// @return The new element count (`n` when `v` was already present).
+    /// @return The new element count (`n` when `v` was already present or
+    ///         negative).
     /// @invariant [I-136](../../docs/agentic_swdd/30_invariants.md#i-136)
     ///            — the union sites on the kernel chain build their runs
     ///            through this tested primitive, not ad-hoc memmoves.
     /// @see `coldIntRunAt` — the run-fill sibling.
+    /// @see `coldIntRunNonNegAt` — the derivation-union run fill (skips the
+    ///      non-derived tier on read).
     inline int32_t insertLevelSorted(int* run, int32_t n, int v, int32_t cap) {
+        if (v < 0) return n;
         int32_t i = 0;
         while (i < n && run[i] < v) ++i;
         if (i < n && run[i] == v) return n;
@@ -6167,7 +6438,7 @@ namespace gl {
     ///      `EncodedExpression(...)` ctor); fields are not partially-populated.
     /// @post Returns an `IntEncodedExpr` whose every id field references `nm`.
     ///       The returned value is trivially copyable; consumers store it
-    ///       into `TypedArena<IntEncodedExpr>` or
+    ///       into the per-slot gen scratch arena or
     ///       `Memory::intEncodedStatements`.
     /// @invariant All non-`"main"` validity names registered through `nm`
     ///            during this call are minted via `NameMap::encode` (which
@@ -6365,6 +6636,81 @@ namespace gl {
         return ie;
     }
 
+    /// @brief Per-copy memo of the premise encodes a rule install builds its
+    ///        keys from — each premise text is encoded at most once per
+    ///        multiplied copy.
+    ///
+    /// @details
+    /// The rule install derives many normalized keys from one premise run:
+    /// every whole-key permutation, every prefix of every permutation (the
+    /// subkeys) and every admission derivative key read the same premise
+    /// texts. `encodeExpression` is a pure function of the text and the
+    /// NameMap's ids, so its row for a premise is the same at every one of
+    /// those sites; the memo computes it on the FIRST read and hands the
+    /// stored row back afterwards. The fill is lazy on purpose: a premise is
+    /// first read at exactly the program point that used to encode it, so the
+    /// NameMap's first-touch mint order (observable through every id-ordered
+    /// stream, I-84) is unchanged. One memo per multiplied copy of
+    /// `addToHashMemory`, bound to that copy's premise run and handed down to
+    /// the admission installers, which index it by the premise's position in
+    /// that run. Stack-only (Rule 28).
+    ///
+    /// @invariant `at(i, nm)` returns bytes identical to
+    ///            `encodeExpression(key[i], "main", nm)` evaluated at the first
+    ///            call; later calls neither encode nor mint.
+    /// @see `encodeExpression(const StrSpan&, const StrSpan&, NameMap&)`,
+    ///      `ExpressionAnalyzer::addToHashMemory`,
+    ///      `ExpressionAnalyzer::installAdmissionMarkerVariants`.
+    struct KeyEncodeMemo {
+        /// @brief Capacity: the admission key cap plus the marker slot.
+        static constexpr int32_t kCap =
+            ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS + 1;
+
+        const StrSpan* key = nullptr;   ///< The premise run (caller-stable).
+        int32_t keyN = 0;               ///< Its length.
+        IntEncodedExpr enc[kCap];       ///< The memoized rows (valid where `filled`).
+        bool filled[kCap] = {};         ///< Per-premise fill flag.
+
+        /// @brief Bind the memo to a premise run and mark every slot unfilled.
+        ///
+        /// @details
+        /// Re-binding is legal (the next copy of the same install reuses the
+        /// object); every earlier row is forgotten.
+        ///
+        /// @param keyRun The premise spans; must outlive every `at` call.
+        /// @param n      Their count; `0 <= n <= kCap` (asserted).
+        /// @return Nothing.
+        void bind(const StrSpan* keyRun, int32_t n) {
+            assert(n >= 0 && n <= kCap
+                && "KeyEncodeMemo::bind: premise count exceeds the cap");
+            key = keyRun;
+            keyN = n;
+            std::memset(filled, 0, sizeof(filled));
+        }
+
+        /// @brief The encode of premise @p i — computed on the first call,
+        ///        stored and returned unchanged after.
+        ///
+        /// @details
+        /// The first call runs `encodeExpression(key[i], "main", nm)` (which
+        /// mints the premise's names on their first touch); every later call
+        /// returns the stored row, so the row is the same object for the
+        /// memo's lifetime.
+        ///
+        /// @param i  Premise index in `[0, keyN)` (asserted).
+        /// @param nm The LB's NameMap (mints only on the first call for @p i).
+        /// @return The memoized `IntEncodedExpr` row of premise @p i.
+        const IntEncodedExpr& at(int32_t i, NameMap& nm) {
+            assert(i >= 0 && i < keyN
+                && "KeyEncodeMemo::at: premise index out of range");
+            if (!filled[i]) {
+                enc[i] = encodeExpression(key[i], StrSpan("main", 4), nm);
+                filled[i] = true;
+            }
+            return enc[i];
+        }
+    };
+
     /// @brief Reconstruct the string-form `EncodedExpression` of an
     /// `IntEncodedExpr` row from the owning LB's `NameMap` — the exact inverse
     /// of `encodeExpression`.
@@ -6428,8 +6774,8 @@ namespace gl {
     ///        fast-rejection (sub)key's owner-set — the insert-side producer for
     ///        the request-generation u_ literal prune (D-120).
     ///
-    /// @details Called at every owner insert into the four `normalizedEncoded*`
-    /// maps, beside the `OwnerSet::partitionIds.insert`, with the
+    /// @details Called at every owner insert into the subkey map (the whole-key
+    /// record carries no signature), with the
     /// `EncodedExpression` list the (sub)key was built from. It walks that list in
     /// arg order (mirroring how `encodeExpression` / `makeIntNormalizedKey` lay
     /// out arguments) and, for each unchangeable arg (`arg[0] == "True"`), appends
@@ -6547,7 +6893,7 @@ namespace gl {
     /// @param hasUArg  [out] `true` iff at least one pair was emitted.
     /// @return The number of pairs written (`n <= cap`).
     /// @see recordUSignature(OwnerSet&, const IntEncodedExpr*, NameId) — the
-    ///      retained oracle; mergeOwnerRecord (the raw-key overload) — the consumer.
+    ///      retained oracle; mergeSubkeySignatures — the consumer.
     inline int32_t buildUSignatureRunInto(const IntEncodedExpr* encList,
                                           NameId count,
                                           std::pair<int32_t, NameId>* out,
@@ -6572,6 +6918,63 @@ namespace gl {
             }
         }
         return n;
+    }
+
+    /// @brief Heap oracle of one subkey install with its owner — the
+    ///        differential twin of `mergeSubkeySignatures` /
+    ///        `addShortSubkeyOwner` (test-side, never on the pipeline).
+    ///
+    /// @details
+    /// Records the owner's u_ signature exactly as `recordUSignature` does
+    /// (a loose owner sets the loose byte, a u_-bearing owner inserts its
+    /// signature into the sorted set), then attaches `(owner, sigIndex)` to
+    /// `os.owners` — sorted ascending by owner, duplicate-free — where
+    /// `sigIndex` is the position of the owner's signature in the sorted
+    /// signature set after the insert, or -1 for a loose owner. When the
+    /// insert created a new signature at position `p`, every existing owner
+    /// whose index is `>= p` moves up by one, so the indexes stay the set's
+    /// iteration positions. Below `kSubkeyUCheckMinElements` premises the
+    /// production install records no signature; the oracle takes @p count
+    /// `== 0` for that case and attaches a loose owner.
+    ///
+    /// @param os      The record under construction.
+    /// @param encList The subkey's pre-encoded premises (`nullptr` allowed
+    ///                when @p count is 0).
+    /// @param count   Their number (0 = the signature-free short-subkey form).
+    /// @param owner   The installing rule's packed owner.
+    /// @see `recordUSignature`, `Codec<OwnerSet>`, `mergeSubkeySignatures`,
+    ///      `addShortSubkeyOwner`.
+    inline void recordSubkeyOwner(OwnerSet& os,
+                                  const IntEncodedExpr* encList, NameId count,
+                                  RuleOwner owner) {
+        using Sig = std::vector<std::pair<int32_t, NameId>>;
+        int32_t sigIndex = -1;
+        if (count > 0) {
+            std::pair<int32_t, NameId> run[
+                ExecutionParameters::MAX_ADMISSION_KEY_ELEMENTS
+                * ExecutionParameters::MAX_ARITY];
+            bool hasUArg = false;
+            const int32_t n = buildUSignatureRunInto(encList, count, run,
+                static_cast<int32_t>(sizeof(run) / sizeof(run[0])), hasUArg);
+            if (hasUArg) {
+                const auto ins = os.uSignatures.insert(Sig(run, run + n));
+                sigIndex = static_cast<int32_t>(
+                    std::distance(os.uSignatures.begin(), ins.first));
+                if (ins.second) {
+                    for (std::pair<RuleOwner, int32_t>& ow : os.owners)
+                        if (ow.second >= sigIndex) ++ow.second;
+                }
+            }
+        }
+        if (sigIndex < 0) os.hasLooseOwner = true;
+        // One rule may hold several signatures on one subkey (different
+        // premise prefixes of its permutations carry different u_ literals):
+        // the list is a set of (owner, signature index) pairs, sorted by owner
+        // then index; a repeated pair is a no-op.
+        const std::pair<RuleOwner, int32_t> pair(owner, sigIndex);
+        auto it = std::lower_bound(os.owners.begin(), os.owners.end(), pair);
+        if (it != os.owners.end() && *it == pair) return;
+        os.owners.insert(it, pair);
     }
 
     /// @brief Inter-LB message bag — statements + implications + origin map
@@ -6982,13 +7385,12 @@ namespace gl {
         return len;
     }
 
-    /// @brief The shared D-49 cap-full preference RMW on an id-form mail origin
+    /// @brief The shared cap-gated RMW on an id-form mail origin
     ///        run — the engine behind `addInternalMailOrigin` /
     ///        `addDeloadableMailOutOrigin` / the `deserializeInto` origin fold.
     ///
-    /// @details Below the cap, append `record` if absent; at the cap, a new
-    /// non-`equality1`/`equality2` record displaces the first equality-convenience
-    /// slot (foundation displaces convenience), else the existing slot wins. Record
+    /// @details Below the cap, append `record` if absent; at the cap nothing is
+    /// written — the existing rows win. Record
     /// equality is `IntMailOrigin::operator==` (tag + packed deps); the interner is
     /// bijective so id-equality is string-equality, and the codec is injective so
     /// blob byte-equality IS record equality. The `OriginTag` comparison
@@ -6999,12 +7401,9 @@ namespace gl {
     /// The interior is heap-free on fixed-capacity STACK buffers (no arena, no
     /// per-slot scratch): the new record serializes once into a
     /// `kMaxOriginBlobBytes` frame; one scan peeks each existing blob through the
-    /// caller-buffer `peekRecordBytes` door (dedup by whole-blob `memcmp` + the
-    /// first convenience-slot index); the append paths take the raw
-    /// `appendBlobToRun` / one-blob `assignRun` doors; the rare cap-full
-    /// convenience-replace assembles survivors verbatim + the replacement into
-    /// ONE `kMaxOriginRunBytes` stack frame and writes it back through the raw
-    /// whole-run `assignRun` door — byte-identical to the retired
+    /// caller-buffer `peekRecordBytes` door (dedup by whole-blob `memcmp`);
+    /// the append paths take the raw `appendBlobToRun` / one-blob `assignRun`
+    /// doors; at the cap nothing is written — byte-identical to the retired
     /// decode-into-`std::vector`-reserialize cycle (twin test
     /// `add_mail_origin_record_rmw_matches_heap`). The rebuild's run-length
     /// assert against `kMaxOriginRunBlobs` is a Rule-19 tripwire (origin runs
@@ -7020,17 +7419,10 @@ namespace gl {
         const int32_t newLen = serializeMailOriginTo(
             newBlob, ExecutionParameters::kMaxOriginBlobBytes, record);
 
-        const auto isEqualityConvenienceTag = [](uint8_t tag) {
-            return tag == static_cast<uint8_t>(OriginTag::equality1)
-                || tag == static_cast<uint8_t>(OriginTag::equality2);
-        };
-
         // One scan over the existing run: duplicate detection (blob byte
-        // equality == IntMailOrigin::operator==, the codec is injective) and
-        // the first equality-convenience slot for the cap-full replace.
+        // equality == IntMailOrigin::operator==, the codec is injective).
         const int32_t id = col.lookup(key);
         const int32_t rl = id ? col.runLen(id) : 0;
-        int32_t convenienceIdx = -1;
         {
             char blobBuf[ExecutionParameters::kMaxOriginBlobBytes];
             for (int32_t j = 0; j < rl; ++j) {
@@ -7041,10 +7433,6 @@ namespace gl {
                     && std::memcmp(bp, newBlob,
                                    static_cast<std::size_t>(bl)) == 0) {
                     return;  // duplicate — the no-op insert
-                }
-                if (convenienceIdx < 0
-                    && isEqualityConvenienceTag(static_cast<uint8_t>(bp[0]))) {
-                    convenienceIdx = j;
                 }
             }
         }
@@ -7058,41 +7446,12 @@ namespace gl {
             return;
         }
 
-        // Cap-full origin-preference replacement (D-49): foundation displaces
-        // convenience; a convenience-tag record or a run with no convenience
-        // slot leaves the existing run untouched (existing wins).
-        if (isEqualityConvenienceTag(record.tag)) return;
-        if (convenienceIdx < 0) return;
-        assert(rl <= ExecutionParameters::kMaxOriginRunBlobs
-            && "addMailOriginRecord: cap-full run exceeds kMaxOriginRunBlobs "
-               "(Rule-19 tripwire — widen the constant with evidence)");
-        char runBuf[ExecutionParameters::kMaxOriginRunBytes];
-        int32_t lens[ExecutionParameters::kMaxOriginRunBlobs];
-        int32_t at = 0;
-        for (int32_t j = 0; j < rl; ++j) {
-            if (j == convenienceIdx) {
-                std::memcpy(runBuf + at, newBlob,
-                            static_cast<std::size_t>(newLen));
-                lens[j] = newLen;
-                at += newLen;
-                continue;
-            }
-            int32_t bl = 0;
-            const char* bp = col.peekRecordBytes(id, j, bl, runBuf + at,
-                ExecutionParameters::kMaxOriginRunBytes - at);
-            assert(at + bl <= ExecutionParameters::kMaxOriginRunBytes
-                && "addMailOriginRecord: survivor run exceeds kMaxOriginRunBytes");
-            if (bp != runBuf + at) {
-                std::memcpy(runBuf + at, bp, static_cast<std::size_t>(bl));
-            }
-            lens[j] = bl;
-            at += bl;
-        }
-        col.inner().assignRun(key, runBuf, lens, rl);
+        // At the cap the existing rows win: the newcomer is dropped, nothing is
+        // displaced (I-216).
     }
 
     /// @brief POD overload of @ref addMailOriginRecord — append a `(tag, deps)`
-    ///        mail history line with the D-49 cap-full RMW, no `IntMailOrigin`
+    ///        mail history line with the cap-gated RMW, no `IntMailOrigin`
     ///        materialized.
     ///
     /// @details
@@ -7100,10 +7459,7 @@ namespace gl {
     /// once via the POD `serializeMailOriginTo(buf, cap, tag, deps, depN)` (no
     /// `IntMailOrigin{tag, deps}` heap vector), then the SAME whole-blob-memcmp
     /// dedup scan, the SAME below-cap `appendBlobToRun` / one-blob `assignRun`
-    /// splice, and the SAME D-49 cap-full convenience-replace assembling
-    /// survivors verbatim + the replacement into one `kMaxOriginRunBytes` stack
-    /// frame for a single raw whole-run `assignRun`. The convenience-tag guard
-    /// reads @p tag directly. Single-threaded write sites only
+    /// splice, and the SAME at-cap drop (existing rows win). Single-threaded write sites only
     /// ([I-83](../../docs/agentic_swdd/30_invariants.md#i-83)).
     ///
     /// @param col        The cold `IntMailOrigin` blob map.
@@ -7125,14 +7481,8 @@ namespace gl {
         const int32_t newLen = serializeMailOriginTo(
             newBlob, ExecutionParameters::kMaxOriginBlobBytes, tag, deps, depN);
 
-        const auto isEqualityConvenienceTag = [](uint8_t t) {
-            return t == static_cast<uint8_t>(OriginTag::equality1)
-                || t == static_cast<uint8_t>(OriginTag::equality2);
-        };
-
         const int32_t id = col.lookup(key);
         const int32_t rl = id ? col.runLen(id) : 0;
-        int32_t convenienceIdx = -1;
         {
             char blobBuf[ExecutionParameters::kMaxOriginBlobBytes];
             for (int32_t j = 0; j < rl; ++j) {
@@ -7144,10 +7494,6 @@ namespace gl {
                                    static_cast<std::size_t>(bl)) == 0) {
                     return;  // duplicate — the no-op insert
                 }
-                if (convenienceIdx < 0
-                    && isEqualityConvenienceTag(static_cast<uint8_t>(bp[0]))) {
-                    convenienceIdx = j;
-                }
             }
         }
 
@@ -7157,34 +7503,8 @@ namespace gl {
             return;
         }
 
-        if (isEqualityConvenienceTag(tag)) return;
-        if (convenienceIdx < 0) return;
-        assert(rl <= ExecutionParameters::kMaxOriginRunBlobs
-            && "addMailOriginRecord: cap-full run exceeds kMaxOriginRunBlobs "
-               "(Rule-19 tripwire — widen the constant with evidence)");
-        char runBuf[ExecutionParameters::kMaxOriginRunBytes];
-        int32_t lens[ExecutionParameters::kMaxOriginRunBlobs];
-        int32_t at = 0;
-        for (int32_t j = 0; j < rl; ++j) {
-            if (j == convenienceIdx) {
-                std::memcpy(runBuf + at, newBlob,
-                            static_cast<std::size_t>(newLen));
-                lens[j] = newLen;
-                at += newLen;
-                continue;
-            }
-            int32_t bl = 0;
-            const char* bp = col.peekRecordBytes(id, j, bl, runBuf + at,
-                ExecutionParameters::kMaxOriginRunBytes - at);
-            assert(at + bl <= ExecutionParameters::kMaxOriginRunBytes
-                && "addMailOriginRecord: survivor run exceeds kMaxOriginRunBytes");
-            if (bp != runBuf + at) {
-                std::memcpy(runBuf + at, bp, static_cast<std::size_t>(bl));
-            }
-            lens[j] = bl;
-            at += bl;
-        }
-        col.inner().assignRun(key, runBuf, lens, rl);
+        // At the cap the existing rows win: the newcomer is dropped, nothing is
+        // displaced (I-216).
     }
 
     /// @brief Append a history line to an internal-mail `ColdMail`'s origin run —
@@ -7411,8 +7731,7 @@ namespace gl {
     /// @details
     /// Canonical-member selection and iteration filtering partition names into
     /// three tiers, matching exactly the two precompiled patterns historically
-    /// inlined in `prover.hpp::filterIterations`, `chooseCanonical` and
-    /// `canonicalizeUnderClasses`:
+    /// inlined in `prover.hpp::filterIterations` and `chooseCanonical`:
     /// - `IntLev` — whole-string match of `int_lev_<digits>_<digits>`.
     /// - `ItLev`  — whole-string match of `it_<digits>_lev_<digits>_<digits>`.
     /// - `Normal` — everything else (concrete values, `repl_*`, user names).
@@ -7750,6 +8069,75 @@ namespace gl {
         return static_cast<NameKind>(kindById_[id]);
     }
 
+    /// @brief Build one canonical special-token scan blob for @p text on
+    ///        @p peekArena and return a view over it.
+    ///
+    /// @details
+    /// The token-memo blob layout,
+    /// `[i32 nInt][(i32 len, bytes)…][i32 nIt][(i32 len, bytes)…]`, built
+    /// DIRECTLY on the caller's byte-bump tier via the regex-free occurrence
+    /// scanners in two passes (count, then exact-length fill — asserted),
+    /// byte-identical to `serializeSpecialTokenScan(scanSpecialTokens(text))`
+    /// by the scanners' iterator-twin contract + the layout coupling. This is
+    /// the memo-independent half of `EqClassNameCaches::tokensViewOf`'s miss
+    /// path, factored out so a caller holding raw expression bytes with NO
+    /// NameMap id (a freshly-arrived mail statement at the absorb drain) can
+    /// scan without minting the expression or touching the memo.
+    ///
+    /// NO internal mark/rewind: the blob must outlive the return, so the
+    /// CALLER owns the arena window (marks before, pops after the consumer
+    /// finishes).
+    ///
+    /// @param text      Full expression bytes to scan.
+    /// @param peekArena Byte-bump arena receiving the blob.
+    /// @return View over the freshly-built blob — valid until the caller's
+    ///         arena pop.
+    /// @invariant Blob bytes byte-identical to the
+    ///            `serializeSpecialTokenScan(scanSpecialTokens(text))` codec
+    ///            path ([I-134](../../docs/agentic_swdd/30_invariants.md#i-134)).
+    /// @see EqClassNameCaches::tokensViewOf — the memoized consumer;
+    ///      scanSpecialTokens — the retained regex oracle.
+    inline SpecialTokenScanView buildSpecialTokenScanView(StrSpan text,
+        ScratchArena& peekArena) {
+        // Pass 1 — count.
+        int32_t nInt = 0, sumIntLen = 0;
+        scanIntLevOccurrences(text, [&](int32_t, int32_t tokenLen) {
+            ++nInt;
+            sumIntLen += tokenLen;
+        });
+        int32_t nIt = 0, sumItLen = 0;
+        scanItLevOccurrences(text, [&](int32_t, int32_t tokenLen) {
+            ++nIt;
+            sumItLen += tokenLen;
+        });
+        const int32_t blobLen = 8 + 4 * nInt + sumIntLen + 4 * nIt + sumItLen;
+        char* blob = peekArena.allocBytes(blobLen);
+
+        // Pass 2 — exact-length fill (same scans, same order).
+        int32_t at = 0;
+        const auto putI32 = [&blob, &at](int32_t v) {
+            std::memcpy(blob + at, &v, sizeof(int32_t));
+            at += static_cast<int32_t>(sizeof(int32_t));
+        };
+        putI32(nInt);
+        scanIntLevOccurrences(text, [&](int32_t start, int32_t tokenLen) {
+            putI32(tokenLen);
+            std::memcpy(blob + at, text.ptr + start,
+                        static_cast<size_t>(tokenLen));
+            at += tokenLen;
+        });
+        putI32(nIt);
+        scanItLevOccurrences(text, [&](int32_t start, int32_t tokenLen) {
+            putI32(tokenLen);
+            std::memcpy(blob + at, text.ptr + start,
+                        static_cast<size_t>(tokenLen));
+            at += tokenLen;
+        });
+        assert(at == blobLen
+            && "buildSpecialTokenScanView: exact-length blob fill diverged from the count pass");
+        return SpecialTokenScanView{ blob, blobLen };
+    }
+
     /// @brief Out-of-line `EqClassNameCaches::tokensViewOf` — declared in
     ///        `memory_infra/eq_class_name_caches.hpp`, defined here so
     ///        `NameMap`, the occurrence scanners, and `SpecialTokenScanView`
@@ -7812,52 +8200,18 @@ namespace gl {
             return SpecialTokenScanView{ bp, blen };
         }
 
-        // Miss: direct canonical-blob build on the caller's byte-bump tier —
-        // [i32 nInt][(i32 len, bytes)…][i32 nIt][(i32 len, bytes)…].
+        // Miss: direct canonical-blob build on the caller's byte-bump tier
+        // via the shared builder (the memo-independent half of this path).
         const StrSpan text = nm.decodeView(exprId);
-
-        // Pass 1 — count.
-        int32_t nInt = 0, sumIntLen = 0;
-        scanIntLevOccurrences(text, [&](int32_t, int32_t tokenLen) {
-            ++nInt;
-            sumIntLen += tokenLen;
-        });
-        int32_t nIt = 0, sumItLen = 0;
-        scanItLevOccurrences(text, [&](int32_t, int32_t tokenLen) {
-            ++nIt;
-            sumItLen += tokenLen;
-        });
-        const int32_t blobLen = 8 + 4 * nInt + sumIntLen + 4 * nIt + sumItLen;
-        char* blob = peekArena.allocBytes(blobLen);
-
-        // Pass 2 — exact-length fill (same scans, same order).
-        int32_t at = 0;
-        const auto putI32 = [&blob, &at](int32_t v) {
-            std::memcpy(blob + at, &v, sizeof(int32_t));
-            at += static_cast<int32_t>(sizeof(int32_t));
-        };
-        putI32(nInt);
-        scanIntLevOccurrences(text, [&](int32_t start, int32_t tokenLen) {
-            putI32(tokenLen);
-            std::memcpy(blob + at, text.ptr + start,
-                        static_cast<size_t>(tokenLen));
-            at += tokenLen;
-        });
-        putI32(nIt);
-        scanItLevOccurrences(text, [&](int32_t start, int32_t tokenLen) {
-            putI32(tokenLen);
-            std::memcpy(blob + at, text.ptr + start,
-                        static_cast<size_t>(tokenLen));
-            at += tokenLen;
-        });
-        assert(at == blobLen
-            && "tokensViewOf: exact-length blob fill diverged from the count pass");
+        const SpecialTokenScanView built =
+            buildSpecialTokenScanView(text, peekArena);
 
         // Raw byte door: Codec<NameId> is the identity key codec, so the
         // KeyView IS the id. Then re-peek the INSTALLED record — one uniform
         // view path, and the re-peek validates the install.
+        int32_t blobLen = built.len;
         const int32_t nid =
-            tokensByExprId_.inner().assignRun(exprId, blob, &blobLen, 1);
+            tokensByExprId_.inner().assignRun(exprId, built.p, &blobLen, 1);
         int32_t blen = 0;
         const char* bp = tokensByExprId_.peekRecordBytes(nid, 0, blen, peekArena);
         return SpecialTokenScanView{ bp, blen };
@@ -8539,13 +8893,18 @@ namespace gl {
         ColdHashSet<BytesKeyStore> keys;       ///< dedup + component byte interner (page tier).
         PagedVector<int32_t> origIds;          ///< per-row original id (page tier).
         PagedVector<int32_t> valIds;           ///< per-row validity id (page tier).
+        /// Per-row SOURCE statement id — the statement whose disintegration
+        /// produced the row (the carrier the install door records in
+        /// `compactExpansions`); 0 for a row appended without a source.
+        PagedVector<int32_t> srcIds;
 
-        /// @brief Bind the interner and the two id columns to the arena's PAGE
+        /// @brief Bind the interner and the three id columns to the arena's PAGE
         ///        tier; the composite build and the sort index use its BYTE-BUMP
         ///        tier (independent substrate, no interference).
         /// @param a The per-slot scratch arena; outlives this channel.
         explicit DisintPairChannel(LbArena* a)
-            : arena(a), keys(a, &dirty), origIds(a, &dirty), valIds(a, &dirty) {}
+            : arena(a), keys(a, &dirty), origIds(a, &dirty), valIds(a, &dirty),
+              srcIds(a, &dirty) {}
         DisintPairChannel(const DisintPairChannel&) = delete;
         DisintPairChannel& operator=(const DisintPairChannel&) = delete;
 
@@ -8558,7 +8917,12 @@ namespace gl {
         ///
         /// @param original The expression bytes (span source, read synchronously).
         /// @param validity The validity-scope bytes (span source).
-        void append(StrSpan original, StrSpan validity) {
+        /// @param source   The statement whose disintegration produced the row
+        ///                 (empty = no source, stored as id 0). A repeated
+        ///                 `(original, validity)` keeps its first source — one
+        ///                 rule text at one scope has one carrier inside one
+        ///                 disintegration.
+        void append(StrSpan original, StrSpan validity, StrSpan source) {
             ScratchScope sc(*arena);
             const int32_t n = original.len + 1 + validity.len;
             char* buf = reinterpret_cast<char*>(arena->resolve(arena->alloc(n, 1)));
@@ -8571,6 +8935,15 @@ namespace gl {
             keys.mint(composite);
             origIds.push_back(keys.mint(original));
             valIds.push_back(keys.mint(validity));
+            srcIds.push_back(source.len > 0 ? keys.mint(source) : 0);
+        }
+
+        /// @brief Append one distinct `(original, validity)` row without a
+        ///        source (the statement channel's form).
+        /// @param original The expression bytes.
+        /// @param validity The validity-scope bytes.
+        void append(StrSpan original, StrSpan validity) {
+            append(original, validity, StrSpan());
         }
 
         /// @brief Number of distinct rows. @return Row count (== `std::set` size).
@@ -8605,6 +8978,33 @@ namespace gl {
                 cb(keys.decode(origIds[r]), keys.decode(valIds[r]));
             }
         }
+
+        /// @brief `forEachSorted` with the row's source statement as a third
+        ///        argument (an empty span for a source-less row).
+        ///
+        /// @tparam Fn `void(StrSpan original, StrSpan validity, StrSpan source)`.
+        /// @param cb The per-row visitor, in `forEachSorted`'s order.
+        template <typename Fn> void forEachSortedWithSource(Fn cb) const {
+            const int32_t n = origIds.size();
+            if (n == 0) return;
+            ScratchScope sc(*arena);
+            int32_t* idx = reinterpret_cast<int32_t*>(arena->resolve(
+                arena->alloc(n * static_cast<int32_t>(sizeof(int32_t)),
+                             alignof(int32_t))));
+            for (int32_t k = 0; k < n; ++k) idx[k] = k;
+            std::sort(idx, idx + n, [&](int32_t a, int32_t b) {
+                const int c = compareSpans(keys.decode(origIds[a]),
+                                           keys.decode(origIds[b]));
+                if (c != 0) return c < 0;
+                return compareSpans(keys.decode(valIds[a]),
+                                    keys.decode(valIds[b])) < 0;
+            });
+            for (int32_t k = 0; k < n; ++k) {
+                const int32_t r = idx[k];
+                cb(keys.decode(origIds[r]), keys.decode(valIds[r]),
+                   srcIds[r] != 0 ? keys.decode(srcIds[r]) : StrSpan());
+            }
+        }
     };
 
     /// @brief The two-channel return holder for `disintegrateExpr2` — the
@@ -8623,10 +9023,15 @@ namespace gl {
     struct DisintProducts {
         DisintPairChannel implications;  ///< former `get<0>` set.
         DisintPairChannel statements;    ///< former `get<1>` set.
+        /// @brief Uncovered-group compacts selected for the flag-5 mail relay
+        ///        (D-284); consumed only by local
+        ///        (status-0/1) callers, ignored elsewhere.
+        DisintPairChannel relayCompacts;
 
-        /// @brief Bind both channels to @p a.
+        /// @brief Bind all three channels to @p a.
         /// @param a The per-slot scratch arena; outlives this holder.
-        explicit DisintProducts(LbArena* a) : implications(a), statements(a) {}
+        explicit DisintProducts(LbArena* a)
+            : implications(a), statements(a), relayCompacts(a) {}
         DisintProducts(const DisintProducts&) = delete;
         DisintProducts& operator=(const DisintProducts&) = delete;
     };
@@ -8642,7 +9047,7 @@ namespace gl {
     /// `WorkInstruction` / `CollectedArena` idiom), holding the three fields a
     /// class carries — members, per-pair levels, origin history — with only the
     /// mutating operations the merge performs (seed, decoded-lex member union,
-    /// per-key level set/lookup, `addOriginId` with the D-49 cap-preference,
+    /// per-key level set/lookup, `addOriginId` capped (existing rows win),
     /// per-key origin overwrite-merge). It replaces the heap
     /// `EquivalenceClass mergedClass`: the five consumers in
     /// `updateEquivalenceClasses` read it (serialize→blob, `changedClassesThisStep`
@@ -8671,6 +9076,8 @@ namespace gl {
     ///            together with it and `EquivalenceClassView`.
     /// @see serializeEquivalenceClass, EquivalenceClassView,
     ///      unionMemberIdsByName, addOriginId, overwriteOriginsId.
+
+
     struct MergeClassAccum {
         LbArena* arena;                       ///< per-slot scratch arena (PAGE tier).
         DirtyState dirty = DirtyState::Clean; ///< scratch (never deloaded).
@@ -8796,12 +9203,11 @@ namespace gl {
             lineDepLen.push_back(depN);
         }
 
-        /// @brief `addOriginId` twin — dedup + cap + D-49 cap-full preference.
+        /// @brief `addOriginId` twin — dedup + cap, existing lines win.
         ///
-        /// @details Mirrors `gl::addOriginId` byte-for-byte on the flat lines of
-        /// `key`: below cap, dedup-append; at cap, skip if present, else (a
-        /// non-equality tag) replace the FIRST equality-convenience line under
-        /// `key` (its tag + deps repointed), otherwise the existing slot wins.
+        /// @details Mirrors `gl::addOriginId` on the flat lines of `key`: below
+        /// the cap, dedup-append; at the cap nothing is written — the existing
+        /// lines win (I-216).
         ///
         /// @param key  The origin key.
         /// @param tag  The `OriginTag` byte.
@@ -8811,32 +9217,16 @@ namespace gl {
         void addOriginId(int64_t key, uint8_t tag,
                          const int64_t* deps, int32_t depN, int cap) {
             int32_t count = 0;
-            int32_t firstEqLine = -1;
             bool present = false;
             for (int32_t i = 0; i < lineKey.size(); ++i) {
                 if (lineKey[i] != key) continue;
                 ++count;
                 if (lineEquals(i, tag, deps, depN)) present = true;
-                if (firstEqLine < 0
-                    && (lineTag[i] == static_cast<uint8_t>(OriginTag::equality1)
-                        || lineTag[i] == static_cast<uint8_t>(OriginTag::equality2)))
-                    firstEqLine = i;
             }
-            if (count < cap) {
-                if (!present) addOriginLine(key, tag, deps, depN);
-                return;
-            }
-            if (present) return;
-            const bool isEqTag = (tag == static_cast<uint8_t>(OriginTag::equality1)
-                               || tag == static_cast<uint8_t>(OriginTag::equality2));
-            if (!isEqTag && firstEqLine >= 0) {
-                const int32_t s = depPool.size();
-                for (int32_t d = 0; d < depN; ++d) depPool.push_back(deps[d]);
-                lineTag.setAt(firstEqLine, tag);
-                lineDepStart.setAt(firstEqLine, s);
-                lineDepLen.setAt(firstEqLine, depN);
-            }
-            // else existing slot wins (insertion-order tiebreak).
+            // At the cap the existing lines win: the newcomer is dropped, nothing
+            // is displaced (I-216).
+            if (present || count >= cap) return;
+            addOriginLine(key, tag, deps, depN);
         }
 
         /// @brief Encode a string `(expression, validity)` key + `(tag,
@@ -8847,7 +9237,7 @@ namespace gl {
         /// resolves the tag via the span `originTagFromString` (interns nothing),
         /// then mints the EWV antecedents positionally via
         /// `mintOriginDepsFromEWVInto` and routes to this accumulator's POD
-        /// `addOriginId` (dedup + cap + D-49) — no transient `IdOrigin`
+        /// `addOriginId` (dedup + cap, existing rows win) — no transient `IdOrigin`
         /// materialized. Single-threaded write side only (I-83).
         ///
         /// @param oi     The owning LB's origin interner (mint side).
@@ -8879,7 +9269,7 @@ namespace gl {
         /// order, so the `originInterner` mint sequence is preserved), then the
         /// dependency ids are minted positionally via `mintOriginDepsInto` into
         /// a stack buffer and fed to this accumulator's POD `addOriginId` sink
-        /// (dedup + cap + D-49) — no transient `IdOrigin` materialized.
+        /// (dedup + cap, existing rows win) — no transient `IdOrigin` materialized.
         /// Single-threaded write side only
         /// ([I-83](../../docs/agentic_swdd/30_invariants.md#i-83)).
         ///
@@ -8913,8 +9303,8 @@ namespace gl {
         /// accumulator's own lines (A) are appended per key below the cap,
         /// deduped — exactly `overwriteOriginsId`'s inner
         /// (`leftVec.size() < cap && find == end`). This is NOT `addOriginId`:
-        /// there is NO D-49 cap-full preference here (that belongs to the
-        /// equality2 emission path, `addOriginId`). Since the accumulator holds
+        /// it appends below the cap only, which is now also all `addOriginId` does
+        /// (existing rows win). Since the accumulator holds
         /// A but the result must lead with B, the op (1) snapshots A's lines,
         /// (2) clears the origin section, (3) re-seeds it verbatim from the
         /// classB view, then (4) merges the A snapshot back below cap. Per-key
@@ -9037,7 +9427,7 @@ namespace gl {
 
         /// @brief Origin-merge from another accumulator — the `tmp = other;
         ///        overwriteOriginsId(tmp, A, cap)` twin (other's lines FIRST,
-        ///        then A appended per key below cap, deduped, NO D-49).
+        ///        then A appended per key below cap, deduped).
         ///
         /// @details Identical shape to `mergeOriginsBBase` with an accumulator
         /// source instead of a classB view: snapshot A's lines, clear, re-seed
@@ -9710,16 +10100,19 @@ namespace gl {
     /// into @p gArena, then appends at the key's run-end through the raw
     /// `inner().appendBlobToRun` / one-blob `inner().assignRun` doors —
     /// byte-identical to `encodedMap.appendRecord(NormKey{...}, LocalMemoryValue{...})`.
-    /// The five trailing params default to the MARKER install's field set
+    /// The trailing params default to the MARKER install's field set
     /// (`levels` empty, `justification` none, `productOfDisintegration` false,
-    /// `disintegrationAllowed` true — the `LocalMemoryValue` defaults), so the
-    /// marker call site stays
-    /// byte-identical; the `addToHashMemory` HEAD install passes the real
-    /// involved-level run, justification, and the two disintegration flags. The
+    /// `disintegrationAllowed` true, `ordisOnly` false, `subsetExclusion`
+    /// false — the `LocalMemoryValue` defaults), so the regular marker call
+    /// site stays byte-identical; the `addToHashMemory` HEAD install passes
+    /// the real involved-level run, justification, the two disintegration
+    /// flags, and the shape-detected `subsetExclusion` tag, and the
+    /// ordis-route marker install passes `ordisOnly` true. The
     /// blob layout mirrors `Codec<LocalMemoryValue>::serialize` field-for-field:
     /// `valueId`, `originalImplicationId`, `justification`(int32),
     /// `validityId`(NameId, int32), `isMarker`(uint8),
     /// `productOfDisintegration`(uint8), `disintegrationAllowed`(uint8),
+    /// `ordisOnly`(uint8), `subsetExclusion`(uint8), `ordis2Demand`(uint8),
     /// `levelN` levels (int32 count + int32 each, ascending), `keyN` + key ids,
     /// `remN` + rem ids.
     ///
@@ -9743,35 +10136,64 @@ namespace gl {
     /// @param productOf        The LMV `productOfDisintegration`; default false.
     /// @param disintegrationAllowed The LMV `disintegrationAllowed`; default
     ///                         true (marker install — never read on that path).
+    /// @param ordisOnly        The LMV `ordisOnly` tag; default false (regular
+    ///                         installs), true only for the ordis-route marker.
+    /// @param subsetExclusion  The LMV `subsetExclusion` tag; default false,
+    ///                         true only for the shape-detected
+    ///                         single-exclusion HEAD install.
+    /// @param ordis2Demand     The LMV `ordis2Demand` tag; default false,
+    ///                         true only for the qualifying-slot marker
+    ///                         variant install.
     /// @see Codec<LocalMemoryValue>::serialize / Codec<NormKey>::encode — the
     ///      byte-layout owners + the twin oracle; encodeNormKeyInto.
-    inline void appendLmvIdsRecord(
-        TypedColdBlobMap<NormKey, LocalMemoryValue>& map,
-        int32_t numberExpressions, const NameId* nkData, int32_t nkLen,
+    /// @brief Serialize one LMV record onto @p gArena in the
+    ///        `Codec<LocalMemoryValue>` layout — the shared body of the cold
+    ///        door `appendLmvIdsRecord` and its staging twin
+    ///        `stageLmvIdsRecord`.
+    ///
+    /// @details
+    /// Field-for-field the blob `Codec<LocalMemoryValue>::serialize` writes:
+    /// `valueId`, `originalImplicationId`, `justification`, `validityId`, the
+    /// six flag bytes, then the level / key-id / remaining-arg-id runs, each
+    /// count-prefixed. The bytes live on @p gArena's byte-bump tier from the
+    /// arena's current cursor; the caller owns the mark / pop window.
+    ///
+    /// @param gArena          The per-slot gen-scratch arena the blob rides.
+    /// @param valueId         The LMV `valueId`.
+    /// @param isMarker        The LMV `isMarker` flag.
+    /// @param keyIds          The LMV `keyIds` run.
+    /// @param keyN            The `keyIds` count.
+    /// @param remIds          The LMV `remainingArgIds` run.
+    /// @param remN            The `remainingArgIds` count.
+    /// @param originalImplId  The LMV `originalImplicationId`.
+    /// @param validityId      The LMV `validityId`.
+    /// @param levels          The LMV `levels` run (ascending-unique).
+    /// @param levelN          The `levels` count.
+    /// @param justification   The LMV `justification`.
+    /// @param productOf       The LMV `productOfDisintegration`.
+    /// @param disintegrationAllowed The LMV `disintegrationAllowed`.
+    /// @param ordisOnly       The LMV `ordisOnly` tag.
+    /// @param subsetExclusion The LMV `subsetExclusion` tag.
+    /// @param ordis2Demand    The LMV `ordis2Demand` tag.
+    /// @param blobLen         Out: the blob's byte length.
+    /// @return The blob's first byte on @p gArena.
+    /// @invariant Byte-identical to `Codec<LocalMemoryValue>::serialize` of the
+    ///            same record (the twin oracle).
+    /// @see appendLmvIdsRecord, stageLmvIdsRecord, Codec<LocalMemoryValue>.
+    inline char* serializeLmvIdsBlob(ScratchArena& gArena,
         int32_t valueId, bool isMarker,
         const int32_t* keyIds, int32_t keyN,
         const int32_t* remIds, int32_t remN,
-        int32_t originalImplId, NameId validityId, ScratchArena& gArena,
-        const int* levels = nullptr, int32_t levelN = 0,
-        RuleJustification justification = RuleJustification::none,
-        bool productOf = false,
-        bool disintegrationAllowed = true) {
-        const ArenaOffset mark = gArena.cursor();
-
-        // 1. NormKey key bytes on the stack.
-        char keyBuf[ExecutionParameters::kMaxNormKeyBytes];
-        const int32_t kn = encodeNormKeyInto(numberExpressions, nkData, nkLen,
-            keyBuf, ExecutionParameters::kMaxNormKeyBytes);
-        const StrSpan keyView(keyBuf, kn);
-
-        // 2. Codec<LocalMemoryValue> blob on the arena, field-for-field. The
-        //    four trailing params default to the marker install (justification
-        //    none, levels empty, productOf false); the head install passes real
-        //    values.
+        int32_t originalImplId, NameId validityId,
+        const int* levels, int32_t levelN,
+        RuleJustification justification,
+        bool productOf, bool disintegrationAllowed,
+        bool ordisOnly, bool subsetExclusion, bool ordis2Demand,
+        int32_t& blobLen) {
         assert(keyN >= 0 && remN >= 0 && levelN >= 0);
         assert(levelN == 0 || levels != nullptr);
-        const int32_t blobLen =
-            4 + 4 + 4 + 4 + 1 + 1 + 1 // valueId,origImpl,just,validity,isMarker,pod,disintAllowed
+        blobLen =
+            4 + 4 + 4 + 4 + 1 + 1 + 1 + 1 + 1 + 1 // valueId,origImpl,just,validity,isMarker,pod,disintAllowed,ordisOnly,subsetExclusion,ordis2Demand
             + 4 + 4 * levelN          // levels count + levels
             + 4 + 4 * keyN            // keyIds count + ids
             + 4 + 4 * remN;           // remIds count + ids
@@ -9789,6 +10211,9 @@ namespace gl {
         put8(isMarker ? 1 : 0);
         put8(productOf ? 1 : 0);
         put8(disintegrationAllowed ? 1 : 0);
+        put8(ordisOnly ? 1 : 0);
+        put8(subsetExclusion ? 1 : 0);
+        put8(ordis2Demand ? 1 : 0);
         put32(levelN);
         for (int32_t i = 0; i < levelN; ++i) put32(levels[i]);
         put32(keyN);
@@ -9796,15 +10221,130 @@ namespace gl {
         put32(remN);
         for (int32_t i = 0; i < remN; ++i) put32(remIds[i]);
         assert(at == blobLen
-            && "appendLmvIdsRecord: blob fill diverged from the layout");
+            && "serializeLmvIdsBlob: blob fill diverged from the layout");
+        return b;
+    }
+
+    inline void appendLmvIdsRecord(
+        TypedColdBlobMap<NormKey, LocalMemoryValue>& map,
+        int32_t numberExpressions, const NameId* nkData, int32_t nkLen,
+        int32_t valueId, bool isMarker,
+        const int32_t* keyIds, int32_t keyN,
+        const int32_t* remIds, int32_t remN,
+        int32_t originalImplId, NameId validityId, ScratchArena& gArena,
+        const int* levels = nullptr, int32_t levelN = 0,
+        RuleJustification justification = RuleJustification::none,
+        bool productOf = false,
+        bool disintegrationAllowed = true,
+        bool ordisOnly = false,
+        bool subsetExclusion = false,
+        bool ordis2Demand = false) {
+        const ArenaOffset mark = gArena.cursor();
+
+        // 1. NormKey key bytes on the stack; 2. the Codec<LocalMemoryValue>
+        //    blob on the arena (the shared serializer). The trailing params
+        //    default to the marker install; the head install passes real values.
+        char keyBuf[ExecutionParameters::kMaxNormKeyBytes];
+        int32_t kn = 0;
+        int32_t blobLen = 0;
+        char* b = nullptr;
+        {
+        RT_SCOPE_HERE("LMV_SERIALIZE");
+        kn = encodeNormKeyInto(numberExpressions, nkData, nkLen,
+            keyBuf, ExecutionParameters::kMaxNormKeyBytes);
+        b = serializeLmvIdsBlob(gArena, valueId, isMarker, keyIds, keyN,
+            remIds, remN, originalImplId, validityId, levels, levelN,
+            justification, productOf, disintegrationAllowed, ordisOnly,
+            subsetExclusion, ordis2Demand, blobLen);
+        } // RT_SCOPE LMV_SERIALIZE
+        const StrSpan keyView(keyBuf, kn);
 
         // 3. Append at the key's run-end (the typed appendRecord idiom).
-        const int32_t id = map.inner().lookup(keyView);
-        if (id != 0) {
-            map.inner().appendBlobToRun(id, b, blobLen);
-        } else {
-            const int32_t len = blobLen;
-            map.inner().assignRun(keyView, b, &len, 1);
+        int32_t id = 0;
+        {
+            RT_SCOPE_HERE("LMV_LOOKUP");
+            id = map.inner().lookup(keyView);
+        }
+        {
+            RT_SCOPE_HERE("LMV_WRITE");
+            if (id != 0) {
+                map.inner().appendBlobToRun(id, b, blobLen);
+            } else {
+                const int32_t len = blobLen;
+                map.inner().assignRun(keyView, b, &len, 1);
+            }
+        }
+        gArena.popTo(mark);
+    }
+
+    /// @brief Stage one LMV record for the key's run — the staging twin of
+    ///        `appendLmvIdsRecord` (D-333).
+    ///
+    /// @details
+    /// Builds the same key bytes and the same `Codec<LocalMemoryValue>` blob
+    /// (`serializeLmvIdsBlob`) and stages the blob under the key in the LMV
+    /// section; the flush appends the section's blobs to the key's run in
+    /// staging order, which is the order `appendLmvIdsRecord` would have
+    /// appended them (an LMV run is arrival-ordered). Same parameters and
+    /// defaults as the cold door.
+    ///
+    /// @param section          The LMV staging section (the slot staging's `lmv`).
+    /// @param numberExpressions The key's leading count field.
+    /// @param nkData           The key's int16 payload.
+    /// @param nkLen            The payload length.
+    /// @param valueId          The LMV `valueId`.
+    /// @param isMarker         The LMV `isMarker` flag.
+    /// @param keyIds           The LMV `keyIds` run.
+    /// @param keyN             The `keyIds` count.
+    /// @param remIds           The LMV `remainingArgIds` run.
+    /// @param remN             The `remainingArgIds` count.
+    /// @param originalImplId   The LMV `originalImplicationId`.
+    /// @param validityId       The LMV `validityId`.
+    /// @param gArena           Per-slot gen-scratch arena for the transient blob.
+    /// @param levels           The LMV `levels` run (ascending-unique).
+    /// @param levelN           The `levels` count.
+    /// @param justification    The LMV `justification`.
+    /// @param productOf        The LMV `productOfDisintegration`.
+    /// @param disintegrationAllowed The LMV `disintegrationAllowed`.
+    /// @param ordisOnly        The LMV `ordisOnly` tag.
+    /// @param subsetExclusion  The LMV `subsetExclusion` tag.
+    /// @param ordis2Demand     The LMV `ordis2Demand` tag.
+    /// @return Nothing.
+    /// @invariant After the flush the key's run is byte-identical to the run
+    ///            the same sequence of `appendLmvIdsRecord` calls produces.
+    /// @see appendLmvIdsRecord, serializeLmvIdsBlob,
+    ///      ExpressionAnalyzer::flushRuleIndexStaging.
+    inline void stageLmvIdsRecord(
+        RuleIndexStagingSection& section,
+        int32_t numberExpressions, const NameId* nkData, int32_t nkLen,
+        int32_t valueId, bool isMarker,
+        const int32_t* keyIds, int32_t keyN,
+        const int32_t* remIds, int32_t remN,
+        int32_t originalImplId, NameId validityId, ScratchArena& gArena,
+        const int* levels = nullptr, int32_t levelN = 0,
+        RuleJustification justification = RuleJustification::none,
+        bool productOf = false,
+        bool disintegrationAllowed = true,
+        bool ordisOnly = false,
+        bool subsetExclusion = false,
+        bool ordis2Demand = false) {
+        const ArenaOffset mark = gArena.cursor();
+        char keyBuf[ExecutionParameters::kMaxNormKeyBytes];
+        int32_t kn = 0;
+        int32_t blobLen = 0;
+        char* b = nullptr;
+        {
+        RT_SCOPE_HERE("LMV_SERIALIZE");
+        kn = encodeNormKeyInto(numberExpressions, nkData, nkLen,
+            keyBuf, ExecutionParameters::kMaxNormKeyBytes);
+        b = serializeLmvIdsBlob(gArena, valueId, isMarker, keyIds, keyN,
+            remIds, remN, originalImplId, validityId, levels, levelN,
+            justification, productOf, disintegrationAllowed, ordisOnly,
+            subsetExclusion, ordis2Demand, blobLen);
+        } // RT_SCOPE LMV_SERIALIZE
+        {
+            RT_SCOPE_HERE("LMV_STAGE");
+            section.stage(StrSpan(keyBuf, kn), 0, b, blobLen, 0);
         }
         gArena.popTo(mark);
     }
@@ -10086,6 +10626,10 @@ namespace gl {
                         putGlobalEwv(dep);
                 }
             }
+            // statement flags: heap batches (broadcast / root deposits / test
+            // oracles) never carry any, so the section is always empty here —
+            // the DeloadableMailOut overload emits the real column.
+            putPod(static_cast<int32_t>(0));
             return out;
         }
 
@@ -10147,6 +10691,17 @@ namespace gl {
                 }
                 batch.exprOriginMap.emplace(std::move(key), std::move(origins));
             }
+            // statement flags: consumed and DROPPED — the heap `Mail` twin
+            // carries no flag column (like `disintegrationSignals` on the
+            // routing channel); only the cold `deserializeMailBlobInto` sink
+            // folds them into `RoutingColdMail::statementFlags_`.
+            int32_t flagCount = 0; getPod(flagCount);
+            for (int32_t f = 0; f < flagCount; ++f) {
+                int32_t fo = 0; getPod(fo);
+                int32_t fv = 0; getPod(fv);
+                int32_t fp = 0; getPod(fp);
+                (void)fo; (void)fv; (void)fp;
+            }
             assert(cur == end
                 && "Codec<Mail>::deserialize: blob longer than the layout");
             return batch;
@@ -10180,7 +10735,7 @@ namespace gl {
         /// `addMailOriginRecord(origins_, …, INT_MAX)` — so the result equals
         /// `mergeBatchInto(deserialize(data, n), inbox)` byte-for-byte, with no
         /// owning container built. Merge order is irrelevant (statements set-merge;
-        /// origins fold uncapped and the absorb re-sorts under the D-49 cap).
+        /// origins fold uncapped and the absorb re-applies the cap).
         /// Over/under-run is a hard `assert` (Rule 19). Defined out-of-line below
         /// `RoutingColdMail`.
         ///
@@ -10374,60 +10929,65 @@ namespace gl {
                         static_cast<int32_t>(alignof(int32_t)))));
         int32_t accepted = 0, off = 0;
 
-        // Pass 1 — all class lines, in LineView order, no dedup (== the heap
-        // `newRun := classLines` copy).
+        // Pass 1 — the body's existing lines, verbatim: the LB's own
+        // chronological history is never dropped
+        // (I-216).
+        const int32_t bid = exprOriginMap.lookup(key);
+        if (bid != 0) {
+            const int32_t rl = exprOriginMap.runLen(bid);
+            assert(rl <= cap
+                && "exprOriginRunReplace: body run exceeds the per-key cap");
+            for (int32_t j = 0; j < rl; ++j) {
+                int32_t blen = 0;
+                const char* bp = exprOriginMap.peekRecordBytes(bid, j, blen, arena);
+                assert(off + blen <= bufCap
+                    && "exprOriginRunReplace: body run exceeds buf");
+                std::memcpy(buf + off, bp, static_cast<std::size_t>(blen));
+                lens[accepted++] = blen;
+                off += blen;
+            }
+        }
+
+        // Pass 2 — class lines, in LineView order: dedup-append against the
+        // accepted lines by whole-blob memcmp, while below the cap.
         for (int32_t t = 0; t < classLines.size(); ++t) {
+            if (accepted >= cap) break;
             int64_t depBuf[ExecutionParameters::kMaxOriginDeps];
             const int32_t dn = classLines.depCount(t);
             assert(dn <= ExecutionParameters::kMaxOriginDeps
                 && "exprOriginRunReplace: class line dep count exceeds "
                    "kMaxOriginDeps");
             for (int32_t d = 0; d < dn; ++d) depBuf[d] = classLines.dep(t, d);
-            const int32_t w = serializeOriginTo(buf + off, bufCap - off,
+            char lineBlob[ExecutionParameters::kMaxOriginBlobBytes];
+            const int32_t w = serializeOriginTo(lineBlob,
+                ExecutionParameters::kMaxOriginBlobBytes,
                 static_cast<uint8_t>(classLines.tag(t)), depBuf, dn);
+            bool dup = false;
+            for (int32_t k = 0, o2 = 0; k < accepted; o2 += lens[k], ++k)
+                if (lens[k] == w
+                    && std::memcmp(buf + o2, lineBlob,
+                                   static_cast<std::size_t>(w)) == 0) {
+                    dup = true;
+                    break;
+                }
+            if (dup) continue;
+            assert(off + w <= bufCap
+                && "exprOriginRunReplace: merged origin run exceeds buf");
+            std::memcpy(buf + off, lineBlob, static_cast<std::size_t>(w));
             lens[accepted++] = w;
             off += w;
-        }
-
-        // Pass 2 — body lines: dedup-append against ALL accepted lines by whole-
-        // blob memcmp (== the heap `std::find` `IdOrigin` equality), cap-gated (==
-        // the heap `newRun.size() >= cap` break).
-        const int32_t bid = exprOriginMap.lookup(key);
-        if (bid != 0) {
-            const int32_t rl = exprOriginMap.runLen(bid);
-            for (int32_t j = 0; j < rl; ++j) {
-                if (accepted >= cap) break;
-                int32_t blen = 0;
-                const char* bp = exprOriginMap.peekRecordBytes(bid, j, blen, arena);
-                bool dup = false;
-                for (int32_t k = 0, o2 = 0; k < accepted; o2 += lens[k], ++k)
-                    if (lens[k] == blen
-                        && std::memcmp(buf + o2, bp,
-                                       static_cast<std::size_t>(blen)) == 0) {
-                        dup = true;
-                        break;
-                    }
-                if (!dup) {
-                    assert(off + blen <= bufCap
-                        && "exprOriginRunReplace: merged origin run exceeds buf");
-                    std::memcpy(buf + off, bp, static_cast<std::size_t>(blen));
-                    lens[accepted++] = blen;
-                    off += blen;
-                }
-            }
         }
         assert(accepted <= cap);
         exprOriginMap.inner().assignRun(key, buf, lens, accepted);
     }
 
     /// @brief Cold twin of `addOriginId` — append a history line to one key's
-    ///        run with the D-49 cap-full preference, on the cold exprOriginMap.
+    ///        run, existing rows winning at the cap, on the cold exprOriginMap.
     ///
     /// @details
     /// Applies the EXACT policy of the `IdOriginMap` twin (below the cap:
-    /// append if absent; at the cap: a new non-equality record overwrites the
-    /// first `equality1`/`equality2` convenience slot, else the existing slot
-    /// wins). Record equality on ids IS string equality (the interner is
+    /// append if absent; at the cap nothing is written — the existing rows
+    /// win). Record equality on ids IS string equality (the interner is
     /// bijective), and the codec is injective so blob byte-equality IS record
     /// equality. Single-threaded write sites only (I-83).
     ///
@@ -10435,16 +10995,9 @@ namespace gl {
     /// per-slot scratch), mirroring `addMailOriginRecord`: the new line
     /// serializes once into a `kMaxOriginBlobBytes` frame
     /// (`serializeOriginTo`); one scan peeks each existing blob through the
-    /// caller-buffer `peekRecordBytes` door (dedup by whole-blob `memcmp` +
-    /// the first convenience-slot index — the tag is the blob's first byte);
+    /// caller-buffer `peekRecordBytes` door (dedup by whole-blob `memcmp`);
     /// the append paths take the raw `appendBlobToRun` / one-blob `assignRun`
-    /// doors; the rare cap-full convenience-replace assembles survivors
-    /// verbatim + the replacement into ONE `kMaxOriginRunBytes` stack frame
-    /// and writes it back through the raw whole-run `assignRun` door —
-    /// byte-identical to the retired decode-into-`std::vector`-reserialize
-    /// cycle (twin test `add_origin_id_cold_rmw_matches_heap`). The rebuild's
-    /// run-length assert against `kMaxOriginRunBlobs` is a Rule-19 tripwire
-    /// (origin runs are config-capped at 30).
+    /// doors.
     ///
     /// @param map        The cold origin map.
     /// @param key        Packed (expressionId, validityId) key.
@@ -10457,17 +11010,10 @@ namespace gl {
         const int32_t newLen = serializeOriginTo(
             newBlob, ExecutionParameters::kMaxOriginBlobBytes, origin);
 
-        const auto isEqualityConvenienceTag = [](uint8_t tag) {
-            return tag == static_cast<uint8_t>(OriginTag::equality1)
-                || tag == static_cast<uint8_t>(OriginTag::equality2);
-        };
-
         // One scan over the existing run: duplicate detection (blob byte
-        // equality == IdOrigin equality, the codec is injective) and the
-        // first equality-convenience slot for the cap-full replace.
+        // equality == IdOrigin equality, the codec is injective).
         const int32_t id = map.lookup(key);
         const int32_t rl = id ? map.runLen(id) : 0;
-        int32_t convenienceIdx = -1;
         {
             char blobBuf[ExecutionParameters::kMaxOriginBlobBytes];
             for (int32_t j = 0; j < rl; ++j) {
@@ -10478,10 +11024,6 @@ namespace gl {
                     && std::memcmp(bp, newBlob,
                                    static_cast<std::size_t>(bl)) == 0) {
                     return;  // duplicate — the no-op insert
-                }
-                if (convenienceIdx < 0
-                    && isEqualityConvenienceTag(static_cast<uint8_t>(bp[0]))) {
-                    convenienceIdx = j;
                 }
             }
         }
@@ -10495,42 +11037,12 @@ namespace gl {
             return;
         }
 
-        // Cap-full origin-preference replacement (D-49): foundation displaces
-        // convenience — see the string twin for the full policy rationale; a
-        // convenience-tag record or a run with no convenience slot leaves the
-        // existing run untouched (insertion-order tiebreak, existing wins).
-        if (isEqualityConvenienceTag(static_cast<uint8_t>(origin.first))) return;
-        if (convenienceIdx < 0) return;
-        assert(rl <= ExecutionParameters::kMaxOriginRunBlobs
-            && "addOriginId: cap-full run exceeds kMaxOriginRunBlobs "
-               "(Rule-19 tripwire — widen the constant with evidence)");
-        char runBuf[ExecutionParameters::kMaxOriginRunBytes];
-        int32_t lens[ExecutionParameters::kMaxOriginRunBlobs];
-        int32_t at = 0;
-        for (int32_t j = 0; j < rl; ++j) {
-            if (j == convenienceIdx) {
-                std::memcpy(runBuf + at, newBlob,
-                            static_cast<std::size_t>(newLen));
-                lens[j] = newLen;
-                at += newLen;
-                continue;
-            }
-            int32_t bl = 0;
-            const char* bp = map.peekRecordBytes(id, j, bl, runBuf + at,
-                ExecutionParameters::kMaxOriginRunBytes - at);
-            assert(at + bl <= ExecutionParameters::kMaxOriginRunBytes
-                && "addOriginId: survivor run exceeds kMaxOriginRunBytes");
-            if (bp != runBuf + at) {
-                std::memcpy(runBuf + at, bp, static_cast<std::size_t>(bl));
-            }
-            lens[j] = bl;
-            at += bl;
-        }
-        map.inner().assignRun(key, runBuf, lens, rl);
+        // At the cap the existing rows win: the newcomer is dropped, nothing is
+        // displaced (I-216).
     }
 
     /// @brief POD overload of the cold @ref addOriginId — append a `(tag, deps)`
-    ///        history line with the D-49 cap-full preference, no `IdOrigin`
+    ///        history line (existing rows win at the cap), no `IdOrigin`
     ///        materialized.
     ///
     /// @details
@@ -10538,10 +11050,7 @@ namespace gl {
     /// serializes once via the POD `serializeOriginTo(buf, cap, tag, deps, depN)`
     /// (no `IdOrigin{tag, deps}` heap vector), then the SAME whole-blob-memcmp
     /// dedup scan, the SAME below-cap `appendBlobToRun` / one-blob `assignRun`
-    /// splice, and the SAME D-49 cap-full convenience-replace assembling
-    /// survivors verbatim + the replacement into one `kMaxOriginRunBytes` stack
-    /// frame for a single raw whole-run `assignRun`. The convenience-tag guard
-    /// reads @p tag directly. Single-threaded write sites only
+    /// splice, and the SAME at-cap drop (existing rows win). Single-threaded write sites only
     /// ([I-83](../../docs/agentic_swdd/30_invariants.md#i-83)).
     ///
     /// @param map        The cold origin map.
@@ -10563,14 +11072,8 @@ namespace gl {
         const int32_t newLen = serializeOriginTo(
             newBlob, ExecutionParameters::kMaxOriginBlobBytes, tag, deps, depN);
 
-        const auto isEqualityConvenienceTag = [](uint8_t t) {
-            return t == static_cast<uint8_t>(OriginTag::equality1)
-                || t == static_cast<uint8_t>(OriginTag::equality2);
-        };
-
         const int32_t id = map.lookup(key);
         const int32_t rl = id ? map.runLen(id) : 0;
-        int32_t convenienceIdx = -1;
         {
             char blobBuf[ExecutionParameters::kMaxOriginBlobBytes];
             for (int32_t j = 0; j < rl; ++j) {
@@ -10582,10 +11085,6 @@ namespace gl {
                                    static_cast<std::size_t>(bl)) == 0) {
                     return;  // duplicate — the no-op insert
                 }
-                if (convenienceIdx < 0
-                    && isEqualityConvenienceTag(static_cast<uint8_t>(bp[0]))) {
-                    convenienceIdx = j;
-                }
             }
         }
 
@@ -10595,34 +11094,8 @@ namespace gl {
             return;
         }
 
-        if (isEqualityConvenienceTag(tag)) return;
-        if (convenienceIdx < 0) return;
-        assert(rl <= ExecutionParameters::kMaxOriginRunBlobs
-            && "addOriginId: cap-full run exceeds kMaxOriginRunBlobs "
-               "(Rule-19 tripwire — widen the constant with evidence)");
-        char runBuf[ExecutionParameters::kMaxOriginRunBytes];
-        int32_t lens[ExecutionParameters::kMaxOriginRunBlobs];
-        int32_t at = 0;
-        for (int32_t j = 0; j < rl; ++j) {
-            if (j == convenienceIdx) {
-                std::memcpy(runBuf + at, newBlob,
-                            static_cast<std::size_t>(newLen));
-                lens[j] = newLen;
-                at += newLen;
-                continue;
-            }
-            int32_t bl = 0;
-            const char* bp = map.peekRecordBytes(id, j, bl, runBuf + at,
-                ExecutionParameters::kMaxOriginRunBytes - at);
-            assert(at + bl <= ExecutionParameters::kMaxOriginRunBytes
-                && "addOriginId: survivor run exceeds kMaxOriginRunBytes");
-            if (bp != runBuf + at) {
-                std::memcpy(runBuf + at, bp, static_cast<std::size_t>(bl));
-            }
-            lens[j] = bl;
-            at += bl;
-        }
-        map.inner().assignRun(key, runBuf, lens, rl);
+        // At the cap the existing rows win: the newcomer is dropped, nothing is
+        // displaced (I-216).
     }
 
     /// @brief Cold twin of `addOriginEncoded` — encode a string history line and
@@ -10701,7 +11174,7 @@ namespace gl {
     /// compiler-chosen argument-evaluation order to a deterministic key-first
     /// sequence under the user's byte-identity waiver (`files/` artifacts are
     /// id-value-independent; only the gitignored `.deload/` id VALUES may
-    /// reassign). The D-49 cap-full preference fires identically. This is the L3
+    /// reassign). The at-cap existing-rows-win gate fires identically. This is the L3
     /// flip of the deferred origin-antecedent boundary the L1/L2 span-key door
     /// left string.
     ///
@@ -10787,9 +11260,10 @@ namespace gl {
     /// @details
     /// Layout: `valueId`, `originalImplicationId`, `justification` (int32 each),
     /// `validityId` (NameId, int32), `isMarker`, `productOfDisintegration`,
-    /// `disintegrationAllowed` (uint8 each), then `levels` (int32 count + int32
-    /// each, ascending set order), `keyIds` and `remainingArgIds` (int32 count +
-    /// int32 each, positional order).
+    /// `disintegrationAllowed`, `ordisOnly`, `subsetExclusion`,
+    /// `ordis2Demand` (uint8 each), then `levels` (int32 count + int32 each,
+    /// ascending set order), `keyIds`
+    /// and `remainingArgIds` (int32 count + int32 each, positional order).
     ///
     /// @see `LocalMemoryValue`, `Codec`.
     template <>
@@ -10811,6 +11285,9 @@ namespace gl {
             put(static_cast<uint8_t>(v.isMarker ? 1 : 0));
             put(static_cast<uint8_t>(v.productOfDisintegration ? 1 : 0));
             put(static_cast<uint8_t>(v.disintegrationAllowed ? 1 : 0));
+            put(static_cast<uint8_t>(v.ordisOnly ? 1 : 0));
+            put(static_cast<uint8_t>(v.subsetExclusion ? 1 : 0));
+            put(static_cast<uint8_t>(v.ordis2Demand ? 1 : 0));
             put(static_cast<int32_t>(v.levels.size()));
             for (const int lev : v.levels) put(static_cast<int32_t>(lev));
             put(static_cast<int32_t>(v.keyIds.size()));
@@ -10843,6 +11320,9 @@ namespace gl {
             uint8_t marker = 0; get(marker); v.isMarker = (marker != 0);
             uint8_t pod = 0; get(pod); v.productOfDisintegration = (pod != 0);
             uint8_t da = 0; get(da); v.disintegrationAllowed = (da != 0);
+            uint8_t ordis = 0; get(ordis); v.ordisOnly = (ordis != 0);
+            uint8_t sx = 0; get(sx); v.subsetExclusion = (sx != 0);
+            uint8_t o2d = 0; get(o2d); v.ordis2Demand = (o2d != 0);
             int32_t lc = 0; get(lc);
             for (int32_t i = 0; i < lc; ++i) {
                 int32_t lev = 0; get(lev); v.levels.insert(static_cast<int>(lev));
@@ -10865,11 +11345,12 @@ namespace gl {
     ///        fixed-offset read, no record decode.
     ///
     /// @details
-    /// `Codec<LocalMemoryValue>` writes a fixed 19-byte prefix — `valueId`
+    /// `Codec<LocalMemoryValue>` writes a fixed 21-byte prefix — `valueId`
     /// (int32 @0), `originalImplicationId` (int32 @4), `justification`
     /// (int32 @8), `validityId` (NameId @12), `isMarker` (uint8 @16),
     /// `productOfDisintegration` (uint8 @17), `disintegrationAllowed`
-    /// (uint8 @18) — before the variable
+    /// (uint8 @18), `ordisOnly` (uint8 @19), `subsetExclusion` (uint8 @20),
+    /// `ordis2Demand` (uint8 @21) — before the variable
     /// `levels` / `keyIds` / `remainingArgIds` sections, so the scope id is
     /// always the four bytes at offset 12. `Memory::wipeSubtree`'s
     /// `encodedMap` sweep reads it through this peek to test closed-scope
@@ -10881,7 +11362,7 @@ namespace gl {
     /// `Codec<OwnerSet>`.
     ///
     /// @param p   The blob's bytes (a `peekRecordBytes` span).
-    /// @param len The blob's byte length; asserted `>= 19` (the fixed
+    /// @param len The blob's byte length; asserted `>= 22` (the fixed
     ///            prefix — every serialized LMV carries it).
     /// @return The record's `validityId`.
     /// @invariant `I-139` — the wipe consumes this peek
@@ -10889,7 +11370,7 @@ namespace gl {
     /// @see `Codec<LocalMemoryValue>`, `wipeEncodedMapForClosed`,
     ///      `OwnerSetBlob`.
     inline NameId lmvBlobValidityId(const char* p, int32_t len) {
-        assert(len >= 19
+        assert(len >= 22
             && "lmvBlobValidityId: blob shorter than the fixed LMV prefix");
         NameId v;
         std::memcpy(&v, p + 12, sizeof(v));
@@ -10977,11 +11458,12 @@ namespace gl {
     ///        variable sections, no record materialized.
     ///
     /// @details
-    /// `Codec<LocalMemoryValue>` writes a fixed 19-byte prefix — `valueId`
+    /// `Codec<LocalMemoryValue>` writes a fixed 21-byte prefix — `valueId`
     /// (int32 @0), `originalImplicationId` (int32 @4), `justification`
     /// (int32 @8), `validityId` (NameId @12), `isMarker` (uint8 @16),
     /// `productOfDisintegration` (uint8 @17), `disintegrationAllowed`
-    /// (uint8 @18) — then `levelCount` (int32) +
+    /// (uint8 @18), `ordisOnly` (uint8 @19), `subsetExclusion` (uint8 @20),
+    /// `ordis2Demand` (uint8 @21) — then `levelCount` (int32) +
     /// levels (int32 each), `keyIdCount` (int32) + keyIds (int32 each,
     /// positional), `remainingCount` (int32) + remainingArgIds (int32 each).
     /// Every read goes through `std::memcpy` (unaligned pool bytes).
@@ -10998,7 +11480,7 @@ namespace gl {
     /// `OwnerSetBlob` mirror their codecs.
     ///
     /// @invariant Construction asserts the exact frame
-    ///            `len == 31 + 4*(levelCount + keyIdCount + remainingCount)`
+    ///            `len == 34 + 4*(levelCount + keyIdCount + remainingCount)`
     ///            — the view twin of the codec's `cur == end` asserts
     ///            (Rule 19).
     /// @see `Codec<LocalMemoryValue>`, `lmvBlobValidityId`,
@@ -11018,17 +11500,17 @@ namespace gl {
         ///             verbatim gen-arena copy).
         /// @param len_ The blob's byte length.
         LmvBlobView(const char* p_, int32_t len_) : p(p_), len(len_) {
-            assert(len >= 23
+            assert(len >= 26
                 && "LmvBlobView: blob shorter than the fixed LMV prefix");
             const int32_t lc = levelCount();
-            assert(lc >= 0 && len >= 27 + 4 * lc
+            assert(lc >= 0 && len >= 30 + 4 * lc
                 && "LmvBlobView: blob shorter than the levels section");
             const int32_t kc = keyIdCount();
-            assert(kc >= 0 && len >= 31 + 4 * (lc + kc)
+            assert(kc >= 0 && len >= 34 + 4 * (lc + kc)
                 && "LmvBlobView: blob shorter than the keyIds section");
             int32_t rc;
-            std::memcpy(&rc, p + 27 + 4 * (lc + kc), sizeof(rc));
-            assert(rc >= 0 && len == 31 + 4 * (lc + kc + rc)
+            std::memcpy(&rc, p + 30 + 4 * (lc + kc), sizeof(rc));
+            assert(rc >= 0 && len == 34 + 4 * (lc + kc + rc)
                 && "LmvBlobView: blob length does not match the layout");
         }
 
@@ -11057,16 +11539,16 @@ namespace gl {
         }
 
         /// @brief The level count.
-        /// @return The int32 at offset 19.
-        int32_t levelCount() const { return readI32(19); }
+        /// @return The int32 at offset 22.
+        int32_t levelCount() const { return readI32(22); }
 
         /// @brief The keyIds count.
         /// @return The int32 directly past the levels section.
-        int32_t keyIdCount() const { return readI32(23 + 4 * levelCount()); }
+        int32_t keyIdCount() const { return readI32(26 + 4 * levelCount()); }
 
         /// @brief The keyIds run's raw bytes (a contiguous int32 run).
         /// @return Pointer to `keyIdsByteLen()` bytes.
-        const char* keyIdsBytes() const { return p + 27 + 4 * levelCount(); }
+        const char* keyIdsBytes() const { return p + 30 + 4 * levelCount(); }
 
         /// @brief The keyIds run's byte length.
         /// @return `4 * keyIdCount()`.
@@ -11079,7 +11561,7 @@ namespace gl {
         int32_t keyIdAt(int32_t i) const {
             assert(i >= 0 && i < keyIdCount()
                 && "LmvBlobView::keyIdAt: index out of range");
-            return readI32(27 + 4 * levelCount() + 4 * i);
+            return readI32(30 + 4 * levelCount() + 4 * i);
         }
 
         /// @brief The record's `valueId` (rule-interner id, the rule head).
@@ -11118,30 +11600,63 @@ namespace gl {
             return v != 0;
         }
 
+        /// @brief The record's `ordisOnly` flag — installed by the
+        ///        ordis-only qualification route; the firing site copies it
+        ///        into the staged admission value.
+        /// @return The uint8 at offset 19, as a bool.
+        bool ordisOnly() const {
+            uint8_t v;
+            std::memcpy(&v, p + 19, 1);
+            return v != 0;
+        }
+
+        /// @brief The record's `subsetExclusion` flag — the park-first
+        ///        single-exclusion rule family
+        ///        (I-184); the firing site
+        ///        strips the route-(b) open signal from heads fired by a
+        ///        tagged rule.
+        /// @return The uint8 at offset 20, as a bool.
+        bool subsetExclusion() const {
+            uint8_t v;
+            std::memcpy(&v, p + 20, 1);
+            return v != 0;
+        }
+
+        /// @brief The record's `ordis2Demand` flag — the qualifying-slot
+        ///        marker variant (D-267); the
+        ///        firing site emits a demand record instead of a marker
+        ///        admission.
+        /// @return The uint8 at offset 21, as a bool.
+        bool ordis2Demand() const {
+            uint8_t v;
+            std::memcpy(&v, p + 21, 1);
+            return v != 0;
+        }
+
         /// @brief Level `i` (ascending set order — the `std::set<int>`
         ///        iteration order the codec serialized).
         /// @param i The index; asserted `0 <= i < levelCount()`.
-        /// @return The int32 at offset `23 + 4*i`.
+        /// @return The int32 at offset `26 + 4*i`.
         int32_t levelAt(int32_t i) const {
             assert(i >= 0 && i < levelCount()
                 && "LmvBlobView::levelAt: out of range");
-            return readI32(23 + 4 * i);
+            return readI32(26 + 4 * i);
         }
 
         /// @brief The remainingArgIds count.
         /// @return The int32 directly past the keyIds section.
         int32_t remainingCount() const {
-            return readI32(27 + 4 * levelCount() + 4 * keyIdCount());
+            return readI32(30 + 4 * levelCount() + 4 * keyIdCount());
         }
 
         /// @brief RemainingArgId `i` (positional order).
         /// @param i The index; asserted `0 <= i < remainingCount()`.
         /// @return The int32 at offset
-        ///         `31 + 4*levelCount() + 4*keyIdCount() + 4*i`.
+        ///         `34 + 4*levelCount() + 4*keyIdCount() + 4*i`.
         int32_t remainingArgIdAt(int32_t i) const {
             assert(i >= 0 && i < remainingCount()
                 && "LmvBlobView::remainingArgIdAt: out of range");
-            return readI32(31 + 4 * levelCount() + 4 * keyIdCount() + 4 * i);
+            return readI32(34 + 4 * levelCount() + 4 * keyIdCount() + 4 * i);
         }
     };
 
@@ -11314,11 +11829,30 @@ namespace gl {
     ///            surviving content.
     /// @see `wipeEncodedMapForClosed` — the pattern sibling; `LmvBlobView`;
     ///      `eradicateImplicationFromLB` — the sole caller.
-    inline void eradicateEncodedMapForImpl(
+    /// @brief Drop every `encodedMap` record a predicate rejects, in one
+    ///        two-pass splice — the batched LMV compaction.
+    ///
+    /// @details
+    /// Pass 1 walks every key's run, keeps the records @p drop rejects (bytes
+    /// copied onto @p gArena before the reset frees the pages the peeks
+    /// alias) and records the keys that keep at least one record; pass 2
+    /// resets the map and rebuilds it from the survivors through the raw run
+    /// doors (a key whose run emptied vanishes). Survivor order is preserved,
+    /// so the rebuilt map's ids and deload bytes are a deterministic function
+    /// of the surviving content. O(records) with one rebuild — run once per
+    /// instance per apply over the SET of rules leaving (the drop set), never
+    /// per rule. Zero heap. Single-threaded seam only (I-83).
+    ///
+    /// @tparam Drop A callable `bool(const LmvBlobView&)` — `true` drops the record.
+    /// @param m      The rule registry of one `HashMemory` instance.
+    /// @param drop   The drop predicate over the zero-decode record view.
+    /// @param gArena Per-slot gen-scratch arena (framed inside).
+    /// @see `eradicateEncodedMapForImpl` (the single-rule wrapper), `LmvBlobView`.
+    template <typename Drop>
+    inline void eradicateEncodedMapWhere(
         TypedColdBlobMap<NormKey, LocalMemoryValue>& m,
-        int32_t implRuleId, NameId implVid,
-        ScratchArena& gArena,
-        ColdHashSet<BytesKeyStore>& erasedChains) {
+        Drop&& drop,
+        ScratchArena& gArena) {
         struct KeyRec {
             ArenaOffset keyOff; int32_t keyLen;
             int32_t firstBlob; int32_t blobCount;
@@ -11332,8 +11866,8 @@ namespace gl {
             PagedVector<KeyRec> keyRecs(&gArena, &keysDirty);
             PagedVector<BlobRec> blobRecs(&gArena, &blobsDirty);
 
-            // Pass 1 — collect survivors + dropped chains (bytes copied /
-            // minted out BEFORE the reset frees the pages the peeks alias).
+            // Pass 1 — collect survivors (bytes copied out BEFORE the reset
+            // frees the pages the peeks alias).
             const int32_t n = m.count();
             for (int32_t id = 1; id <= n; ++id) {
                 const int32_t firstBlob = blobRecs.size();
@@ -11342,14 +11876,7 @@ namespace gl {
                     int32_t bl = 0;
                     const char* bp = m.peekRecordBytes(id, j, bl, gArena);
                     const LmvBlobView view(bp, bl);
-                    if (view.originalImplicationId() == implRuleId
-                        && view.validityId() == implVid) {
-                        if (view.keyIdCount() > 0) {
-                            erasedChains.mint(StrSpan(view.keyIdsBytes(),
-                                                      view.keyIdsByteLen()));
-                        }
-                        continue;
-                    }
+                    if (drop(view)) continue;
                     const ArenaOffset off = gArena.alloc(bl, 1);
                     std::memcpy(gArena.resolve(off), bp,
                                 static_cast<std::size_t>(bl));
@@ -11383,11 +11910,39 @@ namespace gl {
         gArena.popTo(mark);
     }
 
-    /// @brief Record codec for `OwnerSet` — the value of the four owner-set maps.
+    /// @brief Drop every `encodedMap` record of ONE rule `(implRuleId, implVid)`,
+    ///        minting the dropped marker records' key chains into
+    ///        @p erasedChains — the single-rule wrapper of
+    ///        `eradicateEncodedMapWhere`.
+    ///
+    /// @param m            The rule registry of one `HashMemory` instance.
+    /// @param implRuleId   The rule's `originalImplicationId`.
+    /// @param implVid      The rule's install scope id.
+    /// @param gArena       Per-slot gen-scratch arena.
+    /// @param erasedChains Receives the `keyIds` bytes of every dropped marker record.
+    /// @see `eradicateEncodedMapWhere`.
+    inline void eradicateEncodedMapForImpl(
+        TypedColdBlobMap<NormKey, LocalMemoryValue>& m,
+        int32_t implRuleId, NameId implVid,
+        ScratchArena& gArena,
+        ColdHashSet<BytesKeyStore>& erasedChains) {
+        eradicateEncodedMapWhere(m, [&](const LmvBlobView& view) {
+            if (view.originalImplicationId() != implRuleId
+                || view.validityId() != implVid) {
+                return false;
+            }
+            if (view.keyIdCount() > 0) {
+                erasedChains.mint(StrSpan(view.keyIdsBytes(),
+                                          view.keyIdsByteLen()));
+            }
+            return true;
+        }, gArena);
+    }
+
+    /// @brief Record codec for `OwnerSet` — the subkey map's record value.
     ///
     /// @details
-    /// Layout: `hasLooseOwner` (uint8), `partitionIds` (int32 count + int64 each,
-    /// ascending set order), `uSignatures` (int32 count, then per signature an
+    /// Layout: `hasLooseOwner` (uint8), `uSignatures` (int32 count, then per signature an
     /// int32 pair-count + each `(int32, int32)` pair — both the outer set and the
     /// inner vectors emit in their canonical order).
     ///
@@ -11405,8 +11960,6 @@ namespace gl {
                 out.insert(out.end(), p, p + sizeof(x));
             };
             put(static_cast<uint8_t>(v.hasLooseOwner ? 1 : 0));
-            put(static_cast<int32_t>(v.partitionIds.size()));
-            for (const int64_t id : v.partitionIds) put(id);
             put(static_cast<int32_t>(v.uSignatures.size()));
             for (const std::vector<std::pair<int32_t, NameId>>& sig
                      : v.uSignatures) {
@@ -11415,6 +11968,11 @@ namespace gl {
                     put(pr.first);
                     put(pr.second);
                 }
+            }
+            put(static_cast<int32_t>(v.owners.size()));
+            for (const std::pair<RuleOwner, int32_t>& ow : v.owners) {
+                put(ow.first);
+                put(ow.second);
             }
             return out;
         }
@@ -11435,10 +11993,6 @@ namespace gl {
                 cur += sizeof(x);
             };
             uint8_t loose = 0; get(loose); v.hasLooseOwner = (loose != 0);
-            int32_t pc = 0; get(pc);
-            for (int32_t i = 0; i < pc; ++i) {
-                int64_t id = 0; get(id); v.partitionIds.insert(id);
-            }
             int32_t sc = 0; get(sc);
             for (int32_t i = 0; i < sc; ++i) {
                 int32_t pairCount = 0; get(pairCount);
@@ -11450,272 +12004,56 @@ namespace gl {
                 }
                 v.uSignatures.insert(std::move(sig));
             }
+            int32_t oc = 0; get(oc);
+            v.owners.reserve(static_cast<std::size_t>(oc));
+            for (int32_t i = 0; i < oc; ++i) {
+                RuleOwner ow = 0; int32_t si = 0; get(ow); get(si);
+                v.owners.emplace_back(ow, si);
+            }
             assert(cur == end
                 && "Codec<OwnerSet>: blob longer than the layout");
             return v;
         }
     };
 
-    /// @brief Closed-scope sweep of one owner-set map (`normalizedEncoded*`)
-    ///        — the zero-decode blob-byte filter behind `Memory::wipeSubtree`'s
-    ///        step 10b.
+    /// @brief Blob codec of one owner record — eight bytes, the packed
+    ///        `RuleOwner` verbatim.
     ///
-    /// @details
-    /// Pass 1 walks every key id ascending and reads the key's SINGLE blob
-    /// (the owner maps are run-length-1 — `mergeOwnerRecord` installs one
-    /// whole-value record per key; asserted). Through `OwnerSetBlob` it
-    /// counts the partition ids whose LOW half (the interned scope vid,
-    /// `makePartitionId`'s D-105 low 32 bits, read via
-    /// `Codec<StatementKey>::decode(pid).validity`) sits in the closed bitmap:
-    /// - all survive  → the WHOLE blob is byte-bump-copied verbatim;
-    /// - none survive → the key is dropped; when `droppedKeys` is non-null
-    ///   the key's bytes are minted into it (mint copies the bytes into the
-    ///   set's own pool — taken in pass 1, while the source map is still
-    ///   resident);
-    /// - some survive → the blob is rewritten into a fresh
-    ///   `bl - 8 * dropped` buffer: byte 0 (`hasLooseOwner`) verbatim, the
-    ///   int32 survivor count, the surviving int64 ids in their original
-    ///   (ascending `std::set`) order, then the whole `uSignatures` tail
-    ///   memcpy'd verbatim from `uSigOffset()` — the wipe filters ONLY
-    ///   `partitionIds`; `hasLooseOwner` + `uSignatures` are deliberately
-    ///   left stale (sound, weaker-only — I-79).
-    /// Pass 2 resets the map and re-installs each surviving key in
-    /// ascending old-id order via the raw single-blob `assignRun` (M == 1).
-    ///
-    /// Byte contract: key order = ascending old id (the old survivors
-    /// vector); a filtered blob equals `Codec<OwnerSet>::serialize` of the
-    /// old decode-erase result (erasing from a `std::set<int32_t>` keeps
-    /// the ascending survivor order, and re-serializing the untouched
-    /// loose-flag / signature sets reproduces their bytes — a pure function
-    /// of content); all-survive == whole-blob verbatim.
-    ///
-    /// @param m             One of the four owner-set maps.
-    /// @param closedBits    The wipe's closed-id bitmap.
-    /// @param nameHighWater The bitmap's id ceiling; the membership lambda
-    ///                      ASSERTS every composite low half inside
-    ///                      `[1, nameHighWater]` — a decode-heritage read
-    ///                      where out-of-range means corruption, never legal
-    ///                      input (the retired per-owner `decode`
-    ///                      range-asserted the same way).
-    /// @param gArena        The per-slot gen-scratch arena (byte-bump copies
-    ///                      + page-tier metadata columns, `cursor`/`popTo`
-    ///                      framed).
-    /// @param droppedKeys   Non-null ONLY for `normalizedEncodedKeys` (the
-    ///                      map whose dropped keys feed the 10c
-    ///                      `remainingArgsNormalizedEncodedMap` prune);
-    ///                      null for the three subkey maps.
-    /// @invariant `I-139`; [I-49](../../docs/agentic_swdd/30_invariants.md#i-49)
-    ///            — a key is dropped exactly when its owner set empties.
-    /// @see `OwnerSetBlob`, `Codec<OwnerSet>`, `wipeRemainingArgsForClosed`,
-    ///      `Memory::wipeSubtree`.
-    inline void wipeOwnerSetMapForClosed(
-        TypedColdBlobMap<NormKey, OwnerSet>& m,
-        const uint64_t* closedBits, int32_t nameHighWater,
-        ScratchArena& gArena,
-        ColdHashSet<BytesKeyStore>* droppedKeys) {
-        struct KeyRec { ArenaOffset keyOff; int32_t keyLen;
-                        ArenaOffset blobOff; int32_t blobLen; };
-        const auto closed = [&](int32_t v) -> bool {
-            // Decode-heritage read: the composite's low half is a minted
-            // NameMap scope vid (makePartitionId packs interned ids) —
-            // out-of-range is impossible by contract and must abort HERE
-            // (the retired decode() of the vid range-asserted the same
-            // corruption; a tolerant guard would classify it as "not
-            // closed" silently).
-            assert(v >= 1 && v <= nameHighWater
-                && "wipeOwnerSetMapForClosed: partition scope vid outside "
-                   "the minted NameMap range");
-            // v is a guaranteed-in-range positive NameId — no uint16 wrap (a
-            // wrap would alias scope vids >= 65536 into the wrong bit once the
-            // ceiling rises).
-            return ((closedBits[v >> 6] >> (v & 63)) & 1ull) != 0;
-        };
-
-        const ArenaOffset mark = gArena.cursor();
-        {
-            DirtyState keysDirty = DirtyState::Clean;
-            PagedVector<KeyRec> keyRecs(&gArena, &keysDirty);
-
-            // Pass 1 — filter each key's single blob at the byte level.
-            const int32_t n = m.count();
-            for (int32_t id = 1; id <= n; ++id) {
-                assert(m.runLen(id) == 1
-                    && "wipeOwnerSetMapForClosed: owner maps are run-length-1");
-                int32_t bl = 0;
-                const char* bp = m.peekRecordBytes(id, 0, bl, gArena);
-                const OwnerSetBlob ob{ bp, bl };
-                const int32_t pc = ob.partitionCount();
-                int32_t dropped = 0;
-                for (int32_t i = 0; i < pc; ++i) {
-                    if (closed(Codec<StatementKey>::decode(
-                            ob.partitionId(i)).validity))
-                        ++dropped;
-                }
-                if (dropped == pc) {
-                    // No partition id survives (an already-empty set counts
-                    // — the former `partitionIds.empty()` gate) -> the key
-                    // is dropped.
-                    if (droppedKeys != nullptr)
-                        droppedKeys->mint(m.inner().decode(id));
-                    continue;
-                }
-                ArenaOffset blobOff; int32_t blobLen;
-                if (dropped == 0) {
-                    // all survive -> whole blob verbatim.
-                    blobLen = bl;
-                    blobOff = gArena.alloc(bl, 1);
-                    std::memcpy(gArena.resolve(blobOff), bp,
-                                static_cast<std::size_t>(bl));
-                } else {
-                    // partial -> rewrite: byte0 + count' + ascending
-                    // survivors + verbatim uSig tail.
-                    blobLen = bl - 8 * dropped;
-                    blobOff = gArena.alloc(blobLen, 1);
-                    char* w = gArena.resolve(blobOff);
-                    w[0] = bp[0];
-                    const int32_t keptCount = pc - dropped;
-                    std::memcpy(w + 1, &keptCount, sizeof(int32_t));
-                    int32_t at = 5;
-                    for (int32_t i = 0; i < pc; ++i) {
-                        const int64_t pid = ob.partitionId(i);
-                        if (closed(Codec<StatementKey>::decode(pid).validity))
-                            continue;
-                        std::memcpy(w + at, &pid, sizeof(int64_t));
-                        at += 8;
-                    }
-                    const int32_t tailLen = bl - ob.uSigOffset();
-                    std::memcpy(w + at, bp + ob.uSigOffset(),
-                                static_cast<std::size_t>(tailLen));
-                    assert(at + tailLen == blobLen
-                        && "wipeOwnerSetMapForClosed: rewrite length drift");
-                }
-                const StrSpan ks = m.inner().decode(id);
-                const ArenaOffset koff = gArena.alloc(ks.len, 1);
-                std::memcpy(gArena.resolve(koff), ks.ptr,
-                            static_cast<std::size_t>(ks.len));
-                keyRecs.push_back(KeyRec{ koff, ks.len, blobOff, blobLen });
-            }
-
-            // Pass 2 — rebuild via the single-blob raw door.
-            m.resetToFresh();
-            for (int32_t ki = 0; ki < keyRecs.size(); ++ki) {
-                const KeyRec kr = keyRecs[ki];
-                m.inner().assignRun(
-                    StrSpan(gArena.resolve(kr.keyOff), kr.keyLen),
-                    gArena.resolve(kr.blobOff), &kr.blobLen, 1);
-            }
+    /// @details The value codec of the owner-run maps (`normalizedEncodedKeys`,
+    ///          `originals`, `remainingArgsOwners`). The production writer
+    ///          `addOwnerToRun` emits the same bytes through the raw run
+    ///          door; this codec is the typed door and the test oracle.
+    template <>
+    struct Codec<RuleOwnerRec> {
+        /// @brief Serialize one owner record.
+        /// @param r The record.
+        /// @return Its eight bytes.
+        static std::vector<char> serialize(const RuleOwnerRec& r) {
+            std::vector<char> out(sizeof(RuleOwner));
+            std::memcpy(out.data(), &r.owner, sizeof(RuleOwner));
+            return out;
         }
-        gArena.popTo(mark);
-    }
 
-    /// @brief Prune `remainingArgsNormalizedEncodedMap` of the normalized
-    ///        keys the 10b owner-set wipe dropped — `Memory::wipeSubtree`'s
-    ///        step 10c, as a byte-peek membership filter.
-    ///
-    /// @details
-    /// A record of this map IS an encoded `NormKey` — and
-    /// `Codec<NormKey>::serialize` is documented byte-identical to the key
-    /// `encode`, so a record's raw bytes are directly usable as the
-    /// dropped-key lookup key: keep record `j` iff
-    /// `droppedKeys.lookup(StrSpan(bytes, len)) == 0`. Zero decode
-    /// anywhere. Pass 1 copies surviving keys + records verbatim onto the
-    /// byte-bump tier; pass 2 resets and re-installs each surviving key in
-    /// ascending old-id order via an `M == 0` `assignRun` + per-record
-    /// `appendBlobToRun` (runs here are many-record). Keys whose run
-    /// empties are dropped.
-    ///
-    /// The `droppedKeys.count() == 0` early return is the defined twin of
-    /// the former `if (!droppedKeys.empty())` gate — a contracted bivalent
-    /// branch (nothing to prune), not a failure fallback.
-    ///
-    /// Byte contract: the four points of the 10a splice — ascending
-    /// survivor key order, original record order minus dropped, verbatim
-    /// record bytes (trivially round-trip-stable — fixed int16 framing),
-    /// and the append door's byte-identity to a one-shot `assignRun`.
-    ///
-    /// @param ra          The remaining-args secondary index.
-    /// @param rev         The derived reverse membership index for @p ra;
-    ///                    rebuilt wholesale from the pruned forward map after the
-    ///                    survivor reinstall (the survivor key ids are reassigned
-    ///                    by the resetToFresh+reinstall, so an incremental edit
-    ///                    cannot track them — I-154).
-    /// @param droppedKeys The 10b-collected dropped `NormKey` byte set.
-    /// @param gArena      The per-slot gen-scratch arena (`cursor`/`popTo`
-    ///                    framed).
-    /// @invariant `I-139`; the serialize==encode
-    ///            identity of `Codec<NormKey>` is the membership lever.
-    /// @see `wipeOwnerSetMapForClosed`, `Codec<NormKey>`,
-    ///      `Memory::wipeSubtree`, `ReverseArgsIndex`.
-    inline void wipeRemainingArgsForClosed(
-        TypedColdBlobMap<Int16SetKey, NormKey>& ra,
-        ReverseArgsIndex& rev,
-        const ColdHashSet<BytesKeyStore>& droppedKeys,
-        ScratchArena& gArena) {
-        if (droppedKeys.count() == 0) return;
-        struct KeyRec { ArenaOffset keyOff; int32_t keyLen;
-                        int32_t firstBlob; int32_t blobCount; };
-        struct BlobRec { ArenaOffset off; int32_t len; };
-
-        const ArenaOffset mark = gArena.cursor();
-        {
-            DirtyState keysDirty = DirtyState::Clean;
-            DirtyState blobsDirty = DirtyState::Clean;
-            PagedVector<KeyRec> keyRecs(&gArena, &keysDirty);
-            PagedVector<BlobRec> blobRecs(&gArena, &blobsDirty);
-
-            // Pass 1 — keep records whose bytes are NOT dropped keys.
-            const int32_t n = ra.count();
-            for (int32_t id = 1; id <= n; ++id) {
-                const int32_t firstBlob = blobRecs.size();
-                const int32_t rl = ra.runLen(id);
-                for (int32_t j = 0; j < rl; ++j) {
-                    int32_t bl = 0;
-                    const char* bp = ra.peekRecordBytes(id, j, bl, gArena);
-                    if (droppedKeys.lookup(StrSpan(bp, bl)) != 0) continue;
-                    const ArenaOffset off = gArena.alloc(bl, 1);
-                    std::memcpy(gArena.resolve(off), bp,
-                                static_cast<std::size_t>(bl));
-                    blobRecs.push_back(BlobRec{ off, bl });
-                }
-                const int32_t kept = blobRecs.size() - firstBlob;
-                if (kept >= 1) {
-                    const StrSpan ks = ra.inner().decode(id);
-                    const ArenaOffset koff = gArena.alloc(ks.len, 1);
-                    std::memcpy(gArena.resolve(koff), ks.ptr,
-                                static_cast<std::size_t>(ks.len));
-                    keyRecs.push_back(KeyRec{ koff, ks.len,
-                                              firstBlob, kept });
-                }
-            }
-
-            // Pass 2 — rebuild through the raw doors.
-            ra.resetToFresh();
-            for (int32_t ki = 0; ki < keyRecs.size(); ++ki) {
-                const KeyRec kr = keyRecs[ki];
-                const int32_t nid = ra.inner().assignRun(
-                    StrSpan(gArena.resolve(kr.keyOff), kr.keyLen),
-                    nullptr, nullptr, 0);
-                for (int32_t j = 0; j < kr.blobCount; ++j) {
-                    const BlobRec br = blobRecs[kr.firstBlob + j];
-                    ra.inner().appendBlobToRun(nid, gArena.resolve(br.off),
-                                               br.len);
-                }
-            }
+        /// @brief Deserialize one owner record.
+        /// @param data Blob bytes.
+        /// @param n    Blob length (asserted eight).
+        /// @return The record.
+        static RuleOwnerRec deserialize(const char* data, int32_t n) {
+            assert(n == static_cast<int32_t>(sizeof(RuleOwner))
+                && "Codec<RuleOwnerRec>: malformed blob length");
+            RuleOwnerRec r;
+            std::memcpy(&r.owner, data, sizeof(RuleOwner));
+            return r;
         }
-        // Re-derive the reverse index from the pruned forward map: the survivor
-        // key ids were reassigned by the resetToFresh + reinstall above, so an
-        // incremental edit cannot track them (I-154). The
-        // early return above skips this when nothing was dropped (ra unchanged).
-        rev.rebuildReverseIndex(ra, gArena);
-        gArena.popTo(mark);
-    }
+    };
 
     /// @brief Record codec for `AdmissionMapValue` — an `admissionMap` set member.
     ///
     /// @details
     /// Layout: `standardMaxAdmissionDepth`, `standardMaxSecondaryNumber` (int32
-    /// each), `flag` (uint8), then `key` and `remainingArgs` (int32 count + int32
-    /// each, positional / decoded-lex order preserved verbatim).
+    /// each), `flag` (uint8), `ordisOnly` (uint8), then `key` and
+    /// `remainingArgs` (int32 count + int32 each, positional / decoded-lex
+    /// order preserved verbatim).
     ///
     /// @see `AdmissionMapValue`, `Codec`.
     template <>
@@ -11733,6 +12071,7 @@ namespace gl {
             put(static_cast<int32_t>(v.standardMaxAdmissionDepth));
             put(static_cast<int32_t>(v.standardMaxSecondaryNumber));
             put(static_cast<uint8_t>(v.flag ? 1 : 0));
+            put(static_cast<uint8_t>(v.ordisOnly ? 1 : 0));
             put(static_cast<int32_t>(v.key.size()));
             for (const int32_t id : v.key) put(id);
             put(static_cast<int32_t>(v.remainingArgs.size()));
@@ -11758,6 +12097,7 @@ namespace gl {
             int32_t depth = 0; get(depth); v.standardMaxAdmissionDepth = depth;
             int32_t sec = 0; get(sec); v.standardMaxSecondaryNumber = sec;
             uint8_t flag = 0; get(flag); v.flag = (flag != 0);
+            uint8_t ordis = 0; get(ordis); v.ordisOnly = (ordis != 0);
             int32_t kc = 0; get(kc);
             v.key.resize(static_cast<std::size_t>(kc));
             for (int32_t i = 0; i < kc; ++i)
@@ -11778,9 +12118,10 @@ namespace gl {
     ///
     /// @details
     /// `Codec<AdmissionMapValue>` writes `standardMaxAdmissionDepth` (int32 @0),
-    /// `standardMaxSecondaryNumber` (int32 @4), `flag` (uint8 @8), then
-    /// `keyCount` (int32 @9) + key ids (int32 each, positional order) +
-    /// `remCount` (int32) + remainingArgs ids (int32 each, decoded-lex order).
+    /// `standardMaxSecondaryNumber` (int32 @4), `flag` (uint8 @8), `ordisOnly`
+    /// (uint8 @9), then `keyCount` (int32 @10) + key ids (int32 each,
+    /// positional order) + `remCount` (int32) + remainingArgs ids (int32 each,
+    /// decoded-lex order).
     /// Everything past the uint8 is UNALIGNED — every read goes through
     /// `std::memcpy`. The D-172 RMW splice (`insertAdmissionBlobSorted`)
     /// compares run blobs through this view instead of decoding a heap
@@ -11792,7 +12133,7 @@ namespace gl {
     /// `Codec<RejectedMapValue>`.
     ///
     /// @invariant Construction asserts the exact frame
-    ///            `len == 17 + 4*(keyCount + remCount)` — the view twin of the
+    ///            `len == 18 + 4*(keyCount + remCount)` — the view twin of the
     ///            codec's `cur == end` asserts (Rule 19: a malformed blob is a
     ///            bug surfaced at its origin, never tolerated).
     /// @see `Codec<AdmissionMapValue>`, `RejectedValueBlobView`,
@@ -11812,13 +12153,13 @@ namespace gl {
         ///             verbatim gen-arena copy).
         /// @param len_ The blob's byte length.
         AdmissionValueBlobView(const char* p_, int32_t len_) : p(p_), len(len_) {
-            assert(len >= 13
+            assert(len >= 14
                 && "AdmissionValueBlobView: blob shorter than the fixed prefix");
             const int32_t kc = keyCount();
-            assert(kc >= 0 && len >= 17 + 4 * kc
+            assert(kc >= 0 && len >= 18 + 4 * kc
                 && "AdmissionValueBlobView: blob shorter than the key section");
             const int32_t rc = remCount();
-            assert(rc >= 0 && len == 17 + 4 * (kc + rc)
+            assert(rc >= 0 && len == 18 + 4 * (kc + rc)
                 && "AdmissionValueBlobView: blob length does not match the layout");
         }
 
@@ -11850,33 +12191,46 @@ namespace gl {
             return v;
         }
 
+        /// @brief The record's `ordisOnly` byte (0 or 1).
+        ///
+        /// @details Non-zero marks a value produced by the ordis-only
+        /// qualification route — demand evidence for or-cohort opening that
+        /// general Pass-B admission skips.
+        ///
+        /// @return The uint8 at offset 9.
+        uint8_t ordisByte() const {
+            uint8_t v;
+            std::memcpy(&v, p + 9, sizeof(v));
+            return v;
+        }
+
         /// @brief The key element count.
-        /// @return The int32 at offset 9.
-        int32_t keyCount() const { return readI32(9); }
+        /// @return The int32 at offset 10.
+        int32_t keyCount() const { return readI32(10); }
 
         /// @brief Key element `i`'s value-interner id (positional order).
         ///
         /// @param i The key index; asserted `0 <= i < keyCount()`.
-        /// @return The int32 at offset `13 + 4*i`.
+        /// @return The int32 at offset `14 + 4*i`.
         int32_t keyId(int32_t i) const {
             assert(i >= 0 && i < keyCount()
                 && "AdmissionValueBlobView::keyId: index out of range");
-            return readI32(13 + 4 * i);
+            return readI32(14 + 4 * i);
         }
 
         /// @brief The remainingArgs element count.
         /// @return The int32 directly past the key section.
-        int32_t remCount() const { return readI32(13 + 4 * keyCount()); }
+        int32_t remCount() const { return readI32(14 + 4 * keyCount()); }
 
         /// @brief remainingArgs element `i`'s value-interner id (decoded-lex
         ///        storage order).
         ///
         /// @param i The index; asserted `0 <= i < remCount()`.
-        /// @return The int32 at offset `17 + 4*keyCount() + 4*i`.
+        /// @return The int32 at offset `18 + 4*keyCount() + 4*i`.
         int32_t remId(int32_t i) const {
             assert(i >= 0 && i < remCount()
                 && "AdmissionValueBlobView::remId: index out of range");
-            return readI32(17 + 4 * keyCount() + 4 * i);
+            return readI32(18 + 4 * keyCount() + 4 * i);
         }
     };
 
@@ -11886,7 +12240,9 @@ namespace gl {
     /// @details
     /// Field order exactly as `DecodedAdmissionValueLess::operator()`: `key`
     /// (decoded-lex id-vector compare), `remainingArgs`, then
-    /// `standardMaxAdmissionDepth`, `standardMaxSecondaryNumber`, `flag`. Each
+    /// `standardMaxAdmissionDepth`, `standardMaxSecondaryNumber`, `flag`,
+    /// `ordisOnly` (deliberately LAST so pre-existing runs keep their order
+    /// and a tagged/untagged twin pair stays adjacent, untagged first). Each
     /// id-vector section runs the `valueIdVectorLess` semantics as a three-way
     /// walk — id-equality short-circuits per element (the interner is
     /// bijective, so equal ids ARE the equal-string case), a differing pair
@@ -11934,7 +12290,8 @@ namespace gl {
         if (rc != 0) return rc < 0;
         if (a.depth() != b.depth()) return a.depth() < b.depth();
         if (a.sec() != b.sec()) return a.sec() < b.sec();
-        return a.flagByte() < b.flagByte();
+        if (a.flagByte() != b.flagByte()) return a.flagByte() < b.flagByte();
+        return a.ordisByte() < b.ordisByte();
     }
 
     /// @brief Serialize one `AdmissionMapValue` onto a gen-scratch byte-bump
@@ -11959,7 +12316,7 @@ namespace gl {
     {
         const int32_t kc = static_cast<int32_t>(v.key.size());
         const int32_t rc = static_cast<int32_t>(v.remainingArgs.size());
-        const int32_t len = 17 + 4 * (kc + rc);
+        const int32_t len = 18 + 4 * (kc + rc);
         char* out = reinterpret_cast<char*>(gArena.resolve(gArena.alloc(len, 1)));
         char* at = out;
         const auto put = [&at](const auto& x) {
@@ -11969,6 +12326,7 @@ namespace gl {
         put(static_cast<int32_t>(v.standardMaxAdmissionDepth));
         put(static_cast<int32_t>(v.standardMaxSecondaryNumber));
         put(static_cast<uint8_t>(v.flag ? 1 : 0));
+        put(static_cast<uint8_t>(v.ordisOnly ? 1 : 0));
         put(kc);
         for (const int32_t id : v.key) put(id);
         put(rc);
@@ -12123,7 +12481,7 @@ namespace gl {
     /// @details
     /// Fuses `stagedToIdValue` + `Codec<AdmissionMapValue>::serialize` without
     /// the intermediate heap `AdmissionMapValue`: the closed-form length is
-    /// written first (`17 + 4*(keyCount + remCount)`), then the ids are minted
+    /// written first (`18 + 4*(keyCount + remCount)`), then the ids are minted
     /// through `vi.encode(StrSpan)` in EXACTLY `stagedToIdValue`'s order —
     /// every key element in rule order, then every remaining arg in the
     /// presorted lex order — so the interner-touch sequence (and therefore
@@ -12144,7 +12502,7 @@ namespace gl {
     {
         const int32_t kc = sv.key.size();
         const int32_t rc = sv.remainingArgsSorted.size();
-        const int32_t len = 17 + 4 * (kc + rc);
+        const int32_t len = 18 + 4 * (kc + rc);
         char* out = reinterpret_cast<char*>(gArena.resolve(gArena.alloc(len, 1)));
         char* at = out;
         const auto put = [&at](const auto& x) {
@@ -12154,6 +12512,7 @@ namespace gl {
         put(static_cast<int32_t>(sv.standardMaxAdmissionDepth));
         put(static_cast<int32_t>(sv.standardMaxSecondaryNumber));
         put(static_cast<uint8_t>(sv.flag ? 1 : 0));
+        put(static_cast<uint8_t>(sv.ordisOnly ? 1 : 0));
         put(kc);
         for (const SealedString& k : sv.key) {
             put(vi.encode(StrSpan(k)));
@@ -12267,6 +12626,48 @@ namespace gl {
             new (&views[j]) AdmissionValueBlobView(gArena.resolve(off), bl);
         }
         return AdmissionRunSnapshot{ views, runN };
+    }
+
+    /// @brief Does an admission key hold at least one REGULAR (untagged)
+    ///        value — the value-level form of the bare `lookup(pk) != 0`
+    ///        key probe.
+    ///
+    /// @details
+    /// A key whose run holds only `ordisOnly` values is demand evidence for
+    /// or-cohort opening, not a general admission: every general-admission
+    /// consumer that used the key-level `admissionMap.lookup(pk) != 0`
+    /// presence test must ask this instead, so an ordis-only key never
+    /// triggers general machinery (the Pass-B parking rendezvous is the
+    /// production consumer). Walks the run's `ordisByte()`s through
+    /// zero-decode peeks and short-circuits on the first untagged record;
+    /// the run is canonical, so the walk order is deterministic. Mints
+    /// nothing; a never-minted key is a defined miss (`false`).
+    ///
+    /// @param m      The cold admission blob map (read-only).
+    /// @param pk     The packed `(templateId, validityId)` key.
+    /// @param gArena The caller's gen-scratch arena (page-straddle peeks
+    ///               byte-bump onto it); reclaimed by this function's own
+    ///               mark/popTo.
+    /// @return `true` iff @p pk is minted and at least one of its values is
+    ///         untagged.
+    /// @see AdmissionValueBlobView::ordisByte, snapshotAdmissionRun.
+    inline bool admissionRunHasRegularValue(
+        const TypedColdBlobMap<int64_t, AdmissionMapValue>& m,
+        int64_t pk, ScratchArena& gArena)
+    {
+        const int32_t id = m.lookup(pk);
+        if (id == 0) return false;
+        const ArenaOffset mark = gArena.cursor();
+        bool found = false;
+        const int32_t runN = m.runLen(id);
+        for (int32_t j = 0; j < runN && !found; ++j) {
+            int32_t bl = 0;
+            const char* bp = m.peekRecordBytes(id, j, bl, gArena);
+            const AdmissionValueBlobView v(bp, bl);
+            found = (v.ordisByte() == 0);
+        }
+        gArena.popTo(mark);
+        return found;
     }
 
     /// @brief Read-modify-write one `AdmissionMapValue` into an admission key's
@@ -12780,6 +13181,741 @@ namespace gl {
         int32_t count;
     };
 
+    /// @brief Per-apply validity buckets over a rejected map's key set — the
+    ///        "which keys can this class touch" index of the two rejected-map
+    ///        equi-class hooks.
+    ///
+    /// @details
+    /// `applyEquivalenceClassToRejectedMap` and
+    /// `applyEquivalenceClassToRejectedMapIntegration` rewrite only keys parked
+    /// at the class's own validity, yet each call used to decode, intern and sort
+    /// the WHOLE map before skipping every other validity — O(classes x M log M)
+    /// per fixpoint round (D-307). This transient index
+    /// groups the map's packed `(templateId, validityId)` keys by validity id ONCE
+    /// per `applyEquiClasses` call, read straight off the packed pair
+    /// (`Codec<StatementKey>`, no string decode), so a hook visits exactly its
+    /// validity's run. Two passes: per-key validity ordinal + run lengths, then a
+    /// counting-sort scatter; within a run the keys keep map-id order (the hook
+    /// sorts its hits by template afterwards, so this order is never observable).
+    ///
+    /// Built lazily on first use (`ensureBuilt`) on the caller's gen-scratch
+    /// arena (page tier — I-124 / I-130), dropped with it. Staleness contract:
+    /// the index is a snapshot of the key set at its build. A key dropped
+    /// later in the apply is filtered by the consumer's `lookup(pk) == 0`; a
+    /// key the hooks re-key INTO the map during the apply (the canonical K',
+    /// D-308) is not in the index and is visited at
+    /// the next apply — K' never names a non-canonical member of the class
+    /// that minted it, so no hit of that class is missed; a K' that equals a
+    /// key dropped earlier in the same apply is reached again through that
+    /// key's stale posting (`lookup` hits the re-inserted key).
+    ///
+    /// @invariant Zero heap: three page-tier `PagedVector`s and one `ColdHashSet`
+    ///            on the arena handed in. Never deloaded, never dumped, never a
+    ///            proof input.
+    /// @see ExpressionAnalyzer::applyEquivalenceClassToRejectedMap,
+    ///      ExpressionAnalyzer::applyEquivalenceClassToRejectedMapIntegration,
+    ///      ExpressionAnalyzer::applyEquiClasses, HashMap::insertEpoch.
+    class RejectedValidityBuckets {
+    public:
+        /// @brief Bind to a gen-scratch arena; nothing is built yet.
+        ///
+        /// @param arena Page-tier gen-scratch arena (never the string arena).
+        /// @param dirty The caller's scratch `DirtyState` cell.
+        RejectedValidityBuckets(LbArena* arena, DirtyState* dirty)
+            : vids_(arena, dirty), runStart_(arena, dirty), ordOf_(arena, dirty),
+              pks_(arena, dirty), fill_(arena, dirty),
+              postKeys_(arena, dirty), postStart_(arena, dirty), postOrd_(arena, dirty),
+              postIdx_(arena, dirty), postLast_(arena, dirty), postOut_(arena, dirty) {
+            assert(arena != nullptr && dirty != nullptr
+                && "RejectedValidityBuckets: arena and dirty cell required");
+        }
+
+        /// @brief Build the buckets from @p m on the first call; on every later
+        ///        call assert the key set is the one the index was built over.
+        ///
+        /// @details
+        /// Pass 1 walks ids `1..count()`, interns each key's validity id into
+        /// `vids_` (ordinal = first-seen order) and counts the run lengths; pass 2
+        /// turns the lengths into exclusive starts (plus an end sentinel) and
+        /// scatters the packed keys into `pks_`. A third and fourth pass build the
+        /// ARGUMENT POSTINGS: every `(validityId, argument NameMap id)` pair of a
+        /// template (`getArgsSpans` over the decoded template — templates are
+        /// flat marker forms; an argument that is not a NameMap name can never be
+        /// a class member and is skipped; a repeated argument posts once) maps to
+        /// the run of bucket indices of the keys naming it, so a hook can visit
+        /// exactly the keys that name one of its class's members. @p m is any
+        /// typed cold map keyed by a packed `StatementKey` whose `inner()` exposes
+        /// `insertEpoch()`.
+        ///
+        /// @param m  The rejected map (algebra or integration), resident.
+        /// @param ti The LB's template interner (decodes the template half).
+        /// @param nm The LB's NameMap (argument name -> id, non-minting).
+        /// @invariant Built once per index lifetime; later calls are no-ops
+        ///            (the snapshot is never rebuilt inside an apply).
+        template <class MapT>
+        void ensureBuilt(const MapT& m, const TemplateInterner& ti, const NameMap& nm) {
+            ensureBuiltFrom(m.count(),
+                [&](int32_t id) { return m.keyAt(id); },
+                [&](NameId orig) { return ti.decodeView(orig); },
+                nm);
+        }
+
+        /// @brief Build the buckets from any packed-`StatementKey` sequence —
+        ///        the core `ensureBuilt` delegates to, opened for a key source
+        ///        that is not a cold map (the compact rows of the statement
+        ///        registry, decoded through the NameMap).
+        ///
+        /// @tparam KeyAt  `int64_t(int32_t id)` for `id` in `1..n`.
+        /// @tparam Decode `StrSpan(NameId orig)` — the template half's text.
+        /// @param n      The number of keys.
+        /// @param keyAt  The key source.
+        /// @param decode The template decoder (argument postings).
+        /// @param nm     The LB's NameMap (argument name -> id, non-minting).
+        /// @invariant Built once per index lifetime; later calls are no-ops.
+        template <class KeyAt, class Decode>
+        void ensureBuiltFrom(int32_t n, KeyAt keyAt, Decode decode, const NameMap& nm) {
+            if (built_) return;
+            built_ = true;
+            countAtBuild_ = n;
+            vids_.resetToFresh();
+            runStart_.clear();
+            ordOf_.clear();
+            pks_.clear();
+            fill_.clear();
+            for (int32_t id = 1; id <= n; ++id) {
+                const NameId vid =
+                    Codec<StatementKey>::decode(keyAt(id)).validity;
+                int32_t ord = vids_.lookup(vid);
+                if (ord == 0) {
+                    ord = vids_.mint(vid);
+                    runStart_.push_back(0);   // run length for now
+                }
+                ordOf_.push_back(ord);
+                runStart_.setAt(ord - 1, runStart_[ord - 1] + 1);
+                pks_.push_back(0);
+            }
+            const int32_t v = runStart_.size();
+            int32_t acc = 0;
+            for (int32_t o = 0; o < v; ++o) {
+                const int32_t len = runStart_[o];
+                runStart_.setAt(o, acc);
+                fill_.push_back(acc);
+                acc += len;
+            }
+            runStart_.push_back(acc);   // end sentinel: runStart_[v] == n
+            for (int32_t id = 1; id <= n; ++id) {
+                const int32_t ord = ordOf_[id - 1];
+                const int32_t pos = fill_[ord - 1];
+                pks_.setAt(pos, keyAt(id));
+                fill_.setAt(ord - 1, pos + 1);
+            }
+            // Argument postings: (validity, argument id) -> bucket indices.
+            postKeys_.resetToFresh();
+            postStart_.clear();
+            postOrd_.clear();
+            postIdx_.clear();
+            postLast_.clear();
+            postOut_.clear();
+            for (int32_t i = 0; i < n; ++i) {
+                const StatementKey sk = Codec<StatementKey>::decode(pks_[i]);
+                const StrSpan tmpl = decode(sk.orig);
+                StrSpan args[ExecutionParameters::MAX_ARITY];
+                const int32_t argN =
+                    getArgsSpans(tmpl, args, ExecutionParameters::MAX_ARITY);
+                for (int32_t a = 0; a < argN; ++a) {
+                    const NameId aid = nm.lookup(args[a]);
+                    if (aid == 0) continue;
+                    const int64_t key = postKey(sk.validity, aid);
+                    int32_t ord = postKeys_.lookup(key);
+                    if (ord == 0) {
+                        ord = postKeys_.mint(key);
+                        postStart_.push_back(0);
+                        postLast_.push_back(-1);
+                    }
+                    if (postLast_[ord - 1] == i) continue;   // repeated argument
+                    postLast_.setAt(ord - 1, i);
+                    postOrd_.push_back(ord);
+                    postIdx_.push_back(i);
+                    postStart_.setAt(ord - 1, postStart_[ord - 1] + 1);
+                }
+            }
+            const int32_t pv = postStart_.size();
+            const int32_t pn = postIdx_.size();
+            int32_t pacc = 0;
+            for (int32_t o = 0; o < pv; ++o) {
+                const int32_t len = postStart_[o];
+                postStart_.setAt(o, pacc);
+                postLast_.setAt(o, pacc);   // reused as the scatter cursor
+                pacc += len;
+            }
+            postStart_.push_back(pacc);   // end sentinel
+            for (int32_t j = 0; j < pn; ++j) postOut_.push_back(0);
+            for (int32_t j = 0; j < pn; ++j) {
+                const int32_t ord = postOrd_[j];
+                const int32_t pos = postLast_[ord - 1];
+                postOut_.setAt(pos, postIdx_[j]);
+                postLast_.setAt(ord - 1, pos + 1);
+            }
+        }
+
+        /// @brief First posting index of the keys at validity @p vid whose
+        ///        template names the argument @p argId.
+        /// @param vid   A NameMap validity id.
+        /// @param argId A NameMap id (a class member).
+        /// @return The posting start, or 0 when no such key exists (then
+        ///         `postBegin == postEnd`, an empty run — a defined result).
+        /// @brief Number of distinct validities the index was built over.
+        int32_t validityCount() const {
+            assert(built_ && "RejectedValidityBuckets: read before ensureBuilt");
+            return vids_.count();
+        }
+        /// @brief The validity id at ordinal @p ord (1-based, first-seen order).
+        NameId validityAt(int32_t ord) const {
+            assert(built_ && ord >= 1 && ord <= vids_.count()
+                && "RejectedValidityBuckets: validity ordinal out of range");
+            return vids_.keyAt(ord);
+        }
+        int32_t postBegin(NameId vid, NameId argId) const {
+            assert(built_ && "RejectedValidityBuckets: read before ensureBuilt");
+            const int32_t o = postKeys_.lookup(postKey(vid, argId));
+            return o ? postStart_[o - 1] : 0;
+        }
+
+        /// @brief One past the last posting index for (@p vid, @p argId).
+        /// @param vid   A NameMap validity id.
+        /// @param argId A NameMap id (a class member).
+        /// @return The posting end, or 0 when no such key exists.
+        int32_t postEnd(NameId vid, NameId argId) const {
+            assert(built_ && "RejectedValidityBuckets: read before ensureBuilt");
+            const int32_t o = postKeys_.lookup(postKey(vid, argId));
+            return o ? postStart_[o] : 0;
+        }
+
+        /// @brief The bucket index stored at posting @p j
+        ///        (`postBegin <= j < postEnd`); feed it to `pkAt`.
+        /// @param j A posting index.
+        /// @return A bucket index.
+        int32_t postAt(int32_t j) const {
+            assert(built_ && j >= 0 && j < postOut_.size()
+                && "RejectedValidityBuckets: posting index out of the built range");
+            return postOut_[j];
+        }
+
+        /// @brief First index (into `pkAt`) of validity @p vid's run.
+        /// @param vid A NameMap validity id.
+        /// @return The run start, or 0 when no key carries @p vid (then
+        ///         `runBegin == runEnd`, an empty run — a defined result).
+        int32_t runBegin(NameId vid) const {
+            assert(built_ && "RejectedValidityBuckets: read before ensureBuilt");
+            const int32_t o = vids_.lookup(vid);
+            return o ? runStart_[o - 1] : 0;
+        }
+
+        /// @brief One past the last index of validity @p vid's run.
+        /// @param vid A NameMap validity id.
+        /// @return The run end, or 0 when no key carries @p vid.
+        int32_t runEnd(NameId vid) const {
+            assert(built_ && "RejectedValidityBuckets: read before ensureBuilt");
+            const int32_t o = vids_.lookup(vid);
+            return o ? runStart_[o] : 0;
+        }
+
+        /// @brief The packed key at bucket index @p i (`runBegin <= i < runEnd`).
+        /// @param i A bucket index.
+        /// @return The packed `(templateId, validityId)` key.
+        int64_t pkAt(int32_t i) const {
+            assert(built_ && i >= 0 && i < pks_.size()
+                && "RejectedValidityBuckets: index out of the built range");
+            return pks_[i];
+        }
+
+        /// @brief Whether `ensureBuilt` has run.
+        /// @return `true` after the first `ensureBuilt`.
+        bool built() const { return built_; }
+
+        /// @brief The map's key count at build time.
+        /// @return `count()` of the map when the index was built; -1 unbuilt.
+        int32_t countAtBuild() const { return countAtBuild_; }
+
+    private:
+        /// @brief Pack a (validity id, argument id) posting key.
+        /// @param vid   A NameMap validity id (non-negative).
+        /// @param argId A NameMap id (non-negative).
+        /// @return The packed 64-bit key, validity in the high half.
+        static int64_t postKey(NameId vid, NameId argId) {
+            return (static_cast<int64_t>(static_cast<uint32_t>(vid)) << 32)
+                 | static_cast<int64_t>(static_cast<uint32_t>(argId));
+        }
+
+        ColdHashSet<PodKeyStore<NameId>> vids_;   // validity id -> ordinal (1-based)
+        PagedVector<int32_t> runStart_;           // exclusive starts + end sentinel
+        PagedVector<int32_t> ordOf_;              // per map id: ordinal (build scratch)
+        PagedVector<int64_t> pks_;                // keys scattered by validity
+        PagedVector<int32_t> fill_;               // scatter cursors (build scratch)
+        ColdHashSet<PodKeyStore<int64_t>> postKeys_;   // (validity, arg id) -> ordinal
+        PagedVector<int32_t> postStart_;          // posting starts + end sentinel
+        PagedVector<int32_t> postOrd_;            // per posting: ordinal (build scratch)
+        PagedVector<int32_t> postIdx_;            // per posting: bucket index (build scratch)
+        PagedVector<int32_t> postLast_;           // dedup marker, then scatter cursor
+        PagedVector<int32_t> postOut_;            // bucket indices grouped by posting key
+        int32_t countAtBuild_ = -1;
+        bool built_ = false;
+    };
+
+    /// @brief Merge two ascending-unique statement-level runs into one, with
+    ///        the `{-1}` non-derived tier transparent — the level union of an
+    ///        equivalence-class product.
+    ///
+    /// @details
+    /// Leading negatives (the `{-1}` singleton tier, I-182) are skipped on
+    /// both inputs; the remaining runs are linear-merged sorted-unique. A
+    /// union whose every input was non-derived is the `{-1}` singleton again
+    /// — ground material. Byte-identical to the merge the pairwise
+    /// `applyEquivalenceClass` rewrite sink performed inline.
+    ///
+    /// @param a   First ascending-unique run (`nullptr` allowed when @p an is 0).
+    /// @param an  Length of @p a.
+    /// @param b   Second ascending-unique run (`nullptr` allowed when @p bn is 0).
+    /// @param bn  Length of @p b.
+    /// @param out Caller buffer receiving the merged run.
+    /// @param cap Capacity of @p out — a loud Rule-19 tripwire, asserted.
+    /// @return The merged run length; 0 only when both inputs are empty.
+    /// @invariant The output is ascending-unique and never mixes `-1` with a
+    ///            real level.
+    inline int32_t mergeLevelRuns(const int* a, int32_t an,
+                                  const int* b, int32_t bn,
+                                  int* out, int32_t cap) {
+        int32_t ai = 0;
+        int32_t bi = 0;
+        int32_t n = 0;
+        bool hadNonDerived = false;
+        while (ai < an && a[ai] < 0) { hadNonDerived = true; ++ai; }
+        while (bi < bn && b[bi] < 0) { hadNonDerived = true; ++bi; }
+        while (ai < an && bi < bn) {
+            assert(n < cap && "mergeLevelRuns: run exceeds caller capacity");
+            if (a[ai] < b[bi])      { out[n++] = a[ai++]; }
+            else if (b[bi] < a[ai]) { out[n++] = b[bi++]; }
+            else                    { out[n++] = a[ai++]; ++bi; }
+        }
+        while (ai < an) {
+            assert(n < cap && "mergeLevelRuns: run exceeds caller capacity");
+            out[n++] = a[ai++];
+        }
+        while (bi < bn) {
+            assert(n < cap && "mergeLevelRuns: run exceeds caller capacity");
+            out[n++] = b[bi++];
+        }
+        if (n == 0 && hadNonDerived) {
+            assert(cap >= 1 && "mergeLevelRuns: run exceeds caller capacity");
+            out[n++] = -1;
+        }
+        return n;
+    }
+
+    /// @brief The per-apply class table of the `applyEquiClasses` statement
+    ///        batch: every class of the LB with its blob view, strong-member
+    ///        run, application rank, due-from position and delta flag, plus
+    ///        the token postings `member id -> classes containing it`.
+    ///
+    /// @details
+    /// Built once per apply after the first round's hook loops — the class
+    /// state is fixed inside an apply (nothing there admits a positive
+    /// equality). The postings follow the `ReverseArgsIndex` chain idiom:
+    /// one interned entry per member id, a head cell per entry, two node
+    /// columns (`class`, `next`) — O(1) append; chain order is not
+    /// observable (every consumer re-sorts the classes it collects by
+    /// `rank`). Every FULL member posts (weak members included): a weak
+    /// member position is still a rewrite position, only the substitutes are
+    /// the strong run. The strong runs live contiguously on the arena's
+    /// byte-bump tier so `enumerateEqClassRewrites` reads them as a plain
+    /// run; the blob views alias the class store's cold pages (or a straddle
+    /// copy on the same byte-bump tier), valid for the apply because the
+    /// store is not mutated inside it. Transient: gen-scratch page tier plus
+    /// byte-bump, no deload tag, no heap (the I-130 discipline). Never open
+    /// a `ScratchScope` around `addClass` that outlives the table — the
+    /// rewind would free the strong runs.
+    ///
+    /// @invariant `dueFrom` of a class is the first registry position the
+    ///            class has not been applied to (a delta entry's `startIdx`
+    ///            for a delta class, the persistent waterline of
+    ///            `eqClassSttmntIndexMapMap` for a non-delta class); the
+    ///            batch advances it to the registry size after every round.
+    /// @see `ExpressionAnalyzer::buildEquiClassTable`,
+    ///      `ExpressionAnalyzer::collectEquiAffectedRows`.
+    class EquiClassTable {
+    public:
+        /// @brief One class of the table.
+        struct ClassRow {
+            NameId vid;             ///< The class's validity-scope id.
+            const char* blobPtr;    ///< `EquivalenceClassView` bytes (apply-transient alias).
+            int32_t blobLen;        ///< Byte length of the blob.
+            const NameId* strong;   ///< Strong-member run (weak members dropped), byte-bump tier.
+            int32_t strongCount;    ///< Length of `strong`.
+            int32_t rank;           ///< Application order: delta entries first, then Pass-2 order.
+            int64_t dueFrom;        ///< First registry position not yet applied to.
+            int32_t isDelta;        ///< 1 iff the class is a live delta entry of this apply.
+        };
+
+        /// @brief Bind to a gen-scratch arena; nothing is allocated yet.
+        ///
+        /// @param arena Page-tier gen-scratch arena (never the string arena).
+        /// @param dirty The caller's scratch `DirtyState` cell.
+        EquiClassTable(LbArena* arena, DirtyState* dirty)
+            : arena_(arena), tokens_(arena, dirty), headById_(arena, dirty),
+              nodeClass_(arena, dirty), nodeNext_(arena, dirty), rows_(arena, dirty) {
+            assert(arena != nullptr && dirty != nullptr
+                && "EquiClassTable: arena and dirty cell required");
+        }
+
+        EquiClassTable(const EquiClassTable&) = delete;
+        EquiClassTable& operator=(const EquiClassTable&) = delete;
+
+        /// @brief Add one class and post every one of its members.
+        ///
+        /// @details
+        /// Copies the strong run onto the arena's byte-bump tier (a plain
+        /// contiguous run for the rewrite enumerator) and appends one posting
+        /// node per member of @p view to that member's chain.
+        ///
+        /// @param vid     The class's validity-scope id.
+        /// @param view    The class blob view (aliased, not copied).
+        /// @param strong  The strong-member run (`reduceEqClassIds` output).
+        /// @param strongN Length of @p strong.
+        /// @param rank    Application order key (ascending).
+        /// @param dueFrom First registry position the class is due for.
+        /// @param isDelta Whether the class is a live delta entry.
+        /// @return The class index (`0 <= idx < classCount()`).
+        int32_t addClass(NameId vid, const EquivalenceClassView& view,
+                         const NameId* strong, int32_t strongN,
+                         int32_t rank, int64_t dueFrom, bool isDelta) {
+            const NameId* strongRun = nullptr;
+            if (strongN > 0) {
+                NameId* buf = reinterpret_cast<NameId*>(arena_->resolve(arena_->alloc(
+                    strongN * static_cast<int32_t>(sizeof(NameId)),
+                    static_cast<int32_t>(alignof(NameId)))));
+                std::memcpy(buf, strong, static_cast<std::size_t>(strongN) * sizeof(NameId));
+                strongRun = buf;
+            }
+            const int32_t idx = rows_.size();
+            rows_.push_back(ClassRow{ vid, view.p, view.len, strongRun, strongN,
+                                      rank, dueFrom, isDelta ? 1 : 0 });
+            const int32_t n = view.memberCount();
+            for (int32_t i = 0; i < n; ++i) {
+                const int32_t entryId = tokens_.mint(view.memberId(i));
+                assert(entryId >= 1 && "EquiClassTable::addClass: mint returned a null id");
+                while (headById_.size() < entryId) headById_.push_back(-1);
+                const int32_t oldHead = headById_[entryId - 1];
+                const int32_t node = nodeClass_.size();
+                nodeClass_.push_back(idx);
+                nodeNext_.push_back(oldHead);
+                headById_.setAt(entryId - 1, node);
+            }
+            return idx;
+        }
+
+        /// @brief Number of classes in the table.
+        /// @return The class count.
+        int32_t classCount() const { return rows_.size(); }
+
+        /// @brief The row of class @p c.
+        /// @param c A class index.
+        /// @return The row (a reference into the page-tier column).
+        const ClassRow& rowAt(int32_t c) const { return rows_[c]; }
+
+        /// @brief The blob view of class @p c.
+        /// @param c A class index.
+        /// @return The zero-copy class view.
+        EquivalenceClassView viewAt(int32_t c) const {
+            const ClassRow& r = rows_[c];
+            return EquivalenceClassView{ r.blobPtr, r.blobLen };
+        }
+
+        /// @brief Advance class @p c's due-from position.
+        /// @param c       A class index.
+        /// @param dueFrom The new first-not-applied registry position.
+        void setDueFrom(int32_t c, int64_t dueFrom) {
+            ClassRow r = rows_[c];
+            r.dueFrom = dueFrom;
+            rows_.setAt(c, r);
+        }
+
+        /// @brief Visit every class containing member @p token, once each.
+        ///
+        /// @details
+        /// A never-posted token yields nothing (a defined miss). Chain order
+        /// is not observable — consumers re-sort by `rank`.
+        ///
+        /// @tparam Sink Callable `void(int32_t classIdx)`.
+        /// @param token The member (NameMap) id.
+        /// @param sink  Invoked once per containing class.
+        template <class Sink>
+        void forEachClassContaining(NameId token, Sink&& sink) const {
+            const int32_t entryId = tokens_.lookup(token);
+            if (entryId == 0) return;
+            for (int32_t node = headById_[entryId - 1]; node != -1;
+                 node = nodeNext_[node]) {
+                sink(nodeClass_[node]);
+            }
+        }
+
+        /// @brief Whether any class contains member @p token.
+        /// @param token The member (NameMap) id.
+        /// @return True iff the token is posted.
+        bool anyClassContains(NameId token) const { return tokens_.lookup(token) != 0; }
+
+    private:
+        LbArena* arena_;
+        ColdHashSet<PodKeyStore<NameId>> tokens_;
+        PagedVector<int32_t> headById_;
+        PagedVector<int32_t> nodeClass_;
+        PagedVector<int32_t> nodeNext_;
+        PagedVector<ClassRow> rows_;
+    };
+
+    /// @brief The temporary product list of the `applyEquiClasses` statement
+    ///        batch — every rewrite product staged during one round, keyed by
+    ///        `(target scope, text)`, drained into the cold containers in one
+    ///        step after the round's closure.
+    ///
+    /// @details
+    /// Records append in staging order (never shift); the text of a record is
+    /// interned once in `texts_` under the packed key `validity id ++ text`,
+    /// which is also the batch's dedup key. Levels, justifying `(from, to)`
+    /// pairs and the product's argument ids ride flat pools addressed by
+    /// `[start, count)` runs. A `Seed` record is the registry row a closure
+    /// started from (never drained); a `Full` record commits as a new
+    /// statement plus its `equality1` row; an `OriginOnly` record (compressor
+    /// mode only) writes the history row for an already-known product. All
+    /// columns ride the apply's gen-scratch arena — page tier, no deload tag,
+    /// no heap. The key bytes are assembled on the arena's byte-bump tier
+    /// under a scope local to the call.
+    ///
+    /// @invariant Every `(target scope, text)` carries at most one `Seed` and
+    ///            at most one product record (`Full` or `OriginOnly`) — the
+    ///            first product staged wins, as the first registered wins in
+    ///            the registry; a product equal to a registry row is known at
+    ///            that scope (dropped), or in compressor mode an `OriginOnly`
+    ///            beside the row's `Seed`.
+    /// @see `ExpressionAnalyzer::stageEquiClosure`,
+    ///      `ExpressionAnalyzer::drainStagedEquiProducts`.
+    class StagedEquiProducts {
+    public:
+        /// @brief Record kinds.
+        enum Kind : int32_t { Seed = 0, Full = 1, OriginOnly = 2 };
+
+        /// @brief One staged product.
+        struct Record {
+            int32_t keyId;      ///< `texts_` id of `validity id ++ text`.
+            NameId targetVid;   ///< Deposit scope id.
+            int32_t sourceRec;  ///< Index of the record it was rewritten from (-1 for a seed).
+            int32_t classIdx;   ///< Table class that produced it (-1 for a seed).
+            int32_t levelStart; ///< Level run start in the level pool.
+            int32_t levelCount; ///< Level run length.
+            int32_t pairStart;  ///< Justifier run start in the pair pools.
+            int32_t pairCount;  ///< Justifier run length.
+            int32_t argStart;   ///< Argument-id run start in the arg pool.
+            int32_t argCount;   ///< Argument-id run length (the product's arity).
+            int32_t kind;       ///< A `Kind` value.
+        };
+
+        /// @brief Bind to a gen-scratch arena; nothing is allocated yet.
+        ///
+        /// @param arena Page-tier gen-scratch arena (never the string arena).
+        /// @param dirty The caller's scratch `DirtyState` cell.
+        StagedEquiProducts(LbArena* arena, DirtyState* dirty)
+            : arena_(arena), texts_(arena, dirty), keyFlags_(arena, dirty),
+              records_(arena, dirty), levels_(arena, dirty), pairFrom_(arena, dirty),
+              pairTo_(arena, dirty), args_(arena, dirty) {
+            assert(arena != nullptr && dirty != nullptr
+                && "StagedEquiProducts: arena and dirty cell required");
+        }
+
+        StagedEquiProducts(const StagedEquiProducts&) = delete;
+        StagedEquiProducts& operator=(const StagedEquiProducts&) = delete;
+
+        /// @brief Empty the list for the next round (the interner resets too).
+        void clear() {
+            texts_.resetToFresh();
+            keyFlags_.clear();
+            records_.clear();
+            levels_.clear();
+            pairFrom_.clear();
+            pairTo_.clear();
+            args_.clear();
+        }
+
+        /// @brief Probe whether any record carries `(targetVid, text)`.
+        /// @param targetVid The deposit scope id.
+        /// @param text      The product text.
+        /// @return True iff a record with that key exists (seed or product).
+        bool contains(NameId targetVid, StrSpan text) const {
+            return flagsOf(targetVid, text) != 0;
+        }
+
+        /// @brief Probe whether a product record (`Full` / `OriginOnly`)
+        ///        carries `(targetVid, text)` — the closure's product dedup.
+        /// @param targetVid The deposit scope id.
+        /// @param text      The product text.
+        /// @return True iff such a record exists.
+        bool hasProduct(NameId targetVid, StrSpan text) const {
+            return (flagsOf(targetVid, text) & kProductFlag) != 0;
+        }
+
+        /// @brief Probe whether a `Seed` record carries `(targetVid, text)`.
+        /// @param targetVid The deposit scope id.
+        /// @param text      The product text.
+        /// @return True iff such a record exists.
+        bool hasSeed(NameId targetVid, StrSpan text) const {
+            return (flagsOf(targetVid, text) & kSeedFlag) != 0;
+        }
+
+        /// @brief Stage one record; a second `Seed` or a second product under
+        ///        one key is asserted against (the seed rule is a registry
+        ///        uniqueness tripwire, the product rule the closure's dedup).
+        ///
+        /// @param targetVid The deposit scope id.
+        /// @param text      The product text (copied into the interner).
+        /// @param kind      A `Kind` value.
+        /// @param sourceRec The source record index (-1 for a seed).
+        /// @param classIdx  The producing table class (-1 for a seed).
+        /// @param levels    Ascending-unique level run.
+        /// @param levelN    Length of @p levels.
+        /// @param pairFrom  Justifier `from` ids (parallel to @p pairTo).
+        /// @param pairTo    Justifier `to` ids.
+        /// @param pairN     Number of justifier pairs.
+        /// @param args      The product's argument ids in position order.
+        /// @param argN      The product's arity.
+        /// @return The new record's index.
+        int32_t stage(NameId targetVid, StrSpan text, int32_t kind,
+                      int32_t sourceRec, int32_t classIdx,
+                      const int* levels, int32_t levelN,
+                      const NameId* pairFrom, const NameId* pairTo, int32_t pairN,
+                      const NameId* args, int32_t argN) {
+            int32_t keyId = 0;
+            {
+                ScratchScope keyScope(*arena_);
+                keyId = texts_.mint(makeKey(targetVid, text));
+            }
+            while (keyFlags_.size() < keyId) keyFlags_.push_back(0);
+            const uint8_t flag = (kind == Seed) ? kSeedFlag : kProductFlag;
+            assert((keyFlags_[keyId - 1] & flag) == 0
+                && "StagedEquiProducts::stage: a seed or a product is already staged under this key");
+            keyFlags_.setAt(keyId - 1, static_cast<uint8_t>(keyFlags_[keyId - 1] | flag));
+            Record r;
+            r.keyId = keyId;
+            r.targetVid = targetVid;
+            r.sourceRec = sourceRec;
+            r.classIdx = classIdx;
+            r.levelStart = levels_.size();
+            r.levelCount = levelN;
+            for (int32_t k = 0; k < levelN; ++k) levels_.push_back(levels[k]);
+            r.pairStart = pairFrom_.size();
+            r.pairCount = pairN;
+            for (int32_t k = 0; k < pairN; ++k) {
+                pairFrom_.push_back(pairFrom[k]);
+                pairTo_.push_back(pairTo[k]);
+            }
+            r.argStart = args_.size();
+            r.argCount = argN;
+            for (int32_t k = 0; k < argN; ++k) args_.push_back(args[k]);
+            r.kind = kind;
+            records_.push_back(r);
+            return records_.size() - 1;
+        }
+
+        /// @brief Number of staged records (seeds included).
+        /// @return The record count.
+        int32_t count() const { return records_.size(); }
+
+        /// @brief The record at index @p i.
+        /// @param i A record index.
+        /// @return The record.
+        const Record& recordAt(int32_t i) const { return records_[i]; }
+
+        /// @brief The text of record @p i (the key without its scope prefix).
+        /// @param i A record index.
+        /// @return A span into the interner's byte pool (stable until `clear`).
+        StrSpan textAt(int32_t i) const {
+            const StrSpan k = texts_.keyAt(records_[i].keyId);
+            return StrSpan(k.ptr + sizeof(NameId),
+                           k.len - static_cast<int32_t>(sizeof(NameId)));
+        }
+
+        /// @brief Copy record @p i's level run into a caller buffer.
+        /// @param i   A record index.
+        /// @param out Caller buffer.
+        /// @param cap Capacity of @p out (asserted).
+        /// @return The run length.
+        int32_t copyLevels(int32_t i, int* out, int32_t cap) const {
+            const Record& r = records_[i];
+            assert(r.levelCount <= cap && "StagedEquiProducts::copyLevels: run exceeds capacity");
+            for (int32_t k = 0; k < r.levelCount; ++k) out[k] = levels_[r.levelStart + k];
+            return r.levelCount;
+        }
+
+        /// @brief Justifier `from` id @p k of record @p i.
+        /// @param i A record index.
+        /// @param k Pair index in `[0, pairCount)`.
+        /// @return The id.
+        NameId pairFromAt(int32_t i, int32_t k) const {
+            return pairFrom_[records_[i].pairStart + k];
+        }
+
+        /// @brief Justifier `to` id @p k of record @p i.
+        /// @param i A record index.
+        /// @param k Pair index in `[0, pairCount)`.
+        /// @return The id.
+        NameId pairToAt(int32_t i, int32_t k) const {
+            return pairTo_[records_[i].pairStart + k];
+        }
+
+        /// @brief Argument id @p k of record @p i.
+        /// @param i A record index.
+        /// @param k Position in `[0, argCount)`.
+        /// @return The id.
+        NameId argAt(int32_t i, int32_t k) const {
+            return args_[records_[i].argStart + k];
+        }
+
+    private:
+        static constexpr uint8_t kSeedFlag = 1;
+        static constexpr uint8_t kProductFlag = 2;
+
+        /// @brief The seed / product flags of a key, 0 when never staged.
+        /// @param vid  The scope id.
+        /// @param text The product text.
+        /// @return The flag byte.
+        uint8_t flagsOf(NameId vid, StrSpan text) const {
+            ScratchScope keyScope(*arena_);
+            const int32_t keyId = texts_.lookup(makeKey(vid, text));
+            return keyId == 0 ? 0 : keyFlags_[keyId - 1];
+        }
+
+        /// @brief Assemble the packed key `validity id ++ text` on the byte-bump tier.
+        /// @param vid  The scope id.
+        /// @param text The product text.
+        /// @return The key span (valid until the caller's scope rewinds).
+        StrSpan makeKey(NameId vid, StrSpan text) const {
+            const int32_t n = static_cast<int32_t>(sizeof(NameId)) + text.len;
+            char* buf = arena_->allocBytes(n);
+            std::memcpy(buf, &vid, sizeof(NameId));
+            if (text.len > 0) {
+                std::memcpy(buf + sizeof(NameId), text.ptr,
+                            static_cast<std::size_t>(text.len));
+            }
+            return StrSpan(buf, n);
+        }
+
+        LbArena* arena_;
+        ColdHashSet<BytesKeyStore> texts_;
+        PagedVector<uint8_t> keyFlags_;
+        PagedVector<Record> records_;
+        PagedVector<int> levels_;
+        PagedVector<NameId> pairFrom_;
+        PagedVector<NameId> pairTo_;
+        PagedVector<NameId> args_;
+    };
+
     /// @brief Snapshot a rejected key's value run as verbatim blob copies +
     ///        zero-decode views on a gen-scratch arena.
     ///
@@ -12866,9 +14002,9 @@ namespace gl {
     /// The id-run twin of `insertAdmissionValue`: instead of taking a heap
     /// `AdmissionMapValue` (two `std::vector<int32_t>` spines), it serializes
     /// the `Codec<AdmissionMapValue>` byte layout DIRECTLY from two
-    /// caller-owned id runs (`17 + 4*(keyCount+remCount)` closed-form length,
-    /// the identical `put` sequence — depth, sec, flag, keyCount + key ids,
-    /// remCount + remainingArgs ids), then splices via
+    /// caller-owned id runs (`18 + 4*(keyCount+remCount)` closed-form length,
+    /// the identical `put` sequence — depth, sec, flag, ordisOnly, keyCount +
+    /// key ids, remCount + remainingArgs ids), then splices via
     /// `insertAdmissionBlobSorted`. No minting occurs inside the door — the ids
     /// arrive already interned, so the CALLER owns the mint order (frozen by
     /// its pinning test). Byte-identical blob bytes ⇒ identical
@@ -12890,6 +14026,8 @@ namespace gl {
     ///                 read-only — no mint here).
     /// @param gArena   The per-slot gen-scratch arena for the blob + the splice
     ///                 copies; reclaimed by this function's own mark/popTo.
+    /// @param ordisOnly The value's `ordisOnly` tag (defaults false — every
+    ///                 pre-existing caller deposits a regular value).
     /// @invariant No mint inside the door — the ids come in; the caller's mint
     ///            order is the byte-transparent contract.
     /// @see `insertAdmissionValue` — the value-form sibling + test oracle;
@@ -12899,12 +14037,13 @@ namespace gl {
         int32_t depth, int32_t sec, bool flag,
         const int32_t* keyIds, int32_t keyCount,
         const int32_t* remIds, int32_t remCount,
-        const ValueInterner& vi, ScratchArena& gArena)
+        const ValueInterner& vi, ScratchArena& gArena,
+        bool ordisOnly = false)
     {
         assert(keyCount >= 0 && (keyCount == 0 || keyIds != nullptr));
         assert(remCount >= 0 && (remCount == 0 || remIds != nullptr));
         const ArenaOffset mark = gArena.cursor();
-        const int32_t len = 17 + 4 * (keyCount + remCount);
+        const int32_t len = 18 + 4 * (keyCount + remCount);
         char* out = reinterpret_cast<char*>(gArena.resolve(gArena.alloc(len, 1)));
         char* at = out;
         const auto put = [&at](const auto& x) {
@@ -12914,6 +14053,7 @@ namespace gl {
         put(depth);
         put(sec);
         put(static_cast<uint8_t>(flag ? 1 : 0));
+        put(static_cast<uint8_t>(ordisOnly ? 1 : 0));
         put(keyCount);
         for (int32_t i = 0; i < keyCount; ++i) put(keyIds[i]);
         put(remCount);
@@ -12989,6 +14129,813 @@ namespace gl {
         assert(at == out + len
             && "insertRejectedIdsBlob: fill diverged from the closed-form length");
         insertRejectedBlobSorted(m, pk, out, len, vi, gArena);
+        gArena.popTo(mark);
+    }
+
+    /// @brief Record codec for `RejectedMapOrdisValue` — a `rejectedMapOrdis`
+    ///        set member.
+    ///
+    /// @details
+    /// Layout: `orStatement` (int32 @0), then `levels` (int32 count + int32
+    /// each, ascending set order). Mirror of `Codec<RejectedMapValue>` for
+    /// the parked-cohort record.
+    ///
+    /// @see `RejectedMapOrdisValue`, `Codec`.
+    template <>
+    struct Codec<RejectedMapOrdisValue> {
+        /// @brief Serialize a value to its canonical blob.
+        ///
+        /// @param v The value.
+        /// @return The byte blob.
+        static std::vector<char> serialize(const RejectedMapOrdisValue& v) {
+            std::vector<char> out;
+            const auto put = [&out](const auto& x) {
+                const char* p = reinterpret_cast<const char*>(&x);
+                out.insert(out.end(), p, p + sizeof(x));
+            };
+            put(v.orStatement);
+            put(static_cast<int32_t>(v.levels.size()));
+            for (const int lev : v.levels) put(static_cast<int32_t>(lev));
+            return out;
+        }
+
+        /// @brief Deserialize a value from its blob.
+        ///
+        /// @param data Blob bytes.
+        /// @param n    Blob length.
+        /// @return The decoded value.
+        static RejectedMapOrdisValue deserialize(const char* data, int32_t n) {
+            RejectedMapOrdisValue v;
+            const char* cur = data;
+            const char* const end = data + n;
+            const auto get = [&cur, end](auto& x) {
+                assert(cur + sizeof(x) <= end
+                    && "Codec<RejectedMapOrdisValue>: blob shorter than the layout");
+                std::memcpy(&x, cur, sizeof(x));
+                cur += sizeof(x);
+            };
+            get(v.orStatement);
+            int32_t lc = 0; get(lc);
+            for (int32_t i = 0; i < lc; ++i) {
+                int32_t lev = 0; get(lev); v.levels.insert(static_cast<int>(lev));
+            }
+            assert(cur == end
+                && "Codec<RejectedMapOrdisValue>: blob longer than the layout");
+            return v;
+        }
+    };
+
+    /// @brief Zero-decode reader over one serialized `RejectedMapOrdisValue`
+    ///        blob — fixed-offset field peeks plus the variable levels
+    ///        section, no record materialized.
+    ///
+    /// @details
+    /// `Codec<RejectedMapOrdisValue>` writes `orStatement` (int32 @0), then
+    /// `levelCount` (int32 @4) + levels (int32 each, ascending set order).
+    /// Every read goes through `std::memcpy` (unaligned pool bytes).
+    /// Layout-coupled to `Codec<RejectedMapOrdisValue>`: the two are edited
+    /// together, exactly as `RejectedValueBlobView` mirrors
+    /// `Codec<RejectedMapValue>`.
+    ///
+    /// @invariant Construction asserts the exact frame
+    ///            `len == 8 + 4*levelCount` — the view twin of the codec's
+    ///            `cur == end` asserts (Rule 19).
+    /// @see `Codec<RejectedMapOrdisValue>`, `RejectedValueBlobView`,
+    ///      `rejectedOrdisBlobLess`, `insertRejectedOrdisBlobSorted`.
+    struct RejectedOrdisValueBlobView {
+        const char* p;
+        int32_t len;
+
+        /// @brief Construct over one blob's bytes, asserting the exact frame.
+        ///
+        /// @param p_   The blob's bytes (a `peekRecordBytes` span or a
+        ///             verbatim gen-arena copy).
+        /// @param len_ The blob's byte length.
+        RejectedOrdisValueBlobView(const char* p_, int32_t len_)
+            : p(p_), len(len_) {
+            assert(len >= 8
+                && "RejectedOrdisValueBlobView: blob shorter than the fixed prefix");
+            const int32_t lc = levelCount();
+            assert(lc >= 0 && len == 8 + 4 * lc
+                && "RejectedOrdisValueBlobView: blob length does not match the layout");
+        }
+
+        /// @brief Read one int32 field at a byte offset (unaligned-safe).
+        ///
+        /// @param off The byte offset into the blob.
+        /// @return The int32 at `off`.
+        int32_t readI32(int32_t off) const {
+            assert(off >= 0 && off + 4 <= len
+                && "RejectedOrdisValueBlobView: read past the blob");
+            int32_t v;
+            std::memcpy(&v, p + off, sizeof(v));
+            return v;
+        }
+
+        /// @brief The parked or statement's value-interner id.
+        /// @return The int32 at offset 0.
+        int32_t orStatementId() const { return readI32(0); }
+
+        /// @brief The level count.
+        /// @return The int32 at offset 4.
+        int32_t levelCount() const { return readI32(4); }
+
+        /// @brief Level `i` of the run (ascending set order).
+        ///
+        /// @param i The level index; asserted `0 <= i < levelCount()`.
+        /// @return The int32 at offset `8 + 4*i`.
+        int32_t levelAt(int32_t i) const {
+            assert(i >= 0 && i < levelCount()
+                && "RejectedOrdisValueBlobView::levelAt: index out of range");
+            return readI32(8 + 4 * i);
+        }
+    };
+
+    /// @brief Decoded-order less-than over two `RejectedMapOrdisValue` blobs
+    ///        — the zero-decode twin of `DecodedRejectedOrdisValueLess`.
+    ///
+    /// @details
+    /// Field order exactly as `DecodedRejectedOrdisValueLess::operator()`:
+    /// `orStatement` (id-inequality gate then the decoded compare), then
+    /// `levels` (int-wise lex over the ascending runs, shorter-prefix-first
+    /// — the `std::set<int>::operator<` twin). Distinct ids decoding to
+    /// equal bytes are impossible (the interner dedups) and assert.
+    ///
+    /// @param a  First blob view.
+    /// @param b  Second blob view.
+    /// @param vi The owning LB's value interner (read-only).
+    /// @return `true` iff decoded @p a orders before decoded @p b.
+    /// @invariant Comparator-equal implies blob-byte-equal (every compared
+    ///            field is a POD int or an injective interner id).
+    /// @see `DecodedRejectedOrdisValueLess` — the heap-set oracle;
+    ///      `insertRejectedOrdisBlobSorted`.
+    inline bool rejectedOrdisBlobLess(const RejectedOrdisValueBlobView& a,
+        const RejectedOrdisValueBlobView& b, const ValueInterner& vi)
+    {
+        if (a.orStatementId() != b.orStatementId()) {
+            const int c = compareSpans(vi.decodeView(a.orStatementId()),
+                                       vi.decodeView(b.orStatementId()));
+            assert(c != 0
+                && "distinct value ids decode to equal bytes — interner "
+                   "injectivity broken");
+            return c < 0;
+        }
+        const int32_t la = a.levelCount();
+        const int32_t lb = b.levelCount();
+        const int32_t n = la < lb ? la : lb;
+        for (int32_t i = 0; i < n; ++i) {
+            const int32_t xa = a.levelAt(i);
+            const int32_t yb = b.levelAt(i);
+            if (xa != yb) return xa < yb;
+        }
+        return la < lb;
+    }
+
+    /// @brief Serialize one `RejectedMapOrdisValue` onto a gen-scratch
+    ///        byte-bump frame — the arena twin of
+    ///        `Codec<RejectedMapOrdisValue>::serialize`.
+    ///
+    /// @details
+    /// Writes the identical byte layout (`orStatement`, `levelCount` +
+    /// ascending levels) with the identical `put` sequence into one
+    /// `alloc(len, 1)` run; the closed-form length is computed first and the
+    /// exact-fill asserted. No heap `std::vector<char>` is materialized.
+    ///
+    /// @param gArena The per-slot gen-scratch arena the blob bytes land on;
+    ///               the caller owns the surrounding mark/popTo frame.
+    /// @param v      The value to serialize.
+    /// @return Span over the freshly written blob (valid until the caller's
+    ///         `popTo` past it).
+    /// @see `Codec<RejectedMapOrdisValue>` — the byte-layout owner;
+    ///      `insertRejectedOrdisValue` — the RMW wrapper feeding the splice.
+    inline StrSpan serializeRejectedOrdisValueToArena(ScratchArena& gArena,
+        const RejectedMapOrdisValue& v)
+    {
+        const int32_t lc = static_cast<int32_t>(v.levels.size());
+        const int32_t len = 8 + 4 * lc;
+        char* out = reinterpret_cast<char*>(gArena.resolve(gArena.alloc(len, 1)));
+        char* at = out;
+        const auto put = [&at](const auto& x) {
+            std::memcpy(at, &x, sizeof(x));
+            at += sizeof(x);
+        };
+        put(v.orStatement);
+        put(lc);
+        for (const int lev : v.levels) put(static_cast<int32_t>(lev));
+        assert(at == out + len
+            && "serializeRejectedOrdisValueToArena: fill diverged from the "
+               "closed-form length");
+        return StrSpan(out, len);
+    }
+
+    /// @brief Splice one serialized `RejectedMapOrdisValue` blob into a
+    ///        parked key's canonical run at blob level — the D-172 RMW
+    ///        interior for `rejectedMapOrdis`.
+    ///
+    /// @details
+    /// Byte-for-byte the `insertRejectedBlobSorted` procedure with the ordis
+    /// record types: verbatim gen-arena copies of the existing run
+    /// (copy-before-`assignRun`), positional insert under the
+    /// `rejectedOrdisBlobLess` comparator twin, duplicate ⟺ byte-equal by
+    /// interner injectivity (asserted — the RMW also dedups re-parks of the
+    /// same statement), unconditional write-back through the raw
+    /// `inner().assignRun` byte door with the same block-straddle widening
+    /// path. Mints `pk` on first touch. Single-threaded write side only
+    /// (I-83).
+    ///
+    /// @param m       The cold parked-cohort blob map.
+    /// @param pk      The packed (templateId, validityId) key.
+    /// @param newBlob The new value's serialized blob bytes.
+    /// @param newLen  The new blob's byte length.
+    /// @param vi      The owning LB's value interner (comparator state,
+    ///                read-only).
+    /// @param gArena  The per-slot gen-scratch arena; reclaimed by this
+    ///                function's own mark/popTo.
+    /// @invariant The written run is canonical under
+    ///            `DecodedRejectedOrdisValueLess` (I-99).
+    /// @see `insertRejectedOrdisValue` — the value-form wrapper;
+    ///      `rejectedOrdisBlobLess`, `insertRejectedBlobSorted` — the
+    ///      discipline template.
+    inline void insertRejectedOrdisBlobSorted(
+        TypedColdBlobMap<int64_t, RejectedMapOrdisValue>& m,
+        int64_t pk, const char* newBlob, int32_t newLen,
+        const ValueInterner& vi, ScratchArena& gArena)
+    {
+        const ArenaOffset mark = gArena.cursor();
+        struct BlobRec { ArenaOffset off; int32_t len; };
+        DirtyState recsDirty = DirtyState::Clean;
+        PagedVector<BlobRec> recs(&gArena, &recsDirty);
+        const int32_t id = m.lookup(pk);
+        if (id != 0) {
+            const int32_t rl = m.runLen(id);
+            for (int32_t j = 0; j < rl; ++j) {
+                int32_t bl = 0;
+                const char* bp = m.peekRecordBytes(id, j, bl, gArena);
+                const ArenaOffset coff = gArena.alloc(bl, 1);
+                std::memcpy(gArena.resolve(coff), bp,
+                            static_cast<std::size_t>(bl));
+                recs.push_back(BlobRec{ coff, bl });
+            }
+        }
+        const RejectedOrdisValueBlobView nv(newBlob, newLen);
+        const int32_t M = recs.size();
+        int32_t pos = 0;
+        bool dup = false;
+        for (; pos < M; ++pos) {
+            const BlobRec br = recs[pos];
+            const RejectedOrdisValueBlobView ev(
+                reinterpret_cast<const char*>(gArena.resolve(br.off)), br.len);
+            if (rejectedOrdisBlobLess(ev, nv, vi)) continue;  // existing < new
+            if (!rejectedOrdisBlobLess(nv, ev, vi)) {
+                dup = (br.len == newLen)
+                    && std::memcmp(gArena.resolve(br.off), newBlob,
+                                   static_cast<std::size_t>(newLen)) == 0;
+                assert(dup
+                    && "comparator-equal ordis blobs differ in bytes — "
+                       "interner injectivity broken");
+            }
+            break;
+        }
+        const int32_t outCount = dup ? M : M + 1;
+        int64_t total = 0;
+        for (int32_t j = 0; j < M; ++j) total += recs[j].len;
+        if (!dup) total += newLen;
+        if (total > ExecutionParameters::kMaxAdmissionRunBytes) {
+            const int32_t wid = m.inner().assignRun(pk, nullptr, nullptr, 0);
+            for (int32_t j = 0; j <= M; ++j) {
+                if (!dup && j == pos)
+                    m.inner().appendBlobToRun(wid, newBlob, newLen);
+                if (j == M) break;
+                const BlobRec br = recs[j];
+                m.inner().appendBlobToRun(wid, gArena.resolve(br.off), br.len);
+            }
+            gArena.popTo(mark);
+            return;
+        }
+        const ArenaOffset concatOff =
+            gArena.alloc(static_cast<int32_t>(total), 1);
+        const ArenaOffset lensOff = gArena.alloc(
+            outCount * static_cast<int32_t>(sizeof(int32_t)),
+            static_cast<int32_t>(alignof(int32_t)));
+        char* concat = reinterpret_cast<char*>(gArena.resolve(concatOff));
+        int32_t* lens =
+            reinterpret_cast<int32_t*>(gArena.resolve(lensOff));
+        int32_t at = 0;
+        int32_t oi = 0;
+        for (int32_t j = 0; j <= M; ++j) {
+            if (!dup && j == pos) {
+                std::memcpy(concat + at, newBlob,
+                            static_cast<std::size_t>(newLen));
+                lens[oi++] = newLen;
+                at += newLen;
+            }
+            if (j == M) break;
+            const BlobRec br = recs[j];
+            std::memcpy(concat + at, gArena.resolve(br.off),
+                        static_cast<std::size_t>(br.len));
+            lens[oi++] = br.len;
+            at += br.len;
+        }
+        assert(oi == outCount && at == static_cast<int32_t>(total)
+            && "insertRejectedOrdisBlobSorted: concatenation diverged from "
+               "the computed frame");
+        m.inner().assignRun(pk, concat, lens, outCount);
+        gArena.popTo(mark);
+    }
+
+    /// @brief Decode a parked key's whole value run into its sorted set form
+    ///        — the cold blob map read snapshot.
+    ///
+    /// @details
+    /// Mirror of `rejectedRecordsAt` for `rejectedMapOrdis` (same comparator
+    /// discipline, same defined-miss contract). Test oracle + dump reader.
+    ///
+    /// @param m  The cold parked-cohort blob map.
+    /// @param pk The packed (templateId, validityId) key.
+    /// @param vi The owning LB's value interner (the comparator's state).
+    /// @return The key's value set; empty when `pk` was never minted.
+    inline RejectedOrdisValueSet rejectedOrdisRecordsAt(
+        const TypedColdBlobMap<int64_t, RejectedMapOrdisValue>& m,
+        int64_t pk, const ValueInterner& vi)
+    {
+        RejectedOrdisValueSet s(DecodedRejectedOrdisValueLess{ &vi });
+        const int32_t id = m.lookup(pk);
+        if (id != 0) {
+            const std::vector<RejectedMapOrdisValue> run = m.recordsAt(id);
+            for (const RejectedMapOrdisValue& r : run) s.insert(r);
+        }
+        return s;
+    }
+
+    /// @brief A read-only snapshot of one parked key's value run — an array
+    ///        of zero-decode @ref RejectedOrdisValueBlobView over verbatim
+    ///        blob copies on a gen-scratch arena.
+    ///
+    /// @invariant The struct owns nothing — `views` and the copied bytes ride
+    ///            the snapshotting arena. `count == 0` for a never-minted key
+    ///            is a defined query result (Rule 19).
+    /// @see rejectedOrdisRecordsAt — the retained heap-set oracle;
+    ///      RejectedOrdisValueBlobView, snapshotRejectedOrdisRun.
+    struct RejectedOrdisRunSnapshot {
+        const RejectedOrdisValueBlobView* views;
+        int32_t count;
+    };
+
+    /// @brief Snapshot a parked key's value run as verbatim blob copies +
+    ///        zero-decode views on a gen-scratch arena.
+    ///
+    /// @details
+    /// Byte-for-byte the @ref snapshotRejectedRun body for
+    /// `rejectedMapOrdis` — the copy-before-loop discipline (09b pitfall 6,
+    /// I-99) for the revival's snapshot→erase→process walk and the
+    /// equi-class hook. Mints nothing; a never-minted key yields
+    /// `{ nullptr, 0 }`.
+    ///
+    /// @param m      The cold parked-cohort blob map (read-only here).
+    /// @param pk     The packed `(templateId, validityId)` key.
+    /// @param gArena The caller's gen-scratch arena (byte-bump tier);
+    ///               reclaimed by the caller's `popTo` / task-exit
+    ///               `releaseAll`.
+    /// @return `{ views, count }` — non-owning views over the arena copies.
+    /// @invariant Copies survive any later mutation of @p m (I-99).
+    /// @see rejectedOrdisRecordsAt — the retained heap oracle;
+    ///      RejectedOrdisRunSnapshot, snapshotRejectedRun.
+    inline RejectedOrdisRunSnapshot snapshotRejectedOrdisRun(
+        const TypedColdBlobMap<int64_t, RejectedMapOrdisValue>& m,
+        int64_t pk, ScratchArena& gArena)
+    {
+        const int32_t id = m.lookup(pk);
+        const int32_t runN = id ? m.runLen(id) : 0;
+        if (runN == 0) return RejectedOrdisRunSnapshot{ nullptr, 0 };
+        RejectedOrdisValueBlobView* views =
+            reinterpret_cast<RejectedOrdisValueBlobView*>(
+                gArena.resolve(gArena.alloc(
+                    runN * static_cast<int32_t>(sizeof(RejectedOrdisValueBlobView)),
+                    static_cast<int32_t>(alignof(RejectedOrdisValueBlobView)))));
+        for (int32_t j = 0; j < runN; ++j) {
+            int32_t bl = 0;
+            const char* bp = m.peekRecordBytes(id, j, bl, gArena);
+            const ArenaOffset off = gArena.alloc(bl, 1);
+            std::memcpy(gArena.resolve(off), bp, static_cast<std::size_t>(bl));
+            new (&views[j]) RejectedOrdisValueBlobView(gArena.resolve(off), bl);
+        }
+        return RejectedOrdisRunSnapshot{ views, runN };
+    }
+
+    /// @brief Read-modify-write one `RejectedMapOrdisValue` into a parked
+    ///        key's run, preserving sorted-unique (`std::set`) semantics.
+    ///
+    /// @details
+    /// Mirror of `insertRejectedValue` for `rejectedMapOrdis`: serialize onto
+    /// the caller's gen-scratch frame (`serializeRejectedOrdisValueToArena`)
+    /// and splice into the canonical run at blob level
+    /// (`insertRejectedOrdisBlobSorted`). The RMW dedup also collapses
+    /// re-parks of the same statement + levels. Mints `pk` on first touch.
+    /// Single-threaded write side only (I-83). This and the revival's
+    /// consume-erase are the only `rejectedMapOrdis` writers — the
+    /// equi-class hook never writes it directly (I-37).
+    ///
+    /// @param m      The cold parked-cohort blob map.
+    /// @param pk     The packed (templateId, validityId) key.
+    /// @param value  The value to insert (sorted + deduped into the run).
+    /// @param vi     The owning LB's value interner (the comparator's state).
+    /// @param gArena The caller's per-slot gen-scratch arena; reclaimed by
+    ///               this function's own mark/popTo.
+    inline void insertRejectedOrdisValue(
+        TypedColdBlobMap<int64_t, RejectedMapOrdisValue>& m,
+        int64_t pk, const RejectedMapOrdisValue& value, const ValueInterner& vi,
+        ScratchArena& gArena)
+    {
+        const ArenaOffset mark = gArena.cursor();
+        const StrSpan blob = serializeRejectedOrdisValueToArena(gArena, value);
+        insertRejectedOrdisBlobSorted(m, pk, blob.ptr, blob.len, vi, gArena);
+        gArena.popTo(mark);
+    }
+
+    /// @brief Deposit one parked-cohort value from a PRE-MINTED statement id
+    ///        + level run — the value-object-free door onto the ordis blob
+    ///        splice.
+    ///
+    /// @details
+    /// The id-run twin of `insertRejectedOrdisValue`: serializes the
+    /// `Codec<RejectedMapOrdisValue>` byte layout DIRECTLY from the caller's
+    /// id + ascending-unique level run (`8 + 4*levelCount` closed-form
+    /// length, the identical `put` sequence), then splices via
+    /// `insertRejectedOrdisBlobSorted`. No minting occurs inside the door.
+    ///
+    /// @param m           The cold parked-cohort blob map.
+    /// @param pk          The packed (templateId, validityId) key.
+    /// @param orStatement The parked or statement's value-interner id.
+    /// @param levels      Ascending-unique level run; null iff
+    ///                    `levelCount == 0` (asserted, I-136).
+    /// @param levelCount  The level count (`>= 0`).
+    /// @param vi          The owning LB's value interner (comparator state,
+    ///                    read-only — no mint here).
+    /// @param gArena      The per-slot gen-scratch arena; reclaimed by this
+    ///                    function's own mark/popTo.
+    /// @invariant No mint inside the door — the ids come in.
+    /// @see `insertRejectedOrdisValue` — the value-form sibling + test
+    ///      oracle; `serializeRejectedOrdisValueToArena`,
+    ///      `insertRejectedOrdisBlobSorted`.
+    inline void insertRejectedOrdisIdsBlob(
+        TypedColdBlobMap<int64_t, RejectedMapOrdisValue>& m, int64_t pk,
+        int32_t orStatement,
+        const int* levels, int32_t levelCount,
+        const ValueInterner& vi, ScratchArena& gArena)
+    {
+        assert(levelCount >= 0 && (levelCount == 0 || levels != nullptr));
+        const ArenaOffset mark = gArena.cursor();
+        const int32_t len = 8 + 4 * levelCount;
+        char* out = reinterpret_cast<char*>(gArena.resolve(gArena.alloc(len, 1)));
+        char* at = out;
+        const auto put = [&at](const auto& x) {
+            std::memcpy(at, &x, sizeof(x));
+            at += sizeof(x);
+        };
+        put(orStatement);
+        put(levelCount);
+        for (int32_t i = 0; i < levelCount; ++i) {
+            assert((i == 0 || levels[i] > levels[i - 1])
+                && "insertRejectedOrdisIdsBlob: levels must be ascending "
+                   "strictly-unique");
+            put(static_cast<int32_t>(levels[i]));
+        }
+        assert(at == out + len
+            && "insertRejectedOrdisIdsBlob: fill diverged from the "
+               "closed-form length");
+        insertRejectedOrdisBlobSorted(m, pk, out, len, vi, gArena);
+        gArena.popTo(mark);
+    }
+
+    /// @brief Record codec for `AdmissionMapOrdis2Value` — an
+    ///        `admissionMapOrdis2` set member.
+    ///
+    /// @details
+    /// Layout: `sourceImplId` (int32 @0), then `levels` (int32 count + int32
+    /// each, ascending set order). Byte-shape identical to
+    /// `Codec<RejectedMapOrdisValue>`; the two families stay verbatim twins.
+    ///
+    /// @see `AdmissionMapOrdis2Value`, `Codec`.
+    template <>
+    struct Codec<AdmissionMapOrdis2Value> {
+        /// @brief Serialize a value to its canonical blob.
+        ///
+        /// @param v The value.
+        /// @return The byte blob.
+        static std::vector<char> serialize(const AdmissionMapOrdis2Value& v) {
+            std::vector<char> out;
+            const auto put = [&out](const auto& x) {
+                const char* p = reinterpret_cast<const char*>(&x);
+                out.insert(out.end(), p, p + sizeof(x));
+            };
+            put(v.sourceImplId);
+            put(static_cast<int32_t>(v.levels.size()));
+            for (const int lev : v.levels) put(static_cast<int32_t>(lev));
+            return out;
+        }
+
+        /// @brief Deserialize a value from its blob.
+        ///
+        /// @param data Blob bytes.
+        /// @param n    Blob length.
+        /// @return The decoded value.
+        static AdmissionMapOrdis2Value deserialize(const char* data, int32_t n) {
+            AdmissionMapOrdis2Value v;
+            const char* cur = data;
+            const char* const end = data + n;
+            const auto get = [&cur, end](auto& x) {
+                assert(cur + sizeof(x) <= end
+                    && "Codec<AdmissionMapOrdis2Value>: blob shorter than the layout");
+                std::memcpy(&x, cur, sizeof(x));
+                cur += sizeof(x);
+            };
+            get(v.sourceImplId);
+            int32_t lc = 0; get(lc);
+            for (int32_t i = 0; i < lc; ++i) {
+                int32_t lev = 0; get(lev); v.levels.insert(static_cast<int>(lev));
+            }
+            assert(cur == end
+                && "Codec<AdmissionMapOrdis2Value>: blob longer than the layout");
+            return v;
+        }
+    };
+
+    /// @brief Zero-decode reader over one serialized `AdmissionMapOrdis2Value`
+    ///        blob — fixed-offset field peeks plus the variable levels
+    ///        section, no record materialized.
+    ///
+    /// @details
+    /// `Codec<AdmissionMapOrdis2Value>` writes `sourceImplId` (int32 @0), then
+    /// `levelCount` (int32 @4) + levels (int32 each, ascending set order).
+    /// Layout-coupled to `Codec<AdmissionMapOrdis2Value>`: the two are edited
+    /// together, exactly as `RejectedOrdisValueBlobView` mirrors its codec.
+    ///
+    /// @invariant Construction asserts the exact frame
+    ///            `len == 8 + 4*levelCount` (Rule 19).
+    /// @see `Codec<AdmissionMapOrdis2Value>`, `admissionOrdis2BlobLess`,
+    ///      `insertAdmissionOrdis2BlobSorted`.
+    struct AdmissionOrdis2ValueBlobView {
+        const char* p;
+        int32_t len;
+
+        /// @brief Construct over one blob's bytes, asserting the exact frame.
+        ///
+        /// @param p_   The blob's bytes (a `peekRecordBytes` span or a
+        ///             verbatim gen-arena copy).
+        /// @param len_ The blob's byte length.
+        AdmissionOrdis2ValueBlobView(const char* p_, int32_t len_)
+            : p(p_), len(len_) {
+            assert(len >= 8
+                && "AdmissionOrdis2ValueBlobView: blob shorter than the fixed prefix");
+            const int32_t lc = levelCount();
+            assert(lc >= 0 && len == 8 + 4 * lc
+                && "AdmissionOrdis2ValueBlobView: blob length does not match the layout");
+        }
+
+        /// @brief Read one int32 field at a byte offset (unaligned-safe).
+        ///
+        /// @param off The byte offset into the blob.
+        /// @return The int32 at `off`.
+        int32_t readI32(int32_t off) const {
+            assert(off >= 0 && off + 4 <= len
+                && "AdmissionOrdis2ValueBlobView: read past the blob");
+            int32_t v;
+            std::memcpy(&v, p + off, sizeof(v));
+            return v;
+        }
+
+        /// @brief The demanding rule's rule-interner id.
+        /// @return The int32 at offset 0.
+        int32_t sourceImplId() const { return readI32(0); }
+
+        /// @brief The level count.
+        /// @return The int32 at offset 4.
+        int32_t levelCount() const { return readI32(4); }
+
+        /// @brief Level `i` of the run (ascending set order).
+        ///
+        /// @param i The level index; asserted `0 <= i < levelCount()`.
+        /// @return The int32 at offset `8 + 4*i`.
+        int32_t levelAt(int32_t i) const {
+            assert(i >= 0 && i < levelCount()
+                && "AdmissionOrdis2ValueBlobView::levelAt: index out of range");
+            return readI32(8 + 4 * i);
+        }
+    };
+
+    /// @brief Decoded-order less-than over two `AdmissionMapOrdis2Value`
+    ///        blobs — the zero-decode twin of `DecodedAdmissionOrdis2ValueLess`.
+    ///
+    /// @details
+    /// Field order exactly as `DecodedAdmissionOrdis2ValueLess::operator()`:
+    /// `sourceImplId` (id-inequality gate then the decoded compare via the
+    /// RULE interner), then `levels` (int-wise lex over the ascending runs,
+    /// shorter-prefix-first — the `std::set<int>::operator<` twin).
+    ///
+    /// @param a  First blob view.
+    /// @param b  Second blob view.
+    /// @param vi The owning LB's rule interner (read-only).
+    /// @return `true` iff decoded @p a orders before decoded @p b.
+    /// @invariant Comparator-equal implies blob-byte-equal.
+    /// @see `DecodedAdmissionOrdis2ValueLess` — the heap-set oracle;
+    ///      `insertAdmissionOrdis2BlobSorted`.
+    inline bool admissionOrdis2BlobLess(const AdmissionOrdis2ValueBlobView& a,
+        const AdmissionOrdis2ValueBlobView& b, const ValueInterner& vi)
+    {
+        if (a.sourceImplId() != b.sourceImplId()) {
+            const int c = compareSpans(vi.decodeView(a.sourceImplId()),
+                                       vi.decodeView(b.sourceImplId()));
+            assert(c != 0
+                && "distinct rule ids decode to equal bytes — interner "
+                   "injectivity broken");
+            return c < 0;
+        }
+        const int32_t la = a.levelCount();
+        const int32_t lb = b.levelCount();
+        const int32_t n = la < lb ? la : lb;
+        for (int32_t i = 0; i < n; ++i) {
+            const int32_t xa = a.levelAt(i);
+            const int32_t yb = b.levelAt(i);
+            if (xa != yb) return xa < yb;
+        }
+        return la < lb;
+    }
+
+    /// @brief Splice one serialized `AdmissionMapOrdis2Value` blob into a
+    ///        demand key's canonical run at blob level — the RMW interior for
+    ///        `admissionMapOrdis2`.
+    ///
+    /// @details
+    /// Byte-for-byte the `insertRejectedOrdisBlobSorted` procedure with the
+    /// demand record types: verbatim gen-arena copies of the existing run,
+    /// positional insert under the `admissionOrdis2BlobLess` comparator twin,
+    /// duplicate ⟺ byte-equal (asserted — re-demands of the same ground
+    /// premise by the same rule dedup), unconditional write-back through the
+    /// raw `inner().assignRun` byte door. Mints `pk` on first touch.
+    /// Single-threaded write side only (I-83) — the post-fixpoint drain.
+    ///
+    /// @param m       The cold ordis2-demand blob map.
+    /// @param pk      The packed (templateId, validityId) key.
+    /// @param newBlob The new value's serialized blob bytes.
+    /// @param newLen  The new blob's byte length.
+    /// @param vi      The owning LB's rule interner (comparator state).
+    /// @param gArena  The per-slot gen-scratch arena; reclaimed by this
+    ///                function's own mark/popTo.
+    /// @invariant The written run is canonical under
+    ///            `DecodedAdmissionOrdis2ValueLess` (I-99).
+    /// @see `insertAdmissionOrdis2IdsBlob` — the 0%-heap drain door.
+    inline void insertAdmissionOrdis2BlobSorted(
+        TypedColdBlobMap<int64_t, AdmissionMapOrdis2Value>& m,
+        int64_t pk, const char* newBlob, int32_t newLen,
+        const ValueInterner& vi, ScratchArena& gArena)
+    {
+        const ArenaOffset mark = gArena.cursor();
+        struct BlobRec { ArenaOffset off; int32_t len; };
+        DirtyState recsDirty = DirtyState::Clean;
+        PagedVector<BlobRec> recs(&gArena, &recsDirty);
+        const int32_t id = m.lookup(pk);
+        if (id != 0) {
+            const int32_t rl = m.runLen(id);
+            for (int32_t j = 0; j < rl; ++j) {
+                int32_t bl = 0;
+                const char* bp = m.peekRecordBytes(id, j, bl, gArena);
+                const ArenaOffset coff = gArena.alloc(bl, 1);
+                std::memcpy(gArena.resolve(coff), bp,
+                            static_cast<std::size_t>(bl));
+                recs.push_back(BlobRec{ coff, bl });
+            }
+        }
+        const AdmissionOrdis2ValueBlobView nv(newBlob, newLen);
+        const int32_t M = recs.size();
+        int32_t pos = 0;
+        bool dup = false;
+        for (; pos < M; ++pos) {
+            const BlobRec br = recs[pos];
+            const AdmissionOrdis2ValueBlobView ev(
+                reinterpret_cast<const char*>(gArena.resolve(br.off)), br.len);
+            if (admissionOrdis2BlobLess(ev, nv, vi)) continue;  // existing < new
+            if (!admissionOrdis2BlobLess(nv, ev, vi)) {
+                dup = (br.len == newLen)
+                    && std::memcmp(gArena.resolve(br.off), newBlob,
+                                   static_cast<std::size_t>(newLen)) == 0;
+                assert(dup
+                    && "comparator-equal demand blobs differ in bytes — "
+                       "interner injectivity broken");
+            }
+            break;
+        }
+        const int32_t outCount = dup ? M : M + 1;
+        int64_t total = 0;
+        for (int32_t j = 0; j < M; ++j) total += recs[j].len;
+        if (!dup) total += newLen;
+        if (total > ExecutionParameters::kMaxAdmissionRunBytes) {
+            const int32_t wid = m.inner().assignRun(pk, nullptr, nullptr, 0);
+            for (int32_t j = 0; j <= M; ++j) {
+                if (!dup && j == pos)
+                    m.inner().appendBlobToRun(wid, newBlob, newLen);
+                if (j == M) break;
+                const BlobRec br = recs[j];
+                m.inner().appendBlobToRun(wid, gArena.resolve(br.off), br.len);
+            }
+            gArena.popTo(mark);
+            return;
+        }
+        const ArenaOffset concatOff =
+            gArena.alloc(static_cast<int32_t>(total), 1);
+        const ArenaOffset lensOff = gArena.alloc(
+            outCount * static_cast<int32_t>(sizeof(int32_t)),
+            static_cast<int32_t>(alignof(int32_t)));
+        char* concat = reinterpret_cast<char*>(gArena.resolve(concatOff));
+        int32_t* lens =
+            reinterpret_cast<int32_t*>(gArena.resolve(lensOff));
+        int32_t at = 0;
+        int32_t oi = 0;
+        for (int32_t j = 0; j <= M; ++j) {
+            if (!dup && j == pos) {
+                std::memcpy(concat + at, newBlob,
+                            static_cast<std::size_t>(newLen));
+                lens[oi++] = newLen;
+                at += newLen;
+            }
+            if (j == M) break;
+            const BlobRec br = recs[j];
+            std::memcpy(concat + at, gArena.resolve(br.off),
+                        static_cast<std::size_t>(br.len));
+            lens[oi++] = br.len;
+            at += br.len;
+        }
+        assert(oi == outCount && at == static_cast<int32_t>(total)
+            && "insertAdmissionOrdis2BlobSorted: concatenation diverged from "
+               "the computed frame");
+        m.inner().assignRun(pk, concat, lens, outCount);
+        gArena.popTo(mark);
+    }
+
+    /// @brief Decode a demand key's whole value run into its sorted set form
+    ///        — the cold blob map read snapshot (test oracle + dump reader).
+    ///
+    /// @param m  The cold ordis2-demand blob map.
+    /// @param pk The packed (templateId, validityId) key.
+    /// @param vi The owning LB's rule interner (the comparator's state).
+    /// @return The key's value set; empty when `pk` was never minted.
+    inline AdmissionOrdis2ValueSet admissionOrdis2RecordsAt(
+        const TypedColdBlobMap<int64_t, AdmissionMapOrdis2Value>& m,
+        int64_t pk, const ValueInterner& vi)
+    {
+        AdmissionOrdis2ValueSet s(DecodedAdmissionOrdis2ValueLess{ &vi });
+        const int32_t id = m.lookup(pk);
+        if (id != 0) {
+            const std::vector<AdmissionMapOrdis2Value> run = m.recordsAt(id);
+            for (const AdmissionMapOrdis2Value& r : run) s.insert(r);
+        }
+        return s;
+    }
+
+    /// @brief Build one `AdmissionMapOrdis2Value` blob from id runs and splice
+    ///        it into the demand key's canonical run — the 0%-heap door for
+    ///        the drain.
+    ///
+    /// @details
+    /// The `insertRejectedOrdisIdsBlob` twin: closed-form length, stack
+    /// `put` fill byte-exact to `Codec<AdmissionMapOrdis2Value>::serialize`,
+    /// ascending-strictly-unique level assert, then the sorted RMW splice.
+    ///
+    /// @param m            The cold ordis2-demand blob map.
+    /// @param pk           The packed (templateId, validityId) key.
+    /// @param sourceImplId The demanding rule's rule-interner id.
+    /// @param levels       Ascending-unique level run (`(nullptr, 0)` empty).
+    /// @param levelCount   The level count (`>= 0`).
+    /// @param vi           The owning LB's rule interner (comparator state).
+    /// @param gArena       The per-slot gen-scratch arena; reclaimed by this
+    ///                     function's own mark/popTo.
+    /// @see `insertAdmissionOrdis2BlobSorted`, `Codec<AdmissionMapOrdis2Value>`.
+    inline void insertAdmissionOrdis2IdsBlob(
+        TypedColdBlobMap<int64_t, AdmissionMapOrdis2Value>& m, int64_t pk,
+        int32_t sourceImplId,
+        const int* levels, int32_t levelCount,
+        const ValueInterner& vi, ScratchArena& gArena)
+    {
+        assert(levelCount >= 0 && (levelCount == 0 || levels != nullptr));
+        const ArenaOffset mark = gArena.cursor();
+        const int32_t len = 8 + 4 * levelCount;
+        char* out = reinterpret_cast<char*>(gArena.resolve(gArena.alloc(len, 1)));
+        char* at = out;
+        const auto put = [&at](const auto& x) {
+            std::memcpy(at, &x, sizeof(x));
+            at += sizeof(x);
+        };
+        put(sourceImplId);
+        put(levelCount);
+        for (int32_t i = 0; i < levelCount; ++i) {
+            assert((i == 0 || levels[i] > levels[i - 1])
+                && "insertAdmissionOrdis2IdsBlob: levels must be ascending "
+                   "strictly-unique");
+            put(static_cast<int32_t>(levels[i]));
+        }
+        assert(at == out + len
+            && "insertAdmissionOrdis2IdsBlob: fill diverged from the "
+               "closed-form length");
+        insertAdmissionOrdis2BlobSorted(m, pk, out, len, vi, gArena);
         gArena.popTo(mark);
     }
 
@@ -14774,6 +16721,39 @@ namespace gl {
         return m;
     }
 
+    /// @brief Decode a `DeloadableMailOut`'s statement-flag side column to
+    ///        canonical-sorted `(EWV, packed value)` rows.
+    ///
+    /// @details Walks `statementFlags_` (ids 1..count, insertion order),
+    /// decodes each packed private-interner key via `decodeOriginKey`, and
+    /// sorts by the decoded `(original, validity)` pair — the same
+    /// canonical-string ordering `decodeMailOutStatements` imposes, so the
+    /// serialized flag section is a pure function of column content
+    /// regardless of insertion order.
+    ///
+    /// @param mo The mailbox whose flag column is decoded.
+    /// @param mi The mailbox's dedicated per-LB interner.
+    /// @return Sorted `(EWV, packed flag value)` rows.
+    /// @see Codec<Mail>::serialize(const DeloadableMailOut&, const ValueInterner&).
+    inline std::vector<std::pair<ExpressionWithValidity, int32_t>>
+    decodeMailOutStatementFlags(const DeloadableMailOut& mo,
+        const ValueInterner& mi) {
+        std::vector<std::pair<ExpressionWithValidity, int32_t>> out;
+        const int32_t n = mo.statementFlags_.count();
+        out.reserve(static_cast<size_t>(n));
+        for (int32_t id = 1; id <= n; ++id) {
+            const int64_t pk = mo.statementFlags_.decodeKey(id);
+            std::pair<std::string, std::string> kv = decodeOriginKey(pk, mi);
+            out.emplace_back(
+                ExpressionWithValidity(std::move(kv.first),
+                                       std::move(kv.second)),
+                mo.statementFlags_.valueAt(id));
+        }
+        std::sort(out.begin(), out.end(),
+            [](const auto& a, const auto& b) { return a.first < b.first; });
+        return out;
+    }
+
     /// @brief Out-of-line `Codec<Mail>::serialize(const DeloadableMailOut&)`.
     inline std::vector<char> Codec<Mail>::serialize(const DeloadableMailOut& hm,
         const ValueInterner& senderMi) {
@@ -14815,6 +16795,15 @@ namespace gl {
                 for (const ExpressionWithValidity& dep : origin.second)
                     putGlobalEwv(dep);
             }
+        }
+        // statement flags: decode private mailbox ids -> strings (canonical
+        // sorted), emit each key as global ids plus the packed value verbatim.
+        const std::vector<std::pair<ExpressionWithValidity, int32_t>> flags =
+            decodeMailOutStatementFlags(hm, senderMi);
+        putPod(static_cast<int32_t>(flags.size()));
+        for (const std::pair<ExpressionWithValidity, int32_t>& fl : flags) {
+            putGlobalEwv(fl.first);
+            putPod(fl.second);
         }
         return out;
     }
@@ -15029,6 +17018,17 @@ namespace gl {
                     (std::numeric_limits<int>::max)());
             }
         }
+        // statement flags: GLOBAL-id keys, packed values folded verbatim
+        // through the merging door (flag 5 wins, iterations min-merge across
+        // ancestors' blobs).
+        int32_t flagCount = 0; src.getPod(flagCount);
+        for (int32_t f = 0; f < flagCount; ++f) {
+            int32_t flOrigId = 0; src.getPod(flOrigId);
+            int32_t flValidId = 0; src.getPod(flValidId);
+            int32_t flPacked = 0; src.getPod(flPacked);
+            inbox.mergeStatementFlag(packOriginKey(flOrigId, flValidId),
+                flPacked);
+        }
         assert(src.atEnd()
             && "deserializeMailBlobInto: blob longer than the layout");
     }
@@ -15055,9 +17055,6 @@ namespace gl {
                             static_cast<int32_t>(start + len) };
         deserializeMailBlobInto(src, inbox);
     }
-
-
-
 
 
     /// @brief One *logic block* (LB) — the prover's primary unit of state.
@@ -15120,9 +17117,9 @@ namespace gl {
     ///   staged for the next burst; emptied and refilled every
     ///   burst (NOT persistent, unlike the local-premise containers).
     /// - `intKnownStatements`       — packed `(originalId, validityId)`
-    ///   keys; the value's `known` bit answers "is this statement already
-    ///   known here" (Site F), the `registered` bit answers "was this
-    ///   statement registered through an add-path door".
+    ///   keys; ROW PRESENCE answers "is this statement already known /
+    ///   admitted here" (Site F and every other probe); the value carries
+    ///   only the `local` / `fullyDisintegrated` payload.
     /// - `intStatementLevelsMap`    — packed `(originalId, validityId)`
     ///   keys → per-statement set of LB levels at which it was deposited.
     ///
@@ -15230,6 +17227,10 @@ namespace gl {
         // lbStateInterner does NOT reset there.
         TypedColdSet<LbStatePairKey>& expandedImplications =
             lbMemory.expandedImplications;
+        TypedColdBlobMap<int64_t, CompactExpansionRec>& compactExpansions =
+            lbMemory.compactExpansions;
+        ColdHashMap<PodKeyStore<int64_t>, int32_t>& expansionCarrierCount =
+            lbMemory.expansionCarrierCount;
         // The LB's expression key (its identity) — statified: interned in the
         // never-deloaded analyzer-wide skeletonInterner() and stored as a 4-byte
         // id (0 == empty, the root sentinel). The former `std::string exprKey`
@@ -15371,6 +17372,26 @@ namespace gl {
         /// @see `DeferredIntegrationPrep` — the element type.
         /// @see `prover.hpp::drainDeferredIntegrationPreps` — the drain.
         std::vector<DeferredIntegrationPrep> deferredIntegrationPreps;
+
+        /// @brief Per-hashburst staging buffer for ordis2 demands, drained
+        ///        once after the fixpoint loop
+        ///        (D-267).
+        ///
+        /// @details
+        /// Sibling of `admissionKeysAlgebra`: populated only by
+        /// `applyFiringRecords`' demand arm (canonical firing order);
+        /// `drainAdmissionKeysOrdis2` mints each record into
+        /// `admissionMapOrdis2` and wakes the or heads filed in
+        /// `rejectedMapOrdis2` under the same key before the post-burst
+        /// `standardProcessing` absorb, so a woken or re-consumes with
+        /// route (c) able to read the fresh demand. Cleared at burst start
+        /// beside the other per-step delta clears and again post-drain
+        /// (sealed views must not outlive the page sweep); never read
+        /// during the fixpoint loop.
+        ///
+        /// @see `Ordis2DemandRecord` — the element type.
+        /// @see `prover.hpp::drainAdmissionKeysOrdis2` — the drain.
+        std::vector<Ordis2DemandRecord> admissionKeysOrdis2;
         // Keyed by the templateInterner id of the integration template
         // (D-135; the former string key). No validity
         // dimension — the map never filters at wipeSubtree (counter
@@ -15478,6 +17499,36 @@ namespace gl {
             equivalenceClassesMap.assignRun(validityId, classes);
         }
         bool isActive;
+
+        /// @brief Rule-index staging window depth
+        ///        (D-333): while `> 0`, the rule
+        ///        installs into this LB's four hash memories stage their
+        ///        index writes and the window's closer flushes them once;
+        ///        at `0` every `addToHashMemory` flushes at its own exit.
+        ///
+        /// @details
+        /// Armed around the two mail absorbs of `standardProcessing`, around
+        /// `applyEquiClasses`, and by every `addToHashMemory` for its own
+        /// duration (a nested deposit into the same instance shares the
+        /// staging and must not flush it from under the outer install);
+        /// nested windows count up and down and the outermost closer flushes.
+        /// Plain LB-object state, never deloaded; `0` at every seam a reader
+        /// reaches. The staging itself rides the worker slot
+        /// (`ruleStagings()`), not the LB.
+        int32_t ruleStagingArmDepth = 0;
+
+        /// @brief The thread that published `WorkerOwned` on `stewardClaim`.
+        ///
+        /// @details
+        /// Written by `MemorySteward::claimAndLoadForWork` right before its
+        /// release-store of `WorkerOwned`. Outside phase 2 an LB is written by
+        /// its claimant, so only that thread may re-enter the handshake on it
+        /// (a barrier-seam drain re-claiming an LB it already holds); a
+        /// foreign holder is two writers on one LB and asserts (I-122). Phase-2
+        /// split siblings share the LB read-only (I-83) and never consult it.
+        /// Plain LB-object state on the never-deloaded slab, never dumped.
+        std::atomic<std::thread::id> claimHolder{};
+
 
         /// @brief Quiescence latch — `true` when this LB's next burst MAY
         ///        produce new logical work, `false` when its previous burst
@@ -15746,6 +17797,71 @@ namespace gl {
         // Number of disjuncts per parent-scoped cohort id for convergence.
         ColdHashMap<PodKeyStore<int32_t>, int>& orDisjunctCount =
             lbMemory.orDisjunctCount;
+        // Sequenced or-disintegration: cohortId -> the UNRELEASED disjunct
+        // payload-body ids (decoded-lex runs, the orBookkeeping discipline;
+        // release order is re-derived by the disjunct ranking at each
+        // release, never stored) and cohortId -> the cohort's seed level run
+        // (ascending ints). Reference aliases into lbMemory (tags 805..810).
+        TypedColdSetMap<int32_t, int32_t>& orPendingBranches =
+            lbMemory.orPendingBranches;
+        TypedColdSetMap<int32_t, int32_t>& orPendingLevels =
+            lbMemory.orPendingLevels;
+
+        // Flag-5 relay staging (D-284): compact NameMap id →
+        // sender witness-generation stamp + the staging deposit's level run.
+        // Main-scope only; erased when fillMailOut ships the compact.
+        // Reference aliases into lbMemory (tags 811..815).
+        TypedColdMap<int32_t, int32_t>& pendingRelayIter =
+            lbMemory.pendingRelayIter;
+        TypedColdSetMap<int32_t, int32_t>& pendingRelayLevels =
+            lbMemory.pendingRelayLevels;
+
+        /// @brief Stage one compact for the flag-5 mail relay.
+        ///
+        /// @details On a fresh key, records the witness-generation stamp and
+        /// the staging deposit's ascending level run; on a restage, the stamp
+        /// min-merges (a compact derivable at a lower generation is that
+        /// generation — order-free) and the first-seen level run is kept.
+        /// Single-threaded per LB (the caller holds the worker claim or runs
+        /// at a post-join drain).
+        ///
+        /// @param exprId The compact's NameMap expression id (main scope).
+        /// @param iteration The disintegration's witness-generation stamp;
+        ///                  `>= -1` (-1 = none carried).
+        /// @param lvRun Ascending-unique level run of the staging deposit; may
+        ///              be null only when @p lvN is 0.
+        /// @param lvN Level count (`>= 0`).
+        /// @return Nothing.
+        /// @see fillMailOut (the consumer), erasePendingRelay.
+        void stagePendingRelay(NameId exprId, int32_t iteration,
+            const int* lvRun, int32_t lvN) {
+            assert(lvN >= 0 && (lvN == 0 || lvRun != nullptr));
+            const int32_t key = static_cast<int32_t>(exprId);
+            const int32_t vid = pendingRelayIter.lookup(key);
+            if (vid != 0) {
+                const int32_t oldIt = pendingRelayIter.valueAt(vid);
+                const int32_t mergedIt =
+                    (oldIt == -1) ? iteration
+                    : (iteration == -1) ? oldIt
+                    : (oldIt < iteration ? oldIt : iteration);
+                pendingRelayIter.upsert(key, mergedIt);
+                return;   // first-seen level run kept
+            }
+            pendingRelayIter.upsert(key, iteration);
+            pendingRelayLevels.assignSet(key, lvRun, lvN);
+        }
+
+        /// @brief Drop one staged relay compact (shipped or wiped).
+        /// @param exprId The compact's NameMap expression id.
+        /// @return Nothing.
+        /// @see stagePendingRelay.
+        void erasePendingRelay(NameId exprId) {
+            const int32_t key = static_cast<int32_t>(exprId);
+            pendingRelayIter.eraseIf(
+                [&](int32_t k) { return k == key; });
+            pendingRelayLevels.eraseSetIf(
+                [&](int32_t k) { return k == key; });
+        }
 
         // --- Static hot path: NameId-based hash memory ---
         NameMap nameMap;
@@ -16137,7 +18253,8 @@ namespace gl {
         ///        reset.
         ///
         /// @param directory The deload directory the files live in.
-        void reloadFromImage(const std::string& directory);
+        void reloadFromImage(const std::string& directory,
+                             bool rebuildDerivedIndexes = true);
 
     public:
 
@@ -16208,14 +18325,17 @@ namespace gl {
         TypedColdSetMap<StatementKey, int> intToBeProved{
             &persistentArena, &persistentDirty };
 
-        // Disproved-goal inbox: contradiction seeds (the `__contradiction__`
+        // Settled-goal inbox: contradiction seeds (the `__contradiction__`
         // exprKey suffix, verbatim) deposited by the post-join theorem drain
         // when a primed contradiction child of THIS LB emits its theorem
         // (whose head is negate(seed), I-165). The end-of-burst
-        // `drainDisprovedGoals` probes each seed against this LB's MAIN goals:
-        // a hit means the goal is disproved and its integration machinery is
-        // wiped; a miss is the complement-twin / already-closed case — a
-        // defined no-op, not a failure. Rides the PERSISTENT arena like
+        // `drainDisprovedGoals` probes each seed against this LB's MAIN goals
+        // in both directions: seed == goal means the goal is disproved and
+        // its integration machinery is wiped; negate(seed) == goal means the
+        // goal is PROVED and closes with success semantics (row erased, goal
+        // scopes wiped, history kept — D-279); a
+        // double miss is the already-closed case — a defined no-op, not a
+        // failure. Rides the PERSISTENT arena like
         // `intToBeProved` (never deloaded, so the single-threaded seam writes
         // it while the LB is cold without a claim); in NO deload stream; the
         // byte-key set dedups repeat deposits; reclaimed with the persistent
@@ -16237,6 +18357,35 @@ namespace gl {
         ColdHashSet<PodKeyStore<NameId>> pendingDeadOrBranches{
             &persistentArena, &persistentDirty };
 
+        // Live `_ordis_` branch registry (I-206): NameMap
+        // vids of branch scopes `ordisMerge` has seen (the seed deposit is the
+        // first sighting) that are neither frozen nor retired. The end-of-burst
+        // `freezeResolvedOrBranches` evaluates every live branch against the
+        // LB's chain goals and moves the resolved ones into `frozenOrBranches`;
+        // a vid whose scope is filtered (retired by `drainDeadOrBranches` or
+        // closed by `wipeSubtree`) drops out without evaluation. Rides the
+        // PERSISTENT arena like `pendingDeadOrBranches` (never deloaded, in NO
+        // deload stream); the pod-key set dedups repeat sightings; reclaimed at
+        // discharge.
+        ColdHashSet<PodKeyStore<NameId>> orLiveBranches{
+            &persistentArena, &persistentDirty };
+
+        // Frozen `_ordis_` branch registry (I-206): NameMap
+        // vids of branch scopes that reached every `toBeProved` goal on their
+        // chain — each goal whose scope is the cohort parent or one of its
+        // ancestors is `known` at the branch scope or a strict ancestor. A
+        // frozen branch keeps every registry row, `orBookkeeping` entry and
+        // history line; the ONLY consumer is `filterIntEncodedStatements`,
+        // which drops from the request universe every statement whose scope is
+        // a frozen branch or a descendant of one. Written only on the
+        // single-threaded end-of-burst seam, read `const` by the parallel
+        // phase-2 request generation (I-83); a one-way latch until discharge.
+        // Rides the PERSISTENT arena like `pendingDeadOrBranches` (never
+        // deloaded, in NO deload stream — readable while the main arena is
+        // cold); reclaimed at discharge.
+        ColdHashSet<PodKeyStore<NameId>> frozenOrBranches{
+            &persistentArena, &persistentDirty };
+
         // Retired-disjunct record per `_ordis_` cohort: cohortId (the
         // lbStateInterner-packed (parent, orSignature) id) -> sorted run of
         // packed (disjunctId, refutationScopeVid) pairs — the branches
@@ -16251,6 +18400,58 @@ namespace gl {
         // Rides the PERSISTENT arena (never deloaded, in NO deload stream);
         // reclaimed at discharge.
         TypedColdSetMap<int32_t, int64_t> orRetiredDisjuncts{
+            &persistentArena, &persistentDirty };
+
+        // Cohort-release inbox (sequenced or-disintegration): cohortIds whose
+        // live branch RESOLVED this burst — it derived an expression matching
+        // a `toBeProved` goal on the branch's parent chain (staged by
+        // `ordisMerge`'s goal probe) or it retired refuted (staged by
+        // `drainDeadOrBranches`). The end-of-burst `drainPendingOrReleases`
+        // releases each staged cohort's next pending branch (top-ranked
+        // disjunct). Rides the PERSISTENT arena like `pendingDeadOrBranches`
+        // (never deloaded, in NO deload stream); the pod-key set dedups
+        // repeat stagings; a stale entry whose cohort retired is the drain's
+        // defined skip; reclaimed at discharge.
+        ColdHashSet<PodKeyStore<int32_t>> pendingOrReleases{
+            &persistentArena, &persistentDirty };
+
+        // Route-(a) starter pick (admission-based ordis): cohortId -> the
+        // ADMITTED disjunct's wrapped payload id (lbStateInterner space, the
+        // orPendingBranches value convention). Written once at cohort open
+        // when the demand probe admitted the cohort — the demand names WHICH
+        // branch carries the relevance, so it opens first (ties among
+        // several admitted disjuncts fall to the standing ranking);
+        // consumed ONE-SHOT by drainPendingOrReleases before its
+        // pickTopOrDisjunct, later releases rank as today. Route-(b)
+        // (product-of-disintegration) cohorts write no row. Rides the
+        // PERSISTENT arena like pendingOrReleases (never deloaded, in NO
+        // deload stream); reclaimed at discharge.
+        TypedColdMap<int32_t, int32_t> orStarterPick{
+            &persistentArena, &persistentDirty };
+
+        // Processed-or ledger (the deposit door's or-uniqueness gate, I-219):
+        // scope vid (NameMap) -> sorted-unique run of packed pairs
+        // `packInt32Pair(canonicalId, originalId)`. `originalId` is the or
+        // statement's door-canonical text at record time — the cohort
+        // signature the D-331 drain and every clear path key on; it received
+        // FULL processing at that scope (the willDisintegrate branch ran
+        // `disintegrateExpr2` on it, so its K/subset-exclusion compacts were
+        // emitted and its cohort opened, parked, or depth-gated).
+        // `canonicalId` is that text's class-canonical id under the scope's
+        // CURRENT class bucket: `recanonicalizeProcessedOrLedger` re-derives
+        // it at the one class-change seam (`updateEquivalenceClasses`, right
+        // after the `changedClassesThisStep` push), so the rows never go
+        // stale and the door's gate is an exact id membership test on either
+        // half — no canonicalization per probe. A row leaves through the
+        // parked-or un-know (`resetParkedOrStatementRegistries`), the two
+        // ordis park hooks' re-mail rewrites (the mailed re-consumption
+        // must pass the gate as the representative), the D-331 drain's
+        // loser retirement, and the disproof-cleanup wiped-scope sweep;
+        // `wipeSubtree`d scopes keep their rows inert like the cohort rows
+        // (a closed scope never re-deposits). Numeric run order — never
+        // observable: in NO deload stream, in NO dump. Rides the PERSISTENT
+        // arena like `orStarterPick` (never deloaded); reclaimed at discharge.
+        TypedColdSetMap<NameId, int64_t> processedOrLedger{
             &persistentArena, &persistentDirty };
 
         // Int mirrors for static addExprToMemoryBlock early checks. Statified
@@ -16303,6 +18504,35 @@ namespace gl {
             const int32_t originalId = mailOutInterner.encode(original);
             const int32_t validityId = mailOutInterner.encode(validityName);
             mailOut.insertStatement(originalId, validityId, levels, levelCount);
+            mailOutPending = true;
+            mailOutLiveBytes = mailOut.liveBytes();
+        }
+
+        /// @brief Set an outgoing statement's mail flag — the sender-side
+        ///        relay-marking door.
+        ///
+        /// @details Mints the two spans into the private mailbox interner
+        /// (find-or-mint — the paired `insertMailOutStatement` deposit uses the
+        /// same ids), packs them via `packOriginKey`, and folds the flag into
+        /// the mailbox's side column (`DeloadableMailOut::setStatementFlag`:
+        /// flag 5 wins, generation stamps min-merge). Raises the resident
+        /// pending bit like every mailbox write door.
+        ///
+        /// @param original Outgoing expression bytes.
+        /// @param validityName Outgoing validity bytes.
+        /// @param flagCode The flag code (`kMailStatementFlag*`).
+        /// @param iteration The sender disintegration's witness-generation
+        ///                  stamp; -1 = none.
+        /// @return Nothing.
+        /// @invariant Input spans do not alias `mailOutInterner` storage across
+        ///            a mint; the LB is resident and claimed.
+        /// @see insertMailOutStatement, DeloadableMailOut::setStatementFlag.
+        void setMailOutStatementFlag(const StrSpan& original,
+            const StrSpan& validityName, int32_t flagCode, int32_t iteration) {
+            const int32_t originalId = mailOutInterner.encode(original);
+            const int32_t validityId = mailOutInterner.encode(validityName);
+            mailOut.setStatementFlag(packOriginKey(originalId, validityId),
+                flagCode, iteration);
             mailOutPending = true;
             mailOutLiveBytes = mailOut.liveBytes();
         }
@@ -16434,15 +18664,13 @@ namespace gl {
         ///   `sameIterationInternalMail.statements`
         /// - Per HashMemory (overall / local / delta):
         ///   - `encodedMap` LMVs by `lmv.validityName`
-        ///   - Four owner-set maps (`normalizedEncodedKeys`,
-        ///     `…Subkeys`, `…SubkeysMinusOne`, `…SubkeysMinusTwo`) by
-        ///     owner-set; empty owner-set drops the key. Dropped keys are
-        ///     also pruned from `remainingArgsNormalizedEncodedMap`.
+        ///   - The normalized-key indexes (`normalizedEncodedKeys`, `…Subkeys`) and
+        ///     `remainingArgsNormalizedEncodedMap` are NOT wiped: no owner record,
+        ///     a stale key is a sound over-approximation (I-49).
         ///   - `admissionMap`, `admissionMapIntegration`,
         ///     `admissionSetIntegration`, `triggersForAdmissionSetIntegration`,
         ///     `rejectedMap`, `rejectedMapIntegration`,
-        ///     `admissionStatusMap`, `consumedAdmissionKeys`,
-        ///     `revisitInProgress`.
+        ///     `admissionStatusMap`, `revisitInProgress`.
         ///
         /// Preserved on purpose:
         /// - `exprOriginMap` (per Rule 16 / I-44 — chapter export reads it).
@@ -16499,7 +18727,7 @@ namespace gl {
         /// types (`EncodedExpression`, the all-`NameId` `IntEncodedExpr`, the
         /// packed-`int32_t` statement keys, and the pointer-free `NameMap`) — with
         /// every hash / mail / equivalence / origin / derived container left at its
-        /// `Memory()` default. The owner-set maps and the `remainingArgs` index now
+        /// `Memory()` default. The normalized-key indexes and the `remainingArgs` index now
         /// key on owning `NormKey`s (keyArena retired), so no dangling-interior-
         /// pointer hazard of a naive whole-`Memory` copy arises. The clone's
         /// `nameMap` is an independent copy, so the per-conjecture run may mint the

@@ -38,6 +38,7 @@ User-oriented SwDD — Chapter 5: Parallel execution (reference-level).
       <ul>
         <li><a href="prover.html#life">Life of a run</a></li>
         <li><a href="prover.html#cycles">Cycles</a></li>
+        <li><a href="prover.html#cuda-filter-classes">CUDA filter classes</a></li>
         <li><a href="prover.html#enter">How a theorem enters</a></li>
         <li><a href="prover.html#status">Status modes</a></li>
         <li><a href="prover.html#deactivate">Deactivation cascade</a></li>
@@ -62,7 +63,7 @@ User-oriented SwDD — Chapter 5: Parallel execution (reference-level).
         <li><a href="mechanisms.html#integ">Integration</a></li>
         <li><a href="mechanisms.html#branch">Branching &amp; contradiction</a></li>
         <li><a href="mechanisms.html#induct">Induction</a></li>
-        <li><a href="mechanisms.html#fan5">5-batch fan-out</a></li>
+        <li><a href="mechanisms.html#fan5">Request-generation fan-out</a></li>
         <li><a href="mechanisms.html#cascade">Pending-rejection cascade</a></li>
       </ul>
     </li>
@@ -85,6 +86,7 @@ User-oriented SwDD — Chapter 5: Parallel execution (reference-level).
         <li><a href="memory.html#aggregate">LbMemory — the aggregate</a></li>
         <li><a href="memory.html#deload">Deload / reload</a></li>
         <li><a href="memory.html#scope">Scope</a></li>
+        <li><a href="memory.html#strings">String statification</a></li>
       </ul>
     </li>
     <li><a href="provenance.html">Provenance</a>
@@ -255,6 +257,93 @@ expression bucket of a split block. No block spawns its own sub-threads. After t
 pool joins, a per-block step concatenates and canonically sorts that block's firing
 records before applying them.</p>
 
+<p><b>Phase&nbsp;2 has two explicit backends.</b> The processor route is the default
+of every run (a customer PC needs no GPU); <code>main.py --GPU</code> selects CUDA
+for the whole run, and a batch configuration may pin one batch to CUDA with
+<code>use_gpu: true</code>. The
+CUDA full-run route keeps the same three barriers and the same
+final deposit door, but batches the read-only block images and runs request
+filtering, growth, ordering, evaluation, full provenance construction, and doom
+selection on the GPU. Split blocks still use the processor stump producer to
+discover disjoint work branches. The device emits complete canonically ordered
+firing records; the host only converts their ownership and applies them. A selected
+CUDA route never silently falls back to the processor. Capacity-bounded chunks
+keep one split block's task family intact, omit structurally impossible request
+batches, and cover every full-run incubator and Peano/Gauss batch. The two routes
+have produced byte-identical proof artifacts on the FTA shortcut identity gate;
+the full route is additionally gated by the complete verifier count.</p>
+
+<p><b>CUDA growth is adaptive inside the global frontier.</b> A preparation pass
+builds one immutable normalised prefix and path summary for every live node in
+three measured fixed pools. Stable selection then lists short and long nodes in
+their original frontier order. The node spans are sorted by call, run, path, and
+candidate and scanned into one exact ordinal stream. Consecutive fixed windows
+cover that stream completely. Short threads and 64-lane blocks apply the cheap
+gates, survivors compact stably, and only survivors perform the exact key and
+owner probes. Pool placement, window size, and thread arrival never become
+ordering keys; retained semantic tokens still determine every observable order.</p>
+
+<figure>
+<svg viewBox="0 0 760 224" role="img" aria-label="CUDA growth prepares pooled prefixes, selects short and long nodes, orders exact candidate spans, and processes every candidate through fixed windows">
+  <defs><marker id="gpu-prefix-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5DCAA5"/></marker></defs>
+  <rect x="14" y="52" width="108" height="78" rx="8" fill="#262938" stroke="#EF9F27"/>
+  <text x="68" y="76" fill="#EF9F27" font-size="10.5" font-weight="bold" text-anchor="middle">live frontier</text>
+  <text x="68" y="98" fill="#8B8FA5" font-size="9" text-anchor="middle">path + cursor</text>
+  <text x="68" y="116" fill="#8B8FA5" font-size="9" text-anchor="middle">filtered span</text>
+  <path d="M122 91 L158 91" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#gpu-prefix-ar)"/>
+  <rect x="160" y="33" width="132" height="116" rx="8" fill="#20232F" stroke="#5DCAA5"/>
+  <text x="226" y="56" fill="#5DCAA5" font-size="10.5" font-weight="bold" text-anchor="middle">prepare once</text>
+  <text x="226" y="80" fill="#8B8FA5" font-size="9" text-anchor="middle">prefix header</text>
+  <text x="226" y="100" fill="#8B8FA5" font-size="9" text-anchor="middle">payload pool</text>
+  <text x="226" y="120" fill="#8B8FA5" font-size="9" text-anchor="middle">variable pools</text>
+  <text x="226" y="138" fill="#8B8FA5" font-size="9" text-anchor="middle">path summaries</text>
+  <path d="M292 91 L328 91" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#gpu-prefix-ar)"/>
+  <rect x="330" y="33" width="120" height="116" rx="8" fill="#262938" stroke="#B084EB"/>
+  <text x="390" y="56" fill="#B084EB" font-size="10.5" font-weight="bold" text-anchor="middle">stable lists</text>
+  <text x="390" y="82" fill="#8B8FA5" font-size="9" text-anchor="middle">short threads</text>
+  <text x="390" y="104" fill="#8B8FA5" font-size="9" text-anchor="middle">64-lane blocks</text>
+  <text x="390" y="130" fill="#8B8FA5" font-size="8.5" text-anchor="middle">frontier order</text>
+  <path d="M450 91 L486 91" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#gpu-prefix-ar)"/>
+  <rect x="488" y="33" width="116" height="116" rx="8" fill="#20232F" stroke="#5DCAA5"/>
+  <text x="546" y="56" fill="#5DCAA5" font-size="10.5" font-weight="bold" text-anchor="middle">canonical spans</text>
+  <text x="546" y="82" fill="#8B8FA5" font-size="9" text-anchor="middle">call · run</text>
+  <text x="546" y="104" fill="#8B8FA5" font-size="9" text-anchor="middle">path · candidate</text>
+  <text x="546" y="130" fill="#8B8FA5" font-size="8.5" text-anchor="middle">exact scan</text>
+  <path d="M604 91 L628 91" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#gpu-prefix-ar)"/>
+  <rect x="630" y="20" width="116" height="142" rx="8" fill="#262938" stroke="#EF9F27"/>
+  <text x="688" y="43" fill="#EF9F27" font-size="10.5" font-weight="bold" text-anchor="middle">fixed window</text>
+  <text x="688" y="67" fill="#8B8FA5" font-size="8.7" text-anchor="middle">cheap gates</text>
+  <text x="688" y="89" fill="#8B8FA5" font-size="8.7" text-anchor="middle">stable compact</text>
+  <text x="688" y="111" fill="#8B8FA5" font-size="8.7" text-anchor="middle">exact key probes</text>
+  <text x="688" y="133" fill="#8B8FA5" font-size="8.7" text-anchor="middle">events + children</text>
+  <text x="688" y="151" fill="#8B8FA5" font-size="8" text-anchor="middle">repeat to exact end</text>
+  <text x="380" y="197" fill="#8B8FA5" font-size="9.5" text-anchor="middle">every candidate exactly once · fixed storage · semantic tokens reconstruct canonical output</text>
+</svg>
+<figcaption><b>Bounded does not mean limited.</b> Prefix construction happens once
+per node, then consecutive windows cover the complete canonical candidate stream;
+only cheap-gate survivors reach exact key and owner probes.</figcaption>
+</figure>
+
+<p><b>The host projection is parallel across logical blocks.</b> Twelve independent,
+fixed-capacity arenas translate read-only block state into the GPU's 24 packed
+columns at the same time. A bounded merge then copies those columns, adjusts every
+array offset and hash-slot index, and puts the logical-block descriptors back in
+their original order before upload. Thus host-core completion order changes only
+where bytes sit in the packed arrays; tasks, firing records, provenance, and the
+exported proof retain canonical order. A direct all-column twin and the full
+shortcut identity gate cover the merge. Byte-identical name and rule-string
+tables share one physical packed slice. Each block retains all ten fixed
+hash-view descriptor ordinals, but only the whole-key/subkey pairs named by its
+executable batches carry entries; unselected pairs are exact empty views.</p>
+
+<p><b>Projection upload overlaps only independent host scheduling.</b> Fifteen
+packed columns needed by filtering, growth, and ordering copy immediately. Nine
+columns first consumed by evaluation travel through fixed page-locked staging on
+a separate CUDA stream while the host builds the task and call schedules. The
+stream joins before the first kernel, so all 24 columns are resident before any
+proof calculation starts. This changes waiting time only: no table is omitted,
+no kernel races an upload, and the device checksum still covers every used byte.</p>
+
 <p><b>The split is statistics-driven and expression-only.</b> Every burst runs to
 completion; there is no request cap, truncation, or discard-and-redo. At the end of
 an iteration, <code>proveKernel</code> totals each block's completed submatch work. A
@@ -267,8 +356,36 @@ enumerates expression combinations called <i>stumps</i> from
 <code>overallHashMemory</code>, which is the superset from which the working and local
 hash memories are populated. The stumps are dealt round-robin into at most one
 bucket per logical core, then each bucket runs the ordinary request generator while
-accepting all rules. The filter and name sort are paid once per bucket, and a request
-reached through two stumps in one bucket is emitted once.</p>
+accepting all rules. The filter and name sort are paid once per bucket.</p>
+
+<p>A stump named here is always a <i>split</i> stump — a place in the search where
+one worker picks up. The generator once had a second, unrelated thing by the same
+name, a fact it was obliged to attach to every request it produced; that one is
+gone, and requests now carry their mandatory facts by being checked once they are
+complete (<a href="substrate.html#hash-local">§3.2.4</a>).</p>
+
+<p>A stump the producer grew may name a fact a particular bucket's rule pool has no
+use for, because the producer reads the superset. That bucket skips the stump: it
+could produce nothing there, and every larger combination reachable from it still
+contains the same unusable fact.</p>
+
+<p><b>A stump is a resume point, not a filter.</b> The unsplit request generator
+searches combinations by adding one statement at a time in ascending name order, so
+every combination is reached along exactly one path. A stump names one node of that
+same search. Its bucket restarts the search as if the stump had just been matched and
+grows it onward, taking only statements that come after the stump's last one, and the
+run ends exactly where the search would drop that last statement again. A bucket
+therefore owns one whole branch of the search and nothing else. Because every
+combination has a single path, different stumps own <i>disjoint</i> branches that
+together cover the entire unsplit search: the split divides the work rather than
+duplicating it, and a split block does exactly the work it would have done alone.</p>
+
+<p>This is what makes splitting worth its cores. An earlier scheme instead attached
+the stump to freely grown combinations and let a bucket keep whatever contained it —
+which meant a combination holding several stumps was rebuilt once per stump. On the
+heaviest burst of the shortcut run that tripled the work, so thirty-two cores bought
+almost no wall-clock time. Under branch ownership the same burst runs two and a half
+times faster and the whole run drops from 219 to 129 seconds.</p>
 
 <p>When the producer replaces a short combination level with a larger one, a short
 combination that can already complete a request is retained as a <b>terminal
@@ -280,19 +397,22 @@ discover work but is never trusted as the final validity decision.</p>
 
 <p>The split is invisible to the proof: every bucket only <i>reads</i> the shared
 block, writes its own firing records, and the merge sorts them, so neither the split
-nor thread order can change the result (I-28). Inside a bucket, generation and checking
-are <b>interleaved</b> — each request is checked the instant it is built. When a block
-runs <b>unsplit</b> (one part) and a fired
-head shows it doomed (a contradiction, a vacuous-truth contradiction, or a reached induction
-goal), that part flips an <i>external</i> per-block stop flag (one
-<code>std::atomic&lt;bool&gt;</code> per block, held by <code>proveKernel</code>, never a field
-on the block) and stops early. Under a <b>split</b> the early-exit is deliberately disabled:
-the N parts are siblings on one block, and one part setting the flag while the others bail
-mid-burst is a thread-timing race — a sibling could be cut before it generates a useful firing,
-making the proved-theorem set depend on scheduling. So split parts each run to completion; the
-requests they skip past a doom point are wasted-once-doomed, so the firing set is unchanged and
-now <i>deterministic</i>. A doomed block is discharged in phase&nbsp;3 regardless, so the
-theorems are identical and the proof graph stays run-to-run byte-identical.
+nor thread order can change the result. Inside a bucket, generation and checking
+are <b>interleaved</b> — each request is checked the instant it is built. When a fired
+head shows the block doomed (a contradiction, a vacuous-truth contradiction, or a reached
+induction goal), the burst stops early — split or not — through the <b>doom line</b>: the
+triggering part publishes the pair (its own submatch counter at the trigger, its part
+number) onto one <i>external</i> per-block atomic (held by <code>proveKernel</code>, never
+a field on the block), lowered only by compare-and-swap to the minimum. Every part then
+stops once its <i>own</i> counter passes the published position, so each part covers the
+identical deterministic prefix of its stream no matter how threads are scheduled; two
+near-simultaneous triggers both publish, and the smaller (position, part-number) pair
+wins. The merge then takes <b>only the winning part's</b> records — the losing parts'
+chains end wherever the signal caught them, which is timing-dependent, so they are
+discarded unread rather than merged. That is sound because the doom detector mirrors the
+phase&nbsp;3 discharge exactly: a doomed block is discharged regardless, its statements
+never propagate, and everything culled was wasted-once-doomed. Timing shapes only
+wall-clock; the winner, its records, and the proof graph stay run-to-run byte-identical.
 </p>
 
 <h2 id="barrier">5.2 &nbsp;The join barrier</h2>
